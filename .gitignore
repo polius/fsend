@@ -1,0 +1,25 @@
+# Binaries
+/fsend
+/fsend-server
+/dist/
+/build/
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# Test artifacts
+coverage.txt
+coverage.out
+*.fsend-partial
+
+# Local config
+.env
+.env.local

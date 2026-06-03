@@ -1,0 +1,38 @@
+# Caddy config for the reference fsend-server self-host stack.
+#
+# {$FSEND_DOMAIN} is injected from the host environment (set in
+# docker-compose.yml). Caddy automatically provisions and renews a
+# Let's Encrypt certificate for this hostname.
+
+{$FSEND_DOMAIN} {
+    # Reverse-proxy all signaling traffic to fsend-server on the internal network.
+    reverse_proxy fsend-server:8080 {
+        # Pass the original client IP through so fsend-server's rate-limiter
+        # and STUN-style reflection see real addresses, not Caddy's.
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # Long-poll endpoints can hold the connection open up to 25s.
+        # Bump Caddy's idle timeouts so they don't get cut off.
+        transport http {
+            read_timeout 30s
+            write_timeout 30s
+        }
+    }
+
+    # Compact log format; off-by-default would be safer for privacy but
+    # operators may want this on while debugging — flip log level if so.
+    log {
+        output stdout
+        level WARN
+    }
+
+    # Minimal hardening headers. fsend's signaling API doesn't render HTML
+    # so most browser-targeted headers are unnecessary, but these are cheap.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+}

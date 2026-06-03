@@ -1,0 +1,81 @@
+# Reference docker-compose for self-hosting an fsend rendezvous + relay server.
+#
+# Prerequisites:
+#   1. A box with public IPv4 (ideally IPv6 too)
+#   2. UDP/443 and TCP/443 open inbound
+#   3. A domain pointing at the box (set via FSEND_DOMAIN env var below)
+#   4. Docker + docker-compose v2
+#
+# What this stack does:
+#   - fsend-server runs on internal ports (HTTP signaling :8080, UDP relay :443)
+#   - Caddy terminates HTTPS on TCP/443 with automatic Let's Encrypt certs
+#   - Caddy forwards signaling HTTP requests to fsend-server
+#   - UDP/443 goes directly to fsend-server (TLS terminates at the peers, not us)
+#
+# Usage:
+#   export FSEND_DOMAIN=fs.example.com
+#   docker compose up -d
+#   docker compose logs -f
+#
+# To upgrade:
+#   docker compose pull
+#   docker compose up -d
+#
+# See https://github.com/polius/fsend for documentation.
+
+services:
+  fsend-server:
+    image: ghcr.io/polius/fsend-server:latest
+    container_name: fsend-server
+    restart: unless-stopped
+    # The container exposes :8080 (HTTP signaling) to Caddy via the internal
+    # network, and :443/udp directly to the host so peers' UDP datagrams
+    # arrive without proxying.
+    ports:
+      - "443:443/udp"
+    expose:
+      - "8080"
+    environment:
+      # All env vars are optional; defaults shown.
+      FSEND_HTTP_ADDR: ":8080"
+      FSEND_UDP_ADDR: ":443"
+      FSEND_LOG_LEVEL: "info"
+      # Abuse limits — tune to your bandwidth budget.
+      FSEND_MAX_RELAY_BYTES_PER_SESSION: "100MiB"
+      FSEND_MAX_SESSIONS_PER_IP: "5"
+      FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN: "30"
+      FSEND_SESSION_IDLE_TIMEOUT: "60s"
+    networks:
+      - fsend-net
+    healthcheck:
+      test: ["CMD", "/fsend-server", "--health-check"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: fsend-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"     # ACME HTTP-01 challenge
+      - "443:443"   # HTTPS signaling
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data         # Let's Encrypt certs live here
+      - caddy_config:/config
+    environment:
+      FSEND_DOMAIN: "${FSEND_DOMAIN:?Set FSEND_DOMAIN to your public hostname (e.g. fs.example.com)}"
+    depends_on:
+      - fsend-server
+    networks:
+      - fsend-net
+
+networks:
+  fsend-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
