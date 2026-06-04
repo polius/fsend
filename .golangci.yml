@@ -1,0 +1,33 @@
+# golangci-lint config for fsend.
+# See docs/decisions/implementation-defaults.md "Linting".
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - gosec
+    - staticcheck
+    - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters-settings:
+  revive:
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: exported
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck

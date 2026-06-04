@@ -155,8 +155,11 @@ func TestWait_Timeout(t *testing.T) {
 
 func TestHealth(t *testing.T) {
 	srv := newTestServer(t)
-	resp, _ := http.Get(srv.URL + "/v1/health")
-	defer resp.Body.Close()
+	resp, err := http.Get(srv.URL + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Errorf("health status = %d", resp.StatusCode)
 	}
@@ -179,7 +182,7 @@ func TestDeleteSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 204 {
 		t.Errorf("delete status = %d", resp.StatusCode)
 	}
