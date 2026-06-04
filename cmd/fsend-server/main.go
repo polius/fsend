@@ -19,6 +19,9 @@ import (
 	"syscall"
 	"time"
 
+	"net"
+
+	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/version"
 )
@@ -62,6 +65,31 @@ func run(args []string) error {
 	defer cancel()
 	go s.StartJanitor(ctx)
 
+	// Bring up the UDP relay listener on cfg.udpAddr and wire it into
+	// the signaling layer so /v1/relay/allocate works.
+	udpListener, err := net.ListenPacket("udp", cfg.udpAddr)
+	if err != nil {
+		return fmt.Errorf("relay UDP listen on %s: %w", cfg.udpAddr, err)
+	}
+	defer udpListener.Close()
+	relaySrv := relay.NewServer(udpListener, relay.ServerConfig{
+		MaxBytesPerSession: cfg.maxBytesPerSession,
+		SessionIdleTimeout: time.Duration(cfg.sessionIdleSecs) * time.Second,
+		Logger:             logger,
+	})
+	// External address: the operator should set FSEND_PUBLIC_ADDR to the
+	// host:port clients dial. Default to udpAddr (only sensible on dev).
+	publicAddr := envOr("FSEND_PUBLIC_ADDR", cfg.udpAddr)
+	s.WithRelay(relaySrv, publicAddr)
+	relayCtx, relayCancel := context.WithCancel(ctx)
+	defer relayCancel()
+	go func() {
+		if err := relaySrv.Run(relayCtx); err != nil {
+			logger.Error("relay loop ended", "err", err)
+		}
+	}()
+	logger.Info("relay UDP listener up", "addr", cfg.udpAddr, "public", publicAddr)
+
 	httpSrv := &http.Server{
 		Addr:              cfg.httpAddr,
 		Handler:           s.Handler(),
@@ -101,6 +129,8 @@ type runtimeConfig struct {
 	logLevel             slog.Level
 	maxSessionsPerIP     int
 	maxNewSessionsPerMin int
+	maxBytesPerSession   uint64
+	sessionIdleSecs      int
 }
 
 func loadConfig() runtimeConfig {
@@ -109,6 +139,8 @@ func loadConfig() runtimeConfig {
 		udpAddr:              envOr("FSEND_UDP_ADDR", ":443"),
 		maxSessionsPerIP:     envInt("FSEND_MAX_SESSIONS_PER_IP", 5),
 		maxNewSessionsPerMin: envInt("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", 30),
+		maxBytesPerSession:   uint64(envInt("FSEND_MAX_RELAY_BYTES_PER_SESSION", 100*1024*1024)),
+		sessionIdleSecs:      envInt("FSEND_SESSION_IDLE_TIMEOUT_SECS", 60),
 	}
 	switch strings.ToLower(os.Getenv("FSEND_LOG_LEVEL")) {
 	case "debug":

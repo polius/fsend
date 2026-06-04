@@ -16,6 +16,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/polius/fsend/internal/code"
+	"github.com/polius/fsend/internal/relay"
 )
 
 // Config holds runtime tuning for the signaling server.
@@ -58,13 +59,34 @@ func (c *Config) Default() {
 // typically), so contention is negligible. A janitor goroutine sweeps
 // expired entries every 10 seconds.
 type Server struct {
-	cfg       Config
-	started   time.Time
-	mu        sync.Mutex
-	byCode    map[string]*session
-	byID      map[string]*session
-	ipCounts  map[string]int    // active sessions per source IP
-	ipBucket  map[string]*rateBucket // new-session rate limiter per source IP
+	cfg        Config
+	started    time.Time
+	mu         sync.Mutex
+	byCode     map[string]*session
+	byID       map[string]*session
+	ipCounts   map[string]int         // active sessions per source IP
+	ipBucket   map[string]*rateBucket // new-session rate limiter per source IP
+
+	// Relay-fallback wiring (optional). When non-nil, the server exposes
+	// POST /v1/relay/allocate and returns RelayPublicAddr as the address
+	// clients should send framed datagrams to.
+	relayAllocator RelayAllocator
+	relayPublicAddr string
+}
+
+// RelayAllocator is the minimal interface internal/relay.Server exposes
+// for our purposes — abstracting it lets us test the signaling layer
+// without standing up real UDP sockets.
+type RelayAllocator interface {
+	Allocate() (relay.Token, error)
+}
+
+// WithRelay wires a relay allocator and its public address into the
+// signaling layer. publicAddr is the host:port string clients dial.
+func (s *Server) WithRelay(allocator RelayAllocator, publicAddr string) *Server {
+	s.relayAllocator = allocator
+	s.relayPublicAddr = publicAddr
+	return s
 }
 
 // New constructs a Server with defaults filled in.
@@ -110,8 +132,42 @@ func (s *Server) Handler() *http.ServeMux {
 	m.HandleFunc("POST /v1/session/{id}/candidates", s.pushCandidates)
 	m.HandleFunc("GET /v1/session/{id}/candidates", s.pullCandidates)
 	m.HandleFunc("DELETE /v1/session/{id}", s.deleteSession)
+	m.HandleFunc("POST /v1/relay/allocate", s.allocateRelay)
 	m.HandleFunc("GET /v1/health", s.health)
 	return m
+}
+
+func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
+	if s.relayAllocator == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "relay not enabled on this server")
+		return
+	}
+	var body RelayAllocateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "bad json")
+		return
+	}
+	if body.SessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session_id")
+		return
+	}
+	s.mu.Lock()
+	_, ok := s.byID[body.SessionID]
+	s.mu.Unlock()
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	tok, err := s.relayAllocator.Allocate()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "alloc failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, RelayAllocateResponse{
+		RelayAddr:    s.relayPublicAddr,
+		SessionToken: tok.String(),
+		TTLSeconds:   600,
+	})
 }
 
 // StartJanitor launches the background eviction loop. It exits when ctx

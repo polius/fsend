@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/polius/fsend/internal/code"
+	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/quicconn"
@@ -32,13 +33,14 @@ func runReceive(f *flags, c string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// LAN discovery first (per PROJECT_SPEC.md connection flow step 3).
+	// LAN discovery first.
 	fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Looking for sender on local network…")
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
-		// LAN miss is expected in many cases. v0.1.0 has no internet fallback,
-		// so this is a hard error for now.
-		return fmt.Errorf("%w (no internet fallback in v0.1.0; both peers must be on the same LAN)", fserrors.ErrCodeNotFound)
+		// LAN miss → try the rendezvous + relay path.
+		fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Not on LAN — connecting via rendezvous server…")
+		cfg, _ := config.Load()
+		return runReceiveOverRelay(ctx, f, c, cfg)
 	}
 
 	addr := q.IP.String() + ":" + strconv.Itoa(q.Port)

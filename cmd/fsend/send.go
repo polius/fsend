@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/polius/fsend/internal/code"
+	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/quicconn"
@@ -44,6 +45,8 @@ func runSend(f *flags, paths []string) error {
 		return err
 	}
 
+	// If --code was supplied explicitly, this is unambiguously a "send to
+	// someone who already has the code" flow. Otherwise we generate.
 	c := f.codeArg
 	if c == "" {
 		c, err = code.Generate()
@@ -56,52 +59,73 @@ func runSend(f *flags, paths []string) error {
 		}
 	}
 
+	ctx, cancel := signalContext()
+	defer cancel()
+
+	// Strategy: try LAN first (mDNS + QUIC direct). If that fails to
+	// produce a connection within a short window, fall back to
+	// rendezvous + relay. With --code set, we skip LAN because the user
+	// is targeting a specific code/receiver path.
+	if err := runSendOverLAN(ctx, f, items, kind, c); err == nil {
+		return nil
+	} else if !errors.Is(err, errLANUnavailable) {
+		return err
+	}
+
+	// LAN path unavailable — go internet.
+	cfg, _ := config.Load()
+	return runSendOverRelay(ctx, f, items, kind, cfg)
+}
+
+// errLANUnavailable signals that the LAN path could not be set up. The
+// caller falls back to the rendezvous + relay path.
+var errLANUnavailable = errors.New("LAN unavailable")
+
+// runSendOverLAN is the path we've validated empirically: mDNS announce
+// + QUIC listener on a deterministic port. We give it a short window to
+// pair before bailing out to the internet path.
+func runSendOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, c string) error {
 	port := landisc.PortForCode(c)
 	listenAddr := ":" + strconv.Itoa(port)
 	ln, err := quicconn.ListenAddr(listenAddr)
 	if err != nil {
-		// Port collision (rare given hashing). Surface a clear error.
-		return fmt.Errorf("binding QUIC listener on %s: %w", listenAddr, err)
+		// Port already taken or similar — let the relay path try.
+		return errLANUnavailable
 	}
-	defer ln.Close()
-
 	announceIP := landisc.PreferredLocalIP()
 	mdnsConn, err := landisc.Announce(c, announceIP, port)
 	if err != nil {
-		return fmt.Errorf("publishing mDNS announce: %w", err)
-	}
-	defer mdnsConn.Close()
-
-	hostname := f.hostname
-	if hostname == "" {
-		hostname, _ = os.Hostname()
+		ln.Close()
+		return errLANUnavailable
 	}
 
-	// Render the artifact block.
 	printSendArtifact(c, items, kind)
 
-	// Listen for Ctrl-C.
-	ctx, cancel := signalContext()
-	defer cancel()
+	// Wait up to LAN-discovery window for a receiver.
+	acceptCtx, acceptCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer acceptCancel()
 
-	res, err := ln.Accept(ctx)
+	res, err := ln.Accept(acceptCtx)
 	if err != nil {
-		return fmt.Errorf("accepting QUIC: %w", err)
+		ln.Close()
+		mdnsConn.Close()
+		// No LAN receiver showed up in time; fall back.
+		return errLANUnavailable
 	}
 	defer res.Close()
+	defer ln.Close()
+	defer mdnsConn.Close()
 
 	fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Direct connection established (LAN)")
-
-	sendErr := transfer.Send(ctx, &res.Streams, transfer.SendOptions{
+	if err := transfer.Send(ctx, &res.Streams, transfer.SendOptions{
 		Items:         items,
-		Hostname:      hostname,
+		Hostname:      hostnameOrDefault(f.hostname),
 		OS:            runtime.GOOS,
 		ClientVersion: version.Version,
 		TransferKind:  kind,
 		Compress:      !f.noCompress,
-	})
-	if sendErr != nil {
-		return sendErr
+	}); err != nil {
+		return err
 	}
 	fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Transfer complete")
 	return nil

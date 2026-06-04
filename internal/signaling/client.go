@@ -147,6 +147,17 @@ func (c *Client) Delete(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// AllocateRelay asks the server for a relay token for this session.
+//
+// Returns the relay's host:port (the UDP address clients send framed
+// datagrams to) and the 26-char base32 session token.
+func (c *Client) AllocateRelay(ctx context.Context, sessionID string) (*server.RelayAllocateResponse, error) {
+	var out server.RelayAllocateResponse
+	err := c.do(ctx, http.MethodPost, "/v1/relay/allocate",
+		server.RelayAllocateRequest{SessionID: sessionID}, &out)
+	return &out, err
+}
+
 // Health pings /v1/health and returns the parsed response.
 func (c *Client) Health(ctx context.Context) (*server.HealthResponse, error) {
 	var out server.HealthResponse

@@ -72,9 +72,16 @@ func (r *AcceptResult) Close() {
 	}
 }
 
-// senderTLSConfig builds a TLS config for the sender (QUIC server-role in
+// SenderTLSConfig builds a TLS config for the sender (QUIC server-role in
 // our protocol — see docs/decisions/wire-protocol.md). The sender always
 // opens the listening side; the receiver dials in.
+//
+// Exported for use by callers that want to wire QUIC over a custom
+// net.PacketConn (e.g. relay-mode in cmd/fsend).
+func SenderTLSConfig() (*tls.Config, error) { return senderTLSConfig() }
+
+// senderTLSConfig is the actual implementation. Kept lowercase so the
+// internal package use sites don't need to change.
 //
 // PSK auth via the PAKE-derived key is the real mutual authentication
 // mechanism (see docs/security/threat-model.md). We use a self-signed
@@ -93,7 +100,12 @@ func senderTLSConfig() (*tls.Config, error) {
 	}, nil
 }
 
-// receiverTLSConfig is the client-role TLS config — the receiver dials.
+// ReceiverTLSConfig is the client-role TLS config — the receiver dials.
+//
+// Exported as above for relay-mode callers.
+func ReceiverTLSConfig() *tls.Config { return receiverTLSConfig() }
+
+// receiverTLSConfig is the actual implementation.
 //
 // InsecureSkipVerify is set because the sender's cert is self-signed; the
 // actual MITM defense is the PAKE channel binding (see docs/security/
@@ -111,8 +123,12 @@ func receiverTLSConfig() *tls.Config {
 	}
 }
 
-// quicConfig returns the shared quic-go config (timeouts and limits per
+// QuicConfig returns the shared quic-go config (timeouts and limits per
 // docs/decisions/implementation-defaults.md).
+//
+// Exported for relay-mode callers.
+func QuicConfig() *quic.Config { return quicConfig() }
+
 func quicConfig() *quic.Config {
 	return &quic.Config{
 		HandshakeIdleTimeout:           HandshakeTimeout,
@@ -159,6 +175,13 @@ func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: accept: %w", err)
 	}
+	return senderHandshake(ctx, c)
+}
+
+// SenderHandshake completes the post-Accept stream coordination on the
+// sender side. Exported so callers using a custom QUIC Transport (e.g.
+// relay mode) can drive the same handshake as Listener.Accept does.
+func SenderHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
 	return senderHandshake(ctx, c)
 }
 
@@ -272,6 +295,12 @@ func Dial(ctx context.Context, addr string) (*AcceptResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: dial: %w", err)
 	}
+	return receiverHandshake(ctx, c)
+}
+
+// ReceiverHandshake completes the post-Dial stream coordination on the
+// receiver side. See SenderHandshake for context.
+func ReceiverHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
 	return receiverHandshake(ctx, c)
 }
 
