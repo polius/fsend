@@ -96,7 +96,14 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		}
 	}
 
-	return wire.WriteControl(s.Control, wire.TypeTransferAck, nil)
+	if err := wire.WriteControl(s.Control, wire.TypeTransferAck, nil); err != nil {
+		return err
+	}
+	// Wait for the sender to acknowledge our ack by closing their Control
+	// send side (FIN). This guarantees the ack bytes have left our buffers
+	// and reached the peer before any caller-driven transport close runs.
+	_, _ = io.Copy(io.Discard, s.Control)
+	return nil
 }
 
 func recvPasswordChallenge(s *Streams, opts RecvOptions) error {

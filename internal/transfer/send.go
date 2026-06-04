@@ -95,6 +95,11 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	if ft != wire.TypeTransferAck {
 		return fmt.Errorf("%w: expected TRANSFER_ACK, got %v", fserrors.ErrProtocolError, ft)
 	}
+	// Signal graceful shutdown: close our send side of Control. The receiver
+	// is blocked reading-until-EOF on Control as its final step, so seeing
+	// our FIN unblocks it and lets it return cleanly. This ordering
+	// guarantees both sides finish before any transport close runs.
+	_ = s.Control.Close()
 	return nil
 }
 
