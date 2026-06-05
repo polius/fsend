@@ -10,22 +10,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
-	"github.com/polius/fsend/internal/connpath"
-	"github.com/polius/fsend/internal/landisc"
-	"github.com/polius/fsend/internal/quicconn"
-	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
-	"github.com/polius/fsend/internal/version"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -61,146 +53,21 @@ func runSend(f *flags, paths []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// Strategy: try LAN first (mDNS + QUIC direct). If that fails to
-	// produce a connection within a short window, fall back to
-	// rendezvous + relay.
-	if err := runSendOverLAN(ctx, f, items, kind, totalFiles, label, c); err == nil {
-		return nil
-	} else if !errors.Is(err, errLANUnavailable) {
-		return err
-	}
-
-	// LAN bailed out — but if the reason is that the user pressed Ctrl-C
-	// (or sent SIGTERM), don't silently start the internet fallback. The
-	// LAN Accept failure is indistinguishable from a "no receiver showed
-	// up" timeout at this layer, so we use ctx.Err() to disambiguate.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	// LAN path unavailable — go internet (ICE → relay).
-	cfg, _ := config.Load()
-	return runSendOverInternet(ctx, f, items, kind, totalFiles, label, cfg)
-}
-
-// errLANUnavailable signals that the LAN path could not be set up. The
-// caller falls back to the rendezvous + relay path.
-var errLANUnavailable = errors.New("LAN unavailable")
-
-// runSendOverLAN is the path we've validated empirically: mDNS announce
-// + QUIC listener on a deterministic port. We give it a short window to
-// pair before bailing out to the internet path.
-//
-// Once paired, transient transfer errors are retried symmetrically with
-// the receiver's LAN loop, on the same Listener (the underlying UDP
-// socket and NAT mapping persist across attempts). The "no receiver
-// showed up" case is *not* a retry trigger — it short-circuits with
-// errLANUnavailable so the caller can fall through to the internet
-// path, which is its own retry-aware orchestration.
-func runSendOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label, c string) error {
-	port := landisc.PortForCode(c)
-	listenAddr := ":" + strconv.Itoa(port)
-	ln, err := quicconn.ListenAddr(listenAddr, c)
-	if err != nil {
-		// Port already taken or similar — let the relay path try.
-		return errLANUnavailable
-	}
-	defer ln.Close()
-	announceIP := landisc.PreferredLocalIP()
-	mdnsConn, err := landisc.Announce(c, announceIP, port)
-	if err != nil {
-		return errLANUnavailable
-	}
-	// Close mDNS exactly once: at pair-time (so late receivers stop
-	// discovering us) or in the deferred path (so we always tear it
-	// down on exit, even when nothing paired).
-	var stopMDNSOnce sync.Once
-	stopMDNS := func() { stopMDNSOnce.Do(func() { _ = mdnsConn.Close() }) }
-	defer stopMDNS()
-
+	// Print the artifact (code + receive command) exactly once, here,
+	// before any path is attempted. Both LAN and internet paths use the
+	// same locally-generated code — LAN announces it via mDNS, and the
+	// rendezvous server adopts it via the suggested-code field on Create.
 	printSendArtifact(f, c, items, kind, totalFiles, label)
 
-	closeProg, progressFn := newSenderProgress(f, items)
-	defer closeProg()
-
-	// `paired` flips true once the first Accept succeeds. Before then,
-	// an Accept timeout means "no LAN receiver" and we fall through to
-	// internet (non-transient). After pairing, the same timeout means
-	// "receiver dropped, hasn't reconnected yet" — let retry handle it.
-	paired := false
-	err = retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)},
-		lanSendIsTransient,
-		func(attempt int) error {
-			return runSenderLANOneAttempt(ctx, ln, items, kind, totalFiles, f, progressFn, &paired, stopMDNS)
-		})
-	if err != nil {
-		return err
-	}
-
-	if !f.quiet {
-		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Transfer complete")
-	}
-	return nil
-}
-
-// runSenderLANOneAttempt is one Accept + transfer pass on the LAN
-// listener. The first call uses the 60-second pair window (current
-// spec timeout); retries use a shorter 15-second window since the
-// receiver should be re-Dialing within its own backoff schedule.
-//
-// On Accept failure, the function distinguishes "no one yet" from
-// "lost mid-transfer" via the paired flag; lanSendIsTransient then
-// routes errLANUnavailable to the caller (so the internet fallback
-// can run) instead of retrying it.
-func runSenderLANOneAttempt(ctx context.Context, ln *quicconn.Listener, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, f *flags, progressFn func(uint32, uint64), paired *bool, stopMDNS func()) error {
-	budget := 15 * time.Second
-	if !*paired {
-		budget = 60 * time.Second
-	}
-	acceptCtx, cancel := context.WithTimeout(ctx, budget)
-	defer cancel()
-
-	res, err := ln.Accept(acceptCtx)
-	if err != nil {
-		if !*paired {
-			return errLANUnavailable
-		}
-		return fmt.Errorf("QUIC accept: %w", err)
-	}
-	defer res.Close()
-
-	if !*paired {
-		*paired = true
-		// Stop announcing the moment we have a peer — a late receiver
-		// scanning for the code now finds nothing on the LAN instead of
-		// dialing into a listener that won't Accept again.
-		stopMDNS()
-		printPath(f, connpath.FromLAN())
-	}
-
-	return transfer.Send(ctx, &res.Streams, transfer.SendOptions{
-		Items:         items,
-		Hostname:      hostnameOrDefault(f.hostname),
-		OS:            runtime.GOOS,
-		ClientVersion: version.Version,
-		TransferKind:  kind,
-		TotalFiles:    totalFiles,
-		Password:      f.passArg,
-		ProgressFn:    progressFn,
-	})
-}
-
-// lanSendIsTransient is a thin wrapper around retry.IsTransient that
-// short-circuits errLANUnavailable. We need this because the retry
-// layer is generic and doesn't know about our "fall back to internet"
-// sentinel — but we *do* want the rest of the transient catalog
-// (idle-timeout, EOF, connect-failed) to drive retries on the LAN
-// path the same way they do on the internet path.
-func lanSendIsTransient(err error) bool {
-	if errors.Is(err, errLANUnavailable) {
-		return false
-	}
-	return retry.IsTransient(err)
+	// Both paths run in parallel from T+0. Whichever pairs first wins;
+	// the loser is cancelled and torn down. See sendpair.go for the
+	// coordinator and the failure-mode UX. There is no LAN-only "budget"
+	// — the receiver only contacts the rendezvous server after its
+	// 300 ms mDNS query misses, so same-LAN receivers always win the
+	// race against the server path, and cross-network receivers don't
+	// wait on any timer.
+	cfg, _ := config.Load()
+	return runSendParallel(ctx, f, items, kind, totalFiles, label, c, cfg)
 }
 
 // collectItems resolves CLI args into the SourceItem list the wire

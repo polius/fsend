@@ -12,8 +12,19 @@ import (
 )
 
 // CreateSessionRequest is the body of POST /v1/session.
+//
+// Code is optional. When the client supplies one (and it matches the
+// canonical code format and isn't currently in use), the server adopts
+// it instead of generating a fresh one. The client-suggested-code path
+// exists so the sender can register on the rendezvous server with the
+// same code it already announced on LAN — eliminating the "different
+// code on LAN vs internet" race that otherwise leaves receivers with
+// an E002 from the server. On empty/invalid/taken code, the server
+// silently falls back to generation; the actual code is always echoed
+// back in CreateSessionResponse.Code.
 type CreateSessionRequest struct {
 	ClientVersion string `json:"client_version"`
+	Code          string `json:"code,omitempty"`
 }
 
 // CreateSessionResponse is the success body of POST /v1/session.

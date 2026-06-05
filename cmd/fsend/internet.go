@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -70,72 +71,16 @@ func stunHostFromServer(serverAddr string) string {
 	return h
 }
 
-// runSendOverInternet performs the cross-internet send flow when LAN
-// discovery has failed (or been disabled).
+// joinRetryBudget caps how long the receiver waits for the sender to
+// register the code on the rendezvous server. With the sender's short
+// LAN-only window (~5s) plus a Create round-trip, the sender should
+// always be registered within a couple of seconds of starting. But the
+// human is in the loop — the receiver may have typed the code while
+// the sender is still in its LAN window, so we give Join a budget to
+// outlast that race instead of failing instantly with E002.
 //
-// Strategy ladder per PROJECT_SPEC.md:
-//   1. signaling Create + wait for peer
-//   2. try ICE direct (sender = controlling)
-//   3. on ICE failure, AllocateRelay + run QUIC over the relay
-//
-// In all three cases the QUIC wire protocol is the same — only the
-// underlying net.PacketConn differs.
-func runSendOverInternet(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label string, cfg *config.Config) error {
-	client, serverAddr := signalingClient(cfg)
-
-	created, err := client.Create(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = client.Delete(context.Background(), created.SessionID) }()
-
-	printSendArtifact(f, created.Code, items, kind, totalFiles, label)
-
-	// Long-poll until the receiver pairs.
-	deadline := time.Now().Add(time.Duration(created.TTLSeconds) * time.Second)
-	var waitResp *server.WaitResponse
-	for time.Now().Before(deadline) && waitResp == nil {
-		resp, err := client.Wait(ctx, created.Code)
-		if err != nil {
-			return err
-		}
-		waitResp = resp
-	}
-	if waitResp == nil {
-		return fmt.Errorf("%w: receiver did not arrive within %ds", fserrors.ErrPromptTimeout, created.TTLSeconds)
-	}
-
-	// --- Try ICE direct path ---
-	stunHost := stunHostFromServer(serverAddr)
-	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, iceconn.Options{
-		LocalUfrag:  created.IceCredentials.Ufrag,
-		LocalPwd:    created.IceCredentials.Pwd,
-		RemoteUfrag: waitResp.PeerIceCredentials.Ufrag,
-		RemotePwd:   waitResp.PeerIceCredentials.Pwd,
-		STUNHost:    stunHost,
-	}, true /* controlling */)
-	if iceErr == nil {
-		defer iceConn.Close()
-		printPath(f, icePath)
-		return runSenderQUICOver(ctx, f, items, kind, totalFiles, iceConn, created.Code)
-	}
-	if f.debug {
-		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
-	}
-
-	// --- Fall back to relay ---
-	alloc, err := client.AllocateRelay(ctx, created.SessionID)
-	if err != nil {
-		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
-	}
-	relayConn, err := dialRelay(alloc)
-	if err != nil {
-		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
-	}
-	defer relayConn.Close()
-	printPath(f, connpath.FromRelay(alloc.RelayAddr))
-	return runSenderQUICOver(ctx, f, items, kind, totalFiles, relayConn, created.Code)
-}
+// Var (not const) so tests can shrink it.
+var joinRetryBudget = 15 * time.Second
 
 // runReceiveOverInternet performs the cross-internet receive flow.
 //
@@ -144,7 +89,7 @@ func runSendOverInternet(ctx context.Context, f *flags, items []transfer.SourceI
 func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config) error {
 	client, serverAddr := signalingClient(cfg)
 
-	joined, err := client.Join(ctx, c)
+	joined, err := joinWithRetry(ctx, client, c, f)
 	if err != nil {
 		return err
 	}
@@ -179,6 +124,46 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	defer relayConn.Close()
 	printPath(f, connpath.FromRelay(alloc.RelayAddr))
 	return runReceiverQUICOver(ctx, f, relayConn, c)
+}
+
+// joinWithRetry calls Join, retrying only on ErrCodeNotFound. The
+// receiver almost always wins the race against the sender's Create
+// (LAN window is ~5s, server RTT is <200ms), but a slow human or a
+// laggy network can still produce a few hundred milliseconds where the
+// server hasn't seen the code yet. Without retries that surfaced as
+// an instant, misleading E002 — telling the user the code expired when
+// it just hasn't been registered yet.
+//
+// Other errors propagate immediately: code-already-claimed,
+// server-unreachable, ctx-cancelled, etc., are not transient and the
+// caller should hear about them on the first try.
+func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags) (*server.JoinSessionResponse, error) {
+	deadline := time.Now().Add(joinRetryBudget)
+	delay := 200 * time.Millisecond
+	noticed := false
+	for {
+		joined, err := client.Join(ctx, code)
+		if err == nil {
+			return joined, nil
+		}
+		if !errors.Is(err, fserrors.ErrCodeNotFound) || time.Now().After(deadline) {
+			return nil, err
+		}
+		// One-shot info line so the user knows we're waiting on the
+		// sender rather than dropping into a silent retry loop.
+		if !noticed && !f.quiet {
+			fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Waiting for sender to register code…")
+			noticed = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay < time.Second {
+			delay *= 2
+		}
+	}
 }
 
 // iceEstablish runs the full ICE handshake: starts an agent, pumps local
@@ -327,71 +312,6 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 		return nil, fmt.Errorf("relay bootstrap: %w", err)
 	}
 	return rc, nil
-}
-
-// runSenderQUICOver runs the sender's QUIC + transfer flow over an
-// already-established net.PacketConn (ICE or relay, doesn't matter
-// past this point).
-//
-// Wrapped in a retry loop: a transient QUIC/transfer error tears down
-// the current QUIC session, sleeps, and re-Accepts on the same
-// underlying PacketConn. The receiver's imohash + chunk-aligned partial
-// pick up where the previous attempt left off, so the user sees a brief
-// "retrying" line and the progress bar resumes — not a fresh download.
-func runSenderQUICOver(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, pc net.PacketConn, code string) error {
-	tlsCfg, err := quicconn.SenderTLSConfig()
-	if err != nil {
-		return err
-	}
-	tr := &quic.Transport{Conn: pc}
-	defer tr.Close()
-	ln, err := tr.Listen(tlsCfg, quicconn.QuicConfig())
-	if err != nil {
-		return fmt.Errorf("QUIC listen: %w", err)
-	}
-	defer ln.Close()
-
-	closeProg, progressFn := newSenderProgress(f, items)
-	defer closeProg()
-
-	err = retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
-		func(attempt int) error {
-			return runSenderOneAttempt(ctx, ln, items, kind, totalFiles, f, progressFn, code)
-		})
-	if err != nil {
-		return err
-	}
-
-	if !f.quiet {
-		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Transfer complete")
-	}
-	return nil
-}
-
-// runSenderOneAttempt is one Accept → handshake → transfer iteration. A
-// success returns nil; transient errors are returned for the retry layer
-// to classify.
-func runSenderOneAttempt(ctx context.Context, ln *quic.Listener, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, f *flags, progressFn func(uint32, uint64), code string) error {
-	qc, err := ln.Accept(ctx)
-	if err != nil {
-		return fmt.Errorf("QUIC accept: %w", err)
-	}
-	res, err := quicconn.SenderHandshake(ctx, qc, code)
-	if err != nil {
-		return err
-	}
-	defer res.Close()
-
-	return transfer.Send(ctx, &res.Streams, transfer.SendOptions{
-		Items:         items,
-		Hostname:      hostnameOrDefault(f.hostname),
-		OS:            runtime.GOOS,
-		ClientVersion: version.Version,
-		TransferKind:  kind,
-		TotalFiles:    totalFiles,
-		Password:      f.passArg,
-		ProgressFn:    progressFn,
-	})
 }
 
 // runReceiverQUICOver runs the receiver's QUIC + transfer flow over an

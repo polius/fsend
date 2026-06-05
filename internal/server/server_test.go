@@ -62,6 +62,75 @@ func TestCreateSession_HappyPath(t *testing.T) {
 	}
 }
 
+// CreateSession honors the client-suggested code when it's well-formed
+// and not already in use. This is what lets the sender register on the
+// rendezvous server with the same code it has already shown the user
+// from the LAN phase — no code change in the artifact, no E002 race for
+// the receiver.
+func TestCreateSession_AdoptsSuggestedCode(t *testing.T) {
+	srv := newTestServer(t)
+	suggested := "abc-defg-jkm"
+	resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Code: suggested})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body CreateSessionResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body.Code != suggested {
+		t.Errorf("server should have adopted suggested code %q, got %q", suggested, body.Code)
+	}
+}
+
+// When the suggested code is already taken by another live session, the
+// server falls back to generation rather than 409-ing. The user has
+// already seen and shared the suggestion; surfacing a fresh code in the
+// response is preferable to making them retry. Collisions are rare
+// enough (~17M codes) that the re-render is an edge case.
+func TestCreateSession_TakenSuggestionFallsBackToGenerated(t *testing.T) {
+	srv := newTestServer(t)
+	suggested := "abc-defg-jkm"
+
+	first := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Code: suggested})
+	defer first.Body.Close()
+	var firstBody CreateSessionResponse
+	_ = json.NewDecoder(first.Body).Decode(&firstBody)
+	if firstBody.Code != suggested {
+		t.Fatalf("setup: first Create should have taken the suggested code")
+	}
+
+	second := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Code: suggested})
+	defer second.Body.Close()
+	if second.StatusCode != 200 {
+		t.Fatalf("second Create should succeed (with a fresh code), got status %d", second.StatusCode)
+	}
+	var secondBody CreateSessionResponse
+	_ = json.NewDecoder(second.Body).Decode(&secondBody)
+	if secondBody.Code == suggested {
+		t.Errorf("server should have generated a fresh code on collision, got %q", secondBody.Code)
+	}
+	if secondBody.Code == "" {
+		t.Error("server returned an empty code")
+	}
+}
+
+// Malformed suggestions are ignored, not 400'd. The contract is "best
+// effort suggestion"; whatever the client sent, the response is always
+// a valid, usable code.
+func TestCreateSession_InvalidSuggestionFallsBack(t *testing.T) {
+	srv := newTestServer(t)
+	resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Code: "not a real code"})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body CreateSessionResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body.Code == "" || body.Code == "not a real code" {
+		t.Errorf("server should have generated a fresh code, got %q", body.Code)
+	}
+}
+
 func TestJoin_HappyPath(t *testing.T) {
 	srv := newTestServer(t)
 

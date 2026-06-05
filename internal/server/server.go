@@ -230,6 +230,14 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	clientIP := clientIP(r)
 
+	// Parse body up-front so we can honor a client-suggested code. An
+	// empty/missing body is fine — old clients don't send one and we
+	// fall back to server-side generation as before.
+	var body CreateSessionRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body) // bad json → treat as empty body
+	}
+
 	s.mu.Lock()
 	if !s.allowNewSession(clientIP, time.Now()) {
 		s.mu.Unlock()
@@ -242,11 +250,27 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, err := s.generateUniqueCode()
-	if err != nil {
-		s.mu.Unlock()
-		writeJSONError(w, http.StatusInternalServerError, "code generation failed")
-		return
+	// Adopt the client's code when it's valid and free; otherwise generate.
+	// We do not 409 on a taken suggestion — the client has already shown
+	// the code to the user, and falling back silently is preferable to
+	// asking the user to re-share. The response carries the actual code so
+	// the (rare) collision case is correct, just visibly different.
+	c := strings.ToLower(strings.TrimSpace(body.Code))
+	if c != "" && code.Validate(c) == nil {
+		if _, taken := s.byCode[c]; taken {
+			c = ""
+		}
+	} else {
+		c = ""
+	}
+	if c == "" {
+		var err error
+		c, err = s.generateUniqueCode()
+		if err != nil {
+			s.mu.Unlock()
+			writeJSONError(w, http.StatusInternalServerError, "code generation failed")
+			return
+		}
 	}
 
 	sid := ulid.Make().String()

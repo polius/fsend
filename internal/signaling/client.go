@@ -45,10 +45,16 @@ func New(baseURL, clientVersion string) *Client {
 
 // Create requests a new session. The returned response carries the code
 // the sender must share out-of-band.
-func (c *Client) Create(ctx context.Context) (*server.CreateSessionResponse, error) {
+//
+// suggestedCode lets the caller propose the code they've already shown
+// the user (e.g., the LAN-phase code). When non-empty and free on the
+// server, the server adopts it. Empty / invalid / taken values fall
+// back to server-side generation. Callers should always read the actual
+// code from the response, not assume it equals their suggestion.
+func (c *Client) Create(ctx context.Context, suggestedCode string) (*server.CreateSessionResponse, error) {
 	var out server.CreateSessionResponse
 	err := c.do(ctx, http.MethodPost, "/v1/session",
-		server.CreateSessionRequest{ClientVersion: c.version}, &out, nil)
+		server.CreateSessionRequest{ClientVersion: c.version, Code: suggestedCode}, &out, nil)
 	return &out, err
 }
 
@@ -208,8 +214,15 @@ func mapNetworkErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	// User-initiated cancel (Ctrl-C) must surface as-is so the CLI can
+	// distinguish "user aborted" from "server didn't respond".
+	if errors.Is(err, context.Canceled) {
 		return err
 	}
+	// A DeadlineExceeded here means the http.Client's 30s Timeout fired
+	// (no signaling call uses a caller-supplied deadline), which is the
+	// firewall-drops-our-packets flavor of "server unreachable". Map it
+	// to the same sentinel as connection-refused / DNS-failure so the
+	// catalog renders E001 instead of E099.
 	return fmt.Errorf("%w: %v", fserrors.ErrServerUnreachable, err)
 }

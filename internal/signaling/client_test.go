@@ -3,6 +3,7 @@ package signaling
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -33,7 +34,7 @@ func TestClient_CreateAndJoin_Roundtrip(t *testing.T) {
 
 	ctx := context.Background()
 
-	created, err := sender.Create(ctx)
+	created, err := sender.Create(ctx, "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestClient_DoubleJoin_MapsToCodeAlreadyClaimed(t *testing.T) {
 	receiver2 := New(url, "test")
 	ctx := context.Background()
 
-	created, err := sender.Create(ctx)
+	created, err := sender.Create(ctx, "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestClient_WaitPairs(t *testing.T) {
 	receiver := New(url, "test")
 	ctx := context.Background()
 
-	created, err := sender.Create(ctx)
+	created, err := sender.Create(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,7 @@ func TestClient_WaitPairs(t *testing.T) {
 func TestClient_WaitTimesOut(t *testing.T) {
 	url, _ := setupServer(t)
 	c := New(url, "test")
-	created, _ := c.Create(context.Background())
+	created, _ := c.Create(context.Background(), "")
 	resp, err := c.Wait(context.Background(), created.Code)
 	if err != nil {
 		t.Errorf("wait timeout should be (nil, nil), got err: %v", err)
@@ -148,7 +149,7 @@ func TestClient_HealthAndDelete(t *testing.T) {
 		t.Errorf("health status = %q", h.Status)
 	}
 
-	created, _ := c.Create(ctx)
+	created, _ := c.Create(ctx, "")
 	if err := c.Delete(ctx, created.SessionID); err != nil {
 		t.Errorf("Delete: %v", err)
 	}
@@ -159,5 +160,35 @@ func TestClient_UnreachableServer_MapsToFserror(t *testing.T) {
 	_, err := c.Health(context.Background())
 	if !errors.Is(err, fserrors.ErrServerUnreachable) {
 		t.Errorf("expected ErrServerUnreachable, got %v", err)
+	}
+}
+
+// A slow server that never responds within the request deadline should
+// still surface as ErrServerUnreachable, not bubble up the raw
+// context.DeadlineExceeded (which would render as the generic E099
+// "Unexpected error" through fserrors.Lookup).
+func TestClient_TimeoutMapsToServerUnreachable(t *testing.T) {
+	// httptest server that hangs forever — exercises the http.Client
+	// timeout path that fires when packets are dropped on the floor.
+	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(hang.Close)
+
+	c := New(hang.URL, "test")
+	// Shrink the timeout so the test runs fast.
+	c.hc.Timeout = 50 * time.Millisecond
+
+	_, err := c.Health(context.Background())
+	if !errors.Is(err, fserrors.ErrServerUnreachable) {
+		t.Errorf("expected ErrServerUnreachable, got %v", err)
+	}
+	// User-initiated cancel must still surface as context.Canceled so the
+	// CLI can tell "I aborted" apart from "server didn't respond".
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = c.Health(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled ctx should yield context.Canceled, got %v", err)
 	}
 }
