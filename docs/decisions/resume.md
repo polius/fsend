@@ -9,9 +9,9 @@ when the user re-runs the transfer.
 
 ## User-visible behavior
 
-1. Receiver starts `fsend abc-defgh-jkm`, transfer is interrupted (network
+1. Receiver starts `fsend abc-defg-jkm`, transfer is interrupted (network
    drop, Ctrl-C, sender crash).
-2. Receiver re-runs `fsend abc-defgh-jkm` (or, more often, the sender
+2. Receiver re-runs `fsend abc-defg-jkm` (or, more often, the sender
    re-runs with the same code).
 3. Receiver sees: `Resuming report.pdf — already have 1.8 MB of 4.2 MB`
 4. Sender resumes from the appropriate chunk boundary.

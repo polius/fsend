@@ -111,7 +111,7 @@ var catalog = map[error]Entry{
 	ErrInvalidCodeFormat: {
 		Code: "E004", Exit: 4,
 		Message: "Invalid code format.",
-		Action:  "Codes look like: abc-defgh-jkm",
+		Action:  "Codes look like: abc-defg-jkm",
 	},
 	ErrReceiverDeclined: {
 		Code: "E006", Exit: 6,

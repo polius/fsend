@@ -35,7 +35,7 @@ shown again.
 User just installed fsend. Someone gave them a code. They run:
 
 ```
-$ fsend abc-defgh-jkm
+$ fsend abc-defg-jkm
 
   Welcome to fsend (first run).
 
@@ -79,7 +79,7 @@ $ fsend report.pdf
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm
+      abc-defg-jkm
   ...
 ```
 

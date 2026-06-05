@@ -38,12 +38,12 @@ Cursor returns to a new prompt; no leftover artifacts.
 ### Code not found (receiver side, E002)
 
 ```
-$ fsend abc-defgh-jkm
+$ fsend abc-defg-jkm
 
   ⠋ Connecting to fs.alzina.dev…
-  ⠋ Looking up code abc-defgh-jkm…
+  ⠋ Looking up code abc-defg-jkm…
 
-  ✗ Code "abc-defgh-jkm" was not found.
+  ✗ Code "abc-defg-jkm" was not found.
     Ask the sender to re-run their command — codes expire after 60 seconds.
 ```
 
@@ -52,7 +52,7 @@ $ fsend abc-defgh-jkm
 ```
 $ fsend xyz123
 
-  ✗ Invalid code format. Codes look like: abc-defgh-jkm
+  ✗ Invalid code format. Codes look like: abc-defg-jkm
 ```
 
 No spinner — fails immediately at argument parse time.
@@ -64,10 +64,10 @@ No spinner — fails immediately at argument parse time.
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm
+      abc-defg-jkm
 
   On the other machine, run:
-      fsend abc-defgh-jkm
+      fsend abc-defg-jkm
 
   ──────────────────────────────────────────────
 
@@ -84,7 +84,7 @@ status line below the second `──` is replaced with the failure message.
 ### Receiver prompt timeout (E007), receiver's view
 
 ```
-$ fsend abc-defgh-jkm
+$ fsend abc-defg-jkm
 
   Receiving from Pol's MacBook
 
@@ -129,7 +129,7 @@ user re-runs from scratch — no in-place retry (see threat-model on
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm  →  Sarah's MacBook
+      abc-defg-jkm  →  Sarah's MacBook
 
   ──────────────────────────────────────────────
 
@@ -156,7 +156,7 @@ Both go to the error message in place.
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm  →  Sarah's MacBook
+      abc-defg-jkm  →  Sarah's MacBook
 
   ──────────────────────────────────────────────
 
@@ -230,7 +230,7 @@ Sender's view:
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm  →  Sarah's MacBook
+      abc-defg-jkm  →  Sarah's MacBook
 
   ──────────────────────────────────────────────
 
@@ -356,7 +356,7 @@ file.
 ## When `--quiet` is set
 
 - All artifact/status output: suppressed
-- Code (on send): printed as a bare line to stdout: `abc-defgh-jkm\n`
+- Code (on send): printed as a bare line to stdout: `abc-defg-jkm\n`
 - Errors: still printed to stderr (so `2>` captures them)
 - Progress: nothing
 - Exit code: same as non-quiet

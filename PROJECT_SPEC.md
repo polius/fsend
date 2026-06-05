@@ -59,7 +59,7 @@ with two binaries sharing a common internal package.
 ## Connection flow
 
 1. Sender generates a short code in the format `xxx-xxxx-xxx`
-   (e.g. `abc-defgh-jkm`); user shares it out of band. See "Code format" below.
+   (e.g. `abc-defg-jkm`); user shares it out of band. See "Code format" below.
 2. Both peers contact the rendezvous server and run **SPAKE2** (RFC 9382) over
    the code to derive a shared key (the code never crosses the wire).
 3. Try **mDNS** first — LAN transfers should never touch the internet.
@@ -232,10 +232,10 @@ to scan, redundant on macOS/Linux.
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm
+      abc-defg-jkm
 
   On the other machine, run:
-      fsend abc-defgh-jkm
+      fsend abc-defg-jkm
 
   ──────────────────────────────────────────────
 
@@ -249,7 +249,7 @@ to scan, redundant on macOS/Linux.
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm  →  Sarah's MacBook
+      abc-defg-jkm  →  Sarah's MacBook
 
   ──────────────────────────────────────────────
 
@@ -286,7 +286,7 @@ runs never see this.
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm  →  Sarah's MacBook
+      abc-defg-jkm  →  Sarah's MacBook
 
   ──────────────────────────────────────────────
 
@@ -296,7 +296,7 @@ runs never see this.
 
 ### Receive-side terminal UX
 
-When the user runs `fsend abc-defgh-jkm`, the CLI shows a confirmation
+When the user runs `fsend abc-defg-jkm`, the CLI shows a confirmation
 prompt with the incoming file's metadata, then a matching progress display.
 
 **State 1 — prompt:**
@@ -341,7 +341,7 @@ plus a password is far out of reach of online attacks anyway).
 ### Design rules (locked)
 
 1. **Stderr for everything visual.** Stdout stays clean for pipelines.
-2. **In `--quiet`, stdout gets only the bare code** (`abc-defgh-jkm\n`) —
+2. **In `--quiet`, stdout gets only the bare code** (`abc-defg-jkm\n`) —
    no banners, no whitespace. Makes `fsend foo.pdf --quiet | pbcopy`
    trivial. All progress and status output is silenced.
 3. **Always show the data path** as one of `direct (local)` /

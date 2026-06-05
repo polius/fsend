@@ -18,7 +18,7 @@ fsend — peer-to-peer file transfer
 
 USAGE
   fsend <file|dir>...              Send (1 or more paths)
-  fsend <code>                     Receive (using a code like abc-defgh-jkm)
+  fsend <code>                     Receive (using a code like abc-defg-jkm)
   fsend -                          Send from stdin
   fsend --text "hello world"       Send a literal string
 
@@ -28,7 +28,7 @@ EXAMPLES
     → shows code, waits for receiver
 
   Receive:
-    fsend abc-defgh-jkm
+    fsend abc-defg-jkm
 
   Send a whole folder:
     fsend ./myproject
@@ -141,7 +141,7 @@ Exit code as listed.
 ### E002 — Code not found / expired
 
 ```
-✗ Code "abc-defgh-jkm" was not found.
+✗ Code "abc-defg-jkm" was not found.
   Ask the sender to re-run their command — codes expire after 60 seconds.
 ```
 **Exit:** 3 (session not found)
@@ -149,7 +149,7 @@ Exit code as listed.
 ### E003 — Code already used (race condition: two people typed it)
 
 ```
-✗ Code "abc-defgh-jkm" has already been claimed by another receiver.
+✗ Code "abc-defg-jkm" has already been claimed by another receiver.
   Ask the sender to generate a fresh code.
 ```
 **Exit:** 3
@@ -157,7 +157,7 @@ Exit code as listed.
 ### E004 — Receiver typed wrong code
 
 ```
-✗ Invalid code format. Codes look like: abc-defgh-jkm
+✗ Invalid code format. Codes look like: abc-defg-jkm
 ```
 **Exit:** 4 (bad input)
 

@@ -18,10 +18,10 @@ $ fsend ./myproject
 
   ──────────────────────────────────────────────
 
-      abc-defgh-jkm
+      abc-defg-jkm
 
   On the other machine, run:
-      fsend abc-defgh-jkm
+      fsend abc-defg-jkm
 ```
 
 ### Receiver

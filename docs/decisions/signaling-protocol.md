@@ -78,7 +78,7 @@ Response (200):
 ```json
 {
   "session_id": "01HG7P3M9XKN...",          // ULID, server-issued, opaque to clients
-  "code": "abc-defgh-jkm",                  // server-generated short code
+  "code": "abc-defg-jkm",                  // server-generated short code
   "your_observed_addr": "84.27.123.45:51022", // STUN-style reflection
   "ice_credentials": {
     "ufrag": "9aT4",                         // ICE username fragment
