@@ -20,12 +20,11 @@ type flags struct {
 	forceReceive bool
 
 	// Send-side
-	codeArg    string
-	textArg    string
-	passArg    string // shared with receive-side: sender requires, receiver supplies
-	noCompress bool
-	hostname   string
-	excludes   []string // glob patterns; applied when bundling a directory archive
+	codeArg  string
+	textArg  string
+	passArg  string // shared with receive-side: sender requires, receiver supplies
+	hostname string
+	excludes []string // glob patterns; applied when bundling a directory archive
 
 	// Receive-side
 	yes       bool
@@ -77,7 +76,6 @@ Examples:
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
 	c.Flags().StringVar(&f.passArg, "pass", "",
 		"password gate. Sender: require the receiver to match it. Receiver: supply non-interactively. Env: FSEND_PASS")
-	c.Flags().BoolVar(&f.noCompress, "no-compress", false, "force-disable compression")
 	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers")
 	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files on receive")

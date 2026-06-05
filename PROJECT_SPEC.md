@@ -379,8 +379,6 @@ unambiguously **send** — no regex check, no prompt, no auto-detect.
 **Transfer behavior:**
 - `--code <code>` — provide the code phrase explicitly on send (skips random gen; implies send mode)
 - `--text "<string>"` — send a literal string instead of a file (croc parity)
-- `--no-compress` — force-disable compression. Useful for benchmarking; not
-  needed for normal use because compression auto-detects (see below).
 - `--exclude <glob,…>` — skip entries matching any of these glob patterns
   when bundling a directory. Repeatable or comma-separated. Matches against
   the full relative path **and** against any individual path component, so

@@ -186,7 +186,6 @@ func runSenderLANOneAttempt(ctx context.Context, ln *quicconn.Listener, items []
 		ClientVersion: version.Version,
 		TransferKind:  kind,
 		TotalFiles:    totalFiles,
-		Compress:      !f.noCompress,
 		Password:      f.passArg,
 		ProgressFn:    progressFn,
 	})

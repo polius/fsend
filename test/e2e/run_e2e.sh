@@ -6,7 +6,7 @@
 #   - Dispatch (no args, --code, --send, --receive, --text, stdin)
 #   - Single file / multi-file / directory / stdin / text
 #   - All receiver flags (--yes, --out, --overwrite, --name)
-#   - All UX flags (--quiet, --no-compress, --debug)
+#   - All UX flags (--quiet, --debug)
 #   - Server config (--connect default/set/show)
 #   - Empty file, large file (16 MB), unicode filename, spaces in name
 #   - Error paths (E004 invalid code, sender SIGINT, receiver SIGINT,
@@ -454,7 +454,7 @@ t_5_4_interactive_yes() {
 run_test 5.4 "Interactive prompt answered 'y' completes transfer" t_5_4_interactive_yes
 
 # =========================================================
-# 7. UX (--quiet / --no-compress / --debug)
+# 7. UX (--quiet / --debug)
 # =========================================================
 
 t_7_1_quiet_stdout() {
@@ -504,23 +504,6 @@ t_7_2_quiet_e2e() {
   diff "$src/p.bin" "$dst/p.bin" >/dev/null
 }
 run_test 7.2 "--quiet E2E: both stderr 0 bytes, SHA match" t_7_2_quiet_e2e
-
-t_7_4_no_compress() {
-  local code; code=$(gen_code)
-  local src="$WORKDIR/7_4_src" dst="$WORKDIR/7_4_dst"
-  mkdir -p "$src" "$dst"
-  # highly compressible — would normally take the compressed path
-  python3 -c "import sys; sys.stdout.buffer.write(b'a' * (1024*64))" > "$src/c.txt" 2>/dev/null \
-    || printf 'aaaaaaaaaaaaaaaaaaaaaaaaaa\n%.0s' {1..2000} > "$src/c.txt"
-  "$FSEND" --code "$code" --no-compress "$src/c.txt" \
-    >"$dst/s.err" 2>&1 &
-  local pid=$!
-  sleep "$SETTLE"
-  ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r.err" 2>&1 )
-  local rx=$?; wait_or_kill 5 $pid; local sx=$?
-  [[ $sx -eq 0 && $rx -eq 0 ]] && diff "$src/c.txt" "$dst/c.txt" >/dev/null
-}
-run_test 7.4 "--no-compress: transfer still completes" t_7_4_no_compress
 
 t_7_5_debug() {
   local code; code=$(gen_code)

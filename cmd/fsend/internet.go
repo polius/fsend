@@ -389,7 +389,6 @@ func runSenderOneAttempt(ctx context.Context, ln *quic.Listener, items []transfe
 		ClientVersion: version.Version,
 		TransferKind:  kind,
 		TotalFiles:    totalFiles,
-		Compress:      !f.noCompress,
 		Password:      f.passArg,
 		ProgressFn:    progressFn,
 	})

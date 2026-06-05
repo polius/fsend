@@ -30,7 +30,6 @@ type SendOptions struct {
 	// files packed into the tar so the receiver's prompt block shows
 	// the real file count instead of "1" (the tar wrapper).
 	TotalFiles uint32
-	Compress   bool                                     // if true, attempt zstd; per-chunk auto-decision
 	Password   string                                   // empty → no password challenge
 	ProgressFn func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
 }
@@ -55,10 +54,7 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 		TransferKind:    opts.TransferKind,
 		TotalFiles:      totalFiles,
 		HasPassword:     opts.Password != "",
-		CompressionHint: 0,
-	}
-	if opts.Compress {
-		hello.CompressionHint = 1
+		CompressionHint: 1,
 	}
 	for _, it := range opts.Items {
 		hello.TotalBytes += it.Info.Size
@@ -198,22 +194,18 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 	buf := make([]byte, wire.MaxChunkSize)
 	chunkIndex := startChunk
 
-	var enc *zstd.Encoder
-	if opts.Compress {
-		var err error
-		enc, err = zstd.NewWriter(nil)
-		if err != nil {
-			return fmt.Errorf("send: zstd writer: %w", err)
-		}
-		defer enc.Close()
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		return fmt.Errorf("send: zstd writer: %w", err)
 	}
+	defer enc.Close()
 
 	totalSize := it.Info.Size
 
 	// Edge case: empty file — emit one zero-length FlagLastChunk frame so
 	// the receiver still observes a "done" marker for this file.
 	if totalSize == 0 {
-		return writeChunk(s, &it.Info, chunkIndex, nil, true, enc, opts.Compress)
+		return writeChunk(s, &it.Info, chunkIndex, nil, true, enc)
 	}
 
 	for bytesSentInFile < totalSize {
@@ -236,7 +228,7 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 
 		bytesSentInFile += uint64(n)
 		isLast := bytesSentInFile >= totalSize
-		if err := writeChunk(s, &it.Info, chunkIndex, buf[:n], isLast, enc, opts.Compress); err != nil {
+		if err := writeChunk(s, &it.Info, chunkIndex, buf[:n], isLast, enc); err != nil {
 			return err
 		}
 		chunkIndex++
@@ -248,7 +240,7 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 	return nil
 }
 
-func writeChunk(s *Streams, info *wire.FileInfo, chunkIndex uint32, plain []byte, isLast bool, enc *zstd.Encoder, attemptCompress bool) error {
+func writeChunk(s *Streams, info *wire.FileInfo, chunkIndex uint32, plain []byte, isLast bool, enc *zstd.Encoder) error {
 	c := &wire.Chunk{
 		FileIndex:  info.Index,
 		ChunkIndex: chunkIndex,
@@ -260,13 +252,11 @@ func writeChunk(s *Streams, info *wire.FileInfo, chunkIndex uint32, plain []byte
 	c.Blake3Hash = blakeHash32(plain)
 
 	payload := plain
-	if attemptCompress && enc != nil && len(plain) > 0 {
+	if len(plain) > 0 {
 		compressed := enc.EncodeAll(plain, nil)
-		// Adopt compressed only if it saves ≥10% — matches the spec's
-		// "first-chunk peek, ≥10%" rule applied per-chunk for simplicity.
-		// Per-chunk costs slightly more CPU than a one-time decision but
-		// handles the case where a single file mixes compressible and
-		// incompressible regions.
+		// Adopt compressed only if it saves ≥10% — applied per-chunk so a
+		// single file that mixes compressible and incompressible regions
+		// still benefits where it can.
 		if len(compressed)+len(compressed)/10 < len(plain) {
 			payload = compressed
 			c.Flags |= wire.FlagCompressed
