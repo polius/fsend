@@ -24,43 +24,29 @@ type Conn struct {
 	relayAddr  *net.UDPAddr
 	token      Token
 
-	// peerAddr is what callers see as the source of inbound packets and
-	// the destination of outbound ones. We surface a fake address rather
-	// than the real relay so quic-go's per-peer state stays consistent.
-	peerAddr net.Addr
-
 	mu     sync.Mutex
 	closed bool
 }
 
-// peerSyntheticAddr is the address we present to quic-go for the peer.
-// Since we always WriteTo the relay (regardless of who we're "really"
-// addressing), the address is purely a tag.
-type peerSyntheticAddr string
-
-func (a peerSyntheticAddr) Network() string { return "udp" }
-func (a peerSyntheticAddr) String() string  { return string(a) }
+// syntheticPeer is the address we surface to quic-go as the remote peer.
+// We always WriteTo the relay regardless of destination, so the address
+// is purely a routing tag — a stable synthetic UDPAddr suffices.
+var syntheticPeer = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1}
 
 // NewClient wraps an underlying UDP socket for relay-mode operation.
 //
 // The caller is expected to have already POST'd /v1/relay/allocate and
-// gotten back the relayAddr and token. PeerLabel is any string to use
-// as the synthetic peer address; both peers must agree (or both can pick
-// independently — quic-go just needs a stable label).
-func NewClient(underlying net.PacketConn, relayAddr *net.UDPAddr, token Token, peerLabel string) *Conn {
+// gotten back the relayAddr and token.
+func NewClient(underlying net.PacketConn, relayAddr *net.UDPAddr, token Token) *Conn {
 	return &Conn{
 		underlying: underlying,
 		relayAddr:  relayAddr,
 		token:      token,
-		peerAddr:   peerSyntheticAddr(peerLabel),
 	}
 }
 
 // LocalAddr returns the underlying socket's local address.
 func (c *Conn) LocalAddr() net.Addr { return c.underlying.LocalAddr() }
-
-// PeerAddr returns the synthetic peer address.
-func (c *Conn) PeerAddr() net.Addr { return c.peerAddr }
 
 // SetDeadline plumbs through to the underlying socket.
 func (c *Conn) SetDeadline(t time.Time) error      { return c.underlying.SetDeadline(t) }
@@ -98,7 +84,7 @@ func (c *Conn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 			continue
 		}
 		n = copy(p, payload)
-		return n, c.peerAddr, nil
+		return n, syntheticPeer, nil
 	}
 }
 

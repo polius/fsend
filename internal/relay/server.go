@@ -23,18 +23,20 @@ type Server struct {
 	cfg    ServerConfig
 	logger *slog.Logger
 
-	mu        sync.RWMutex
-	allocs    map[Token]*allocation
-	ipBytes   map[string]uint64 // for ipBytes-per-cap aggregation if needed later
+	mu     sync.RWMutex
+	allocs map[Token]*allocation
 }
 
-// ServerConfig holds the per-session/per-ip tuning.
+// ServerConfig holds the per-session tuning.
 type ServerConfig struct {
 	MaxBytesPerSession uint64
 	SessionIdleTimeout time.Duration
-	JanitorInterval    time.Duration
 	Logger             *slog.Logger
 }
+
+// janitorInterval is how often the eviction loop sweeps idle
+// allocations. Not exposed in ServerConfig because no caller sets it.
+const janitorInterval = 30 * time.Second
 
 // Default fills in zero values.
 func (c *ServerConfig) Default() {
@@ -43,9 +45,6 @@ func (c *ServerConfig) Default() {
 	}
 	if c.SessionIdleTimeout == 0 {
 		c.SessionIdleTimeout = 60 * time.Second
-	}
-	if c.JanitorInterval == 0 {
-		c.JanitorInterval = 30 * time.Second
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -69,11 +68,10 @@ type allocation struct {
 func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 	cfg.Default()
 	return &Server{
-		conn:    conn,
-		cfg:     cfg,
-		logger:  cfg.Logger,
-		allocs:  make(map[Token]*allocation),
-		ipBytes: make(map[string]uint64),
+		conn:   conn,
+		cfg:    cfg,
+		logger: cfg.Logger,
+		allocs: make(map[Token]*allocation),
 	}
 }
 
@@ -197,7 +195,7 @@ func (s *Server) evict(t Token, reason string) {
 }
 
 func (s *Server) janitor(ctx context.Context) {
-	t := time.NewTicker(s.cfg.JanitorInterval)
+	t := time.NewTicker(janitorInterval)
 	defer t.Stop()
 	for {
 		select {

@@ -7,7 +7,7 @@ package wire
 // MaxControlFrameSize at the frame layer.
 
 // SenderHello is the first control frame the sender emits, immediately
-// after the TLS+PAKE handshake completes.
+// after the TLS handshake completes.
 type SenderHello struct {
 	ProtocolVersion uint8        // must equal ProtocolVersion
 	Hostname        string       // sender's hostname or --name override
@@ -16,8 +16,22 @@ type SenderHello struct {
 	TransferKind    TransferKind // single-file, multi-file, directory, stdin, text
 	TotalFiles      uint32       // 1 for single, N for multi/dir, 0 if unknown
 	TotalBytes      uint64       // sum of file sizes (0 if unknown, e.g. stdin)
-	HasPassword     bool         // true → expect PASSWORD_CHALLENGE next
+	HasPassword     bool         // true → expect PASSWORD_CHALLENGE after HELLO_ACK
 	CompressionHint uint8        // 0=none, 1=zstd-auto-per-chunk
+}
+
+// PasswordChallenge is sent by the sender right after a positive
+// HELLO_ACK when SenderHello.HasPassword is true. The nonce is fresh per
+// session so a captured response cannot be replayed against a future
+// session.
+type PasswordChallenge struct {
+	Nonce [32]byte
+}
+
+// PasswordResponse carries HMAC-SHA256(password, nonce) computed by the
+// receiver. The sender verifies it with crypto/subtle.ConstantTimeCompare.
+type PasswordResponse struct {
+	HMAC [32]byte
 }
 
 // ReceiverHello is the receiver's response to SenderHello. Carries the
@@ -45,28 +59,22 @@ type FileInfo struct {
 }
 
 // FileAcceptDecision is the receiver's per-file response to a FILE_INFO.
+//
+// PartialImohash is the imohash (128-bit fingerprint) of the receiver's
+// existing partial file. It is only meaningful when Action == ActionResume
+// and lets the sender verify the receiver's prefix matches the source
+// before streaming the tail. Gob-encoding tolerates adding this field
+// without a version bump: peers running pre-imohash code receive the
+// zero value and ignore it (and never offer ActionResume themselves).
 type FileAcceptDecision struct {
-	Index        uint32 // matches the FileInfo this responds to
-	Action       FileAcceptAction
-	ResumeOffset uint64 // only when Action == ActionResume; chunk-boundary aligned
+	Index          uint32 // matches the FileInfo this responds to
+	Action         FileAcceptAction
+	ResumeOffset   uint64   // only when Action == ActionResume; chunk-boundary aligned
+	PartialImohash [16]byte // only when Action == ActionResume
 }
 
 // ErrorFrame carries a numbered error from one peer to the other.
 type ErrorFrame struct {
 	Code    ErrorCode
 	Message string // human-readable
-}
-
-// ProgressAck is a receiver→sender heartbeat for live progress display.
-// Carried on the receiver-control stream (not the main control stream).
-type ProgressAck struct {
-	FileIndex  uint32
-	BytesAcked uint64
-}
-
-// ResumeRequest is a v2 facility for mid-transfer "skip ahead." v1
-// reserves the type byte but doesn't use it.
-type ResumeRequest struct {
-	FileIndex  uint32
-	FromOffset uint64
 }

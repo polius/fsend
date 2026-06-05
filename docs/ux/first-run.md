@@ -16,8 +16,8 @@ command, not pop up onboarding flows or terms-of-service prompts.
 But there are exactly two things a first-time invocation must do that
 later invocations don't:
 
-1. **Briefly disclose what fsend talks to** (the rendezvous server, the
-   GitHub update check). One-line each, dismissable.
+1. **Briefly disclose what fsend talks to** (the rendezvous server).
+   One line, dismissable.
 2. **Ensure the config directory exists** with the right permissions.
 
 That's it. No interactive setup, no welcome banner, no account creation.
@@ -43,9 +43,6 @@ $ fsend abc-defgh-jkm
       fs.alzina.dev    (the default rendezvous server)
     To use your own server later:  fsend --connect <host:port>
 
-  • Once a day, fsend checks GitHub for newer versions.
-    To disable:                    export FSEND_NO_UPDATE_CHECK=1
-
   Privacy: https://github.com/polius/fsend/blob/main/docs/security/privacy.md
 
   ──────────────────────────────────────────────
@@ -54,7 +51,7 @@ $ fsend abc-defgh-jkm
   ...
 ```
 
-The disclosure block is **5 lines**, prepended to the normal output.
+The disclosure block is prepended to the normal output.
 Below the `──────` it's a normal first-time receive. The user is not
 required to confirm or press any key — they just keep going.
 
@@ -63,7 +60,7 @@ written and the disclosure never appears again.
 
 ## First-run on the send side
 
-Symmetric. The 5-line disclosure prepends to the normal send UX:
+Symmetric. The disclosure prepends to the normal send UX:
 
 ```
 $ fsend report.pdf
@@ -73,9 +70,6 @@ $ fsend report.pdf
   • To pair you with the other person, fsend will contact:
       fs.alzina.dev    (the default rendezvous server)
     To use your own server later:  fsend --connect <host:port>
-
-  • Once a day, fsend checks GitHub for newer versions.
-    To disable:                    export FSEND_NO_UPDATE_CHECK=1
 
   Privacy: https://github.com/polius/fsend/blob/main/docs/security/privacy.md
 
@@ -149,12 +143,12 @@ the disclosure is the right thing to do because:
    `--help`. First-run is the one moment we're guaranteed to have their
    attention.
 
-3. **It's brief enough not to be friction.** 5 lines. No interaction.
+3. **It's brief enough not to be friction.** No interaction.
    Skim-able. Different from the typical 30-line EULA wall.
 
-4. **It surfaces the two real network calls.** Rendezvous and update
-   check. If the user objects to either, they have an immediate path to
-   change it (`--connect`, env var).
+4. **It surfaces the one real network call.** The rendezvous server.
+   If the user objects, they have an immediate path to change it
+   (`--connect`).
 
 ## Config file written on first run
 
@@ -164,9 +158,7 @@ the disclosure is the right thing to do because:
   "first_run_completed": true,
   "first_run_at": "2026-06-03T14:22:11Z",
   "server": null,
-  "server_password": null,
-  "last_update_check": null,
-  "latest_known_version": null
+  "server_password": null
 }
 ```
 

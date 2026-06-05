@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/polius/fsend/internal/config"
 )
@@ -48,8 +47,6 @@ func runConnect(f *flags) error {
 		}
 		cfg.Server = host
 		cfg.ServerPassword = password
-		now := time.Now().UTC()
-		cfg.FirstRunAt = &now
 		if err := config.Save(cfg); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}

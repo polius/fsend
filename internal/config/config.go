@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/adrg/xdg"
 
@@ -38,13 +37,9 @@ const SchemaVersion = 1
 // from "zero value" — for example a server set to the empty string is
 // different from a server field that has never been written.
 type Config struct {
-	SchemaVersion       int        `json:"schema_version"`
-	FirstRunCompleted   bool       `json:"first_run_completed"`
-	FirstRunAt          *time.Time `json:"first_run_at,omitempty"`
-	Server              string     `json:"server,omitempty"`           // empty = use compiled-in default
-	ServerPassword      string     `json:"server_password,omitempty"`  // empty = no password
-	LastUpdateCheck     *time.Time `json:"last_update_check,omitempty"`
-	LatestKnownVersion  string     `json:"latest_known_version,omitempty"`
+	SchemaVersion  int    `json:"schema_version"`
+	Server         string `json:"server,omitempty"`          // empty = use compiled-in default
+	ServerPassword string `json:"server_password,omitempty"` // empty = no password
 }
 
 // DefaultServer is the compiled-in default rendezvous server.

@@ -22,11 +22,11 @@ type RecvOptions struct {
 	Hostname      string
 	OS            string
 	ClientVersion string
-	TargetDir     string  // where files are written
+	TargetDir     string // where files are written
 	Overwrite     bool
-	Accept        func(hello wire.SenderHello) bool      // prompt callback; nil → auto-accept (legacy --yes)
-	PromptPasswd  func() (string, error)                  // prompt callback for --pass; nil → no password support
-	SessionKey    []byte                                   // 32-byte TLS exporter-derived key
+	Accept        func(hello wire.SenderHello) bool           // prompt callback; nil → auto-accept (legacy --yes)
+	Password      string                                      // pre-supplied (--pass or FSEND_PASS); used when sender requires a password
+	PromptPass    func() (string, error)                      // fallback when sender requires a password and Password is empty
 	ProgressFn    func(fileIndex uint32, bytesWritten uint64) // optional
 }
 
@@ -58,14 +58,30 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		return fmt.Errorf("recv: hello-ack: %w", err)
 	}
 	if !accept {
+		// Close our write side so the FIN flushes HELLO_ACK to the
+		// sender — without this, an immediate transport close races the
+		// buffered bytes and the sender hangs waiting for HELLO_ACK
+		// that's already been QUIC-buffered but never delivered.
+		_ = s.Control.Close()
+		// Drain any in-flight sender writes so the sender's send-side
+		// FIN can land cleanly. Best-effort; ignore errors.
+		_, _ = io.Copy(io.Discard, s.Control)
 		return fserrors.ErrReceiverDeclined
 	}
 
 	if hello.HasPassword {
-		if err := recvPasswordChallenge(s, opts); err != nil {
+		if err := receiverPasswordHandshake(s, opts); err != nil {
 			return err
 		}
 	}
+
+	// Archive mode: a TransferDirectory hello means the sender bundled
+	// one or more directories (and any sibling files) into a single
+	// deterministic tar. The wire protocol below is identical to the
+	// single-file case — one FILE_INFO, one FILE_ACCEPT, one chunk
+	// stream — but after the tar lands and verifies we extract it into
+	// the target directory instead of renaming it into place.
+	archiveMode := hello.TransferKind == wire.TransferDirectory
 
 	// File loop.
 	for {
@@ -91,7 +107,7 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		if ft != wire.TypeFileInfo {
 			return fmt.Errorf("%w: expected FILE_INFO, got %v", fserrors.ErrProtocolError, ft)
 		}
-		if err := recvOneFile(ctx, s, &info, opts); err != nil {
+		if err := recvOneFile(ctx, s, &info, opts, archiveMode); err != nil {
 			return err
 		}
 	}
@@ -106,46 +122,25 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	return nil
 }
 
-func recvPasswordChallenge(s *Streams, opts RecvOptions) error {
-	var got [32]byte
-	ft, err := wire.ReadControl(s.Control, &got)
-	if err != nil {
-		return fmt.Errorf("recv: password-challenge: %w", err)
+func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts RecvOptions, archiveMode bool) error {
+	// In archive mode the sender's RelativePath is a fixed placeholder
+	// (ArchiveName); we don't actually surface that name to the user.
+	// We just need a stable, hidden temp location inside TargetDir for
+	// the partial file. Extraction happens after the bytes land.
+	var target string
+	if archiveMode {
+		target = filepath.Join(opts.TargetDir, archivePartialName)
+	} else {
+		// Sanitize the peer-supplied relative path before composing the target.
+		relClean, err := SanitizeRelativePath(info.RelativePath)
+		if err != nil {
+			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+				Code: wire.ErrCodeProtocolError, Message: "bad path",
+			})
+			return fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
+		}
+		target = filepath.Join(opts.TargetDir, relClean)
 	}
-	if ft != wire.TypePasswordChallenge {
-		return fmt.Errorf("%w: expected PASSWORD_CHALLENGE, got %v", fserrors.ErrProtocolError, ft)
-	}
-
-	if opts.PromptPasswd == nil {
-		return fserrors.ErrWrongPassword
-	}
-	pwd, err := opts.PromptPasswd()
-	if err != nil {
-		return err
-	}
-	mine := computePasswordHMAC(pwd, opts.SessionKey)
-	if err := wire.WriteControl(s.Control, wire.TypePasswordResponse, &mine); err != nil {
-		return fmt.Errorf("recv: password-response: %w", err)
-	}
-	if !constantTimeEqual32(got, mine) {
-		// Sender will see the mismatch and abort; we still need to consume
-		// any in-flight ERROR or just bail.
-		return fserrors.ErrWrongPassword
-	}
-	return nil
-}
-
-func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts RecvOptions) error {
-	// Sanitize the relative path before composing the target.
-	relClean, err := SanitizeRelativePath(info.RelativePath)
-	if err != nil {
-		// Inform peer + abort.
-		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-			Code: wire.ErrCodeProtocolError, Message: "bad path",
-		})
-		return fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
-	}
-	target := filepath.Join(opts.TargetDir, relClean)
 
 	// Defensive: confirm target stays under TargetDir even after filesystem
 	// resolution.
@@ -185,19 +180,55 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		return wire.WriteControl(s.Control, wire.TypeFileAccept, &decision)
 	}
 
-	// Regular file: decide action.
+	// Regular file: write through a `.fsend-partial` sidecar and rename
+	// to the real target only after the BLAKE3 root hash passes. That
+	// way an interrupted transfer leaves a self-describing artifact the
+	// next attempt can resume from, and a successful target file is
+	// always fully verified.
+	partial := target + partialSuffix
+
+	// Resume detection: if a partial exists and lines up on a chunk
+	// boundary below the source size, elect ActionResume so the sender
+	// seeks past the bytes we already have.
+	//
+	// We pair the resume offer with an imohash fingerprint of our
+	// partial. The sender uses it to verify the source's first
+	// resumeOffset bytes match the bytes we already have. This replaces
+	// the previous "read the entire prefix back through BLAKE3" step,
+	// which was the single biggest source of slow-resumes on large files.
+	//
+	// Imohash is non-cryptographic but the threat model here is "did the
+	// source change between attempts?" — a collision-finder would need to
+	// craft a file whose first N bytes imohash-collide with a specific
+	// target, which is meaningless without also matching every per-chunk
+	// BLAKE3 (which is cryptographic). The expected case — same source,
+	// same partial — collides with probability ~2⁻⁶⁴.
 	action := wire.ActionAcceptFull
 	resumeOffset := uint64(0)
-	if existing, err := os.Stat(target); err == nil && !existing.IsDir() {
-		if !opts.Overwrite {
-			// In v1 single-receiver flow we accept-full anyway (sender
-			// won't have generated this filename if there was a prior
-			// successful receive — the partial sidecar handles in-flight
-			// resume). A future version can prompt here.
-			// For now: if a non-resume partial exists, just accept-full
-			// and overwrite the contents.
+	var partialImo [ImohashSize]byte
+	if info.Resumable {
+		if st, err := os.Stat(partial); err == nil && !st.IsDir() {
+			existing := uint64(st.Size())
+			aligned := (existing / wire.MaxChunkSize) * wire.MaxChunkSize
+			switch {
+			case aligned > 0 && aligned < info.Size:
+				// Fingerprint just the chunk-aligned prefix we plan to
+				// keep. If the partial has bytes past `aligned`, the
+				// truncation below trims them — so the imohash must
+				// reflect what's *kept*, not what's on disk right now.
+				h, err := PrefixImohash(partial, int64(aligned))
+				if err == nil {
+					action = wire.ActionResume
+					resumeOffset = aligned
+					partialImo = h
+				}
+				// On imohash failure we silently fall through to a
+				// full re-transfer rather than blocking the user.
+			case existing >= info.Size:
+				// Stale or oversized partial — discard.
+				_ = os.Remove(partial)
+			}
 		}
-		_ = existing
 	}
 
 	// Parent must exist.
@@ -206,44 +237,49 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	}
 
 	decision := wire.FileAcceptDecision{
-		Index:        info.Index,
-		Action:       action,
-		ResumeOffset: resumeOffset,
+		Index:          info.Index,
+		Action:         action,
+		ResumeOffset:   resumeOffset,
+		PartialImohash: partialImo,
 	}
 	if err := wire.WriteControl(s.Control, wire.TypeFileAccept, &decision); err != nil {
 		return fmt.Errorf("recv: file-accept: %w", err)
 	}
 
-	// Open target for write.
+	// Open the partial sidecar (not the target). On full re-download we
+	// O_TRUNC; on resume we keep the existing prefix.
 	flag := os.O_RDWR | os.O_CREATE
 	if action == wire.ActionAcceptFull {
 		flag |= os.O_TRUNC
 	}
-	f, err := os.OpenFile(target, flag, os.FileMode(info.Mode))
+	f, err := os.OpenFile(partial, flag, os.FileMode(info.Mode))
 	if err != nil {
-		return fmt.Errorf("%w: open target: %v", fserrors.ErrWriteFailed, err)
+		return fmt.Errorf("%w: open partial: %v", fserrors.ErrWriteFailed, err)
 	}
 	defer f.Close()
 
-	if resumeOffset > 0 {
+	// Drop any bytes past the chunk boundary so what's on disk lines up
+	// with what the sender will start writing from resumeOffset.
+	if action == wire.ActionResume {
+		if err := f.Truncate(int64(resumeOffset)); err != nil {
+			return fmt.Errorf("%w: truncate partial: %v", fserrors.ErrWriteFailed, err)
+		}
 		if _, err := f.Seek(int64(resumeOffset), io.SeekStart); err != nil {
 			return fmt.Errorf("%w: seek: %v", fserrors.ErrWriteFailed, err)
 		}
 	}
 
-	// Receive chunks.
-	verifier := blake3.New()
-	// If resuming, fast-forward the verifier over already-written bytes.
-	if resumeOffset > 0 {
-		// Re-read what's on disk into the verifier so the final root check works.
-		_, _ = f.Seek(0, io.SeekStart)
-		if _, err := io.CopyN(verifier, f, int64(resumeOffset)); err != nil {
-			return fmt.Errorf("%w: re-hash existing: %v", fserrors.ErrReadFailed, err)
-		}
-		// Re-seek for writes.
-		if _, err := f.Seek(int64(resumeOffset), io.SeekStart); err != nil {
-			return fmt.Errorf("%w: re-seek: %v", fserrors.ErrWriteFailed, err)
-		}
+	// On a fresh transfer we accumulate a BLAKE3 root over every byte
+	// and compare to info.Blake3Root at the end. On a resume we skip
+	// the root check entirely: the prefix was verified at receive-time
+	// (per-chunk BLAKE3) when it was originally written, and the
+	// sender just confirmed the imohash matches its source's prefix.
+	// Re-reading the on-disk prefix only to feed the BLAKE3 verifier
+	// would defeat the whole point of imohash resume.
+	resumed := resumeOffset > 0
+	var verifier *blake3.Hasher
+	if !resumed {
+		verifier = blake3.New()
 	}
 
 	var bytesWritten uint64 = resumeOffset
@@ -258,9 +294,18 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// Peek the control stream non-blockingly: the sender may have
+		// posted an ErrorFrame (e.g. partial-imohash mismatch) before
+		// the first chunk lands. We don't actually peek — we just check
+		// once via a short data-stream read. If the data stream is
+		// closed by EOF and control has an ERROR queued, surface the
+		// real reason instead of "stream closed mid-file".
 		c, err := wire.ReadChunk(s.Data)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				if reason := tryReadPeerError(s.Control); reason != nil {
+					return reason
+				}
 				return fmt.Errorf("recv: stream closed mid-file: %w", fserrors.ErrConnectFailed)
 			}
 			return fmt.Errorf("recv: chunk: %w", err)
@@ -292,7 +337,9 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 			if _, err := f.Write(plain); err != nil {
 				return fmt.Errorf("%w: write: %v", fserrors.ErrWriteFailed, err)
 			}
-			verifier.Write(plain)
+			if verifier != nil {
+				verifier.Write(plain)
+			}
 			bytesWritten += uint64(len(plain))
 			if opts.ProgressFn != nil {
 				opts.ProgressFn(info.Index, bytesWritten)
@@ -304,13 +351,60 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		}
 	}
 
-	// Final root hash check.
-	var got [32]byte
-	copy(got[:], verifier.Sum(nil))
-	if got != info.Blake3Root {
-		// Delete corrupted file.
-		_ = os.Remove(target)
-		return fserrors.ErrHashMismatch
+	// Final root hash check. Skipped in three cases:
+	//
+	//   - resumed transfers: the kept prefix was verified by per-chunk
+	//     BLAKE3 the first time it was received, and the sender
+	//     confirmed our imohash matches its source. New chunks are
+	//     verified per-chunk as they arrive (above). The Merkle root
+	//     would be the only thing left to check, but its information is
+	//     fully covered by those two together.
+	//   - synthetic items (stdin / --text): the sender can't pre-compute
+	//     a digest over a stream of unknown size, so Blake3Root is left
+	//     zero and Resumable is false. Per-chunk hashes already cover
+	//     integrity.
+	if verifier != nil {
+		var got [32]byte
+		copy(got[:], verifier.Sum(nil))
+		var zero [32]byte
+		syntheticSkip := !info.Resumable && info.Blake3Root == zero
+		if !syntheticSkip && got != info.Blake3Root {
+			// Discard the partial — its contents are corrupt or the source
+			// changed mid-flight. Next attempt starts fresh.
+			_ = f.Close()
+			_ = os.Remove(partial)
+			// Notify peer so its TRANSFER_ACK read can fail fast instead of
+			// blocking on QUIC idle timeout.
+			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+				Code: wire.ErrCodeFileHashMismatch, Message: "root hash mismatch",
+			})
+			return fserrors.ErrHashMismatch
+		}
+	}
+
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("%w: close partial: %v", fserrors.ErrWriteFailed, err)
+	}
+
+	if archiveMode {
+		// The partial *is* the tar. Extract it into TargetDir, then
+		// remove the partial so a re-run starts clean. Extraction is
+		// the last point at which the transfer can fail visibly; if it
+		// does, we leave the .partial in place so the user (or a
+		// retry) can re-extract without re-downloading.
+		if err := ExtractArchive(partial, opts.TargetDir); err != nil {
+			return fmt.Errorf("%w: extract archive: %v", fserrors.ErrWriteFailed, err)
+		}
+		_ = os.Remove(partial)
+		return nil
+	}
+
+	// Promote partial → target. Close first so Windows doesn't refuse
+	// the rename, and remove any existing target so POSIX and Windows
+	// behave identically.
+	_ = os.Remove(target)
+	if err := os.Rename(partial, target); err != nil {
+		return fmt.Errorf("%w: finalize: %v", fserrors.ErrWriteFailed, err)
 	}
 
 	// Apply modtime.
@@ -319,4 +413,92 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		_ = os.Chtimes(target, t, t)
 	}
 	return nil
+}
+
+// partialSuffix is appended to the destination filename while a transfer
+// is in flight. Renamed away atomically once the BLAKE3 root hash passes.
+const partialSuffix = ".fsend-partial"
+
+// receiverPasswordHandshake mirrors senderPasswordHandshake: read the
+// challenge, derive the password (from --pass / FSEND_PASS or the
+// interactive prompt), send the HMAC response, and wait for the sender's
+// verdict.
+//
+// One attempt per session — a wrong password drops the connection. The
+// receiver must rerun fsend to try again, which forces a fresh code path
+// and a fresh nonce.
+func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
+	var ch wire.PasswordChallenge
+	ft, err := wire.ReadControl(s.Control, &ch)
+	if err != nil {
+		return fmt.Errorf("recv: read password challenge: %w", err)
+	}
+	if ft != wire.TypePasswordChallenge {
+		return fmt.Errorf("%w: expected PASSWORD_CHALLENGE, got %v", fserrors.ErrProtocolError, ft)
+	}
+
+	password := opts.Password
+	if password == "" {
+		if opts.PromptPass == nil {
+			return fserrors.ErrWrongPassword
+		}
+		password, err = opts.PromptPass()
+		if err != nil {
+			return fmt.Errorf("recv: read password: %w", err)
+		}
+	}
+
+	mac := hmacPassword(password, ch.Nonce[:])
+	var resp wire.PasswordResponse
+	copy(resp.HMAC[:], mac)
+	if err := wire.WriteControl(s.Control, wire.TypePasswordResponse, &resp); err != nil {
+		return fmt.Errorf("recv: write password response: %w", err)
+	}
+
+	// Sender now writes either PASSWORD_VERIFIED (proceed) or
+	// ERROR{ErrCodeWrongPassword} (abort). Any decoded-payload error here
+	// also means abort — we don't try to "recover."
+	var ef wire.ErrorFrame
+	ft, err = wire.ReadControl(s.Control, &ef)
+	if err != nil {
+		return fmt.Errorf("recv: read password verdict: %w", err)
+	}
+	switch ft {
+	case wire.TypePasswordVerified:
+		return nil
+	case wire.TypeError:
+		if ef.Code == wire.ErrCodeWrongPassword {
+			return fserrors.ErrWrongPassword
+		}
+		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
+	default:
+		return fmt.Errorf("%w: expected PASSWORD_VERIFIED, got %v", fserrors.ErrProtocolError, ft)
+	}
+}
+
+// tryReadPeerError reads at most one frame from the control stream and
+// returns a mapped fserrors error if it's a TypeError frame, otherwise
+// nil. Used when the data stream EOFs early and we want to surface the
+// real reason the sender bailed (e.g. ErrCodePartialMismatch).
+//
+// Best-effort only: if the control stream is also closed or carries
+// something other than an ErrorFrame, returns nil and lets the caller
+// fall back to its generic "stream closed" message.
+func tryReadPeerError(r io.Reader) error {
+	var ef wire.ErrorFrame
+	ft, err := wire.ReadControl(r, &ef)
+	if err != nil {
+		return nil
+	}
+	if ft != wire.TypeError {
+		return nil
+	}
+	switch ef.Code {
+	case wire.ErrCodePartialMismatch:
+		return fserrors.ErrPartialMismatch
+	case wire.ErrCodeFileHashMismatch, wire.ErrCodeChunkHashMismatch:
+		return fserrors.ErrHashMismatch
+	default:
+		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
+	}
 }

@@ -18,7 +18,6 @@ func TestControl_HelloRoundtrip(t *testing.T) {
 		TransferKind:    TransferSingleFile,
 		TotalFiles:      1,
 		TotalBytes:      4404019,
-		HasPassword:     true,
 		CompressionHint: 1,
 	}
 	var buf bytes.Buffer

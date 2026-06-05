@@ -259,12 +259,31 @@ visually flat, hard to scan, redundant on macOS/Linux.
 
   ──────────────────────────────────────────────
 
-  ✓ Direct connection established  (no relay)
+  ✓ direct (local) — same LAN, no NAT crossed
   ▕████████████████░░░░░░░░░░░░░░░░░░░░░░░░▏  42%   1.8 MB/s   ETA 1s
 ```
 
-If the transfer falls back to the relay, the line reads:
-`⚠ Relayed via fs.alzina.dev (NAT hole-punch failed)` — honest, not hidden.
+The data-path line is **tri-state** — the same UX surface in every
+transfer, so users can see at a glance how their bytes are actually
+moving:
+
+| Path | Status line | When |
+|---|---|---|
+| LAN | `✓ direct (local) — same LAN, no NAT crossed` | mDNS-discovered peer, or ICE selected a host↔host pair |
+| STUN | `✓ direct (STUN) — NAT hole-punched` | ICE selected a pair with at least one srflx/prflx candidate |
+| TURN | `⚠ relay (TURN) via fs.alzina.dev:443 — NAT hole-punch failed` | ICE failed; QUIC tunneled through the rendezvous server |
+
+The three buckets correspond directly to what's happening underneath:
+LAN means no NAT was crossed, STUN means one was hole-punched, TURN
+means the relay is forwarding ciphertext. Surfacing this tells the user
+what to expect for speed (LAN ≫ STUN > TURN) without exposing ICE
+internals, and gives self-hosters / debuggers a one-glance "did
+hole-punching work" signal.
+
+With `--debug`, a second line appears under the headline showing the
+selected ICE candidate types (`    ICE candidate pair: host → srflx`) —
+useful for diagnosing why a peer ended up on a particular path. Plain
+runs never see this.
 
 **State 3 — complete:**
 
@@ -277,7 +296,7 @@ If the transfer falls back to the relay, the line reads:
 
   ──────────────────────────────────────────────
 
-  ✓ Direct connection established  (no relay)
+  ✓ direct (local) — same LAN, no NAT crossed
   ✓ Sent 4.2 MB in 2.4 s  (1.75 MB/s avg)
 ```
 
@@ -333,9 +352,12 @@ plus a password is far out of reach of online attacks anyway).
    trivial. All progress and status output is silenced.
 3. **Clipboard copy on by default.** `--no-clipboard` disables. The "✓
    Code copied to clipboard" line is visible so users don't double-copy.
-4. **Always show the data path** (direct vs relayed) — a real
-   differentiator vs croc, and users learn that fsend punched through
-   their NAT.
+4. **Always show the data path** as one of `direct (local)` /
+   `direct (STUN)` / `relay (TURN)` — a real differentiator vs croc,
+   and users learn that fsend punched through their NAT. Three buckets
+   beats two because LAN vs STUN-punched is a meaningfully different
+   performance regime, and the bucket name doubles as a debug
+   breadcrumb ("we're on TURN — that's why this is slow").
 5. **Receive command shown once, OS-agnostic.** Just `fsend <code>`. Croc's
    dual Windows/macOS-Linux variants are unnecessary noise.
 6. **ANSI when stderr is a TTY, ASCII fallback when piped.** Unicode
@@ -367,6 +389,11 @@ unambiguously **send** — no regex check, no prompt, no auto-detect.
 - `--text "<string>"` — send a literal string instead of a file (croc parity)
 - `--no-compress` — force-disable compression. Useful for benchmarking; not
   needed for normal use because compression auto-detects (see below).
+- `--exclude <glob,…>` — skip entries matching any of these glob patterns
+  when bundling a directory. Repeatable or comma-separated. Matches against
+  the full relative path **and** against any individual path component, so
+  `--exclude node_modules` skips `proj/x/node_modules/...` without forcing
+  the user to write `**/node_modules`. No-op when sending a single file.
 - `--yes` — auto-accept incoming transfers (skip receiver prompt)
 - `--out <dir>` — receive into a specific directory
 - `--overwrite` — overwrite existing files on receive
@@ -379,6 +406,124 @@ unambiguously **send** — no regex check, no prompt, no auto-detect.
   code phrase. See "Password protection" below.
 - `--name <string>` — override the hostname shown to the peer (default:
   the OS-reported hostname)
+
+**Secrets in argv vs environment:**
+
+`--code` and `--pass` are convenient but leak the secret to anyone with
+`ps -ef` access on the same host (the same class of issue as croc's
+[CVE-2023-43621](https://github.com/schollz/croc/security/advisories/GHSA-h6m8-r3vf-3gqv)).
+Two environment variables provide an opt-in safer path:
+
+- `FSEND_CODE` — used as the code when `--code` is not passed.
+- `FSEND_PASS` — used as the password when `--pass` is not passed.
+
+**Precedence:** flag > env var > default. Setting both is allowed and
+the flag wins, matching the convention of every other Unix CLI. Scripts
+that wrap fsend should prefer the env-var form so the secret never lands
+in argv.
+
+**Directories are always bundled.**
+
+When the input includes a directory (or `fsend` is run with multiple
+arguments at least one of which is a directory), fsend transparently
+packages everything into a single deterministic tar before sending.
+The receiver writes the tar to a hidden partial file
+(`.fsend-archive-recv.fsend-partial` inside `--out`), verifies it
+chunk-by-chunk during the transfer, and extracts it into the target
+directory on completion. The user never sees the tar, never has to
+type `--archive`, and never has to extract anything by hand.
+
+Why bundling is the default:
+- One large stream is dramatically faster than thousands of small
+  per-file frames over the wire (no per-file FILE_INFO/FILE_ACCEPT
+  round-trip, no small-file chunk overhead).
+- The tar is deterministic (sorted entries, zeroed uname/gname,
+  second-resolution mtimes), so imohash-based resume works across
+  retries without re-transferring bytes already on disk.
+- Resume becomes a single-file problem instead of a per-file problem.
+
+Compression is not applied to the tar itself — per-chunk zstd in the
+wire layer handles it adaptively, which is cheaper for already-
+compressed payloads (mp4, jpg, zstd-pre-compressed blobs) than running
+a top-level compressor and then discovering it didn't help.
+
+**Resume uses imohash, not BLAKE3, for the prefix check.**
+
+When the receiver finds a `.fsend-partial` aligned on a chunk boundary,
+it computes the **imohash** (a 128-bit fingerprint sampling three 16-KiB
+windows + file size — constant-time for files above 128 KiB) of the
+prefix it plans to keep and sends it in the FILE_ACCEPT decision along
+with `ActionResume` and the byte offset. The sender computes the same
+imohash over its source's first `ResumeOffset` bytes and either:
+
+- **Match** → the prefix is byte-identical; sender seeks to
+  `ResumeOffset` and streams the tail. Receiver does not re-read the
+  prefix at all. New chunks are verified per-chunk by BLAKE3 as they
+  arrive. The final file-level BLAKE3 root check is skipped on
+  resumed transfers — its information is fully covered by per-chunk
+  BLAKE3 + imohash match.
+- **Mismatch** → sender sends an `ErrCodePartialMismatch` ErrorFrame
+  and aborts. The user sees `ErrPartialMismatch` (E019) and is told to
+  delete the partial or use `--out <dir>` to start fresh. This case is
+  almost always a source-file-changed-between-attempts situation.
+
+Imohash is non-cryptographic; an honest user resuming their own
+download collides with probability ~2⁻⁶⁴. A motivated attacker who
+controls the receiver's filesystem could in principle craft a bogus
+partial whose imohash collides with the source's prefix, but that
+attacker can also write the final file directly and skip the protocol
+entirely — the resume layer isn't the right place to defend against
+local-write adversaries. The chunk-level BLAKE3 hashes (cryptographic)
+continue to validate every byte received from the sender.
+
+This replaces the pre-imohash model where the receiver re-read the
+partial through BLAKE3 just to hydrate the running verifier — a step
+that took multiple seconds per gigabyte and was, for a tool whose
+selling point is fast P2P, the single biggest "why is resume so slow"
+complaint shape we'd have inherited from croc.
+
+**Auto-retry on transient transfer errors.**
+
+If a transfer fails partway through with a transient error
+(QUIC idle-timeout, connection reset, mid-frame EOF, net.Error.Timeout,
+fserrors.ErrConnectFailed), both sides reopen QUIC and retry the
+transfer. The receiver's `.fsend-partial` plus imohash resume mean a
+retry resumes from where the previous attempt left off — the user
+sees a brief "retrying" line and the progress bar continues, not a
+fresh download.
+
+The retry shape is the same across LAN, ICE-direct, and relay paths:
+
+- **LAN sender**: keeps the `quicconn.Listener` (and the underlying UDP
+  socket / mDNS announcement) alive across attempts; each retry
+  re-`Accept`s. The first Accept uses the 60-second initial-pair window
+  and an Accept failure there is *not* retried — it falls through to
+  the internet path. After pairing, Accept failures are transient and
+  drive retries with a shorter 15-second budget per attempt.
+- **LAN receiver**: re-Dials the same `host:port` (the mDNS query
+  result) on each attempt. `quic.DialAddr` opens a fresh outbound UDP
+  socket per call, which is fine on LAN.
+- **Internet sender/receiver**: keeps the ICE-established or relay
+  `net.PacketConn` (and the `quic.Transport` wrapping it) alive across
+  attempts; each retry re-`Accept`s / re-`Dial`s on the same
+  Transport. NAT mappings and relay sessions persist across the
+  retry window.
+
+- Up to **3 attempts** per session.
+- Backoff is `1 s`, then `3 s`, then `9 s` (×3, capped at 30 s).
+- Retry is symmetric: both peers run the same loop, so they
+  reconverge naturally even when they detect the failure at slightly
+  different moments.
+- **Not retried**: hash mismatches, wrong password, receiver declined,
+  partial-imohash mismatch, protocol error, path traversal, Ctrl-C.
+  These are terminal failures where another attempt cannot succeed.
+- When the budget is exhausted, the user sees `ErrTransientFailure`
+  (E020) with guidance to re-run; the partial file is preserved so the
+  next invocation resumes immediately.
+
+Implementation lives in `internal/retry`. The classifier in
+`retry.IsTransient` is the single source of truth for what gets
+another attempt.
 
 **Password protection (`--pass`):** when the sender sets `--pass`, the
 receiver gets prompted for it after the connection is established but
@@ -443,9 +588,7 @@ Schema:
 {
   "schema_version": 1,
   "server": "relay.mycompany.com:443",
-  "server_password": "optional-shared-secret",
-  "last_update_check": "2026-06-03T14:22:11Z",
-  "latest_known_version": "0.2.0"
+  "server_password": "optional-shared-secret"
 }
 ```
 
@@ -480,42 +623,10 @@ $ fsend report.pdf
 
 Exit code: 2 (network error). `--quiet` still prints this error (to stderr).
 
-### Update-check edge cases
-
-- `fsend --version` triggers a synchronous update check (with 1 s timeout)
-  and prints both lines:
-  ```
-  fsend 0.1.0 (build a1b2c3d, 2026-05-12)
-  A newer version is available: 0.2.0 — https://github.com/polius/fsend/releases/latest
-  ```
-- During a transfer, the update check runs in a goroutine and the result is
-  printed *after* the final summary line, separated by a blank line.
-- `FSEND_NO_UPDATE_CHECK=1` disables; `--no-update-check` disables for the
-  invocation only.
-
 **Maintenance:**
 - `--uninstall` — remove the `fsend` binary from `PATH` and the config dir
-- `--version` — print version, build commit, and check for updates (see
-  "Update checking" below)
+- `--version` — print version and build commit
 - `--help`
-
-## Update checking
-
-On every invocation, the CLI performs a non-blocking, time-budgeted check
-against the GitHub Releases API for a newer version:
-
-- Request: `GET https://api.github.com/repos/polius/fsend/releases/latest`
-- Timeout: 1 second; failures are silent (never block or annoy the user)
-- Cache: result cached in `~/.config/fsend/update_cache.json` for 24 hours;
-  most invocations hit the cache and do zero network work
-- If a newer semver is found: print a one-line notice on stderr after the
-  transfer completes (never before — must not interrupt the UX)
-
-Opt-outs:
-- `FSEND_NO_UPDATE_CHECK=1` environment variable
-- `--no-update-check` flag
-
-This is the only network call the CLI makes outside of a transfer.
 
 ## Server operation
 

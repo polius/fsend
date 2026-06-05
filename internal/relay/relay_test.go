@@ -64,7 +64,6 @@ func TestRelay_EndToEnd(t *testing.T) {
 	srv := NewServer(serverConn, ServerConfig{
 		MaxBytesPerSession: 10 * 1024 * 1024,
 		SessionIdleTimeout: 5 * time.Second,
-		JanitorInterval:    1 * time.Second,
 	})
 	tok, err := srv.Allocate()
 	if err != nil {
@@ -87,8 +86,8 @@ func TestRelay_EndToEnd(t *testing.T) {
 	}
 	defer clientB.Close()
 
-	connA := NewClient(clientA, relayAddr, tok, "peer-A")
-	connB := NewClient(clientB, relayAddr, tok, "peer-B")
+	connA := NewClient(clientA, relayAddr, tok)
+	connB := NewClient(clientB, relayAddr, tok)
 
 	// A sends; receiver may take a moment because B hasn't registered yet.
 	// The protocol handles this: A's first datagram registers A as peerA,

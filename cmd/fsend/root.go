@@ -22,10 +22,11 @@ type flags struct {
 	// Send-side
 	codeArg    string
 	textArg    string
+	passArg    string // shared with receive-side: sender requires, receiver supplies
 	noCompress bool
 	noClip     bool
-	password   string
 	hostname   string
+	excludes   []string // glob patterns; applied when bundling a directory archive
 
 	// Receive-side
 	yes       bool
@@ -38,9 +39,8 @@ type flags struct {
 	connectArgsRaw []string
 
 	// Misc
-	quiet         bool
-	noUpdateCheck bool
-	debug         bool
+	quiet bool
+	debug bool
 
 	// First-positional args, recorded after parsing.
 	posArgs []string
@@ -76,14 +76,17 @@ Examples:
 	// Transfer behavior
 	c.Flags().StringVar(&f.codeArg, "code", "", "use a specific code (implies send mode)")
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
+	c.Flags().StringVar(&f.passArg, "pass", "",
+		"password gate. Sender: require the receiver to match it. Receiver: supply non-interactively. Env: FSEND_PASS")
 	c.Flags().BoolVar(&f.noCompress, "no-compress", false, "force-disable compression")
 	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers")
 	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files on receive")
 	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress non-error output")
 	c.Flags().BoolVar(&f.noClip, "no-clipboard", false, "don't auto-copy the code to the clipboard")
-	c.Flags().StringVar(&f.password, "pass", "", "require the receiver to enter this password")
 	c.Flags().StringVar(&f.hostname, "name", "", "override the hostname shown to the peer")
+	c.Flags().StringSliceVar(&f.excludes, "exclude", nil,
+		"glob patterns to skip when bundling a directory (repeatable or comma-separated)")
 
 	// Mode override
 	c.Flags().BoolVar(&f.forceSend, "send", false, "force send mode (skip auto-detect)")
@@ -96,7 +99,6 @@ Examples:
 	// identically, so we look at Changed() in dispatch.
 
 	// Misc
-	c.Flags().BoolVar(&f.noUpdateCheck, "no-update-check", false, "skip GitHub release check")
 	c.Flags().BoolVar(&f.debug, "debug", false, "verbose logging to stderr")
 
 	return c
@@ -108,6 +110,15 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	if cmd.Flags().Changed("connect") {
 		return runConnect(f)
 	}
+
+	// Env-var fallback for sensitive arguments.
+	//
+	// Precedence is flag > env > default. Passing a secret via flag
+	// leaks it through /proc/<pid>/cmdline and `ps -ef`; FSEND_CODE
+	// lets users keep it out of argv. We only consult the env var when
+	// the flag wasn't explicitly given, so scripts that set both keep
+	// the flag's value (matching every other CLI's override convention).
+	applyEnvFallbacks(f, cmd)
 
 	// Force mode short-circuits auto-detect.
 	if f.forceSend {
@@ -154,6 +165,22 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		return runReceive(f, arg)
 	}
 	return runSend(f, []string{arg})
+}
+
+// applyEnvFallbacks fills in flags from environment variables when the
+// user did not pass the corresponding flag. Used for secrets we'd
+// rather not see on argv.
+func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
+	if !cmd.Flags().Changed("code") {
+		if v := os.Getenv("FSEND_CODE"); v != "" {
+			f.codeArg = v
+		}
+	}
+	if !cmd.Flags().Changed("pass") {
+		if v := os.Getenv("FSEND_PASS"); v != "" {
+			f.passArg = v
+		}
+	}
 }
 
 // promptCodeOrPath handles the rare collision case where a CLI arg both

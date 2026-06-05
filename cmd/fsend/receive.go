@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -10,9 +10,11 @@ import (
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
+	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/quicconn"
+	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/version"
 	"github.com/polius/fsend/internal/wire"
@@ -34,23 +36,23 @@ func runReceive(f *flags, c string) error {
 	defer cancel()
 
 	// LAN discovery first.
-	fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Looking for sender on local network…")
+	if !f.quiet {
+		fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Looking for sender on local network…")
+	}
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
 		// LAN miss → try the rendezvous + relay path.
-		fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Not on LAN — connecting via rendezvous server…")
+		if !f.quiet {
+			fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Not on LAN — connecting via rendezvous server…")
+		}
 		cfg, _ := config.Load()
-		return runReceiveOverRelay(ctx, f, c, cfg)
+		return runReceiveOverInternet(ctx, f, c, cfg)
 	}
 
 	addr := q.IP.String() + ":" + strconv.Itoa(q.Port)
-	fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Found sender at", addr)
-
-	res, err := quicconn.Dial(ctx, addr)
-	if err != nil {
-		return fmt.Errorf("dialing sender: %w", err)
+	if !f.quiet {
+		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Found sender at", addr)
 	}
-	defer res.Close()
 
 	hostname := f.hostname
 	if hostname == "" {
@@ -65,28 +67,86 @@ func runReceive(f *flags, c string) error {
 		}
 	}
 
-	accept := func(h wire.SenderHello) bool {
-		return promptAccept(f, h)
+	closeProg, accept, progressFn := newReceiverProgress(f)
+	defer closeProg()
+
+	// Same retry shape as the internet receive path: a transient QUIC
+	// or transfer error rebuilds the QUIC connection (Dial opens a
+	// fresh UDP socket on each attempt) and the receiver's partial
+	// file + imohash let the resumed transfer pick up where it left
+	// off.
+	paired := false
+	if err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
+		func(attempt int) error {
+			return runReceiverLANOneAttempt(ctx, addr, outDir, hostname, f, accept, progressFn, &paired)
+		}); err != nil {
+		return err
 	}
 
-	fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Direct connection established (LAN)")
+	if !f.quiet {
+		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Transfer complete")
+	}
+	return nil
+}
 
-	if err := transfer.Recv(ctx, &res.Streams, transfer.RecvOptions{
+// runReceiverLANOneAttempt is one Dial + transfer pass. The `paired`
+// flag suppresses the "✓ direct (local)" line on retries so the user
+// sees it exactly once even when we reconnect mid-session.
+func runReceiverLANOneAttempt(ctx context.Context, addr, outDir, hostname string, f *flags, accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), paired *bool) error {
+	res, err := quicconn.Dial(ctx, addr)
+	if err != nil {
+		return fmt.Errorf("dialing sender: %w", err)
+	}
+	defer res.Close()
+
+	if !*paired {
+		*paired = true
+		printPath(f, connpath.FromLAN())
+	}
+
+	return transfer.Recv(ctx, &res.Streams, transfer.RecvOptions{
 		Hostname:      hostname,
 		OS:            runtime.GOOS,
 		ClientVersion: version.Version,
 		TargetDir:     outDir,
 		Overwrite:     f.overwrite,
 		Accept:        accept,
-	}); err != nil {
-		return err
-	}
+		Password:      f.passArg,
+		PromptPass:    receiverPasswordPrompt(f),
+		ProgressFn:    progressFn,
+	})
+}
 
-	fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Transfer complete")
-	return nil
+// receiverPasswordPrompt returns a callback that reads a password from
+// stdin when the sender requires --pass but the receiver didn't supply
+// one via --pass / FSEND_PASS. Returns nil under --quiet so the transfer
+// engine immediately fails with ErrWrongPassword instead of blocking on
+// a prompt that nobody will see.
+//
+// The input is echoed in v1: we deliberately avoid pulling in golang.org/x/term
+// for the minor UX win of no-echo on TTYs. The expectation is that
+// non-interactive flows use --pass or FSEND_PASS; the prompt is a fallback.
+func receiverPasswordPrompt(f *flags) func() (string, error) {
+	if f.quiet {
+		return nil
+	}
+	return func() (string, error) {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprint(os.Stderr, "  Password required by sender: ")
+		var pw string
+		if _, err := fmt.Fscanln(os.Stdin, &pw); err != nil {
+			return "", err
+		}
+		return pw, nil
+	}
 }
 
 func promptAccept(f *flags, h wire.SenderHello) bool {
+	// --quiet: no prompt block at all. --yes is required (we don't
+	// interactively prompt without UX).
+	if f.quiet {
+		return f.yes
+	}
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  Receiving from", sanitizeRemote(h.Hostname))
 	fmt.Fprintln(os.Stderr)
@@ -147,5 +207,3 @@ func sanitizeRemote(s string) string {
 	return string(out)
 }
 
-// errUnused silences any errors-import linter checks.
-var _ = errors.New

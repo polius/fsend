@@ -14,8 +14,8 @@ README links to it under "Privacy."
 
 - **The fsend CLI on your computer collects no telemetry.** It does not
   phone home, count usage, or report anything to us.
-- **The one network call the CLI makes outside of a transfer is checking
-  GitHub for newer versions.** You can turn this off.
+- **The CLI makes no network calls outside of a transfer.** The only
+  traffic it generates is the encrypted transfer itself.
 - **`fs.alzina.dev` (the default relay) keeps no logs.** While a
   transfer is in progress, the server holds the minimum state needed to
   pair you with the other peer and forward UDP datagrams. That state is
@@ -29,31 +29,22 @@ README links to it under "Privacy."
 
 ## What the CLI collects: nothing
 
-`fsend` (the command-line tool) makes exactly two kinds of network calls:
+`fsend` (the command-line tool) makes exactly one kind of network call:
 
 1. **Transfer traffic** to/from the other peer (encrypted end-to-end;
-   we couldn't read it even if we wanted to)
-2. **A single HTTPS GET to GitHub** at most once every 24 hours, asking
-   `https://api.github.com/repos/polius/fsend/releases/latest` to see if a
-   newer version exists
+   we couldn't read it even if we wanted to), via the rendezvous server
+   for pairing
 
 That is the complete list. No analytics endpoint. No crash reporting
-service. No usage counters. The binary contains no third-party telemetry
-SDKs.
+service. No usage counters. No version checks. The binary contains no
+third-party telemetry SDKs.
 
 You can verify this:
 - Source code is open; grep it for HTTP endpoints
 - `tcpdump -n` while running fsend — you'll see the rendezvous server
-  contact, the peer connection, and (at most) one GitHub request
+  contact and the peer connection, and nothing else
 - Builds are reproducible (see "Reproducibility" below) — you can build
   from source and verify the binary you downloaded matches
-
-To disable the GitHub version check entirely:
-```bash
-export FSEND_NO_UPDATE_CHECK=1
-# or per-invocation:
-fsend --no-update-check ...
-```
 
 ## What fs.alzina.dev sees (and forgets)
 
@@ -180,7 +171,7 @@ If you run your own `fsend-server` via the reference Docker compose:
 
 If we ever change what we collect or retain, we will:
 1. Update this file with a dated changelog entry at the top
-2. Bump the CLI's version (so users see the update notice)
+2. Bump the CLI's version
 3. Print a notice to stderr the first time the new version runs
 
 Honest, narrow, auditable. That's the goal.

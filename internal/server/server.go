@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -305,15 +306,22 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	c := strings.ToLower(r.PathValue("code"))
 	s.mu.Lock()
 	sess, ok := s.byCode[c]
-	s.mu.Unlock()
 	if !ok {
+		s.mu.Unlock()
 		writeJSONError(w, http.StatusNotFound, "code not found")
 		return
 	}
-	if sess.State == "paired" {
+	// Snapshot what we need under the lock so concurrent joinSession
+	// writes don't race the reads below.
+	state := sess.State
+	receiverAddr := sess.ReceiverAddr
+	receiverICE := sess.ReceiverICE
+	waiters := sess.waiters
+	s.mu.Unlock()
+	if state == "paired" {
 		writeJSON(w, http.StatusOK, WaitResponse{
-			PeerObservedAddr:   sess.ReceiverAddr,
-			PeerIceCredentials: sess.ReceiverICE,
+			PeerObservedAddr:   receiverAddr,
+			PeerIceCredentials: receiverICE,
 		})
 		return
 	}
@@ -323,18 +331,24 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-ctx.Done():
 		w.WriteHeader(http.StatusNoContent)
-	case <-sess.waiters:
+	case <-waiters:
 		// Re-fetch in case janitor evicted between wakeup and now.
 		s.mu.Lock()
 		final, ok := s.byCode[c]
+		var finalAddr string
+		var finalICE IceCreds
+		if ok {
+			finalAddr = final.ReceiverAddr
+			finalICE = final.ReceiverICE
+		}
 		s.mu.Unlock()
 		if !ok {
 			writeJSONError(w, http.StatusGone, "session expired")
 			return
 		}
 		writeJSON(w, http.StatusOK, WaitResponse{
-			PeerObservedAddr:   final.ReceiverAddr,
-			PeerIceCredentials: final.ReceiverICE,
+			PeerObservedAddr:   finalAddr,
+			PeerIceCredentials: finalICE,
 		})
 	}
 }
@@ -451,6 +465,11 @@ func (s *Server) generateUniqueCode() (string, error) {
 	return "", errors.New("could not pick a unique code")
 }
 
+// iceCredEnc is Crockford-style base32 (no padding) used for ICE
+// credential strings.
+var iceCredEnc = base32.NewEncoding("ABCDEFGHJKMNPQRSTVWXYZ0123456789").
+	WithPadding(base32.NoPadding)
+
 // newIceCreds returns a fresh ICE ufrag+pwd pair. ICE expects ufrag at
 // least 4 chars and pwd at least 22 chars (RFC 5245 §15.4).
 func newIceCreds() IceCreds {
@@ -459,8 +478,8 @@ func newIceCreds() IceCreds {
 	_, _ = rand.Read(u[:])
 	_, _ = rand.Read(p[:])
 	return IceCreds{
-		Ufrag: shortB32(u[:]),
-		Pwd:   shortB32(p[:]),
+		Ufrag: iceCredEnc.EncodeToString(u[:]),
+		Pwd:   iceCredEnc.EncodeToString(p[:]),
 	}
 }
 
@@ -490,17 +509,4 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 
 func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, ErrorResponse{Error: msg})
-}
-
-// shortB32 returns a Crockford-base32 encoding of b without padding.
-// Used for ICE creds; no security significance.
-const b32 = "ABCDEFGHJKMNPQRSTVWXYZ0123456789"
-
-func shortB32(b []byte) string {
-	var out []byte
-	for _, x := range b {
-		out = append(out, b32[x&0x1F])
-		out = append(out, b32[(x>>5)&0x07|((x>>2)&0x18)])
-	}
-	return string(out[:len(b)*2-1])
 }

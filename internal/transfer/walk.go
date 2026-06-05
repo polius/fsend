@@ -3,10 +3,8 @@ package transfer
 import (
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/zeebo/blake3"
@@ -14,38 +12,28 @@ import (
 	"github.com/polius/fsend/internal/wire"
 )
 
-// SourceItem is one item to be sent: a file, directory, or symlink, with
-// the metadata the wire protocol needs.
+// SourceItem is one item to be sent: a file or symlink, with the
+// metadata the wire protocol needs.
 type SourceItem struct {
-	Info     wire.FileInfo // wire payload (RelativePath, Size, Mode, ModTime, IsDir, IsSymlink, SymlinkTarget, Blake3Root)
-	AbsPath  string        // sender-local absolute path; empty for synthetic items (stdin, text)
-	Reader   io.Reader     // non-nil only for synthetic items (stdin, text)
+	Info      wire.FileInfo // wire payload (RelativePath, Size, Mode, ModTime, IsSymlink, SymlinkTarget, Blake3Root)
+	AbsPath   string        // sender-local absolute path; empty for synthetic items (stdin, text)
+	Reader    io.Reader     // non-nil only for synthetic items (stdin, text)
 	Resumable bool
 }
 
 // Walk expands a list of CLI arguments into the ordered SourceItem list the
 // wire protocol will carry.
 //
-// For each top-level argument:
-//   - If it's a directory, the directory and its descendants are emitted
-//     in deterministic (lexicographic) order. The directory's own basename
-//     becomes the leading component of every RelativePath under it.
-//   - If it's a regular file, one SourceItem is emitted whose RelativePath
-//     is just the basename.
-//   - Symlinks are recorded as symlinks; we do NOT follow them.
-//
-// BLAKE3 roots are computed for regular files in a single pass each. For
-// large trees this is the slowest step pre-transfer; we accept the cost
-// because it gives us cryptographic resume validation.
+// Directories are not supported here — the CLI bundles directories into a
+// tar via BuildArchive before calling Send. Walk only handles regular
+// files and symlinks (one entry per argument, in argument order).
 func Walk(paths []string) ([]SourceItem, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("walk: no paths provided")
 	}
 
-	var items []SourceItem
-	var index uint32
-
-	for _, raw := range paths {
+	items := make([]SourceItem, 0, len(paths))
+	for i, raw := range paths {
 		abs, err := filepath.Abs(raw)
 		if err != nil {
 			return nil, fmt.Errorf("walk: %s: %w", raw, err)
@@ -54,15 +42,15 @@ func Walk(paths []string) ([]SourceItem, error) {
 		if err != nil {
 			return nil, fmt.Errorf("walk: %s: %w", raw, err)
 		}
-		root := filepath.Base(abs)
+		base := filepath.Base(abs)
 
 		switch {
 		case info.Mode()&os.ModeSymlink != 0:
 			target, _ := os.Readlink(abs)
 			items = append(items, SourceItem{
 				Info: wire.FileInfo{
-					Index:         index,
-					RelativePath:  root,
+					Index:         uint32(i),
+					RelativePath:  base,
 					Mode:          uint32(info.Mode().Perm()),
 					ModTime:       info.ModTime().UnixNano(),
 					IsSymlink:     true,
@@ -71,15 +59,8 @@ func Walk(paths []string) ([]SourceItem, error) {
 				},
 				AbsPath: abs,
 			})
-			index++
-
 		case info.IsDir():
-			subItems, err := walkDir(abs, root, &index)
-			if err != nil {
-				return nil, err
-			}
-			items = append(items, subItems...)
-
+			return nil, fmt.Errorf("walk: %s is a directory — directories must be sent through BuildArchive", raw)
 		default:
 			hash, err := blake3FileHash(abs)
 			if err != nil {
@@ -87,8 +68,8 @@ func Walk(paths []string) ([]SourceItem, error) {
 			}
 			items = append(items, SourceItem{
 				Info: wire.FileInfo{
-					Index:        index,
-					RelativePath: root,
+					Index:        uint32(i),
+					RelativePath: base,
 					Size:         uint64(info.Size()),
 					Mode:         uint32(info.Mode().Perm()),
 					ModTime:      info.ModTime().UnixNano(),
@@ -98,121 +79,7 @@ func Walk(paths []string) ([]SourceItem, error) {
 				AbsPath:   abs,
 				Resumable: true,
 			})
-			index++
 		}
-	}
-	return items, nil
-}
-
-// walkDir emits one SourceItem for the directory itself, then recursively
-// for every entry below it, in lexicographic order.
-func walkDir(absRoot, relRoot string, indexCounter *uint32) ([]SourceItem, error) {
-	var items []SourceItem
-
-	// First, the directory itself.
-	dirInfo, err := os.Lstat(absRoot)
-	if err != nil {
-		return nil, fmt.Errorf("walk: stat %s: %w", absRoot, err)
-	}
-	items = append(items, SourceItem{
-		Info: wire.FileInfo{
-			Index:        *indexCounter,
-			RelativePath: relRoot,
-			Mode:         uint32(dirInfo.Mode().Perm()),
-			ModTime:      dirInfo.ModTime().UnixNano(),
-			IsDir:        true,
-			Resumable:    false,
-		},
-		AbsPath: absRoot,
-	})
-	*indexCounter++
-
-	// Then everything under it.
-	err = filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			// Skip entries the OS rejects; warn would be nicer but we don't
-			// have a logger here yet — the calling layer can hook in later.
-			return nil
-		}
-		if path == absRoot {
-			return nil // already emitted above
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		// Compute relative path with forward slashes (wire convention).
-		rel, err := filepath.Rel(absRoot, path)
-		if err != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(filepath.Join(relRoot, rel))
-
-		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			target, _ := os.Readlink(path)
-			items = append(items, SourceItem{
-				Info: wire.FileInfo{
-					Index:         *indexCounter,
-					RelativePath:  rel,
-					Mode:          uint32(info.Mode().Perm()),
-					ModTime:       info.ModTime().UnixNano(),
-					IsSymlink:     true,
-					SymlinkTarget: target,
-					Resumable:     false,
-				},
-				AbsPath: path,
-			})
-			*indexCounter++
-
-		case info.IsDir():
-			items = append(items, SourceItem{
-				Info: wire.FileInfo{
-					Index:        *indexCounter,
-					RelativePath: rel,
-					Mode:         uint32(info.Mode().Perm()),
-					ModTime:      info.ModTime().UnixNano(),
-					IsDir:        true,
-					Resumable:    false,
-				},
-				AbsPath: path,
-			})
-			*indexCounter++
-
-		default:
-			hash, err := blake3FileHash(path)
-			if err != nil {
-				return err
-			}
-			items = append(items, SourceItem{
-				Info: wire.FileInfo{
-					Index:        *indexCounter,
-					RelativePath: rel,
-					Size:         uint64(info.Size()),
-					Mode:         uint32(info.Mode().Perm()),
-					ModTime:      info.ModTime().UnixNano(),
-					Blake3Root:   hash,
-					Resumable:    true,
-				},
-				AbsPath:   path,
-				Resumable: true,
-			})
-			*indexCounter++
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// WalkDir already emits in lexicographic order on POSIX, but
-	// belt-and-suspenders sort for cross-platform determinism.
-	sort.SliceStable(items[1:], func(i, j int) bool {
-		return items[1+i].Info.RelativePath < items[1+j].Info.RelativePath
-	})
-	// After sort, re-number indexes to stay 0..N-1 (sort may have reordered).
-	for i := range items {
-		items[i].Info.Index = uint32(i) + (items[0].Info.Index)
 	}
 	return items, nil
 }

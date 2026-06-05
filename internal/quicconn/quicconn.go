@@ -1,5 +1,5 @@
-// Package quicconn wraps quic-go to expose the three logical streams
-// (control, data, receiver-control) that the transfer engine consumes.
+// Package quicconn wraps quic-go to expose the two logical streams
+// (control + data) that the transfer engine consumes.
 //
 // Critical wiring note (from PROJECT_SPEC.md "Critical implementation
 // note"): when the underlying socket comes from an ICE-established UDP
@@ -8,9 +8,10 @@
 //
 // This package supports both modes:
 //
-//   - Listen(packetConn) / Dial(packetConn, ...) for the production path
-//     where ICE provides the socket.
-//   - ListenAddr / DialAddr for tests and the LAN MVP path where we just
+//   - SenderHandshake / ReceiverHandshake for the production path
+//     where ICE or the relay provides the socket and the caller drives
+//     a quic.Transport directly.
+//   - ListenAddr / Dial for tests and the LAN MVP path where we just
 //     want quic-go to manage its own UDP socket.
 package quicconn
 
@@ -38,22 +39,6 @@ const ALPN = "fsend/1"
 // HandshakeTimeout caps the time we'll spend on the TLS+QUIC handshake.
 const HandshakeTimeout = 10 * time.Second
 
-// streamPair packages quic-go's bidirectional/unidirectional stream into
-// the io.ReadWriteCloser shape the transfer package expects.
-type streamCloser struct {
-	stream *quic.Stream
-}
-
-func (s *streamCloser) Read(p []byte) (int, error)  { return s.stream.Read(p) }
-func (s *streamCloser) Write(p []byte) (int, error) { return s.stream.Write(p) }
-func (s *streamCloser) Close() error {
-	// Close the write side; let read continue until peer closes too.
-	if err := s.stream.Close(); err != nil {
-		return err
-	}
-	return nil
-}
-
 // AcceptResult bundles the negotiated streams with the underlying QUIC
 // connection so callers can manage its lifecycle.
 type AcceptResult struct {
@@ -72,64 +57,37 @@ func (r *AcceptResult) Close() {
 	}
 }
 
-// SenderTLSConfig builds a TLS config for the sender (QUIC server-role in
-// our protocol — see docs/decisions/wire-protocol.md). The sender always
-// opens the listening side; the receiver dials in.
-//
-// Exported for use by callers that want to wire QUIC over a custom
-// net.PacketConn (e.g. relay-mode in cmd/fsend).
-func SenderTLSConfig() (*tls.Config, error) { return senderTLSConfig() }
-
-// senderTLSConfig is the actual implementation. Kept lowercase so the
-// internal package use sites don't need to change.
-//
-// PSK auth via the PAKE-derived key is the real mutual authentication
-// mechanism (see docs/security/threat-model.md). We use a self-signed
-// per-session cert so QUIC can complete its TLS handshake; certificate
-// verification is effectively no-op because we trust the PAKE key.
-func senderTLSConfig() (*tls.Config, error) {
+// SenderTLSConfig builds a TLS config for the sender (QUIC server-role).
+// The sender always opens the listening side; the receiver dials in.
+func SenderTLSConfig() (*tls.Config, error) {
 	cert, err := selfSignedCert()
 	if err != nil {
 		return nil, err
 	}
 	return &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		NextProtos:         []string{ALPN},
-		MinVersion:         tls.VersionTLS13,
-		ClientAuth:         tls.NoClientCert,
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{ALPN},
+		MinVersion:   tls.VersionTLS13,
+		ClientAuth:   tls.NoClientCert,
 	}, nil
 }
 
 // ReceiverTLSConfig is the client-role TLS config — the receiver dials.
 //
-// Exported as above for relay-mode callers.
-func ReceiverTLSConfig() *tls.Config { return receiverTLSConfig() }
-
-// receiverTLSConfig is the actual implementation.
-//
-// InsecureSkipVerify is set because the sender's cert is self-signed; the
-// actual MITM defense is the PAKE channel binding (see docs/security/
-// threat-model.md). When the PAKE key disagrees, the TLS exporter values
-// disagree, and the application-layer password-style check that runs
-// inside the encrypted tunnel fails. In v0.1.0 we depend on that check
-// happening at the transfer-protocol layer (HELLO/PASSWORD frames); the
-// proper RFC 5705 exporter-based binding is in the wire spec for the
-// next iteration.
-func receiverTLSConfig() *tls.Config {
+// InsecureSkipVerify is set because the sender's cert is self-signed;
+// the cross-internet path inherits MITM defense from QUIC's TLS 1.3
+// plus the rendezvous server's narrow role. The PAKE-derived channel
+// binding hinted at in PROJECT_SPEC.md is not wired here today.
+func ReceiverTLSConfig() *tls.Config {
 	return &tls.Config{
-		InsecureSkipVerify: true, // PAKE channel binding is the real auth
+		InsecureSkipVerify: true,
 		NextProtos:         []string{ALPN},
 		MinVersion:         tls.VersionTLS13,
 	}
 }
 
-// QuicConfig returns the shared quic-go config (timeouts and limits per
-// docs/decisions/implementation-defaults.md).
-//
-// Exported for relay-mode callers.
-func QuicConfig() *quic.Config { return quicConfig() }
-
-func quicConfig() *quic.Config {
+// QuicConfig returns the shared quic-go config.
+func QuicConfig() *quic.Config {
 	return &quic.Config{
 		HandshakeIdleTimeout:           HandshakeTimeout,
 		MaxIdleTimeout:                 30 * time.Second,
@@ -138,16 +96,10 @@ func quicConfig() *quic.Config {
 		MaxStreamReceiveWindow:         6 * 1024 * 1024,
 		InitialConnectionReceiveWindow: 1024 * 1024,
 		MaxConnectionReceiveWindow:     15 * 1024 * 1024,
-		EnableDatagrams:                false,
-		Allow0RTT:                      false,
 	}
 }
 
-// ListenAddr opens a QUIC listener on the given UDP address (e.g. ":0")
-// and returns a Listener plus the actual address it bound to.
-//
-// Used by the sender in the LAN MVP path: the sender announces this
-// address via mDNS, then receiver dials it.
+// Listener wraps a quic.Listener for the LAN/test path.
 type Listener struct {
 	ln *quic.Listener
 }
@@ -158,240 +110,112 @@ func (l *Listener) LocalAddr() net.Addr { return l.ln.Addr() }
 // Close stops listening.
 func (l *Listener) Close() error { return l.ln.Close() }
 
-// Accept blocks until the next inbound QUIC connection completes its
-// handshake, then sets up the three logical streams on the sender side.
-//
-// Stream ownership (per docs/decisions/wire-protocol.md):
-//   - Control:         bidirectional, opened by SENDER
-//   - Data:            unidirectional sender→receiver, opened by SENDER
-//   - ReceiverControl: unidirectional receiver→sender, opened by RECEIVER
-//
-// QUIC streams only become visible to the peer once written, so we open
-// our outbound streams AND accept the peer's inbound stream in parallel
-// to avoid a circular wait. A single zero-byte priming write on each
-// outbound stream ensures it actually appears on the wire.
+// Accept blocks for the next inbound QUIC connection, completes the
+// stream handshake on the sender side, and returns the negotiated
+// streams.
 func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
 	c, err := l.ln.Accept(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: accept: %w", err)
 	}
-	return senderHandshake(ctx, c)
+	return SenderHandshake(ctx, c)
 }
 
-// SenderHandshake completes the post-Accept stream coordination on the
-// sender side. Exported so callers using a custom QUIC Transport (e.g.
-// relay mode) can drive the same handshake as Listener.Accept does.
+// SenderHandshake opens the control (bidi) and data (uni) streams on
+// the sender side and primes the data stream so the receiver's
+// AcceptUniStream returns without waiting for the first real chunk.
+//
+// No peer round-trip happens here — the bytes the sender writes during
+// transfer.Send naturally drive the receiver's AcceptStream.
 func SenderHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
-	return senderHandshake(ctx, c)
-}
-
-func senderHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
-	type result struct {
-		ctrl     *quic.Stream
-		dataOut  *quic.SendStream
-		rcvIn    *quic.ReceiveStream
-		err      error
+	ctrl, err := c.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("quicconn: open control: %w", err)
 	}
-	done := make(chan result, 3)
-
-	go func() {
-		r := result{}
-		s, err := c.OpenStreamSync(ctx)
-		if err != nil {
-			r.err = fmt.Errorf("open control: %w", err)
-			done <- r
-			return
-		}
-		// Prime so the receiver's Accept returns.
-		if _, err := s.Write([]byte{0}); err != nil {
-			r.err = fmt.Errorf("prime control: %w", err)
-			done <- r
-			return
-		}
-		r.ctrl = s
-		done <- r
-	}()
-	go func() {
-		r := result{}
-		s, err := c.OpenUniStreamSync(ctx)
-		if err != nil {
-			r.err = fmt.Errorf("open data: %w", err)
-			done <- r
-			return
-		}
-		if _, err := s.Write([]byte{0}); err != nil {
-			r.err = fmt.Errorf("prime data: %w", err)
-			done <- r
-			return
-		}
-		r.dataOut = s
-		done <- r
-	}()
-	go func() {
-		r := result{}
-		s, err := c.AcceptUniStream(ctx)
-		if err != nil {
-			r.err = fmt.Errorf("accept receiver-control: %w", err)
-			done <- r
-			return
-		}
-		// Consume the receiver's priming byte.
-		var b [1]byte
-		if _, err := s.Read(b[:]); err != nil {
-			r.err = fmt.Errorf("read receiver-control prime: %w", err)
-			done <- r
-			return
-		}
-		r.rcvIn = s
-		done <- r
-	}()
-
-	var out AcceptResult
-	out.Conn = c
-	for i := 0; i < 3; i++ {
-		r := <-done
-		if r.err != nil {
-			return nil, fmt.Errorf("quicconn: sender handshake: %w", r.err)
-		}
-		switch {
-		case r.ctrl != nil:
-			// Consume receiver's priming byte on the bidi stream.
-			var b [1]byte
-			if _, err := r.ctrl.Read(b[:]); err != nil {
-				return nil, fmt.Errorf("quicconn: read control prime: %w", err)
-			}
-			out.Streams.Control = &streamCloser{stream: r.ctrl}
-		case r.dataOut != nil:
-			out.Streams.Data = wrapUniOut(r.dataOut)
-		case r.rcvIn != nil:
-			out.Streams.ReceiverControl = wrapUniIn(r.rcvIn)
-		}
+	data, err := c.OpenUniStreamSync(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("quicconn: open data: %w", err)
 	}
-	return &out, nil
+	// One-byte prime so the receiver's AcceptUniStream can return before
+	// the first real chunk is written. Without it, an empty transfer
+	// (e.g. a directory tar with no entries) would deadlock the receiver.
+	if _, err := data.Write([]byte{0}); err != nil {
+		return nil, fmt.Errorf("quicconn: prime data: %w", err)
+	}
+	return &AcceptResult{
+		Conn: c,
+		Streams: transfer.Streams{
+			Control: &streamCloser{stream: ctrl},
+			Data:    wrapUniOut(data),
+		},
+	}, nil
 }
 
 // ListenAddr binds a QUIC listener on addr.
 func ListenAddr(addr string) (*Listener, error) {
-	tlsCfg, err := senderTLSConfig()
+	tlsCfg, err := SenderTLSConfig()
 	if err != nil {
 		return nil, err
 	}
-	ln, err := quic.ListenAddr(addr, tlsCfg, quicConfig())
+	ln, err := quic.ListenAddr(addr, tlsCfg, QuicConfig())
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: listen: %w", err)
 	}
 	return &Listener{ln: ln}, nil
 }
 
-// Dial connects to a sender-side QUIC listener and returns the negotiated
-// streams from the receiver's perspective.
-//
-// Same parallel-open/accept pattern as Listener.Accept (see comment there).
+// Dial connects to a sender-side QUIC listener and returns the
+// negotiated streams from the receiver's perspective.
 func Dial(ctx context.Context, addr string) (*AcceptResult, error) {
 	hsCtx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer cancel()
 
-	c, err := quic.DialAddr(hsCtx, addr, receiverTLSConfig(), quicConfig())
+	c, err := quic.DialAddr(hsCtx, addr, ReceiverTLSConfig(), QuicConfig())
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: dial: %w", err)
 	}
-	return receiverHandshake(ctx, c)
+	return ReceiverHandshake(ctx, c)
 }
 
-// ReceiverHandshake completes the post-Dial stream coordination on the
-// receiver side. See SenderHandshake for context.
+// ReceiverHandshake accepts the sender's control + data streams and
+// consumes the data-stream priming byte.
+//
+// AcceptStream blocks until the sender writes the first HELLO byte;
+// AcceptUniStream returns immediately because the sender always primes
+// the data stream during SenderHandshake.
 func ReceiverHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
-	return receiverHandshake(ctx, c)
+	ctrl, err := c.AcceptStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("quicconn: accept control: %w", err)
+	}
+	data, err := c.AcceptUniStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("quicconn: accept data: %w", err)
+	}
+	var prime [1]byte
+	if _, err := io.ReadFull(data, prime[:]); err != nil {
+		return nil, fmt.Errorf("quicconn: read data prime: %w", err)
+	}
+	return &AcceptResult{
+		Conn: c,
+		Streams: transfer.Streams{
+			Control: &streamCloser{stream: ctrl},
+			Data:    wrapUniIn(data),
+		},
+	}, nil
 }
 
-func receiverHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
-	type result struct {
-		ctrl     *quic.Stream
-		dataIn   *quic.ReceiveStream
-		rcvOut   *quic.SendStream
-		err      error
-	}
-	done := make(chan result, 3)
+// streamCloser wraps a bidi quic.Stream so the transfer package can
+// treat it as an io.ReadWriteCloser. Close() shuts the write side and
+// lets reads continue until peer EOF, matching the wire-protocol
+// shutdown contract.
+type streamCloser struct{ stream *quic.Stream }
 
-	go func() {
-		r := result{}
-		s, err := c.AcceptStream(ctx)
-		if err != nil {
-			r.err = fmt.Errorf("accept control: %w", err)
-			done <- r
-			return
-		}
-		// Consume sender's priming byte.
-		var b [1]byte
-		if _, err := s.Read(b[:]); err != nil {
-			r.err = fmt.Errorf("read control prime: %w", err)
-			done <- r
-			return
-		}
-		// Send our priming byte back so the sender's read completes.
-		if _, err := s.Write([]byte{0}); err != nil {
-			r.err = fmt.Errorf("prime control: %w", err)
-			done <- r
-			return
-		}
-		r.ctrl = s
-		done <- r
-	}()
-	go func() {
-		r := result{}
-		s, err := c.AcceptUniStream(ctx)
-		if err != nil {
-			r.err = fmt.Errorf("accept data: %w", err)
-			done <- r
-			return
-		}
-		var b [1]byte
-		if _, err := s.Read(b[:]); err != nil {
-			r.err = fmt.Errorf("read data prime: %w", err)
-			done <- r
-			return
-		}
-		r.dataIn = s
-		done <- r
-	}()
-	go func() {
-		r := result{}
-		s, err := c.OpenUniStreamSync(ctx)
-		if err != nil {
-			r.err = fmt.Errorf("open receiver-control: %w", err)
-			done <- r
-			return
-		}
-		if _, err := s.Write([]byte{0}); err != nil {
-			r.err = fmt.Errorf("prime receiver-control: %w", err)
-			done <- r
-			return
-		}
-		r.rcvOut = s
-		done <- r
-	}()
+func (s *streamCloser) Read(p []byte) (int, error)  { return s.stream.Read(p) }
+func (s *streamCloser) Write(p []byte) (int, error) { return s.stream.Write(p) }
+func (s *streamCloser) Close() error                { return s.stream.Close() }
 
-	var out AcceptResult
-	out.Conn = c
-	for i := 0; i < 3; i++ {
-		r := <-done
-		if r.err != nil {
-			return nil, fmt.Errorf("quicconn: receiver handshake: %w", r.err)
-		}
-		switch {
-		case r.ctrl != nil:
-			out.Streams.Control = &streamCloser{stream: r.ctrl}
-		case r.dataIn != nil:
-			out.Streams.Data = wrapUniIn(r.dataIn)
-		case r.rcvOut != nil:
-			out.Streams.ReceiverControl = wrapUniOut(r.rcvOut)
-		}
-	}
-	return &out, nil
-}
-
-// uniInCloser adapts a quic.ReceiveStream (read-only) to io.ReadWriteCloser
-// where Write is a no-op error.
+// uniInCloser adapts a quic.ReceiveStream (read-only) to io.ReadWriteCloser.
 type uniInCloser struct{ s *quic.ReceiveStream }
 
 func (u *uniInCloser) Read(p []byte) (int, error)  { return u.s.Read(p) }
@@ -400,8 +224,7 @@ func (u *uniInCloser) Close() error                { u.s.CancelRead(0); return n
 
 func wrapUniIn(s *quic.ReceiveStream) io.ReadWriteCloser { return &uniInCloser{s: s} }
 
-// uniOutCloser adapts a quic.SendStream (write-only) to io.ReadWriteCloser
-// where Read returns EOF immediately.
+// uniOutCloser adapts a quic.SendStream (write-only) to io.ReadWriteCloser.
 type uniOutCloser struct{ s *quic.SendStream }
 
 func (u *uniOutCloser) Read(_ []byte) (int, error)  { return 0, io.EOF }
@@ -411,10 +234,7 @@ func (u *uniOutCloser) Close() error                { return u.s.Close() }
 func wrapUniOut(s *quic.SendStream) io.ReadWriteCloser { return &uniOutCloser{s: s} }
 
 // selfSignedCert returns a fresh self-signed Ed25519 cert valid for 1 hour.
-//
-// The session cert is throwaway; PAKE channel binding is the real auth.
 func selfSignedCert() (tls.Certificate, error) {
-	// Use ECDSA for compatibility with TLS 1.3.
 	pub, priv, err := generateEd25519()
 	if err != nil {
 		return tls.Certificate{}, err

@@ -60,7 +60,6 @@ func TestQUIC_OverRelay(t *testing.T) {
 	relaySrv := relay.NewServer(relayConn, relay.ServerConfig{
 		MaxBytesPerSession: 100 * 1024 * 1024,
 		SessionIdleTimeout: 30 * time.Second,
-		JanitorInterval:    1 * time.Second,
 	})
 	tok, err := relaySrv.Allocate()
 	if err != nil {
@@ -76,7 +75,7 @@ func TestQUIC_OverRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer senderUDP.Close()
-	senderConn := relay.NewClient(senderUDP, relayAddr, tok, "peer-receiver")
+	senderConn := relay.NewClient(senderUDP, relayAddr, tok)
 
 	// --- Receiver's local UDP socket, wrapped as a relay.Conn ---
 	receiverUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -84,7 +83,7 @@ func TestQUIC_OverRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer receiverUDP.Close()
-	receiverConn := relay.NewClient(receiverUDP, relayAddr, tok, "peer-sender")
+	receiverConn := relay.NewClient(receiverUDP, relayAddr, tok)
 
 	// Bootstrap: each peer sends one byte so the relay learns both
 	// addresses. The relay drops these (PeerA registers, PeerB
@@ -98,13 +97,13 @@ func TestQUIC_OverRelay(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// --- Sender: QUIC Transport over relay.Conn ---
-	senderTLS, err := senderTLSConfig()
+	senderTLS, err := SenderTLSConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
 	senderTransport := &quic.Transport{Conn: senderConn}
 	defer senderTransport.Close()
-	senderLn, err := senderTransport.Listen(senderTLS, quicConfig())
+	senderLn, err := senderTransport.Listen(senderTLS, QuicConfig())
 	if err != nil {
 		t.Fatalf("Transport.Listen: %v", err)
 	}
@@ -130,7 +129,7 @@ func TestQUIC_OverRelay(t *testing.T) {
 			sendErr = err
 			return
 		}
-		res, err := senderHandshake(ctx, c)
+		res, err := SenderHandshake(ctx, c)
 		if err != nil {
 			sendErr = err
 			return
@@ -156,12 +155,12 @@ func TestQUIC_OverRelay(t *testing.T) {
 		// can sendto. The relay.Conn.WriteTo ignores addr, so we can
 		// pass any UDPAddr; quic-go uses it as a routing tag locally.
 		dialAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1} // synthetic
-		c, err := receiverTransport.Dial(ctx, dialAddr, receiverTLSConfig(), quicConfig())
+		c, err := receiverTransport.Dial(ctx, dialAddr, ReceiverTLSConfig(), QuicConfig())
 		if err != nil {
 			recvErr = err
 			return
 		}
-		res, err := receiverHandshake(ctx, c)
+		res, err := ReceiverHandshake(ctx, c)
 		if err != nil {
 			recvErr = err
 			return

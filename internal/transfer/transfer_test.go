@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/zeebo/blake3"
 
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -20,9 +22,8 @@ import (
 func pipePair() (Streams, Streams) {
 	ctlA, ctlB := newDuplexPipe()
 	dataA, dataB := newDuplexPipe()
-	rcA, rcB := newDuplexPipe()
-	return Streams{Control: ctlA, Data: dataA, ReceiverControl: rcA},
-		Streams{Control: ctlB, Data: dataB, ReceiverControl: rcB}
+	return Streams{Control: ctlA, Data: dataA},
+		Streams{Control: ctlB, Data: dataB}
 }
 
 // duplexPipe is a bidirectional io.ReadWriteCloser pair built from two
@@ -175,16 +176,20 @@ func TestEmptyFileTransfer(t *testing.T) {
 	}
 }
 
-// TestDirectoryTransfer sends a small directory tree and checks structure.
+// TestDirectoryTransfer sends a small directory tree and checks the
+// extracted structure on the receiver. Directories now ride the
+// transparent-archive code path: BuildArchive turns the tree into a
+// single tar SourceItem, the receiver writes it to a hidden partial,
+// and ExtractArchive unpacks it into TargetDir on completion.
 func TestDirectoryTransfer(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
 	tree := map[string][]byte{
-		"src/main.go":             []byte("package main\nfunc main() {}\n"),
-		"src/sub/helper.go":       bytes.Repeat([]byte("h"), 1024),
-		"docs/README.md":          []byte("# hi\n"),
-		"assets/big.bin":          bytes.Repeat([]byte{0xAB}, 2*1024*1024),
+		"src/main.go":       []byte("package main\nfunc main() {}\n"),
+		"src/sub/helper.go": bytes.Repeat([]byte("h"), 1024),
+		"docs/README.md":    []byte("# hi\n"),
+		"assets/big.bin":    bytes.Repeat([]byte{0xAB}, 2*1024*1024),
 	}
 	for rel, content := range tree {
 		full := filepath.Join(srcDir, "myproject", rel)
@@ -196,10 +201,29 @@ func TestDirectoryTransfer(t *testing.T) {
 		}
 	}
 
-	items, err := Walk([]string{filepath.Join(srcDir, "myproject")})
+	arc, err := BuildArchive([]string{filepath.Join(srcDir, "myproject")}, nil)
 	if err != nil {
-		t.Fatalf("Walk: %v", err)
+		t.Fatalf("BuildArchive: %v", err)
 	}
+	defer os.Remove(arc.Path)
+
+	st, err := os.Stat(arc.Path)
+	if err != nil {
+		t.Fatalf("stat archive: %v", err)
+	}
+	items := []SourceItem{{
+		Info: wire.FileInfo{
+			Index:        0,
+			RelativePath: ArchiveName,
+			Size:         uint64(arc.Size),
+			Mode:         0o644,
+			ModTime:      st.ModTime().UnixNano(),
+			Blake3Root:   arc.Blake3Root,
+			Resumable:    true,
+		},
+		AbsPath:   arc.Path,
+		Resumable: true,
+	}}
 
 	a, b := pipePair()
 	defer a.Close()
@@ -208,8 +232,14 @@ func TestDirectoryTransfer(t *testing.T) {
 	var sendErr, recvErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); sendErr = Send(context.Background(), &a, SendOptions{Items: items, TransferKind: wire.TransferDirectory}) }()
-	go func() { defer wg.Done(); recvErr = Recv(context.Background(), &b, RecvOptions{TargetDir: dstDir}) }()
+	go func() {
+		defer wg.Done()
+		sendErr = Send(context.Background(), &a, SendOptions{Items: items, TransferKind: wire.TransferDirectory})
+	}()
+	go func() {
+		defer wg.Done()
+		recvErr = Recv(context.Background(), &b, RecvOptions{TargetDir: dstDir})
+	}()
 	wg.Wait()
 	if sendErr != nil {
 		t.Errorf("Send: %v", sendErr)
@@ -227,6 +257,11 @@ func TestDirectoryTransfer(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("content mismatch for %s", rel)
 		}
+	}
+
+	// Receiver should not have left the temp tar lying around.
+	if _, err := os.Stat(filepath.Join(dstDir, archivePartialName+partialSuffix)); !os.IsNotExist(err) {
+		t.Errorf("partial archive was not cleaned up: %v", err)
 	}
 }
 
@@ -288,6 +323,99 @@ func TestSanitizeRelativePath(t *testing.T) {
 		if _, err := SanitizeRelativePath(p); err != nil {
 			t.Errorf("SanitizeRelativePath(%q) unexpectedly failed: %v", p, err)
 		}
+	}
+}
+
+// TestPasswordHandshake_Correct verifies a correct password lets the
+// transfer through.
+func TestPasswordHandshake_Correct(t *testing.T) {
+	srcDir, dstDir := t.TempDir(), t.TempDir()
+	srcPath := filepath.Join(srcDir, "blob.bin")
+	payload := bytes.Repeat([]byte{0x55}, 1024)
+	if err := os.WriteFile(srcPath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Walk([]string{srcPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, b := pipePair()
+	defer a.Close()
+	defer b.Close()
+
+	var sendErr, recvErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sendErr = Send(context.Background(), &a, SendOptions{
+			Items: items, TransferKind: wire.TransferSingleFile, Password: "swordfish",
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		recvErr = Recv(context.Background(), &b, RecvOptions{
+			TargetDir: dstDir, Password: "swordfish",
+		})
+	}()
+	wg.Wait()
+	if sendErr != nil {
+		t.Errorf("Send: %v", sendErr)
+	}
+	if recvErr != nil {
+		t.Errorf("Recv: %v", recvErr)
+	}
+	got, err := os.ReadFile(filepath.Join(dstDir, "blob.bin"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload mismatch")
+	}
+}
+
+// TestPasswordHandshake_Wrong verifies a wrong password fails both sides
+// with ErrWrongPassword and writes no destination file.
+func TestPasswordHandshake_Wrong(t *testing.T) {
+	srcDir, dstDir := t.TempDir(), t.TempDir()
+	srcPath := filepath.Join(srcDir, "blob.bin")
+	if err := os.WriteFile(srcPath, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Walk([]string{srcPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, b := pipePair()
+	defer a.Close()
+	defer b.Close()
+
+	var sendErr, recvErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sendErr = Send(context.Background(), &a, SendOptions{
+			Items: items, TransferKind: wire.TransferSingleFile, Password: "correct-horse",
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		recvErr = Recv(context.Background(), &b, RecvOptions{
+			TargetDir: dstDir, Password: "wrong-horse",
+		})
+	}()
+	wg.Wait()
+	if !errors.Is(sendErr, fserrors.ErrWrongPassword) {
+		t.Errorf("Send err = %v, want ErrWrongPassword", sendErr)
+	}
+	if !errors.Is(recvErr, fserrors.ErrWrongPassword) {
+		t.Errorf("Recv err = %v, want ErrWrongPassword", recvErr)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "blob.bin")); err == nil {
+		t.Errorf("destination file was created despite wrong password")
 	}
 }
 

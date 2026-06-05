@@ -19,6 +19,7 @@ import (
 	"os"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/uxlog"
 )
 
 func main() {
@@ -34,7 +35,7 @@ func main() {
 // marker returns the unicode glyph when stderr is a TTY, the ASCII
 // fallback otherwise. Caller passes both forms.
 func marker(unicode, ascii string) string {
-	if isTTY(os.Stderr) {
+	if uxlog.IsTTY(os.Stderr) {
 		return unicode
 	}
 	return ascii

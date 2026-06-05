@@ -47,140 +47,133 @@ func New(baseURL, clientVersion string) *Client {
 // the sender must share out-of-band.
 func (c *Client) Create(ctx context.Context) (*server.CreateSessionResponse, error) {
 	var out server.CreateSessionResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session", server.CreateSessionRequest{ClientVersion: c.version}, &out)
+	err := c.do(ctx, http.MethodPost, "/v1/session",
+		server.CreateSessionRequest{ClientVersion: c.version}, &out, nil)
 	return &out, err
 }
 
 // Join attempts to pair as a receiver, returning the sender's reflected
 // address and ICE credentials.
-//
-// Errors are mapped to fserrors sentinels so the CLI can render the
-// user-facing message correctly.
 func (c *Client) Join(ctx context.Context, code string) (*server.JoinSessionResponse, error) {
 	var out server.JoinSessionResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session/"+code+"/join", server.JoinSessionRequest{ClientVersion: c.version}, &out)
+	err := c.do(ctx, http.MethodPost, "/v1/session/"+code+"/join",
+		server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
 	return &out, err
 }
 
 // Wait long-polls until a receiver pairs with this session.
 //
-// Returns nil + nil on timeout (HTTP 204) — caller should retry until the
-// session TTL expires.
+// Returns (nil, nil) on timeout (HTTP 204) — caller should retry until
+// the session TTL expires.
 func (c *Client) Wait(ctx context.Context, code string) (*server.WaitResponse, error) {
-	req, err := c.newRequest(ctx, http.MethodPost, "/v1/session/"+code+"/wait", server.WaitRequest{})
+	var out server.WaitResponse
+	err := c.do(ctx, http.MethodPost, "/v1/session/"+code+"/wait",
+		server.WaitRequest{}, &out, allowNoContent())
+	if errors.Is(err, errNoContent) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, mapNetworkErr(err)
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		var w server.WaitResponse
-		if err := json.NewDecoder(resp.Body).Decode(&w); err != nil {
-			return nil, fmt.Errorf("decode wait response: %w", err)
-		}
-		return &w, nil
-	case http.StatusNoContent:
-		return nil, nil
-	case http.StatusNotFound:
-		return nil, fserrors.ErrCodeNotFound
-	default:
-		return nil, fmt.Errorf("wait: unexpected status %d", resp.StatusCode)
-	}
+	return &out, nil
 }
 
 // PushCandidates uploads a batch of ICE candidates for this peer.
 func (c *Client) PushCandidates(ctx context.Context, sessionID string, candidates []string) error {
 	return c.do(ctx, http.MethodPost, "/v1/session/"+sessionID+"/candidates",
-		server.CandidatesPushRequest{Candidates: candidates}, nil)
+		server.CandidatesPushRequest{Candidates: candidates}, nil, nil)
 }
 
 // PullCandidates fetches candidates the peer has pushed since the `since`
-// index. Returns nil + nil if nothing new is available yet.
+// index. Returns (nil, nil) if nothing new is available yet.
 func (c *Client) PullCandidates(ctx context.Context, sessionID string, since int) (*server.CandidatesPullResponse, error) {
-	url := fmt.Sprintf("/v1/session/%s/candidates?since=%d", sessionID, since)
-	req, err := c.newRequest(ctx, http.MethodGet, url, nil)
+	var out server.CandidatesPullResponse
+	path := fmt.Sprintf("/v1/session/%s/candidates?since=%d", sessionID, since)
+	err := c.do(ctx, http.MethodGet, path, nil, &out, allowNoContent())
+	if errors.Is(err, errNoContent) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, mapNetworkErr(err)
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		var out server.CandidatesPullResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-			return nil, err
-		}
-		return &out, nil
-	case http.StatusNoContent:
-		return nil, nil
-	case http.StatusNotFound:
-		return nil, fserrors.ErrCodeNotFound
-	default:
-		return nil, fmt.Errorf("pull candidates: status %d", resp.StatusCode)
-	}
+	return &out, nil
 }
 
 // Delete cleans up a session after a successful handshake.
-//
-// Best-effort: errors are logged at the call site, not surfaced.
 func (c *Client) Delete(ctx context.Context, sessionID string) error {
-	req, err := c.newRequest(ctx, http.MethodDelete, "/v1/session/"+sessionID, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return mapNetworkErr(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("delete: status %d", resp.StatusCode)
-	}
-	return nil
+	return c.do(ctx, http.MethodDelete, "/v1/session/"+sessionID, nil, nil, nil)
 }
 
 // AllocateRelay asks the server for a relay token for this session.
-//
-// Returns the relay's host:port (the UDP address clients send framed
-// datagrams to) and the 26-char base32 session token.
 func (c *Client) AllocateRelay(ctx context.Context, sessionID string) (*server.RelayAllocateResponse, error) {
 	var out server.RelayAllocateResponse
 	err := c.do(ctx, http.MethodPost, "/v1/relay/allocate",
-		server.RelayAllocateRequest{SessionID: sessionID}, &out)
+		server.RelayAllocateRequest{SessionID: sessionID}, &out, nil)
 	return &out, err
 }
 
 // Health pings /v1/health and returns the parsed response.
 func (c *Client) Health(ctx context.Context) (*server.HealthResponse, error) {
 	var out server.HealthResponse
-	err := c.do(ctx, http.MethodGet, "/v1/health", nil, &out)
+	err := c.do(ctx, http.MethodGet, "/v1/health", nil, &out, nil)
 	return &out, err
 }
 
+// errNoContent is the sentinel `do` returns when the server replied 204
+// AND the caller opted into noContentOK behavior. Callers translate it
+// to a typed nil-response.
+var errNoContent = errors.New("signaling: no content")
+
+// doOption mutates the request behavior. Used to surface optional
+// 204-handling without growing the do() signature.
+type doOption struct {
+	noContentOK bool
+}
+
+func allowNoContent() *doOption { return &doOption{noContentOK: true} }
+
 // do is the common path for "send JSON, expect JSON" round-trips.
 //
-// Out may be nil; if set, the response body is decoded into it.
-// Maps 404 to fserrors.ErrCodeNotFound, 409 to ErrCodeAlreadyClaimed,
-// 410 to ErrServerRetired, 429 to ErrRateLimited.
-func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
-	req, err := c.newRequest(ctx, method, path, in)
+// in/out may be nil. When out is set, the response body is decoded into
+// it. Status-code mapping:
+//
+//   - 2xx with body → decode into out (if non-nil)
+//   - 204           → returns errNoContent if opt.noContentOK, else nil
+//   - 404           → fserrors.ErrCodeNotFound
+//   - 409           → fserrors.ErrCodeAlreadyClaimed
+//   - 410           → fserrors.ErrServerRetired
+//   - 429           → fserrors.ErrRateLimited
+//   - other 4xx/5xx → opaque error with body excerpt
+func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *doOption) error {
+	var rdr io.Reader
+	if in != nil {
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(in); err != nil {
+			return err
+		}
+		rdr = &buf
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rdr)
 	if err != nil {
 		return err
 	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("User-Agent", "fsend/"+c.version)
+
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return mapNetworkErr(err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNoContent {
+		if opt != nil && opt.noContentOK {
+			return errNoContent
+		}
+		return nil
+	}
 	if err := statusToFsendErr(resp); err != nil {
 		return err
 	}
@@ -191,26 +184,6 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
-}
-
-func (c *Client) newRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
-	var rdr io.Reader
-	if body != nil {
-		var buf bytes.Buffer
-		if err := json.NewEncoder(&buf).Encode(body); err != nil {
-			return nil, err
-		}
-		rdr = &buf
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rdr)
-	if err != nil {
-		return nil, err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("User-Agent", "fsend/"+c.version)
-	return req, nil
 }
 
 func statusToFsendErr(resp *http.Response) error {
@@ -235,8 +208,6 @@ func mapNetworkErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	// Surface as ErrServerUnreachable for any network-level failure so
-	// the CLI renders the right message.
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return err
 	}

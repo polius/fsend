@@ -29,8 +29,6 @@ var (
 	ErrCodeAlreadyClaimed = errors.New("code already claimed")
 	// E004
 	ErrInvalidCodeFormat = errors.New("invalid code format")
-	// E005
-	ErrWrongPassword = errors.New("wrong password")
 	// E006
 	ErrReceiverDeclined = errors.New("receiver declined")
 	// E007
@@ -57,6 +55,14 @@ var (
 	ErrRateLimited = errors.New("rate limited")
 	// E018
 	ErrServerRetired = errors.New("server retired")
+	// E019 — sender's prefix does not match receiver's partial. Almost always
+	// means the source changed between attempts.
+	ErrPartialMismatch = errors.New("partial does not match source")
+	// E020 — transfer was interrupted but is recoverable; surfaced when
+	// retries are exhausted.
+	ErrTransientFailure = errors.New("transient transfer failure")
+	// E021 — receiver did not match the sender's --pass challenge.
+	ErrWrongPassword = errors.New("wrong password")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -103,11 +109,6 @@ var catalog = map[error]Entry{
 		Code: "E004", Exit: 4,
 		Message: "Invalid code format.",
 		Action:  "Codes look like: abc-defgh-jkm",
-	},
-	ErrWrongPassword: {
-		Code: "E005", Exit: 5,
-		Message: "Wrong password.",
-		Action:  "Double-check with the sender and run the command again.",
 	},
 	ErrReceiverDeclined: {
 		Code: "E006", Exit: 6,
@@ -180,6 +181,24 @@ var catalog = map[error]Entry{
 		Action: "Switch to a different server with:\n" +
 			"    fsend --connect <host:port>\n" +
 			"  Or self-host: https://github.com/polius/fsend#self-hosting",
+	},
+	ErrPartialMismatch: {
+		Code: "E019", Exit: 19,
+		Message: "Cannot resume — the source file has changed since the last attempt.",
+		Action: "Delete the .fsend-partial file in your target directory and try again,\n" +
+			"  or use --out <dir> to start fresh in a clean directory.",
+	},
+	ErrTransientFailure: {
+		Code: "E020", Exit: 20,
+		Message: "Transfer was interrupted and retries did not recover.",
+		Action: "Check your network connection and try again — fsend will resume\n" +
+			"  from where it left off.",
+	},
+	ErrWrongPassword: {
+		Code: "E021", Exit: 21,
+		Message: "Wrong password. Transfer aborted.",
+		Action: "Ask the sender for the correct password and run again. Codes are\n" +
+			"  one-shot — the sender may need to restart to issue a fresh code.",
 	},
 }
 

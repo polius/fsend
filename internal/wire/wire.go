@@ -3,8 +3,8 @@
 // See docs/decisions/wire-protocol.md for the full specification.
 //
 // Two frame styles:
-//   - Control frames (gob-encoded payloads) for session metadata, password
-//     challenge, file info, completion, errors. Used on the control stream.
+//   - Control frames (gob-encoded payloads) for session metadata, file
+//     info, completion, errors. Used on the control stream.
 //   - Data chunk frames (compact binary header) carry file bytes. Used on
 //     the data stream. Each chunk has a BLAKE3 hash for end-to-end verification.
 //
@@ -19,11 +19,11 @@ package wire
 // added without bumping by giving them unused type bytes.
 const ProtocolVersion = 0x01
 
-// MaxControlFrameSize bounds gob payload size on control frames. We pick a
-// generous limit because the FILE_INFO batch for large directories can be
-// significant (each entry is ~150 bytes; 100k files = ~15 MB), but cap it
-// to prevent a malicious peer from allocating unbounded memory.
-const MaxControlFrameSize = 64 * 1024 * 1024 // 64 MiB
+// MaxControlFrameSize bounds gob payload size on control frames. One
+// FILE_INFO at a time is the largest control frame in flight, so a
+// modest limit is enough — and prevents a malicious peer from
+// allocating unbounded memory.
+const MaxControlFrameSize = 64 * 1024 // 64 KiB
 
 // MaxChunkSize bounds the plaintext payload in a data CHUNK frame.
 // 1 MiB is the chunk size locked in docs/decisions/wire-protocol.md.
@@ -36,21 +36,18 @@ const (
 	// Control stream frame types (per docs/decisions/wire-protocol.md).
 	TypeHello             FrameType = 0x01 // sender → receiver
 	TypeHelloAck          FrameType = 0x02 // receiver → sender
-	TypePasswordChallenge FrameType = 0x03 // sender → receiver
+	TypePasswordChallenge FrameType = 0x03 // sender → receiver (only if HELLO.HasPassword)
 	TypePasswordResponse  FrameType = 0x04 // receiver → sender
 	TypeFileInfo          FrameType = 0x05 // sender → receiver (per file)
 	TypeFileAccept        FrameType = 0x06 // receiver → sender (per file)
 	TypeTransferComplete  FrameType = 0x07 // sender → receiver
 	TypeTransferAck       FrameType = 0x08 // receiver → sender
+	TypePasswordVerified  FrameType = 0x09 // sender → receiver (positive ack of password)
 	TypeError             FrameType = 0xFE
 	TypeAbort             FrameType = 0xFF
 
 	// Data stream frame types.
 	TypeChunk FrameType = 0x10
-
-	// Receiver-control stream frame types.
-	TypeProgressAck   FrameType = 0x20
-	TypeResumeRequest FrameType = 0x21
 )
 
 // TransferKind tells the receiver how to interpret the upcoming payload.
@@ -89,6 +86,11 @@ const (
 	ErrCodeFileHashMismatch   ErrorCode = 8
 	ErrCodeTimeout            ErrorCode = 9
 	ErrCodeProtocolError      ErrorCode = 10
+	// ErrCodePartialMismatch — receiver offered to resume from a prefix
+	// whose imohash does not match the source's prefix at the same length.
+	// Almost always means the source file changed since the previous
+	// attempt; the receiver should discard its partial and retry.
+	ErrCodePartialMismatch ErrorCode = 11
 )
 
 // Chunk-frame flag bits.

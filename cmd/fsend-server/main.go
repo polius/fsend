@@ -74,7 +74,7 @@ func run(args []string) error {
 	defer udpListener.Close()
 	relaySrv := relay.NewServer(udpListener, relay.ServerConfig{
 		MaxBytesPerSession: cfg.maxBytesPerSession,
-		SessionIdleTimeout: time.Duration(cfg.sessionIdleSecs) * time.Second,
+		SessionIdleTimeout: cfg.sessionIdleTimeout,
 		Logger:             logger,
 	})
 	// External address: the operator should set FSEND_PUBLIC_ADDR to the
@@ -130,7 +130,7 @@ type runtimeConfig struct {
 	maxSessionsPerIP     int
 	maxNewSessionsPerMin int
 	maxBytesPerSession   uint64
-	sessionIdleSecs      int
+	sessionIdleTimeout   time.Duration
 }
 
 func loadConfig() runtimeConfig {
@@ -139,8 +139,8 @@ func loadConfig() runtimeConfig {
 		udpAddr:              envOr("FSEND_UDP_ADDR", ":443"),
 		maxSessionsPerIP:     envInt("FSEND_MAX_SESSIONS_PER_IP", 5),
 		maxNewSessionsPerMin: envInt("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", 30),
-		maxBytesPerSession:   uint64(envInt("FSEND_MAX_RELAY_BYTES_PER_SESSION", 100*1024*1024)),
-		sessionIdleSecs:      envInt("FSEND_SESSION_IDLE_TIMEOUT_SECS", 60),
+		maxBytesPerSession:   envBytes("FSEND_MAX_RELAY_BYTES_PER_SESSION", 100*1024*1024),
+		sessionIdleTimeout:   envDuration("FSEND_SESSION_IDLE_TIMEOUT", 60*time.Second),
 	}
 	switch strings.ToLower(os.Getenv("FSEND_LOG_LEVEL")) {
 	case "debug":
@@ -169,6 +169,69 @@ func envInt(name string, def int) int {
 		}
 	}
 	return def
+}
+
+// envDuration reads a Go-style duration ("60s", "5m") from name, falling
+// back to def on missing or unparseable input.
+func envDuration(name string, def time.Duration) time.Duration {
+	if v := os.Getenv(name); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
+}
+
+// envBytes reads a byte count with optional unit suffix ("100MiB", "50k",
+// "1048576") from name, falling back to def on missing or unparseable
+// input. Suffixes are case-insensitive; b/k/m/g/t are decimal (1000),
+// kib/mib/gib/tib are binary (1024).
+func envBytes(name string, def uint64) uint64 {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return def
+	}
+	// Find suffix boundary.
+	i := 0
+	for i < len(v) && (v[i] == '.' || (v[i] >= '0' && v[i] <= '9')) {
+		i++
+	}
+	num, suf := v[:i], strings.ToLower(strings.TrimSpace(v[i:]))
+	if num == "" {
+		return def
+	}
+	n, err := strconv.ParseFloat(num, 64)
+	if err != nil || n < 0 {
+		return def
+	}
+	var mul float64
+	switch suf {
+	case "", "b":
+		mul = 1
+	case "k", "kb":
+		mul = 1000
+	case "ki", "kib":
+		mul = 1024
+	case "m", "mb":
+		mul = 1000 * 1000
+	case "mi", "mib":
+		mul = 1024 * 1024
+	case "g", "gb":
+		mul = 1000 * 1000 * 1000
+	case "gi", "gib":
+		mul = 1024 * 1024 * 1024
+	case "t", "tb":
+		mul = 1000 * 1000 * 1000 * 1000
+	case "ti", "tib":
+		mul = 1024 * 1024 * 1024 * 1024
+	default:
+		return def
+	}
+	return uint64(n * mul)
 }
 
 // healthCheck pings the local server's /v1/health on the configured
@@ -206,6 +269,9 @@ CONFIGURATION (environment variables — all optional)
   FSEND_LOG_LEVEL                       Default info
   FSEND_MAX_SESSIONS_PER_IP             Default 5
   FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN Default 30
+  FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MiB (accepts e.g. "100MiB", "500m", "104857600")
+  FSEND_SESSION_IDLE_TIMEOUT            Default 60s (Go duration: 30s, 5m, 1h)
+  FSEND_PUBLIC_ADDR                     host:port clients dial for relay; defaults to FSEND_UDP_ADDR
 
 FLAGS
   --help          Show this help

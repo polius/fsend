@@ -47,7 +47,7 @@ COMMON FLAGS
   --overwrite            Overwrite existing files on receive
   --quiet                Suppress all non-error output
   --help                 Show this help
-  --version              Show version (and check for updates)
+  --version              Show version
 
 ADVANCED FLAGS
   --connect <host:port> [password]   Set the rendezvous server (persisted)
@@ -55,14 +55,12 @@ ADVANCED FLAGS
   --connect                          Show current server
   --no-clipboard                     Don't copy code to clipboard
   --no-compress                      Force-disable compression
-  --no-update-check                  Skip GitHub version check
   --name <string>                    Override hostname shown to peer
   --send / --receive                 Force mode (skip auto-detect)
   --text "<string>"                  Send a literal string
   --uninstall                        Remove fsend and its config
 
 ENVIRONMENT
-  FSEND_NO_UPDATE_CHECK=1            Disable update check
   FSEND_DEBUG=1                      Verbose logging to stderr
 
 LEARN MORE

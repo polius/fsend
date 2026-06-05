@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/polius/fsend/internal/fserrors"
 )
@@ -41,14 +40,9 @@ func TestLoad_MissingFile_NoError(t *testing.T) {
 func TestSaveLoad_Roundtrip(t *testing.T) {
 	path := withTempXDG(t)
 
-	now := time.Now().UTC().Truncate(time.Second) // JSON round-trip loses sub-second precision
 	original := &Config{
-		FirstRunCompleted:  true,
-		FirstRunAt:         &now,
-		Server:             "relay.example.com:443",
-		ServerPassword:     "secret",
-		LastUpdateCheck:    &now,
-		LatestKnownVersion: "0.2.0",
+		Server:         "relay.example.com:443",
+		ServerPassword: "secret",
 	}
 	if err := Save(original); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -77,12 +71,6 @@ func TestSaveLoad_Roundtrip(t *testing.T) {
 	}
 	if loaded.ServerPassword != original.ServerPassword {
 		t.Errorf("ServerPassword mismatch")
-	}
-	if !loaded.FirstRunCompleted {
-		t.Error("FirstRunCompleted lost")
-	}
-	if loaded.LatestKnownVersion != "0.2.0" {
-		t.Errorf("LatestKnownVersion: got %q, want 0.2.0", loaded.LatestKnownVersion)
 	}
 	if loaded.EffectiveServer() != "relay.example.com:443" {
 		t.Errorf("EffectiveServer wrong: %q", loaded.EffectiveServer())

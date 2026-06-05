@@ -2,11 +2,14 @@ package transfer
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/zeebo/blake3"
@@ -17,15 +20,19 @@ import (
 
 // SendOptions configures one send invocation.
 type SendOptions struct {
-	Items          []SourceItem
-	Hostname       string
-	OS             string
-	ClientVersion  string
-	TransferKind   wire.TransferKind
-	Password       string // empty = no password challenge
-	SessionKey     []byte // 32-byte TLS exporter-derived key, for HMAC over Password
-	Compress       bool   // if true, attempt zstd; per-chunk auto-decision
-	ProgressFn     func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
+	Items         []SourceItem
+	Hostname      string
+	OS            string
+	ClientVersion string
+	TransferKind  wire.TransferKind
+	// TotalFiles overrides the wire-level HELLO.TotalFiles. When zero,
+	// len(Items) is used. Archive transfers set this to the number of
+	// files packed into the tar so the receiver's prompt block shows
+	// the real file count instead of "1" (the tar wrapper).
+	TotalFiles uint32
+	Compress   bool                                     // if true, attempt zstd; per-chunk auto-decision
+	Password   string                                   // empty → no password challenge
+	ProgressFn func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
 }
 
 // Send executes the full sender-side protocol over the supplied streams.
@@ -33,17 +40,20 @@ type SendOptions struct {
 // Order of operations matches docs/decisions/wire-protocol.md:
 //  1. Write HELLO
 //  2. Read HELLO_ACK (abort if receiver declined)
-//  3. (if HasPassword) write PASSWORD_CHALLENGE, read PASSWORD_RESPONSE, verify
-//  4. For each file: write FILE_INFO, read FILE_ACCEPT, stream chunks if accepted
-//  5. Write TRANSFER_COMPLETE, read TRANSFER_ACK
+//  3. For each file: write FILE_INFO, read FILE_ACCEPT, stream chunks if accepted
+//  4. Write TRANSFER_COMPLETE, read TRANSFER_ACK
 func Send(ctx context.Context, s *Streams, opts SendOptions) error {
+	totalFiles := opts.TotalFiles
+	if totalFiles == 0 {
+		totalFiles = uint32(len(opts.Items))
+	}
 	hello := &wire.SenderHello{
 		ProtocolVersion: wire.ProtocolVersion,
 		Hostname:        opts.Hostname,
 		OS:              opts.OS,
 		ClientVersion:   opts.ClientVersion,
 		TransferKind:    opts.TransferKind,
-		TotalFiles:      uint32(len(opts.Items)),
+		TotalFiles:      totalFiles,
 		HasPassword:     opts.Password != "",
 		CompressionHint: 0,
 	}
@@ -71,7 +81,7 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	}
 
 	if opts.Password != "" {
-		if err := sendPasswordChallenge(s, opts.Password, opts.SessionKey); err != nil {
+		if err := senderPasswordHandshake(s, opts.Password); err != nil {
 			return err
 		}
 	}
@@ -103,29 +113,6 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	return nil
 }
 
-func sendPasswordChallenge(s *Streams, password string, sessionKey []byte) error {
-	want := computePasswordHMAC(password, sessionKey)
-	if err := wire.WriteControl(s.Control, wire.TypePasswordChallenge, want); err != nil {
-		return fmt.Errorf("send: password-challenge: %w", err)
-	}
-	var resp [32]byte
-	ft, err := wire.ReadControl(s.Control, &resp)
-	if err != nil {
-		return fmt.Errorf("send: password-response: %w", err)
-	}
-	if ft != wire.TypePasswordResponse {
-		return fmt.Errorf("%w: expected PASSWORD_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
-	}
-	if !constantTimeEqual32(want, resp) {
-		// Inform peer, then bubble up.
-		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-			Code: wire.ErrCodeWrongPassword, Message: "wrong password",
-		})
-		return fserrors.ErrWrongPassword
-	}
-	return nil
-}
-
 func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptions) error {
 	if err := wire.WriteControl(s.Control, wire.TypeFileInfo, &it.Info); err != nil {
 		return fmt.Errorf("send: file-info %d: %w", it.Info.Index, err)
@@ -154,6 +141,25 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 	// Directory or symlink: no data to stream.
 	if it.Info.IsDir || it.Info.IsSymlink {
 		return nil
+	}
+
+	// On resume, verify the receiver's partial matches the bytes we're
+	// about to skip. Imohash collisions of well-formed (non-adversarial)
+	// inputs are ~2⁻⁶⁴ — if this check fails, the source has almost
+	// certainly changed since the receiver wrote its partial. Aborting
+	// with a clear error is better than silently producing a frankenfile.
+	if decision.Action == wire.ActionResume && it.AbsPath != "" && decision.ResumeOffset > 0 {
+		got, err := PrefixImohash(it.AbsPath, int64(decision.ResumeOffset))
+		if err != nil {
+			return fmt.Errorf("%w: imohash source prefix: %v", fserrors.ErrReadFailed, err)
+		}
+		if got != decision.PartialImohash {
+			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+				Code:    wire.ErrCodePartialMismatch,
+				Message: "receiver's partial does not match source",
+			})
+			return fserrors.ErrPartialMismatch
+		}
 	}
 
 	// Open source.
@@ -292,29 +298,59 @@ func (rs *readerSeeker) Seek(offset int64, whence int) (int64, error) {
 	return 0, nil
 }
 
-// constantTimeEqual32 compares two 32-byte arrays in constant time.
-func constantTimeEqual32(a, b [32]byte) bool {
-	var diff byte
-	for i := 0; i < 32; i++ {
-		diff |= a[i] ^ b[i]
-	}
-	return diff == 0
-}
-
-// computePasswordHMAC binds the password to the TLS exporter key.
+// senderPasswordHandshake runs the challenge/response exchange that gates
+// the transfer when --pass is set. Wire flow:
 //
-// HMAC-SHA256(password, sessionKey) per docs/decisions/implementation-defaults.md.
-// The result never crosses the wire in the clear — it's transmitted inside
-// the TLS-encrypted control stream.
-func computePasswordHMAC(password string, sessionKey []byte) [32]byte {
-	// Imported lazily here to keep the build trim if the rest of the
-	// package wants to compile without crypto/hmac for some reason.
-	// (No real reason; just keeping the test surface small.)
-	h := hmacSHA256(sessionKey, []byte(password))
-	var out [32]byte
-	copy(out[:], h)
-	return out
+//	sender → receiver  PASSWORD_CHALLENGE{nonce}
+//	receiver → sender  PASSWORD_RESPONSE{HMAC-SHA256(password, nonce)}
+//	sender → receiver  PASSWORD_VERIFIED (on match)
+//	                or ERROR{ErrCodeWrongPassword} (on mismatch)
+//
+// The constant-time compare is non-negotiable: a timing leak here would
+// trivially recover the password over a few thousand attempts.
+func senderPasswordHandshake(s *Streams, password string) error {
+	var nonce [32]byte
+	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+		return fmt.Errorf("send: password nonce: %w", err)
+	}
+	if err := wire.WriteControl(s.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
+		return fmt.Errorf("send: password challenge: %w", err)
+	}
+	var resp wire.PasswordResponse
+	ft, err := wire.ReadControl(s.Control, &resp)
+	if err != nil {
+		return fmt.Errorf("send: read password response: %w", err)
+	}
+	if ft != wire.TypePasswordResponse {
+		return fmt.Errorf("%w: expected PASSWORD_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
+	}
+	expected := hmacPassword(password, nonce[:])
+	if subtle.ConstantTimeCompare(expected, resp.HMAC[:]) != 1 {
+		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+			Code:    wire.ErrCodeWrongPassword,
+			Message: "wrong password",
+		})
+		// Symmetric shutdown: close our write side so the ERROR frame's
+		// FIN reaches the receiver before the deferred Conn.Close tears
+		// the QUIC connection down. Without this, the receiver races
+		// the connection-close error against the frame and surfaces a
+		// confusing "Application error 0x0 (remote)" instead of the
+		// real "wrong password."
+		_ = s.Control.Close()
+		_, _ = io.Copy(io.Discard, s.Control)
+		return fserrors.ErrWrongPassword
+	}
+	if err := wire.WriteControl(s.Control, wire.TypePasswordVerified, nil); err != nil {
+		return fmt.Errorf("send: password verified: %w", err)
+	}
+	return nil
 }
 
-// Ensure we don't grow OS-specific paths in the test surface.
-var _ = runtime.GOOS
+// hmacPassword is the shared HMAC-SHA256(password, nonce) computation
+// used by both sides. Exposed at package scope so recv.go can reuse it
+// without duplicating the construction.
+func hmacPassword(password string, nonce []byte) []byte {
+	m := hmac.New(sha256.New, []byte(password))
+	m.Write(nonce)
+	return m.Sum(nil)
+}
