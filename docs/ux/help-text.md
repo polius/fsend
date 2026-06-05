@@ -53,7 +53,6 @@ ADVANCED FLAGS
   --connect <host:port> [password]   Set the rendezvous server (persisted)
   --connect default                  Revert to fs.alzina.dev:443
   --connect                          Show current server
-  --no-clipboard                     Don't copy code to clipboard
   --no-compress                      Force-disable compression
   --name <string>                    Override hostname shown to peer
   --send / --receive                 Force mode (skip auto-detect)

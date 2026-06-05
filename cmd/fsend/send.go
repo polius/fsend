@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/polius/fsend/internal/clipboardx"
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
@@ -387,9 +386,6 @@ func shortRand() string {
 //
 // Honors the locked output rules:
 //   - --quiet: bare code on stdout, nothing on stderr
-//   - --no-clipboard: skip the auto-copy (default: copy)
-//   - "✓ Code copied to clipboard" is shown only when the copy succeeded
-//     (a Linux box without xclip/xsel falls through to "not available")
 func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label string) {
 	if f.quiet {
 		// Pipeline-friendly: just the code on stdout.
@@ -428,11 +424,6 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  ─────────────────────────────────────────────")
 	fmt.Fprintln(os.Stderr)
-	if !f.noClip {
-		if clipboardx.Copy(c) {
-			fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Code copied to clipboard")
-		}
-	}
 	fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Waiting for receiver…")
 }
 

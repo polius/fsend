@@ -24,7 +24,6 @@ type flags struct {
 	textArg    string
 	passArg    string // shared with receive-side: sender requires, receiver supplies
 	noCompress bool
-	noClip     bool
 	hostname   string
 	excludes   []string // glob patterns; applied when bundling a directory archive
 
@@ -83,7 +82,6 @@ Examples:
 	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files on receive")
 	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress non-error output")
-	c.Flags().BoolVar(&f.noClip, "no-clipboard", false, "don't auto-copy the code to the clipboard")
 	c.Flags().StringVar(&f.hostname, "name", "", "override the hostname shown to the peer")
 	c.Flags().StringSliceVar(&f.excludes, "exclude", nil,
 		"glob patterns to skip when bundling a directory (repeatable or comma-separated)")

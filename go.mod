@@ -4,7 +4,6 @@ go 1.25.5
 
 require (
 	github.com/adrg/xdg v0.5.3
-	github.com/atotto/clipboard v0.1.4
 	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.18.6
 	github.com/oklog/ulid/v2 v2.1.1

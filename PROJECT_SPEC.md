@@ -116,11 +116,6 @@ cross-compile to every target). cgo dependencies are explicitly called out.
 - **Compression (auto-detect): `github.com/klauspost/compress`** (zstd).
   The uncontested Go zstd implementation. Used by Caddy, MinIO, Cockroach.
   Last commit today, 4 open issues.
-- **Clipboard: `github.com/atotto/clipboard`** — pure Go, shells out to
-  `xclip`/`xsel` on Linux, `pbcopy` on macOS, native API on Windows.
-  Preserves our static-binary story. Linux users without xclip/xsel
-  installed see "clipboard not available" gracefully — document this in
-  the README install section.
 - **XDG / config paths: `github.com/adrg/xdg`** — cross-platform config
   directory resolution (XDG on Linux, `~/Library/Application Support` on
   macOS, `%APPDATA%` on Windows). Rolling our own is 30 lines but
@@ -225,8 +220,8 @@ stderr: an "artifact" block (the code and the receive command the user
 needs to share) and a "status" block (what the tool is doing).
 
 This is deliberately cleaner than croc's output, which inlines `Code is:
-<code>` alongside two OS-specific receive commands and a clipboard hint —
-visually flat, hard to scan, redundant on macOS/Linux.
+<code>` alongside two OS-specific receive commands — visually flat, hard
+to scan, redundant on macOS/Linux.
 
 #### Lifecycle (rendered on stderr, ANSI when TTY, ASCII fallback otherwise)
 
@@ -244,7 +239,6 @@ visually flat, hard to scan, redundant on macOS/Linux.
 
   ──────────────────────────────────────────────
 
-  ✓ Code copied to clipboard
   ⠋ Waiting for receiver…
 ```
 
@@ -350,19 +344,17 @@ plus a password is far out of reach of online attacks anyway).
 2. **In `--quiet`, stdout gets only the bare code** (`abc-defgh-jkm\n`) —
    no banners, no whitespace. Makes `fsend foo.pdf --quiet | pbcopy`
    trivial. All progress and status output is silenced.
-3. **Clipboard copy on by default.** `--no-clipboard` disables. The "✓
-   Code copied to clipboard" line is visible so users don't double-copy.
-4. **Always show the data path** as one of `direct (local)` /
+3. **Always show the data path** as one of `direct (local)` /
    `direct (STUN)` / `relay (TURN)` — a real differentiator vs croc,
    and users learn that fsend punched through their NAT. Three buckets
    beats two because LAN vs STUN-punched is a meaningfully different
    performance regime, and the bucket name doubles as a debug
    breadcrumb ("we're on TURN — that's why this is slow").
-5. **Receive command shown once, OS-agnostic.** Just `fsend <code>`. Croc's
+4. **Receive command shown once, OS-agnostic.** Just `fsend <code>`. Croc's
    dual Windows/macOS-Linux variants are unnecessary noise.
-6. **ANSI when stderr is a TTY, ASCII fallback when piped.** Unicode
+5. **ANSI when stderr is a TTY, ASCII fallback when piped.** Unicode
    box-drawing and spinner glyphs auto-degrade to `-`, `>`, `[ ]`.
-7. **Errors go to stderr in red, exit code non-zero.** Scripts can detect
+6. **Errors go to stderr in red, exit code non-zero.** Scripts can detect
    failure with `$?`.
 
 ### Dispatch rules (locked)
@@ -399,8 +391,6 @@ unambiguously **send** — no regex check, no prompt, no auto-detect.
 - `--overwrite` — overwrite existing files on receive
 - `--quiet` — suppress all non-error output; in send mode, prints only the
   bare code on stdout for clean piping (`fsend foo.pdf --quiet | pbcopy`)
-- `--no-clipboard` — don't auto-copy the code to the clipboard on send
-  (default: copy)
 - `--pass <password>` — require the receiver to enter this password
   before the transfer starts. Optional extra confirmation on top of the
   code phrase. See "Password protection" below.

@@ -6,7 +6,7 @@
 #   - Dispatch (no args, --code, --send, --receive, --text, stdin)
 #   - Single file / multi-file / directory / stdin / text
 #   - All receiver flags (--yes, --out, --overwrite, --name)
-#   - All UX flags (--quiet, --no-clipboard, --no-compress, --debug)
+#   - All UX flags (--quiet, --no-compress, --debug)
 #   - Server config (--connect default/set/show)
 #   - Empty file, large file (16 MB), unicode filename, spaces in name
 #   - Error paths (E004 invalid code, sender SIGINT, receiver SIGINT,
@@ -153,7 +153,7 @@ do_lan_transfer() {
     dd if=/dev/urandom of="$src/payload.bin" bs=1024 count="$size_kb" 2>/dev/null
   fi
 
-  "$FSEND" --code "$code" --no-clipboard "$@" "$src/payload.bin" \
+  "$FSEND" --code "$code" "$@" "$src/payload.bin" \
     >"$dst/sender.out" 2>"$dst/sender.err" &
   local pid=$!
   sleep "$SETTLE"
@@ -282,7 +282,7 @@ t_3_5() {
   local src="$WORKDIR/3_5_src" dst="$WORKDIR/3_5_dst"
   mkdir -p "$src" "$dst"
   printf "hello\n" > "$src/file with spaces.txt"
-  "$FSEND" --code "$code" --no-clipboard "$src/file with spaces.txt" \
+  "$FSEND" --code "$code" "$src/file with spaces.txt" \
     >"$dst/sender.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
@@ -299,7 +299,7 @@ t_3_6() {
   local src="$WORKDIR/3_6_src" dst="$WORKDIR/3_6_dst"
   mkdir -p "$src" "$dst"
   printf "unicode-bytes\n" > "$src/résumé-é.txt"
-  "$FSEND" --code "$code" --no-clipboard "$src/résumé-é.txt" \
+  "$FSEND" --code "$code" "$src/résumé-é.txt" \
     >"$dst/sender.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
@@ -320,7 +320,7 @@ t_4_1_directory() {
   printf "alpha\n" > "$src/a.txt"
   printf "beta\n"  > "$src/b.txt"
   dd if=/dev/urandom of="$src/sub/c.bin" bs=1024 count=128 2>/dev/null
-  "$FSEND" --code "$code" --no-clipboard "$src" >"$dst/sender.err" 2>&1 &
+  "$FSEND" --code "$code" "$src" >"$dst/sender.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/recv.err" 2>&1 )
@@ -337,7 +337,7 @@ t_4_2_multifile() {
   printf "1\n" > "$src/one"
   printf "2\n" > "$src/two"
   dd if=/dev/urandom of="$src/three" bs=1024 count=32 2>/dev/null
-  "$FSEND" --code "$code" --no-clipboard \
+  "$FSEND" --code "$code" \
     "$src/one" "$src/two" "$src/three" >"$dst/sender.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
@@ -355,7 +355,7 @@ t_4_3_stdin() {
   local dst="$WORKDIR/4_3_dst"
   mkdir -p "$dst"
   echo "hello-stdin-12345" | \
-    "$FSEND" --code "$code" --no-clipboard - >"$dst/sender.err" 2>&1 &
+    "$FSEND" --code "$code" - >"$dst/sender.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/recv.err" 2>&1 )
@@ -371,7 +371,7 @@ t_4_4_text() {
   local code; code=$(gen_code)
   local dst="$WORKDIR/4_4_dst"
   mkdir -p "$dst"
-  "$FSEND" --code "$code" --no-clipboard --text "literal-9876" \
+  "$FSEND" --code "$code" --text "literal-9876" \
     >"$dst/sender.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
@@ -393,7 +393,7 @@ t_5_1_out() {
   local src="$WORKDIR/5_1_src" parent="$WORKDIR/5_1_parent" dst="$WORKDIR/5_1_parent/sub"
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/p.bin" bs=1024 count=64 2>/dev/null
-  "$FSEND" --code "$code" --no-clipboard "$src/p.bin" >"$parent/s.err" 2>&1 &
+  "$FSEND" --code "$code" "$src/p.bin" >"$parent/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   ( cd "$parent" && "$FSEND" --yes --out "$dst" "$code" >"$parent/r.err" 2>&1 )
@@ -409,7 +409,7 @@ t_5_2_overwrite() {
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/p.bin" bs=1024 count=64 2>/dev/null
   echo "PREEXISTING" > "$dst/p.bin"
-  "$FSEND" --code "$code" --no-clipboard "$src/p.bin" >"$dst/s.err" 2>&1 &
+  "$FSEND" --code "$code" "$src/p.bin" >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   ( cd "$dst" && "$FSEND" --yes --overwrite "$code" >"$dst/r.err" 2>&1 )
@@ -426,7 +426,7 @@ t_5_3_name() {
   local src="$WORKDIR/5_3_src" dst="$WORKDIR/5_3_dst"
   mkdir -p "$src" "$dst"
   echo x > "$src/x"
-  "$FSEND" --code "$code" --no-clipboard --name "alice-cli" "$src/x" \
+  "$FSEND" --code "$code" --name "alice-cli" "$src/x" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
@@ -443,7 +443,7 @@ t_5_4_interactive_yes() {
   local src="$WORKDIR/5_4_src" dst="$WORKDIR/5_4_dst"
   mkdir -p "$src" "$dst"
   echo z > "$src/z"
-  "$FSEND" --code "$code" --no-clipboard "$src/z" >"$dst/s.err" 2>&1 &
+  "$FSEND" --code "$code" "$src/z" >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   # answer 'y' interactively
@@ -454,7 +454,7 @@ t_5_4_interactive_yes() {
 run_test 5.4 "Interactive prompt answered 'y' completes transfer" t_5_4_interactive_yes
 
 # =========================================================
-# 7. UX (--quiet / --no-clipboard / --no-compress / --debug)
+# 7. UX (--quiet / --no-compress / --debug)
 # =========================================================
 
 t_7_1_quiet_stdout() {
@@ -462,7 +462,7 @@ t_7_1_quiet_stdout() {
   local src="$WORKDIR/7_1_src"
   mkdir -p "$src"
   echo x > "$src/x"
-  "$FSEND" --code "$code" --no-clipboard --quiet "$src/x" \
+  "$FSEND" --code "$code" --quiet "$src/x" \
       >"$WORKDIR/7_1.stdout" 2>"$WORKDIR/7_1.stderr" &
   local pid=$!
   # Poll for the code to appear on stdout (up to 2s) — the bare line is
@@ -478,7 +478,7 @@ t_7_1_quiet_stdout() {
   # On forced kill the Go runtime may emit nothing or a brief termination
   # message. Spec says no artifact/status output — check that nothing
   # spec-banned leaked.
-  if grep -qE "Sending |Waiting for|Code copied" "$WORKDIR/7_1.stderr"; then
+  if grep -qE "Sending |Waiting for" "$WORKDIR/7_1.stderr"; then
     echo "stderr leaked artifact-block content"
     cat "$WORKDIR/7_1.stderr"
     return 1
@@ -491,7 +491,7 @@ t_7_2_quiet_e2e() {
   local src="$WORKDIR/7_2_src" dst="$WORKDIR/7_2_dst"
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/p.bin" bs=1024 count=128 2>/dev/null
-  "$FSEND" --code "$code" --no-clipboard --quiet "$src/p.bin" \
+  "$FSEND" --code "$code" --quiet "$src/p.bin" \
     >"$dst/s.out" 2>"$dst/s.err" &
   local pid=$!
   sleep "$SETTLE"
@@ -505,21 +505,6 @@ t_7_2_quiet_e2e() {
 }
 run_test 7.2 "--quiet E2E: both stderr 0 bytes, SHA match" t_7_2_quiet_e2e
 
-t_7_3_no_clipboard() {
-  local code; code=$(gen_code)
-  local src="$WORKDIR/7_3_src"
-  mkdir -p "$src"; echo x > "$src/x"
-  ( "$FSEND" --code "$code" --no-clipboard "$src/x" \
-      >"$WORKDIR/7_3.out" 2>"$WORKDIR/7_3.err" ) &
-  local pid=$!
-  sleep "$SETTLE"
-  kill $pid 2>/dev/null; wait_or_kill 5 $pid 2>/dev/null
-  if grep -qi clipboard "$WORKDIR/7_3.err"; then
-    return 1
-  fi
-}
-run_test 7.3 "--no-clipboard suppresses 'copied' line" t_7_3_no_clipboard
-
 t_7_4_no_compress() {
   local code; code=$(gen_code)
   local src="$WORKDIR/7_4_src" dst="$WORKDIR/7_4_dst"
@@ -527,7 +512,7 @@ t_7_4_no_compress() {
   # highly compressible — would normally take the compressed path
   python3 -c "import sys; sys.stdout.buffer.write(b'a' * (1024*64))" > "$src/c.txt" 2>/dev/null \
     || printf 'aaaaaaaaaaaaaaaaaaaaaaaaaa\n%.0s' {1..2000} > "$src/c.txt"
-  "$FSEND" --code "$code" --no-clipboard --no-compress "$src/c.txt" \
+  "$FSEND" --code "$code" --no-compress "$src/c.txt" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
@@ -541,7 +526,7 @@ t_7_5_debug() {
   local code; code=$(gen_code)
   local src="$WORKDIR/7_5_src"
   mkdir -p "$src"; echo y > "$src/y"
-  ( "$FSEND" --code "$code" --no-clipboard --debug "$src/y" \
+  ( "$FSEND" --code "$code" --debug "$src/y" \
       >"$WORKDIR/7_5.out" 2>"$WORKDIR/7_5.err" ) &
   local pid=$!
   sleep "$SETTLE"
@@ -559,7 +544,7 @@ t_8_1_force_send() {
   local code; code=$(gen_code)
   local src="$WORKDIR/8_1_src" dst="$WORKDIR/8_1_dst"
   mkdir -p "$src" "$dst"; echo x > "$src/x"
-  "$FSEND" --send --code "$code" --no-clipboard "$src/x" \
+  "$FSEND" --send --code "$code" "$src/x" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
@@ -573,7 +558,7 @@ t_8_2_force_receive() {
   local code; code=$(gen_code)
   local src="$WORKDIR/8_2_src" dst="$WORKDIR/8_2_dst"
   mkdir -p "$src" "$dst"; echo z > "$src/z"
-  "$FSEND" --code "$code" --no-clipboard "$src/z" >"$dst/s.err" 2>&1 &
+  "$FSEND" --code "$code" "$src/z" >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   ( cd "$dst" && "$FSEND" --receive --yes "$code" >"$dst/r.err" 2>&1 )
@@ -598,7 +583,7 @@ t_9_1_sigint_sender() {
   # interrupts mid-flow.
   dd if=/dev/urandom of="$src/big.bin" bs=1048576 count=64 2>/dev/null
 
-  "$FSEND" --code "$code" --no-clipboard "$src/big.bin" \
+  "$FSEND" --code "$code" "$src/big.bin" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
@@ -647,7 +632,7 @@ t_9_3_sigint_pre_transfer() {
   local src="$WORKDIR/9_3_src"
   mkdir -p "$src"
   echo x > "$src/x"
-  "$FSEND" --code "$code" --no-clipboard "$src/x" >"$src/s.err" 2>&1 &
+  "$FSEND" --code "$code" "$src/x" >"$src/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   kill -INT $pid 2>/dev/null
@@ -668,7 +653,7 @@ t_9_5_sequential_transfers() {
     local src="$WORKDIR/9_5_src_$i" dst="$WORKDIR/9_5_dst_$i"
     mkdir -p "$src" "$dst"
     dd if=/dev/urandom of="$src/p.bin" bs=1024 count=256 2>/dev/null
-    "$FSEND" --code "$code" --no-clipboard "$src/p.bin" >"$dst/s.err" 2>&1 &
+    "$FSEND" --code "$code" "$src/p.bin" >"$dst/s.err" 2>&1 &
     local pid=$!
     sleep "$SETTLE"
     ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r.err" 2>&1 )
@@ -682,7 +667,7 @@ run_test 9.4 "3 sequential transfers (port/socket reuse stability)" t_9_5_sequen
 # 9.6: Sender targets a nonexistent path → sender exits non-zero
 # without crashing.
 t_9_6_nonexistent_source() {
-  "$FSEND" --code "$(gen_code)" --no-clipboard --quiet \
+  "$FSEND" --code "$(gen_code)" --quiet \
     "$WORKDIR/does-not-exist-$$.bin" >/dev/null 2>&1
   [[ $? -ne 0 ]]
 }
@@ -695,7 +680,7 @@ t_9_6_no_partial_after_success() {
   local src="$WORKDIR/9_6_src" dst="$WORKDIR/9_6_dst"
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/p.bin" bs=1024 count=256 2>/dev/null
-  "$FSEND" --code "$code" --no-clipboard "$src/p.bin" >"$dst/s.err" 2>&1 &
+  "$FSEND" --code "$code" "$src/p.bin" >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r.err" 2>&1 )
@@ -718,7 +703,7 @@ t_9_7_resume() {
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/big.bin" bs=1048576 count=64 2>/dev/null
   # Attempt 1 — sender killed mid-stream so a sidecar lands on dst.
-  "$FSEND" --code "$code" --no-clipboard "$src/big.bin" >"$dst/s1.err" 2>&1 &
+  "$FSEND" --code "$code" "$src/big.bin" >"$dst/s1.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r1.err" 2>&1 ) &
@@ -731,7 +716,7 @@ t_9_7_resume() {
   sleep "$SETTLE"
   # Attempt 2 — same code, same file, same dst. Resume kicks in if there's
   # a partial sidecar AND the wire protocol negotiates ActionResume.
-  "$FSEND" --code "$code" --no-clipboard "$src/big.bin" >"$dst/s2.err" 2>&1 &
+  "$FSEND" --code "$code" "$src/big.bin" >"$dst/s2.err" 2>&1 &
   local pid2=$!
   sleep "$SETTLE"
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r2.err" 2>&1 )
@@ -756,7 +741,7 @@ t_9_8_resume_reuses_partial() {
   local ino_before
   ino_before=$(stat -f '%i' "$dst/big.bin.fsend-partial" 2>/dev/null || stat -c '%i' "$dst/big.bin.fsend-partial")
 
-  "$FSEND" --code "$code" --no-clipboard "$src/big.bin" \
+  "$FSEND" --code "$code" "$src/big.bin" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
   sleep "$SETTLE"

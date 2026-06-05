@@ -71,7 +71,6 @@ No spinner — fails immediately at argument parse time.
 
   ──────────────────────────────────────────────
 
-  ✓ Code copied to clipboard
   ⠋ Waiting for receiver…
 
   ────────  Bob types fsend, sees prompt, says no  ────────
