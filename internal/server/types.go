@@ -5,7 +5,11 @@
 // All endpoints are under /v1/...
 package server
 
-import "time"
+import (
+	"time"
+
+	"github.com/polius/fsend/internal/relay"
+)
 
 // CreateSessionRequest is the body of POST /v1/session.
 type CreateSessionRequest struct {
@@ -102,5 +106,11 @@ type session struct {
 	PairedAt           time.Time
 	SenderCandidates   []string
 	ReceiverCandidates []string
-	waiters            chan struct{}
+	// relayToken is the shared relay session token, allocated lazily on
+	// the first AllocateRelay call and reused for any subsequent calls
+	// in the same session — both peers MUST end up with the same token
+	// for the relay's source-addr de-mux to pair them.
+	relayToken    relay.Token
+	relayTokenSet bool
+	waiters       chan struct{}
 }

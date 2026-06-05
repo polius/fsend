@@ -153,17 +153,27 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	_, ok := s.byID[body.SessionID]
-	s.mu.Unlock()
+	sess, ok := s.byID[body.SessionID]
 	if !ok {
+		s.mu.Unlock()
 		writeJSONError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	tok, err := s.relayAllocator.Allocate()
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "alloc failed")
-		return
+	// One token per session: both peers must end up with the same value
+	// so the relay's source-addr de-mux pairs them. Allocate lazily on
+	// first call; subsequent calls reuse.
+	if !sess.relayTokenSet {
+		tok, err := s.relayAllocator.Allocate()
+		if err != nil {
+			s.mu.Unlock()
+			writeJSONError(w, http.StatusInternalServerError, "alloc failed")
+			return
+		}
+		sess.relayToken = tok
+		sess.relayTokenSet = true
 	}
+	tok := sess.relayToken
+	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, RelayAllocateResponse{
 		RelayAddr:    s.relayPublicAddr,
 		SessionToken: tok.String(),
