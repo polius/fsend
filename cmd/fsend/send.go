@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -110,7 +111,12 @@ func runSendOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, 
 	if err != nil {
 		return errLANUnavailable
 	}
-	defer mdnsConn.Close()
+	// Close mDNS exactly once: at pair-time (so late receivers stop
+	// discovering us) or in the deferred path (so we always tear it
+	// down on exit, even when nothing paired).
+	var stopMDNSOnce sync.Once
+	stopMDNS := func() { stopMDNSOnce.Do(func() { _ = mdnsConn.Close() }) }
+	defer stopMDNS()
 
 	printSendArtifact(f, c, items, kind, totalFiles, label)
 
@@ -125,7 +131,7 @@ func runSendOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, 
 	err = retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)},
 		lanSendIsTransient,
 		func(attempt int) error {
-			return runSenderLANOneAttempt(ctx, ln, items, kind, totalFiles, f, progressFn, &paired)
+			return runSenderLANOneAttempt(ctx, ln, items, kind, totalFiles, f, progressFn, &paired, stopMDNS)
 		})
 	if err != nil {
 		return err
@@ -146,7 +152,7 @@ func runSendOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, 
 // "lost mid-transfer" via the paired flag; lanSendIsTransient then
 // routes errLANUnavailable to the caller (so the internet fallback
 // can run) instead of retrying it.
-func runSenderLANOneAttempt(ctx context.Context, ln *quicconn.Listener, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, f *flags, progressFn func(uint32, uint64), paired *bool) error {
+func runSenderLANOneAttempt(ctx context.Context, ln *quicconn.Listener, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, f *flags, progressFn func(uint32, uint64), paired *bool, stopMDNS func()) error {
 	budget := 15 * time.Second
 	if !*paired {
 		budget = 60 * time.Second
@@ -165,6 +171,10 @@ func runSenderLANOneAttempt(ctx context.Context, ln *quicconn.Listener, items []
 
 	if !*paired {
 		*paired = true
+		// Stop announcing the moment we have a peer — a late receiver
+		// scanning for the code now finds nothing on the LAN instead of
+		// dialing into a listener that won't Accept again.
+		stopMDNS()
 		printPath(f, connpath.FromLAN())
 	}
 

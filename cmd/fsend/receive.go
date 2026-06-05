@@ -95,6 +95,22 @@ func runReceive(f *flags, c string) error {
 func runReceiverLANOneAttempt(ctx context.Context, addr, code, outDir, hostname string, f *flags, accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), paired *bool) error {
 	res, err := quicconn.Dial(ctx, addr, code)
 	if err != nil {
+		// mDNS told us the sender exists but the dial failed before
+		// we ever paired — overwhelmingly this means the sender
+		// already accepted another receiver and is no longer
+		// Accept()ing on this listener. (The sender de-announces
+		// mDNS at pair-time, but a receiver query can race the
+		// announce going down.) Surface this as the friendly
+		// "code already claimed" error rather than the raw QUIC
+		// timeout, which the catalog catches as a generic E099.
+		//
+		// After pairing, dial failures are real transient issues
+		// (the receiver lost the connection and is reconnecting via
+		// the retry loop) — let those bubble up so retry can handle
+		// them.
+		if !*paired {
+			return fmt.Errorf("%w (lan: %v)", fserrors.ErrCodeAlreadyClaimed, err)
+		}
 		return fmt.Errorf("dialing sender: %w", err)
 	}
 	defer res.Close()

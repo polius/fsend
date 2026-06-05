@@ -147,6 +147,9 @@ func TestIsTransient_Classification(t *testing.T) {
 		{"receiver_declined_terminal", fserrors.ErrReceiverDeclined, false},
 		{"partial_mismatch_terminal", fserrors.ErrPartialMismatch, false},
 		{"protocol_error_terminal", fserrors.ErrProtocolError, false},
+		{"code_already_claimed_terminal", fserrors.ErrCodeAlreadyClaimed, false},
+		{"wrapped_code_already_claimed_terminal",
+			fmt.Errorf("lan dial: %w", fserrors.ErrCodeAlreadyClaimed), false},
 		{"ctx_canceled_terminal", context.Canceled, false},
 
 		// Wrapped terminal: must still not retry.
