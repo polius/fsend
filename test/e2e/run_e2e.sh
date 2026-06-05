@@ -3,7 +3,7 @@
 #
 # Coverage:
 #   - Static (--help, --version, --health-check)
-#   - Dispatch (no args, --code, --send, --receive, --text, stdin)
+#   - Dispatch (no args, --send, --receive, --text, stdin)
 #   - Single file / multi-file / directory / stdin / text
 #   - All receiver flags (--yes, --out, --overwrite, --name)
 #   - All UX flags (--quiet, --debug)
@@ -104,15 +104,22 @@ wait_or_kill() {
   return $?
 }
 
-# Generate a fresh code in the 3-4-3 alphabet [abcdefghjkmnpqrstuvwxyz].
-# Robust under `set -u` — no positional-arg arithmetic.
-ALPHA="abcdefghjkmnpqrstuvwxyz"
-gen_code() {
-  local part1="" part2="" part3="" i
-  for i in 1 2 3;   do part1+="${ALPHA:$((RANDOM % 23)):1}"; done
-  for i in 1 2 3 4; do part2+="${ALPHA:$((RANDOM % 23)):1}"; done
-  for i in 1 2 3;   do part3+="${ALPHA:$((RANDOM % 23)):1}"; done
-  echo "${part1}-${part2}-${part3}"
+# wait_for_code <stderr-file> [timeout-seconds]
+# Poll the file until a code matching the canonical regex appears.
+# Echoes the code on stdout, returns 0 on success / 1 on timeout.
+wait_for_code() {
+  local file="$1" timeout="${2:-5}"
+  local deadline=$(( $(date +%s) + timeout ))
+  local code
+  while (( $(date +%s) < deadline )); do
+    code=$(grep -oE '[a-hjkmnp-z]{3}-[a-hjkmnp-z]{4}-[a-hjkmnp-z]{3}' "$file" 2>/dev/null | head -1)
+    if [[ -n "$code" ]]; then
+      echo "$code"
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
 }
 
 # ---- Bring up fsend-server ----
@@ -143,7 +150,6 @@ echo "fsend-server ready" >&2
 do_lan_transfer() {
   local id="$1" size_kb="${2:-128}"
   shift 2
-  local code; code=$(gen_code)
   local src="$WORKDIR/${id}_src"
   local dst="$WORKDIR/${id}_dst"
   mkdir -p "$src" "$dst"
@@ -153,10 +159,11 @@ do_lan_transfer() {
     dd if=/dev/urandom of="$src/payload.bin" bs=1024 count="$size_kb" 2>/dev/null
   fi
 
-  "$FSEND" --code "$code" "$@" "$src/payload.bin" \
+  "$FSEND" "$@" "$src/payload.bin" \
     >"$dst/sender.out" 2>"$dst/sender.err" &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/sender.err"); then echo "no code captured"; cat "$dst/sender.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" \
       >"$dst/recv.out" 2>"$dst/recv.err" )
   local rx=$?
@@ -278,14 +285,14 @@ run_test 3.4 "LAN: large (16 MB) file byte-identical" t_3_4
 
 t_3_5() {
   # File with spaces in name.
-  local code; code=$(gen_code)
   local src="$WORKDIR/3_5_src" dst="$WORKDIR/3_5_dst"
   mkdir -p "$src" "$dst"
   printf "hello\n" > "$src/file with spaces.txt"
-  "$FSEND" --code "$code" "$src/file with spaces.txt" \
+  "$FSEND" "$src/file with spaces.txt" \
     >"$dst/sender.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/sender.err"); then echo "no code captured"; cat "$dst/sender.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/recv.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || { cat "$dst/sender.err" "$dst/recv.err"; return 1; }
@@ -295,14 +302,14 @@ run_test 3.5 "LAN: filename with spaces" t_3_5
 
 t_3_6() {
   # Unicode filename.
-  local code; code=$(gen_code)
   local src="$WORKDIR/3_6_src" dst="$WORKDIR/3_6_dst"
   mkdir -p "$src" "$dst"
   printf "unicode-bytes\n" > "$src/résumé-é.txt"
-  "$FSEND" --code "$code" "$src/résumé-é.txt" \
+  "$FSEND" "$src/résumé-é.txt" \
     >"$dst/sender.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/sender.err"); then echo "no code captured"; cat "$dst/sender.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/recv.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] && diff "$src/résumé-é.txt" "$dst/résumé-é.txt" >/dev/null
@@ -314,15 +321,15 @@ run_test 3.6 "LAN: unicode filename (résumé-é.txt)" t_3_6
 # =========================================================
 
 t_4_1_directory() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/4_1_src" dst="$WORKDIR/4_1_dst"
   mkdir -p "$src/sub" "$dst"
   printf "alpha\n" > "$src/a.txt"
   printf "beta\n"  > "$src/b.txt"
   dd if=/dev/urandom of="$src/sub/c.bin" bs=1024 count=128 2>/dev/null
-  "$FSEND" --code "$code" "$src" >"$dst/sender.err" 2>&1 &
+  "$FSEND" "$src" >"$dst/sender.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/sender.err"); then echo "no code captured"; cat "$dst/sender.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/recv.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || { cat "$dst/sender.err" "$dst/recv.err"; return 1; }
@@ -331,16 +338,16 @@ t_4_1_directory() {
 run_test 4.1 "Directory transfer (nested, 3 files)" t_4_1_directory
 
 t_4_2_multifile() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/4_2_src" dst="$WORKDIR/4_2_dst"
   mkdir -p "$src" "$dst"
   printf "1\n" > "$src/one"
   printf "2\n" > "$src/two"
   dd if=/dev/urandom of="$src/three" bs=1024 count=32 2>/dev/null
-  "$FSEND" --code "$code" \
+  "$FSEND" \
     "$src/one" "$src/two" "$src/three" >"$dst/sender.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/sender.err"); then echo "no code captured"; cat "$dst/sender.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/recv.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || return 1
@@ -351,13 +358,13 @@ t_4_2_multifile() {
 run_test 4.2 "Multi-file (3 explicit paths)" t_4_2_multifile
 
 t_4_3_stdin() {
-  local code; code=$(gen_code)
   local dst="$WORKDIR/4_3_dst"
   mkdir -p "$dst"
   echo "hello-stdin-12345" | \
-    "$FSEND" --code "$code" - >"$dst/sender.err" 2>&1 &
+    "$FSEND" - >"$dst/sender.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/sender.err"); then echo "no code captured"; cat "$dst/sender.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/recv.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || return 1
@@ -368,13 +375,13 @@ t_4_3_stdin() {
 run_test 4.3 "Send from stdin (\`-\`)" t_4_3_stdin
 
 t_4_4_text() {
-  local code; code=$(gen_code)
   local dst="$WORKDIR/4_4_dst"
   mkdir -p "$dst"
-  "$FSEND" --code "$code" --text "literal-9876" \
+  "$FSEND" --text "literal-9876" \
     >"$dst/sender.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/sender.err"); then echo "no code captured"; cat "$dst/sender.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/recv.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || return 1
@@ -389,13 +396,13 @@ run_test 4.4 "Send --text literal" t_4_4_text
 # =========================================================
 
 t_5_1_out() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/5_1_src" parent="$WORKDIR/5_1_parent" dst="$WORKDIR/5_1_parent/sub"
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/p.bin" bs=1024 count=64 2>/dev/null
-  "$FSEND" --code "$code" "$src/p.bin" >"$parent/s.err" 2>&1 &
+  "$FSEND" "$src/p.bin" >"$parent/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$parent/s.err"); then echo "no code captured"; cat "$parent/s.err"; return 1; fi
   ( cd "$parent" && "$FSEND" --yes --out "$dst" "$code" >"$parent/r.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || return 1
@@ -404,14 +411,14 @@ t_5_1_out() {
 run_test 5.1 "--out <dir> writes to target, not CWD" t_5_1_out
 
 t_5_2_overwrite() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/5_2_src" dst="$WORKDIR/5_2_dst"
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/p.bin" bs=1024 count=64 2>/dev/null
   echo "PREEXISTING" > "$dst/p.bin"
-  "$FSEND" --code "$code" "$src/p.bin" >"$dst/s.err" 2>&1 &
+  "$FSEND" "$src/p.bin" >"$dst/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes --overwrite "$code" >"$dst/r.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || return 1
@@ -422,14 +429,14 @@ t_5_2_overwrite() {
 run_test 5.2 "--overwrite replaces existing file" t_5_2_overwrite
 
 t_5_3_name() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/5_3_src" dst="$WORKDIR/5_3_dst"
   mkdir -p "$src" "$dst"
   echo x > "$src/x"
-  "$FSEND" --code "$code" --name "alice-cli" "$src/x" \
+  "$FSEND" --name "alice-cli" "$src/x" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
   # No --yes; pipe "y" to confirm. The prompt block on receiver should show
   # the sender's --name override.
   printf "y\n" | ( cd "$dst" && "$FSEND" "$code" >"$dst/r.err" 2>&1 )
@@ -439,13 +446,13 @@ t_5_3_name() {
 run_test 5.3 "--name surfaces to peer's prompt" t_5_3_name
 
 t_5_4_interactive_yes() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/5_4_src" dst="$WORKDIR/5_4_dst"
   mkdir -p "$src" "$dst"
   echo z > "$src/z"
-  "$FSEND" --code "$code" "$src/z" >"$dst/s.err" 2>&1 &
+  "$FSEND" "$src/z" >"$dst/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
   # answer 'y' interactively
   printf "y\n" | ( cd "$dst" && "$FSEND" "$code" >"$dst/r.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
@@ -458,11 +465,10 @@ run_test 5.4 "Interactive prompt answered 'y' completes transfer" t_5_4_interact
 # =========================================================
 
 t_7_1_quiet_stdout() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/7_1_src"
   mkdir -p "$src"
   echo x > "$src/x"
-  "$FSEND" --code "$code" --quiet "$src/x" \
+  "$FSEND" --quiet "$src/x" \
       >"$WORKDIR/7_1.stdout" 2>"$WORKDIR/7_1.stderr" &
   local pid=$!
   # Poll for the code to appear on stdout (up to 2s) — the bare line is
@@ -474,7 +480,12 @@ t_7_1_quiet_stdout() {
   local got; got=$(tr -d '\n' < "$WORKDIR/7_1.stdout")
   kill -TERM $pid 2>/dev/null
   wait_or_kill 5 $pid
-  if [[ "$got" != "$code" ]]; then echo "expected '$code' got '$got'"; return 1; fi
+  # In --quiet, stdout must be exactly one bare code (matching the
+  # canonical regex), nothing else.
+  if [[ ! "$got" =~ ^[a-hjkmnp-z]{3}-[a-hjkmnp-z]{4}-[a-hjkmnp-z]{3}$ ]]; then
+    echo "expected a bare code on stdout, got '$got'"
+    return 1
+  fi
   # On forced kill the Go runtime may emit nothing or a brief termination
   # message. Spec says no artifact/status output — check that nothing
   # spec-banned leaked.
@@ -487,14 +498,15 @@ t_7_1_quiet_stdout() {
 run_test 7.1 "--quiet: stdout = bare code, no artifact block on stderr" t_7_1_quiet_stdout
 
 t_7_2_quiet_e2e() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/7_2_src" dst="$WORKDIR/7_2_dst"
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/p.bin" bs=1024 count=128 2>/dev/null
-  "$FSEND" --code "$code" --quiet "$src/p.bin" \
+  "$FSEND" --quiet "$src/p.bin" \
     >"$dst/s.out" 2>"$dst/s.err" &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  # --quiet emits the bare code on stdout; stderr is expected to be empty.
+  if ! code=$(wait_for_code "$dst/s.out"); then echo "no code captured"; cat "$dst/s.out"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes --quiet "$code" \
       >"$dst/r.out" 2>"$dst/r.err" )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
@@ -506,13 +518,13 @@ t_7_2_quiet_e2e() {
 run_test 7.2 "--quiet E2E: both stderr 0 bytes, SHA match" t_7_2_quiet_e2e
 
 t_7_5_debug() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/7_5_src"
   mkdir -p "$src"; echo y > "$src/y"
-  ( "$FSEND" --code "$code" --debug "$src/y" \
+  ( "$FSEND" --debug "$src/y" \
       >"$WORKDIR/7_5.out" 2>"$WORKDIR/7_5.err" ) &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$WORKDIR/7_5.err"); then echo "no code captured"; cat "$WORKDIR/7_5.err"; return 1; fi
   if ! kill -0 $pid 2>/dev/null; then return 1; fi
   kill $pid 2>/dev/null; wait_or_kill 5 $pid 2>/dev/null
   return 0
@@ -524,13 +536,13 @@ run_test 7.5 "--debug flag accepted (sender survives early wait)" t_7_5_debug
 # =========================================================
 
 t_8_1_force_send() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/8_1_src" dst="$WORKDIR/8_1_dst"
   mkdir -p "$src" "$dst"; echo x > "$src/x"
-  "$FSEND" --send --code "$code" "$src/x" \
+  "$FSEND" --send "$src/x" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] && diff "$src/x" "$dst/x" >/dev/null
@@ -538,12 +550,12 @@ t_8_1_force_send() {
 run_test 8.1 "--send force-mode" t_8_1_force_send
 
 t_8_2_force_receive() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/8_2_src" dst="$WORKDIR/8_2_dst"
   mkdir -p "$src" "$dst"; echo z > "$src/z"
-  "$FSEND" --code "$code" "$src/z" >"$dst/s.err" 2>&1 &
+  "$FSEND" "$src/z" >"$dst/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --receive --yes "$code" >"$dst/r.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] && diff "$src/z" "$dst/z" >/dev/null
@@ -557,7 +569,6 @@ run_test 8.2 "--receive force-mode" t_8_2_force_receive
 # 9.1: Sender SIGINT mid-transfer → receiver sees clean error and
 # leaves no half-written file.
 t_9_1_sigint_sender() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/9_1_src" dst="$WORKDIR/9_1_dst"
   mkdir -p "$src" "$dst"
   # 16 MB so transfer takes long enough to interrupt at ~50%.
@@ -566,10 +577,11 @@ t_9_1_sigint_sender() {
   # interrupts mid-flow.
   dd if=/dev/urandom of="$src/big.bin" bs=1048576 count=64 2>/dev/null
 
-  "$FSEND" --code "$code" "$src/big.bin" \
+  "$FSEND" "$src/big.bin" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r.err" 2>&1 ) &
   local rpid=$!
   # Let some bytes flow.
@@ -611,13 +623,13 @@ run_test 9.2 "Decline path (HELLO_ACK Accepts=false → sender errors)" t_9_2_de
 # 9.3: Sender SIGINT during the wait-for-receiver state cleanly cancels.
 # Tests the signalContext + LAN listener teardown path.
 t_9_3_sigint_pre_transfer() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/9_3_src"
   mkdir -p "$src"
   echo x > "$src/x"
-  "$FSEND" --code "$code" "$src/x" >"$src/s.err" 2>&1 &
+  "$FSEND" "$src/x" >"$src/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$src/s.err"); then echo "no code captured"; cat "$src/s.err"; return 1; fi
   kill -INT $pid 2>/dev/null
   wait_or_kill 3 $pid; local sx=$?
   # 124 = wait_or_kill timeout; non-124 means the process exited on its own.
@@ -632,13 +644,13 @@ run_test 9.3 "Sender SIGINT pre-transfer: exits within 3s" t_9_3_sigint_pre_tran
 # 9.5: Multiple sequential transfers — code reuse / port reuse stability.
 t_9_5_sequential_transfers() {
   for i in 1 2 3; do
-    local code; code=$(gen_code)
     local src="$WORKDIR/9_5_src_$i" dst="$WORKDIR/9_5_dst_$i"
     mkdir -p "$src" "$dst"
     dd if=/dev/urandom of="$src/p.bin" bs=1024 count=256 2>/dev/null
-    "$FSEND" --code "$code" "$src/p.bin" >"$dst/s.err" 2>&1 &
+    "$FSEND" "$src/p.bin" >"$dst/s.err" 2>&1 &
     local pid=$!
-    sleep "$SETTLE"
+    local code
+    if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
     ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r.err" 2>&1 )
     local rx=$?; wait_or_kill 5 $pid; local sx=$?
     if [[ $sx -ne 0 || $rx -ne 0 ]]; then echo "iter $i failed"; return 1; fi
@@ -650,7 +662,7 @@ run_test 9.4 "3 sequential transfers (port/socket reuse stability)" t_9_5_sequen
 # 9.6: Sender targets a nonexistent path → sender exits non-zero
 # without crashing.
 t_9_6_nonexistent_source() {
-  "$FSEND" --code "$(gen_code)" --quiet \
+  "$FSEND" --send --quiet \
     "$WORKDIR/does-not-exist-$$.bin" >/dev/null 2>&1
   [[ $? -ne 0 ]]
 }
@@ -659,13 +671,13 @@ run_test 9.5 "Sending a nonexistent path → non-zero exit, no crash" t_9_6_none
 # 9.6: .fsend-partial cleanup — after a successful transfer there must
 # be no leftover sidecar in the destination.
 t_9_6_no_partial_after_success() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/9_6_src" dst="$WORKDIR/9_6_dst"
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/p.bin" bs=1024 count=256 2>/dev/null
-  "$FSEND" --code "$code" "$src/p.bin" >"$dst/s.err" 2>&1 &
+  "$FSEND" "$src/p.bin" >"$dst/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || return 1
@@ -678,17 +690,18 @@ t_9_6_no_partial_after_success() {
 }
 run_test 9.6 ".fsend-partial sidecar absent after successful transfer" t_9_6_no_partial_after_success
 
-# 9.7: Resume — interrupt a transfer mid-flow, restart with same code;
-# receiver should pick up where it left off via the .fsend-partial sidecar.
+# 9.7: Resume — interrupt a transfer mid-flow, restart; the receiver
+# should pick up where it left off via the .fsend-partial sidecar
+# (keyed by destination filename, so a fresh code is fine).
 t_9_7_resume() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/9_7_src" dst="$WORKDIR/9_7_dst"
   mkdir -p "$src" "$dst"
   dd if=/dev/urandom of="$src/big.bin" bs=1048576 count=64 2>/dev/null
   # Attempt 1 — sender killed mid-stream so a sidecar lands on dst.
-  "$FSEND" --code "$code" "$src/big.bin" >"$dst/s1.err" 2>&1 &
+  "$FSEND" "$src/big.bin" >"$dst/s1.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s1.err"); then echo "no code captured"; cat "$dst/s1.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r1.err" 2>&1 ) &
   local rpid=$!
   sleep 0.4
@@ -697,11 +710,12 @@ t_9_7_resume() {
   wait_or_kill 5 $rpid 2>/dev/null
   # Brief settle so LAN socket frees up.
   sleep "$SETTLE"
-  # Attempt 2 — same code, same file, same dst. Resume kicks in if there's
-  # a partial sidecar AND the wire protocol negotiates ActionResume.
-  "$FSEND" --code "$code" "$src/big.bin" >"$dst/s2.err" 2>&1 &
+  # Attempt 2 — same file, same dst (fresh code is fine). Resume kicks in
+  # if there's a partial sidecar AND the wire protocol negotiates ActionResume.
+  "$FSEND" "$src/big.bin" >"$dst/s2.err" 2>&1 &
   local pid2=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s2.err"); then echo "no code captured"; cat "$dst/s2.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r2.err" 2>&1 )
   local rx=$?; wait_or_kill 10 $pid2; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || { echo "attempt2 failed: s=$sx r=$rx"; return 1; }
@@ -713,7 +727,6 @@ run_test 9.7 "Re-run after sender SIGINT: same code → byte-identical (E2E reco
 # verify the receiver elects ActionResume (file is NOT O_TRUNC'd).
 # The strongest empirical signal: inode preservation across attempts.
 t_9_8_resume_reuses_partial() {
-  local code; code=$(gen_code)
   local src="$WORKDIR/9_8_src" dst="$WORKDIR/9_8_dst"
   mkdir -p "$src" "$dst"
   # 4 MiB random file (4 chunks of 1 MiB each).
@@ -724,10 +737,11 @@ t_9_8_resume_reuses_partial() {
   local ino_before
   ino_before=$(stat -f '%i' "$dst/big.bin.fsend-partial" 2>/dev/null || stat -c '%i' "$dst/big.bin.fsend-partial")
 
-  "$FSEND" --code "$code" "$src/big.bin" \
+  "$FSEND" "$src/big.bin" \
     >"$dst/s.err" 2>&1 &
   local pid=$!
-  sleep "$SETTLE"
+  local code
+  if ! code=$(wait_for_code "$dst/s.err"); then echo "no code captured"; cat "$dst/s.err"; return 1; fi
   ( cd "$dst" && "$FSEND" --yes "$code" >"$dst/r.err" 2>&1 )
   local rx=$?; wait_or_kill 5 $pid; local sx=$?
   [[ $sx -eq 0 && $rx -eq 0 ]] || { echo "transfer failed: s=$sx r=$rx"; return 1; }

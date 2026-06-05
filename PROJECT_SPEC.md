@@ -362,7 +362,6 @@ plus a password is far out of reach of online attacks anyway).
 | Invocation | Action |
 |---|---|
 | `fsend` (no args, no flags) | Print help |
-| `fsend --code <code> [path...]` | **Send** (explicit code provided; if no path, send from stdin) |
 | `fsend --text "..."` | **Send** the literal string as the payload (no file) |
 | `fsend <code>` where `<code>` matches the code regex AND no file/dir with that name exists in CWD | **Receive** |
 | `fsend <code>` where `<code>` matches the code regex AND a file/dir with that name exists in CWD | **Prompt** — `[s]end this file, or [r]eceive with this code?` |
@@ -371,13 +370,12 @@ plus a password is far out of reach of online attacks anyway).
 | `fsend -` | **Send from stdin** |
 | `fsend --send <arg>` / `fsend --receive <arg>` | Force mode, skip auto-detect (scripting safety valve) |
 
-`--code` shortcut: when `--code` is set on the command line, the operation is
-unambiguously **send** — no regex check, no prompt, no auto-detect.
+Codes are always system-generated; there is no flag to pin a code. If you
+need a persistent shared secret across transfers, use `--pass`.
 
 ### Other CLI flags
 
 **Transfer behavior:**
-- `--code <code>` — provide the code phrase explicitly on send (skips random gen; implies send mode)
 - `--text "<string>"` — send a literal string instead of a file (croc parity)
 - `--exclude <glob,…>` — skip entries matching any of these glob patterns
   when bundling a directory. Repeatable or comma-separated. Matches against
@@ -397,18 +395,17 @@ unambiguously **send** — no regex check, no prompt, no auto-detect.
 
 **Secrets in argv vs environment:**
 
-`--code` and `--pass` are convenient but leak the secret to anyone with
-`ps -ef` access on the same host (the same class of issue as croc's
+`--pass` is convenient but leaks the password to anyone with `ps -ef`
+access on the same host (the same class of issue as croc's
 [CVE-2023-43621](https://github.com/schollz/croc/security/advisories/GHSA-h6m8-r3vf-3gqv)).
-Two environment variables provide an opt-in safer path:
+An environment variable provides an opt-in safer path:
 
-- `FSEND_CODE` — used as the code when `--code` is not passed.
 - `FSEND_PASS` — used as the password when `--pass` is not passed.
 
 **Precedence:** flag > env var > default. Setting both is allowed and
 the flag wins, matching the convention of every other Unix CLI. Scripts
-that wrap fsend should prefer the env-var form so the secret never lands
-in argv.
+that wrap fsend should prefer the env-var form so the password never
+lands in argv.
 
 **Directories are always bundled.**
 

@@ -19,7 +19,6 @@ import (
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
-	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/quicconn"
 	"github.com/polius/fsend/internal/retry"
@@ -53,18 +52,9 @@ func runSend(f *flags, paths []string) error {
 	}
 	defer cleanupItems()
 
-	// If --code was supplied explicitly, this is unambiguously a "send to
-	// someone who already has the code" flow. Otherwise we generate.
-	c := f.codeArg
-	if c == "" {
-		c, err = code.Generate()
-		if err != nil {
-			return fmt.Errorf("generating code: %w", err)
-		}
-	} else {
-		if err := code.Validate(c); err != nil {
-			return fserrors.ErrInvalidCodeFormat
-		}
+	c, err := code.Generate()
+	if err != nil {
+		return fmt.Errorf("generating code: %w", err)
 	}
 
 	ctx, cancel := signalContext()
@@ -72,8 +62,7 @@ func runSend(f *flags, paths []string) error {
 
 	// Strategy: try LAN first (mDNS + QUIC direct). If that fails to
 	// produce a connection within a short window, fall back to
-	// rendezvous + relay. With --code set, we skip LAN because the user
-	// is targeting a specific code/receiver path.
+	// rendezvous + relay.
 	if err := runSendOverLAN(ctx, f, items, kind, totalFiles, label, c); err == nil {
 		return nil
 	} else if !errors.Is(err, errLANUnavailable) {

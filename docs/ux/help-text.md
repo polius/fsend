@@ -40,7 +40,6 @@ EXAMPLES
     fsend report.pdf --connect relay.mycompany.com:443
 
 COMMON FLAGS
-  --code <code>          Use a specific code (skip random generation)
   --pass <password>      Require the receiver to enter this password
   --out <dir>            Receive into this directory (default: current)
   --yes                  Auto-accept incoming transfers (no prompt)

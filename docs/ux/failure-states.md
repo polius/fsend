@@ -166,14 +166,14 @@ Both go to the error message in place.
   ────────  Wi-Fi drops  ────────
 
   ✗ Connection to receiver lost at 42% (1.8 MB sent).
-    The receiver has 1.8 MB saved and can resume if you re-run:
-      fsend report.pdf --code abc-defgh-jkm
-    (Use the same code to allow resume.)
+    The receiver has 1.8 MB saved and can resume — just re-run on both sides:
+      fsend report.pdf
+    (The receiver picks up from their .fsend-partial sidecar.)
 ```
 
 Critical UX detail: **tell the user the transfer is resumable AND tell
-them how.** Resume in fsend works across invocations but only if the
-receiver re-runs with the same code's worth of partial state — see
+them how.** Resume in fsend works across invocations because the receiver
+keeps a `.fsend-partial` sidecar keyed by destination filename — see
 [resume.md](../decisions/resume.md). The error message embeds the recipe.
 
 ### Disk full on receiver (E008)

@@ -20,7 +20,6 @@ type flags struct {
 	forceReceive bool
 
 	// Send-side
-	codeArg  string
 	textArg  string
 	passArg  string // shared with receive-side: sender requires, receiver supplies
 	hostname string
@@ -54,7 +53,7 @@ func rootCmd() *cobra.Command {
 
 Examples:
   Send:      fsend report.pdf
-  Receive:   fsend abc-defgh-jkm
+  Receive:   fsend abc-defg-jkm
   Folder:    fsend ./myproject
   Stdin:     cat file | fsend -
   Text:      fsend --text "hello world"`,
@@ -72,7 +71,6 @@ Examples:
 	c.Version = version.Version
 
 	// Transfer behavior
-	c.Flags().StringVar(&f.codeArg, "code", "", "use a specific code (implies send mode)")
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
 	c.Flags().StringVar(&f.passArg, "pass", "",
 		"password gate. Sender: require the receiver to match it. Receiver: supply non-interactively. Env: FSEND_PASS")
@@ -107,13 +105,11 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		return runConnect(f)
 	}
 
-	// Env-var fallback for sensitive arguments.
-	//
-	// Precedence is flag > env > default. Passing a secret via flag
-	// leaks it through /proc/<pid>/cmdline and `ps -ef`; FSEND_CODE
-	// lets users keep it out of argv. We only consult the env var when
-	// the flag wasn't explicitly given, so scripts that set both keep
-	// the flag's value (matching every other CLI's override convention).
+	// Env-var fallback for the password (FSEND_PASS). Passing a secret via
+	// flag leaks it through /proc/<pid>/cmdline and `ps -ef`; the env var
+	// lets users keep it out of argv. We only consult it when the flag
+	// wasn't explicitly given, so scripts that set both keep the flag's
+	// value (matching every other CLI's override convention).
 	applyEnvFallbacks(f, cmd)
 
 	// Force mode short-circuits auto-detect.
@@ -127,10 +123,6 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		return runReceive(f, f.posArgs[0])
 	}
 
-	// --code is unambiguously send mode.
-	if f.codeArg != "" {
-		return runSend(f, f.posArgs)
-	}
 	// --text is unambiguously send mode.
 	if f.textArg != "" {
 		return runSend(f, nil)
@@ -167,11 +159,6 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 // user did not pass the corresponding flag. Used for secrets we'd
 // rather not see on argv.
 func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
-	if !cmd.Flags().Changed("code") {
-		if v := os.Getenv("FSEND_CODE"); v != "" {
-			f.codeArg = v
-		}
-	}
 	if !cmd.Flags().Changed("pass") {
 		if v := os.Getenv("FSEND_PASS"); v != "" {
 			f.passArg = v

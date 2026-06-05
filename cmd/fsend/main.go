@@ -6,7 +6,6 @@
 //                              and no file with that name is in CWD)
 //   - fsend <path>           → send
 //   - fsend -                → send from stdin
-//   - fsend --code <c> ...   → send with explicit code
 //   - fsend --send / --receive force mode (skip auto-detect)
 //
 // v0.1.0 supports LAN-only operation (mDNS discovery + QUIC transfer).
