@@ -42,6 +42,43 @@ docker compose -f deploy/compose/docker-compose.yml up -d
 fsend --connect fs.example.com:443    # on each client
 ```
 
+### Ports
+
+fsend-server has two listeners: a **TCP HTTP signaling API** (`FSEND_HTTP_ADDR`,
+default `:8080`) and a **UDP relay** (`FSEND_UDP_ADDR`, default `:443`). The
+UDP relay only carries opaque QUIC ciphertext between peers — TLS terminates at
+the peers, not at the server — so it is the same listener whether or not you put
+HTTPS in front of signaling.
+
+**HTTP-only mode** (no reverse proxy — fine for LAN, dev, or trusted networks;
+**not** recommended on the public internet, see [threat model](docs/security/threat-model.md)):
+
+| Port             | Direction | Purpose                                         |
+|------------------|-----------|-------------------------------------------------|
+| `8080/tcp`       | inbound   | Signaling HTTP API (clients POST session/join)  |
+| `443/udp`        | inbound   | Relay fallback (opaque QUIC datagrams)          |
+
+Clients then connect with `fsend --connect http://host:8080`. If you change
+`FSEND_UDP_ADDR`, also set `FSEND_PUBLIC_ADDR=host:port` to the address clients
+should dial for relay.
+
+**HTTPS mode** (reverse proxy with your own domain — recommended for any
+public-internet deployment; matches the `deploy/compose/` stack):
+
+| Port             | Direction | Purpose                                              |
+|------------------|-----------|------------------------------------------------------|
+| `443/tcp`        | inbound   | HTTPS signaling — terminated by Caddy/nginx/Traefik  |
+| `443/udp`        | inbound   | Relay fallback — goes **directly** to fsend-server   |
+| `80/tcp`         | inbound   | Let's Encrypt ACME HTTP-01 challenge (cert issue/renew) |
+| `8080/tcp`       | internal  | fsend-server signaling — only reachable by the proxy |
+
+Clients then connect with `fsend --connect fs.example.com:443` (HTTPS is the
+default scheme for non-local hosts). TCP/443 and UDP/443 share the same port
+number but are different protocols, so both can bind simultaneously.
+
+No outbound ports beyond what your OS/Docker needs. fsend-server makes no
+outbound connections to clients.
+
 ## Documentation
 
 - [Project spec](PROJECT_SPEC.md) — architecture, decisions, UX
