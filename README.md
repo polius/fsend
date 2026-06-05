@@ -8,8 +8,12 @@ end-to-end encryption authenticated from a short shared code.
 fsend report.pdf
 
 # Receive (on the other machine)
-fsend abc-defgh-jkm
+fsend abc-defg-jkm
 ```
+
+See **[USAGE.md](USAGE.md)** for every flag, environment variable, and exit
+code — including folders, stdin, password-gated transfers, and self-hosted
+servers.
 
 ## Install
 
@@ -30,6 +34,77 @@ design rationale.
 - SPAKE2 (RFC 9382) channel-bound to TLS 1.3 (X25519 + ML-KEM-768 hybrid)
 - BLAKE3 chunk-verified streaming with resume
 - Auto-detect compression (zstd when it helps, raw when it doesn't)
+
+## How it works
+
+When you run `fsend file.pdf`, the sender opens **two paths at the same
+time** — a LAN listener (mDNS-announced) and a session on the rendezvous
+server. Whichever path the receiver reaches first wins; the other is
+cancelled. There is **no timeout** between the two — neither side ever
+waits on a budget.
+
+### Same network (sender and receiver on the same Wi-Fi)
+
+```
+   Sender                                  Receiver
+   fsend report.pdf                        fsend abc-defg-jkm
+     │                                       │
+     ├─ LAN listener  ──────────────►  ◄──── mDNS query (300 ms)
+     │                                       │
+     └─ Server register (standby)            └─ HIT → dial LAN port
+                                                       │
+                                                       ▼
+                                          direct P2P over LAN
+                                          (server path cancelled)
+```
+
+Pairs in well under a second. Bytes never touch the rendezvous server or
+cross NAT. Works even if the rendezvous server is offline.
+
+### Different networks (sender at home, receiver at a café)
+
+```
+   Sender                                  Receiver
+   fsend report.pdf                        fsend abc-defg-jkm
+     │                                       │
+     ├─ LAN listener (no one comes)          ├─ mDNS query (300 ms, miss)
+     │                                       │
+     └─ Server register  ──────────► ◄────── └─ Join server
+                                                       │
+                                                       ▼
+                                            ICE hole-punch (~70 %)
+                                            ─── or, on hard NAT ───
+                                            UDP relay (encrypted, opaque)
+                                            (LAN path cancelled)
+```
+
+Most cross-network transfers are still direct peer-to-peer thanks to ICE
+hole-punching through STUN. When NAT topology makes hole-punching
+impossible, the rendezvous server forwards encrypted UDP datagrams
+between the peers — it never sees plaintext, since TLS terminates at the
+peers, not at the server.
+
+### Why this design
+
+The two paths run concurrently rather than sequentially because waiting
+is always wrong for one of the two cases: same-network users would
+needlessly wait before the cross-network path even starts, and
+cross-network users would be blocked behind a same-network attempt that
+will never succeed. Running both at once gives you the fastest answer
+either way.
+
+### When the rendezvous server is unreachable
+
+Same-LAN transfers continue working — the LAN path doesn't depend on the
+server. The sender surfaces a one-line warning so you know cross-network
+receivers can't connect right now:
+
+```
+⚠ Rendezvous server unreachable — only same-LAN receivers can connect.
+```
+
+You can keep transferring on the local network or use `fsend --connect
+<other-host>` to point at a different server.
 
 ## Self-hosting
 
@@ -81,6 +156,8 @@ outbound connections to clients.
 
 ## Documentation
 
+- [Usage reference](USAGE.md) — every flag, env var, and exit code
+- [Development guide](DEVELOPMENT.md) — building and testing from source
 - [Project spec](PROJECT_SPEC.md) — architecture, decisions, UX
 - [Threat model](docs/security/threat-model.md) — what we defend against
 - [Privacy](docs/security/privacy.md) — no telemetry, no logs
