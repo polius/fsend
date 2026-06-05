@@ -78,7 +78,7 @@ func runReceive(f *flags, c string) error {
 	paired := false
 	if err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
 		func(attempt int) error {
-			return runReceiverLANOneAttempt(ctx, addr, outDir, hostname, f, accept, progressFn, &paired)
+			return runReceiverLANOneAttempt(ctx, addr, c, outDir, hostname, f, accept, progressFn, &paired)
 		}); err != nil {
 		return err
 	}
@@ -92,8 +92,8 @@ func runReceive(f *flags, c string) error {
 // runReceiverLANOneAttempt is one Dial + transfer pass. The `paired`
 // flag suppresses the "✓ direct (local)" line on retries so the user
 // sees it exactly once even when we reconnect mid-session.
-func runReceiverLANOneAttempt(ctx context.Context, addr, outDir, hostname string, f *flags, accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), paired *bool) error {
-	res, err := quicconn.Dial(ctx, addr)
+func runReceiverLANOneAttempt(ctx context.Context, addr, code, outDir, hostname string, f *flags, accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), paired *bool) error {
+	res, err := quicconn.Dial(ctx, addr, code)
 	if err != nil {
 		return fmt.Errorf("dialing sender: %w", err)
 	}

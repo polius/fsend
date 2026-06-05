@@ -117,7 +117,7 @@ func runSendOverInternet(ctx context.Context, f *flags, items []transfer.SourceI
 	if iceErr == nil {
 		defer iceConn.Close()
 		printPath(f, icePath)
-		return runSenderQUICOver(ctx, f, items, kind, totalFiles, iceConn)
+		return runSenderQUICOver(ctx, f, items, kind, totalFiles, iceConn, created.Code)
 	}
 	if f.debug {
 		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
@@ -134,7 +134,7 @@ func runSendOverInternet(ctx context.Context, f *flags, items []transfer.SourceI
 	}
 	defer relayConn.Close()
 	printPath(f, connpath.FromRelay(alloc.RelayAddr))
-	return runSenderQUICOver(ctx, f, items, kind, totalFiles, relayConn)
+	return runSenderQUICOver(ctx, f, items, kind, totalFiles, relayConn, created.Code)
 }
 
 // runReceiveOverInternet performs the cross-internet receive flow.
@@ -161,7 +161,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	if iceErr == nil {
 		defer iceConn.Close()
 		printPath(f, icePath)
-		return runReceiverQUICOver(ctx, f, iceConn)
+		return runReceiverQUICOver(ctx, f, iceConn, c)
 	}
 	if f.debug {
 		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
@@ -178,7 +178,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}
 	defer relayConn.Close()
 	printPath(f, connpath.FromRelay(alloc.RelayAddr))
-	return runReceiverQUICOver(ctx, f, relayConn)
+	return runReceiverQUICOver(ctx, f, relayConn, c)
 }
 
 // iceEstablish runs the full ICE handshake: starts an agent, pumps local
@@ -338,7 +338,7 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 // underlying PacketConn. The receiver's imohash + chunk-aligned partial
 // pick up where the previous attempt left off, so the user sees a brief
 // "retrying" line and the progress bar resumes — not a fresh download.
-func runSenderQUICOver(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, pc net.PacketConn) error {
+func runSenderQUICOver(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, pc net.PacketConn, code string) error {
 	tlsCfg, err := quicconn.SenderTLSConfig()
 	if err != nil {
 		return err
@@ -356,7 +356,7 @@ func runSenderQUICOver(ctx context.Context, f *flags, items []transfer.SourceIte
 
 	err = retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
 		func(attempt int) error {
-			return runSenderOneAttempt(ctx, ln, items, kind, totalFiles, f, progressFn)
+			return runSenderOneAttempt(ctx, ln, items, kind, totalFiles, f, progressFn, code)
 		})
 	if err != nil {
 		return err
@@ -371,12 +371,12 @@ func runSenderQUICOver(ctx context.Context, f *flags, items []transfer.SourceIte
 // runSenderOneAttempt is one Accept → handshake → transfer iteration. A
 // success returns nil; transient errors are returned for the retry layer
 // to classify.
-func runSenderOneAttempt(ctx context.Context, ln *quic.Listener, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, f *flags, progressFn func(uint32, uint64)) error {
+func runSenderOneAttempt(ctx context.Context, ln *quic.Listener, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, f *flags, progressFn func(uint32, uint64), code string) error {
 	qc, err := ln.Accept(ctx)
 	if err != nil {
 		return fmt.Errorf("QUIC accept: %w", err)
 	}
-	res, err := quicconn.SenderHandshake(ctx, qc)
+	res, err := quicconn.SenderHandshake(ctx, qc, code)
 	if err != nil {
 		return err
 	}
@@ -403,7 +403,7 @@ func runSenderOneAttempt(ctx context.Context, ln *quic.Listener, items []transfe
 // .fsend-partial sidecar plus its imohash fingerprint let the next
 // attempt resume mid-file — the sender verifies the prefix, seeks past
 // it, and streams the remainder.
-func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn) error {
+func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string) error {
 	tr := &quic.Transport{Conn: pc}
 	defer tr.Close()
 
@@ -421,7 +421,7 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn) error
 
 	if err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
 		func(attempt int) error {
-			return runReceiverOneAttempt(ctx, tr, outDir, f, accept, progressFn)
+			return runReceiverOneAttempt(ctx, tr, outDir, f, accept, progressFn, code)
 		}); err != nil {
 		return err
 	}
@@ -434,7 +434,7 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn) error
 // runReceiverOneAttempt is one Dial → handshake → transfer iteration.
 // Mirror of runSenderOneAttempt; returns nil on success or an error for
 // the retry layer to classify.
-func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir string, f *flags, accept func(wire.SenderHello) bool, progressFn func(uint32, uint64)) error {
+func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir string, f *flags, accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), code string) error {
 	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer dialCancel()
 	// The PacketConn ignores the dial address (both relay.Conn and our
@@ -446,7 +446,7 @@ func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir strin
 	if err != nil {
 		return fmt.Errorf("QUIC dial: %w", err)
 	}
-	res, err := quicconn.ReceiverHandshake(ctx, qc)
+	res, err := quicconn.ReceiverHandshake(ctx, qc, code)
 	if err != nil {
 		return err
 	}

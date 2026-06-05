@@ -170,7 +170,7 @@ func TestICE_LoopbackThenQUIC(t *testing.T) {
 			sendErr = err
 			return
 		}
-		res, err := quicconn.SenderHandshake(ctx, c)
+		res, err := quicconn.SenderHandshake(ctx, c, "abc-defg-hjk")
 		if err != nil {
 			sendErr = err
 			return
@@ -198,7 +198,7 @@ func TestICE_LoopbackThenQUIC(t *testing.T) {
 			recvErr = err
 			return
 		}
-		res, err := quicconn.ReceiverHandshake(ctx, c)
+		res, err := quicconn.ReceiverHandshake(ctx, c, "abc-defg-hjk")
 		if err != nil {
 			recvErr = err
 			return

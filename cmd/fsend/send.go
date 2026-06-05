@@ -103,7 +103,7 @@ var errLANUnavailable = errors.New("LAN unavailable")
 func runSendOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label, c string) error {
 	port := landisc.PortForCode(c)
 	listenAddr := ":" + strconv.Itoa(port)
-	ln, err := quicconn.ListenAddr(listenAddr)
+	ln, err := quicconn.ListenAddr(listenAddr, c)
 	if err != nil {
 		// Port already taken or similar — let the relay path try.
 		return errLANUnavailable

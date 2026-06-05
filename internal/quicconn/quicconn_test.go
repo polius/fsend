@@ -34,7 +34,7 @@ func TestQUIC_LoopbackTransfer(t *testing.T) {
 	}
 
 	// Sender side: start QUIC listener on a free port on loopback.
-	ln, err := ListenAddr("127.0.0.1:0")
+	ln, err := ListenAddr("127.0.0.1:0", "abc-defg-hjk")
 	if err != nil {
 		t.Fatalf("ListenAddr: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestQUIC_LoopbackTransfer(t *testing.T) {
 		// Tiny pause so the listener is definitely ready. Belt-and-suspenders;
 		// ListenAddr returns only after the socket is up.
 		time.Sleep(50 * time.Millisecond)
-		res, err := Dial(ctx, listenAddr)
+		res, err := Dial(ctx, listenAddr, "abc-defg-hjk")
 		if err != nil {
 			recvErr = err
 			return

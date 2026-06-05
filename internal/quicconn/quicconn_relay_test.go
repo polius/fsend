@@ -129,7 +129,7 @@ func TestQUIC_OverRelay(t *testing.T) {
 			sendErr = err
 			return
 		}
-		res, err := SenderHandshake(ctx, c)
+		res, err := SenderHandshake(ctx, c, "abc-defg-hjk")
 		if err != nil {
 			sendErr = err
 			return
@@ -160,7 +160,7 @@ func TestQUIC_OverRelay(t *testing.T) {
 			recvErr = err
 			return
 		}
-		res, err := ReceiverHandshake(ctx, c)
+		res, err := ReceiverHandshake(ctx, c, "abc-defg-hjk")
 		if err != nil {
 			recvErr = err
 			return

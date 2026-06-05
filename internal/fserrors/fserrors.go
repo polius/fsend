@@ -63,6 +63,9 @@ var (
 	ErrTransientFailure = errors.New("transient transfer failure")
 	// E021 — receiver did not match the sender's --pass challenge.
 	ErrWrongPassword = errors.New("wrong password")
+	// E022 — peers did not agree on the short code (or someone in the
+	// middle tried to MITM): SPAKE2-derived key + TLS exporter mismatch.
+	ErrPeerAuthFailed = errors.New("peer authentication failed")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -199,6 +202,12 @@ var catalog = map[error]Entry{
 		Message: "Wrong password. Transfer aborted.",
 		Action: "Ask the sender for the correct password and run again. Codes are\n" +
 			"  one-shot — the sender may need to restart to issue a fresh code.",
+	},
+	ErrPeerAuthFailed: {
+		Code: "E022", Exit: 22,
+		Message: "Could not authenticate the other peer.",
+		Action: "Either the codes don't match or something in the network path\n" +
+			"  tampered with the connection. Re-share the code and try again.",
 	},
 }
 

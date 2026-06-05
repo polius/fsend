@@ -74,10 +74,12 @@ func SenderTLSConfig() (*tls.Config, error) {
 
 // ReceiverTLSConfig is the client-role TLS config — the receiver dials.
 //
-// InsecureSkipVerify is set because the sender's cert is self-signed;
-// the cross-internet path inherits MITM defense from QUIC's TLS 1.3
-// plus the rendezvous server's narrow role. The PAKE-derived channel
-// binding hinted at in PROJECT_SPEC.md is not wired here today.
+// InsecureSkipVerify is set because the sender's cert is self-signed:
+// peer identity is established afterwards by the PAKE channel-binding
+// step in authenticatePeer, which binds the SPAKE2-derived secret to
+// this specific TLS session via the RFC 5705 exporter. A MITM that
+// terminates the TLS session ends up with a different exporter and
+// fails that tag check.
 func ReceiverTLSConfig() *tls.Config {
 	return &tls.Config{
 		InsecureSkipVerify: true,
@@ -99,9 +101,12 @@ func QuicConfig() *quic.Config {
 	}
 }
 
-// Listener wraps a quic.Listener for the LAN/test path.
+// Listener wraps a quic.Listener for the LAN/test path. It carries the
+// shared code so each Accept can run the PAKE handshake without an
+// extra argument at the call site.
 type Listener struct {
-	ln *quic.Listener
+	ln   *quic.Listener
+	code string
 }
 
 // LocalAddr returns the UDP address the listener is bound to.
@@ -118,27 +123,26 @@ func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: accept: %w", err)
 	}
-	return SenderHandshake(ctx, c)
+	return SenderHandshake(ctx, c, l.code)
 }
 
-// SenderHandshake opens the control (bidi) and data (uni) streams on
-// the sender side and primes the data stream so the receiver's
-// AcceptUniStream returns without waiting for the first real chunk.
-//
-// No peer round-trip happens here — the bytes the sender writes during
-// transfer.Send naturally drive the receiver's AcceptStream.
-func SenderHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
+// SenderHandshake opens the control stream, authenticates the peer via
+// SPAKE2 + TLS channel binding, then opens and primes the data stream.
+// The prime byte lets the receiver's AcceptUniStream return before the
+// first real chunk — without it an empty transfer (e.g. a directory tar
+// with no entries) would deadlock the receiver.
+func SenderHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptResult, error) {
 	ctrl, err := c.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: open control: %w", err)
+	}
+	if err := authenticatePeer(c, ctrl, code); err != nil {
+		return nil, err
 	}
 	data, err := c.OpenUniStreamSync(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: open data: %w", err)
 	}
-	// One-byte prime so the receiver's AcceptUniStream can return before
-	// the first real chunk is written. Without it, an empty transfer
-	// (e.g. a directory tar with no entries) would deadlock the receiver.
 	if _, err := data.Write([]byte{0}); err != nil {
 		return nil, fmt.Errorf("quicconn: prime data: %w", err)
 	}
@@ -151,8 +155,9 @@ func SenderHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
 	}, nil
 }
 
-// ListenAddr binds a QUIC listener on addr.
-func ListenAddr(addr string) (*Listener, error) {
+// ListenAddr binds a QUIC listener on addr. code is the shared short
+// code used to authenticate every incoming peer.
+func ListenAddr(addr, code string) (*Listener, error) {
 	tlsCfg, err := SenderTLSConfig()
 	if err != nil {
 		return nil, err
@@ -161,12 +166,13 @@ func ListenAddr(addr string) (*Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: listen: %w", err)
 	}
-	return &Listener{ln: ln}, nil
+	return &Listener{ln: ln, code: code}, nil
 }
 
 // Dial connects to a sender-side QUIC listener and returns the
-// negotiated streams from the receiver's perspective.
-func Dial(ctx context.Context, addr string) (*AcceptResult, error) {
+// negotiated streams from the receiver's perspective. code is the
+// shared short code used to authenticate the sender.
+func Dial(ctx context.Context, addr, code string) (*AcceptResult, error) {
 	hsCtx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer cancel()
 
@@ -174,19 +180,19 @@ func Dial(ctx context.Context, addr string) (*AcceptResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: dial: %w", err)
 	}
-	return ReceiverHandshake(ctx, c)
+	return ReceiverHandshake(ctx, c, code)
 }
 
-// ReceiverHandshake accepts the sender's control + data streams and
-// consumes the data-stream priming byte.
-//
-// AcceptStream blocks until the sender writes the first HELLO byte;
-// AcceptUniStream returns immediately because the sender always primes
-// the data stream during SenderHandshake.
-func ReceiverHandshake(ctx context.Context, c *quic.Conn) (*AcceptResult, error) {
+// ReceiverHandshake accepts the sender's control stream, authenticates
+// the peer via SPAKE2 + TLS channel binding, then accepts the data
+// stream and consumes the priming byte.
+func ReceiverHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptResult, error) {
 	ctrl, err := c.AcceptStream(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: accept control: %w", err)
+	}
+	if err := authenticatePeer(c, ctrl, code); err != nil {
+		return nil, err
 	}
 	data, err := c.AcceptUniStream(ctx)
 	if err != nil {
