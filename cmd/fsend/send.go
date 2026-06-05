@@ -81,6 +81,14 @@ func runSend(f *flags, paths []string) error {
 		return err
 	}
 
+	// LAN bailed out — but if the reason is that the user pressed Ctrl-C
+	// (or sent SIGTERM), don't silently start the internet fallback. The
+	// LAN Accept failure is indistinguishable from a "no receiver showed
+	// up" timeout at this layer, so we use ctx.Err() to disambiguate.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// LAN path unavailable — go internet (ICE → relay).
 	cfg, _ := config.Load()
 	return runSendOverInternet(ctx, f, items, kind, totalFiles, label, cfg)
