@@ -89,11 +89,6 @@ func defaultTimeouts() (disconnected, failed, keepalive time.Duration) {
 	return 5 * time.Second, 15 * time.Second, 2 * time.Second
 }
 
-// refTo returns a pointer to a duration literal. pion's AgentConfig uses
-// *time.Duration so callers can distinguish "zero, meaning never" from
-// "unset, meaning use default."
-func refTo(d time.Duration) *time.Duration { return &d }
-
 // New constructs a configured ICE agent and starts candidate gathering.
 //
 // Returns once the agent is alive and gathering is in flight; the caller
@@ -109,34 +104,32 @@ func New(opts Options) (*Agent, error) {
 
 	disc, fail, ka := defaultTimeouts()
 
-	cfg := &ice.AgentConfig{
-		NetworkTypes: []ice.NetworkType{
+	agentOpts := []ice.AgentOption{
+		ice.WithNetworkTypes([]ice.NetworkType{
 			ice.NetworkTypeUDP4,
 			ice.NetworkTypeUDP6,
-		},
-		CandidateTypes: []ice.CandidateType{
+		}),
+		ice.WithCandidateTypes([]ice.CandidateType{
 			ice.CandidateTypeHost,
 			ice.CandidateTypeServerReflexive,
-		},
-		LocalUfrag:          opts.LocalUfrag,
-		LocalPwd:            opts.LocalPwd,
-		DisconnectedTimeout: refTo(disc),
-		FailedTimeout:       refTo(fail),
-		KeepaliveInterval:   refTo(ka),
-		InsecureSkipVerify:  false,
+		}),
+		ice.WithLocalCredentials(opts.LocalUfrag, opts.LocalPwd),
+		ice.WithDisconnectedTimeout(disc),
+		ice.WithFailedTimeout(fail),
+		ice.WithKeepaliveInterval(ka),
 	}
 	if opts.STUNHost != "" {
-		cfg.Urls = []*stun.URI{
+		agentOpts = append(agentOpts, ice.WithUrls([]*stun.URI{
 			{
 				Scheme: stun.SchemeTypeSTUN,
 				Host:   opts.STUNHost,
 				Port:   opts.STUNPort,
 				Proto:  stun.ProtoTypeUDP,
 			},
-		}
+		}))
 	}
 
-	inner, err := ice.NewAgent(cfg)
+	inner, err := ice.NewAgentWithOptions(agentOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("iceconn: new agent: %w", err)
 	}

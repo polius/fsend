@@ -289,7 +289,7 @@ func ExtractArchive(tarPath, targetDir string) error {
 			if err := os.MkdirAll(clean, os.FileMode(hdr.Mode)&os.ModePerm); err != nil {
 				return fmt.Errorf("extract: mkdir %s: %w", clean, err)
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
 				return fmt.Errorf("extract: mkdir parent %s: %w", clean, err)
 			}
