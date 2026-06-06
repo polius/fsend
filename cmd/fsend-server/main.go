@@ -254,7 +254,7 @@ func healthCheck() error {
 }
 
 func printHelp() {
-	fmt.Print(`fsend-server — rendezvous + relay server for fsend
+	fmt.Print(`fsend-server — pairing + relay server for fsend
 
 USAGE
   fsend-server                 Run the server (config via env vars)

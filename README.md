@@ -1,5 +1,7 @@
 # fsend
 
+Truly peer-to-peer file transfer — direct, encrypted, relay only as a fallback. 🚀🔒
+
 Truly peer-to-peer file transfer over QUIC, with NAT hole-punching and
 end-to-end encryption authenticated from a short shared code.
 
@@ -40,7 +42,7 @@ UDP multicast and connect directly. No meaningful difference.
   no matter how fast your own connections are.
 - **fsend** hole-punches through both NATs first using ICE + STUN. When
   hole-punching succeeds, bytes flow **directly** between the two
-  machines and the rendezvous server only helped you find each other.
+  machines and the pairing server only helped you find each other.
   fsend only falls back to a relay when NAT topology makes hole-punching
   impossible (typically symmetric NATs and some locked-down corporate
   networks).
@@ -123,7 +125,7 @@ quantum computer — recorded croc traffic is.
 ## How it works
 
 When you run `fsend file.pdf`, the sender opens **two paths at the same
-time** — a LAN listener (mDNS-announced) and a session on the rendezvous
+time** — a LAN listener (mDNS-announced) and a session on the pairing
 server. Whichever path the receiver reaches first wins; the other is
 cancelled. There is **no timeout** between the two — neither side ever
 waits on a budget.
@@ -143,8 +145,8 @@ waits on a budget.
                                           (server path cancelled)
 ```
 
-Pairs in well under a second. Bytes never touch the rendezvous server or
-cross NAT. Works even if the rendezvous server is offline.
+Pairs in well under a second. Bytes never touch the pairing server or
+cross NAT. Works even if the pairing server is offline.
 
 ### Different networks (sender at home, receiver at a café)
 
@@ -165,7 +167,7 @@ cross NAT. Works even if the rendezvous server is offline.
 
 When the two NATs can be punched through, bytes flow directly between
 the two peers. When NAT topology makes hole-punching impossible (hard
-symmetric NAT, some locked-down corporate networks), the rendezvous
+symmetric NAT, some locked-down corporate networks), the pairing
 server forwards encrypted UDP datagrams between the peers — it never
 sees plaintext, since TLS terminates at the peers, not at the server.
 
@@ -178,22 +180,85 @@ cross-network users would be blocked behind a same-network attempt that
 will never succeed. Running both at once gives you the fastest answer
 either way.
 
-### When the rendezvous server is unreachable
+### When the pairing server is unreachable
 
 Same-LAN transfers continue working — the LAN path doesn't depend on the
 server. The sender surfaces a one-line warning so you know cross-network
 receivers can't connect right now:
 
 ```
-⚠ Rendezvous server unreachable — only same-LAN receivers can connect.
+⚠ Server unreachable — only same-LAN receivers can connect.
 ```
 
 You can keep transferring on the local network or use `fsend --connect
 <other-host>` to point at a different server.
 
+## Is the pairing server something to worry about?
+
+No. It's a matchmaker, not a middleman — and even when it has to step in
+as a fallback, it can't read your files. Here's the full picture.
+
+### Why does the server need to exist at all?
+
+Two machines on different networks usually can't see each other. Both
+sit behind home or office routers (NAT) that hide them from the public
+internet, so neither side knows where to send the first packet. They
+need a meeting point to swap addresses before they can talk directly.
+
+```
+   Sender                   Pairing server                  Receiver
+      │                  ┌───────────────────┐                │
+      │  "I'm here,      │   matchmaker:     │  "I have code  │
+      │   code abc-..."  │   pair two peers  │   abc-..."     │
+      │ ────────────────►│   who share the   │◄────────────── │
+      │                  │   same code       │                │
+      │                  └─────────┬─────────┘                │
+      │                            │                          │
+      │   "here are each other's public addresses — go talk"  │
+      │                            │                          │
+      └────── direct peer-to-peer (server steps aside) ───────┘
+```
+
+That's the whole job: introduce the two peers, then get out of the way.
+In the typical cross-network case the file flows peer-to-peer and the
+server never sees a single byte of it.
+
+When the two networks make a direct connection impossible (hard NAT,
+locked-down corporate firewalls), the server falls back to forwarding
+**already-encrypted** UDP datagrams between the peers — think of a mail
+carrier moving sealed envelopes. It moves the parcel; it can't open it.
+
+### What the server can and cannot see
+
+|                                                   | Server sees     |
+|---------------------------------------------------|-----------------|
+| File contents                                     | ✗ never         |
+| File names, sizes, hashes                         | ✗ never         |
+| Encrypted ciphertext (on the relay-fallback path) | ✓ as opaque bytes — not decryptable, not even by the server's operator |
+| The 7-character pairing code & your IP            | ✓ briefly, in memory only, for pairing — never written to disk |
+
+End-to-end encryption (TLS 1.3 + SPAKE2, see the [Security](#security)
+section) means even the operator of the server can't decrypt traffic
+that goes through it. The encryption keys never leave the two peers.
+
+### What it writes to disk
+
+Effectively nothing:
+
+- **No access log. No per-transfer log line.** The default log level
+  only emits lifecycle events — startup, shutdown, and errors.
+- **No IP addresses or pairing codes in logs**, at any level.
+- **No database, no persistence layer.** Pairing state lives in RAM,
+  evicts within an hour at most (ten minutes once a transfer has
+  paired), and is gone forever on restart.
+
+If you'd still rather not trust our public server,
+[self-host one](#self-hosting) — it's a single binary with nothing to
+back up.
+
 ## Self-hosting
 
-The default rendezvous server at `fs.alzina.dev` is best-effort. To run
+The default pairing server at `fs.alzina.dev` is best-effort. To run
 your own, see [`deploy/compose/`](deploy/compose/).
 
 ```bash

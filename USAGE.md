@@ -30,8 +30,8 @@ Complete reference for the `fsend` client and the `fsend-server` daemon.
 | Send multiple files | `fsend a.txt b.txt c.txt` |
 | Send from stdin | `cat file.bin \| fsend -` |
 | Send a literal string | `fsend --text "hello world"` |
-| Receive | `fsend abc-defg-hjk` |
-| Receive without prompt | `fsend --yes abc-defg-hjk` |
+| Receive | `fsend abc-defg-jkm` |
+| Receive without prompt | `fsend --yes abc-defg-jkm` |
 | Use your own server | `fsend --connect fs.example.com:443` |
 | Reset to default server | `fsend --connect default` |
 | Show current server | `fsend --connect` |
@@ -59,7 +59,7 @@ that prompt, pass `--send` or `--receive` to commit up front.
 fsend [file|dir|-]... [flags]
 ```
 
-You'll see a code like `abc-defg-hjk`. Share it with the receiver.
+You'll see a code like `abc-defg-jkm`. Share it with the receiver.
 
 ### Sender flags
 
@@ -122,16 +122,16 @@ asks you to confirm. Pass `--yes` to skip the prompt.
 
 ```sh
 # Interactive — prompts before accepting
-fsend abc-defg-hjk
+fsend abc-defg-jkm
 
 # No prompt, save into ~/Downloads/incoming
-fsend --yes --out ~/Downloads/incoming abc-defg-hjk
+fsend --yes --out ~/Downloads/incoming abc-defg-jkm
 
 # Overwrite anything already there
-fsend --yes --overwrite abc-defg-hjk
+fsend --yes --overwrite abc-defg-jkm
 
 # Password-gated transfer, supplied via env var (won't appear in `ps`)
-FSEND_PASS=swordfish fsend --yes abc-defg-hjk
+FSEND_PASS=swordfish fsend --yes abc-defg-jkm
 ```
 
 If you cancel a transfer mid-flight, a `.fsend-partial` sidecar is kept and
@@ -143,7 +143,7 @@ asks you to re-run — the next attempt fetches a fresh copy.
 
 ## Choosing a server (`--connect`)
 
-The default rendezvous server is `fs.alzina.dev` — best-effort, free, and
+The default pairing server is `fs.alzina.dev` — best-effort, free, and
 not guaranteed. You can switch at any time:
 
 ```sh
@@ -243,29 +243,35 @@ docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend-server
 Stable from v0.1.0 onward. `0` means success; non-zero codes map to a
 specific failure.
 
-| Code | When it happens |
-|------|-----------------|
-| `0`  | Success (or non-fatal warning, e.g. `E016` config corrupted). |
-| `2`  | `E001` — server unreachable. |
-| `3`  | `E002` code not found / `E003` code already claimed. |
-| `4`  | `E004` — invalid code format. |
-| `6`  | `E006` — receiver declined the transfer. |
-| `7`  | `E007` — confirmation prompt timed out. |
-| `8`  | `E008` — disk full. |
-| `9`  | `E009` — could not write the target file. |
-| `10` | `E010` — could not read the source file. |
-| `11` | `E011` — transfer completed but hash didn't verify. |
-| `12` | `E012` — path traversal rejected (security check). |
-| `13` | `E013` — target file exists, use `--overwrite`. |
-| `14` | `E014` — could not connect to peer, even via relay. |
-| `15` | `E015` — protocol error (incompatible versions). |
-| `17` | `E017` — rate limited. |
-| `18` | `E018` — default server retired. |
-| `19` | `E019` — source file changed; stale partial auto-discarded, re-run to fetch a fresh copy. |
-| `20` | `E020` — transient transfer failure (retries exhausted). |
-| `21` | `E021` — wrong password. |
-| `22` | `E022` — peer authentication failed (code mismatch or tampering). |
-| `99` | `E099` — unexpected error. Run with `--debug` and file an issue. |
+| Code  | When it happens |
+|-------|-----------------|
+| `0`   | Success (or non-fatal warning, e.g. `E016` config corrupted). |
+| `1`   | `E001` — server unreachable. |
+| `2`   | `E002` — code not found. |
+| `3`   | `E003` — code already claimed by another receiver. |
+| `4`   | `E004` — invalid code format. |
+| `6`   | `E006` — receiver declined the transfer. |
+| `7`   | `E007` — session expired on the server before a receiver paired. |
+| `8`   | `E008` — disk full. |
+| `9`   | `E009` — could not write the target file. |
+| `10`  | `E010` — could not read the source file. |
+| `11`  | `E011` — transfer completed but hash didn't verify. |
+| `12`  | `E012` — path traversal rejected (security check). |
+| `13`  | `E013` — target file exists, use `--overwrite`. |
+| `14`  | `E014` — could not connect to peer, even via relay. |
+| `15`  | `E015` — protocol error (incompatible versions). |
+| `17`  | `E017` — rate limited. |
+| `18`  | `E018` — default server retired. |
+| `19`  | `E019` — source file changed; stale partial auto-discarded, re-run to fetch a fresh copy. |
+| `20`  | `E020` — transient transfer failure (retries exhausted). |
+| `21`  | `E021` — wrong password. |
+| `22`  | `E022` — peer authentication failed (code mismatch or tampering). |
+| `23`  | `E023` — relay's per-session byte cap reached. |
+| `24`  | `E024` — invalid usage (bad flag, bad arg shape, conflicting modes). |
+| `25`  | `E025` — source file or directory not found. |
+| `27`  | `E027` — could not open the local-network listener (port in use, mDNS init failed). |
+| `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
+| `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 
 ---
 
