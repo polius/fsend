@@ -163,6 +163,19 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 
 	// Handle symlinks: just Symlink and ACK; no data follows.
 	if info.IsSymlink {
+		// Reject symlinks whose resolved target escapes TargetDir.
+		// Without this, a malicious sender can emit a symlink "evil →
+		// /elsewhere" followed by a regular file "evil/foo.txt" — the
+		// second write resolves through the symlink and lands at
+		// /elsewhere/foo.txt, completely outside TargetDir. The lexical
+		// pathIsUnder check on `target` above sees only the path string,
+		// not the filesystem symlink.
+		if symlinkEscapes(opts.TargetDir, info.RelativePath, info.SymlinkTarget) {
+			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+				Code: wire.ErrCodeProtocolError, Message: "symlink target escapes target dir",
+			})
+			return fserrors.ErrPathTraversal
+		}
 		// Parent must exist.
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
