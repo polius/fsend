@@ -186,9 +186,7 @@ func promptAccept(f *flags, h wire.SenderHello) bool {
 		pwChip = "  🔒 password required"
 	}
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  Receiving from", sanitizeRemote(h.Hostname))
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  "+separator())
+	fmt.Fprintf(os.Stderr, "  Incoming from %s:\n", sanitizeRemote(h.Hostname))
 	fmt.Fprintln(os.Stderr)
 	switch h.TransferKind {
 	case wire.TransferSingleFile:
@@ -217,8 +215,6 @@ func promptAccept(f *flags, h wire.SenderHello) bool {
 		}
 		fmt.Fprintf(os.Stderr, "      stream from stdin  (%s)%s\n", size, pwChip)
 	}
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  "+separator())
 	fmt.Fprintln(os.Stderr)
 
 	if f.yes {

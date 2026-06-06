@@ -67,9 +67,9 @@ func runConnect(f *flags) error {
 		if err := config.Save(cfg); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
-		msg := "Server set to: " + host
+		msg := "Server set to " + host
 		if password != "" {
-			msg += "  (password set)"
+			msg += " (password set)"
 		}
 		fmt.Fprintln(os.Stderr, uxlog.Check(), msg)
 		return nil
@@ -100,17 +100,17 @@ func printCurrentServer(cfg *config.Config) {
 	if cfg.IsDefault() {
 		fmt.Fprintln(os.Stderr, "  Current server:", config.DefaultServer, "(default)")
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "  To set a custom server:  fsend --connect <host:port> [password]")
+		fmt.Fprintln(os.Stderr, "  Set a custom server:  fsend --connect <host:port> [password]")
 	} else {
-		extra := ""
+		tag := "custom"
 		if cfg.ServerPassword != "" {
-			extra = "  (password set)"
+			tag = "custom, password set"
 		}
-		fmt.Fprintln(os.Stderr, "  Current server:", cfg.Server, "(custom)"+extra)
+		fmt.Fprintf(os.Stderr, "  Current server: %s  (%s)\n", cfg.Server, tag)
 		fmt.Fprintln(os.Stderr, "  Default server:", config.DefaultServer)
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "  To revert to the default:  fsend --connect default")
-		fmt.Fprintln(os.Stderr, "  To set a new server:       fsend --connect <host:port> [password]")
+		fmt.Fprintln(os.Stderr, "  Revert to the default:  fsend --connect default")
+		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host:port> [password]")
 	}
 	fmt.Fprintln(os.Stderr)
 }

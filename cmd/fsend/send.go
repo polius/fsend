@@ -294,23 +294,13 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 		// count.
 		fmt.Fprintln(os.Stderr, "  Sending from stdin  (streaming)")
 	}
-	sep := separator()
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  "+sep)
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "      %s\n", c)
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  On the other machine, run:")
-	fmt.Fprintf(os.Stderr, "      fsend %s\n", c)
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  "+sep)
+	fmt.Fprintf(os.Stderr, "      fsend %s\n", c)
 	fmt.Fprintln(os.Stderr)
 	return uxlog.StartSpinner("Waiting for receiver")
 }
-
-// separator is a CLI-facing alias for uxlog.Separator so callers don't
-// have to qualify it on every artifact line.
-func separator() string { return uxlog.Separator() }
 
 // totalBytes sums the payload bytes across items.
 func totalBytes(items []transfer.SourceItem) int64 {

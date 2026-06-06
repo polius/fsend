@@ -18,7 +18,7 @@ import (
 // privileged directory and need the user to escalate by hand.
 func runUninstall(f *flags) error {
 	if !confirmUninstall(f) {
-		fmt.Fprintln(os.Stderr, "  uninstall cancelled")
+		fmt.Fprintln(os.Stderr, "  Uninstall cancelled.")
 		return nil
 	}
 
@@ -26,9 +26,9 @@ func runUninstall(f *flags) error {
 	if cfgPath != "" {
 		dir := filepath.Dir(cfgPath)
 		if err := os.RemoveAll(dir); err == nil {
-			fmt.Fprintf(os.Stderr, "  %s removed config dir: %s\n", uxlog.Check(), dir)
+			fmt.Fprintf(os.Stderr, "  %s Removed config dir: %s\n", uxlog.Check(), dir)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "  %s could not remove %s: %v\n", uxlog.Warn(), dir, err)
+			fmt.Fprintf(os.Stderr, "  %s Could not remove %s: %v\n", uxlog.Warn(), dir, err)
 		}
 	}
 
@@ -44,16 +44,16 @@ func runUninstall(f *flags) error {
 	// On Windows the running .exe can't delete itself. Best we can do
 	// is print the path and ask the user to remove it by hand.
 	if runtime.GOOS == "windows" {
-		fmt.Fprintf(os.Stderr, "  delete this file to finish uninstall: %s\n", binPath)
+		fmt.Fprintf(os.Stderr, "  Delete this file to finish uninstall: %s\n", binPath)
 		return nil
 	}
 
 	if err := os.Remove(binPath); err != nil {
-		fmt.Fprintf(os.Stderr, "  %s could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
+		fmt.Fprintf(os.Stderr, "  %s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
 		fmt.Fprintln(os.Stderr, "    Remove it manually, possibly with sudo.")
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "  %s removed binary: %s\n", uxlog.Check(), binPath)
+	fmt.Fprintf(os.Stderr, "  %s Removed binary: %s\n", uxlog.Check(), binPath)
 	fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
 	return nil
 }

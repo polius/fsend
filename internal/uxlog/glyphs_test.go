@@ -1,7 +1,6 @@
 package uxlog
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -25,27 +24,6 @@ func TestMarker_NonTTYFallback(t *testing.T) {
 			t.Errorf("%s fallback = %q, want %q", c.name, got, c.want)
 		}
 	}
-}
-
-func TestSeparator_FitsBudget(t *testing.T) {
-	got := Separator()
-	if l := visualLen(got); l < 20 || l > 60 {
-		t.Errorf("separator length = %d, want between 20 and 60", l)
-	}
-	// Non-TTY (test env) → ASCII rule.
-	if strings.ContainsRune(got, '─') {
-		t.Errorf("separator should be ASCII under non-TTY, got %q", got)
-	}
-}
-
-// visualLen counts runes — strings.Repeat builds rune-count == byte-count
-// for both '-' and '─' (the latter is 3 bytes).
-func visualLen(s string) int {
-	n := 0
-	for range s {
-		n++
-	}
-	return n
 }
 
 func TestColorEnabled_RespectsNoColor(t *testing.T) {
