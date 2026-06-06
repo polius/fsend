@@ -56,16 +56,16 @@ type ReceiverHello struct {
 // FileInfo describes one file (or directory entry, or symlink) in the
 // transfer. The sender emits these in walk order before any chunks flow.
 type FileInfo struct {
-	Index         uint32 // 0-based within the transfer
-	RelativePath  string // forward-slash, no leading slash, no .. segments
-	Size          uint64 // bytes (0 for empty files, dirs, symlinks)
-	Mode          uint32 // unix mode bits; mapped to closest equivalent on Windows
-	ModTime       int64  // unix nanoseconds
-	IsDir         bool   // true → no data, just create the directory
-	IsSymlink     bool   // true → SymlinkTarget set, no data
-	SymlinkTarget string // only if IsSymlink
+	Index         uint32   // 0-based within the transfer
+	RelativePath  string   // forward-slash, no leading slash, no .. segments
+	Size          uint64   // bytes (0 for empty files, dirs, symlinks)
+	Mode          uint32   // unix mode bits; mapped to closest equivalent on Windows
+	ModTime       int64    // unix nanoseconds
+	IsDir         bool     // true → no data, just create the directory
+	IsSymlink     bool     // true → SymlinkTarget set, no data
+	SymlinkTarget string   // only if IsSymlink
 	Blake3Root    [32]byte // BLAKE3 hash of the full plaintext file
-	Resumable     bool   // false for stdin/text transfers
+	Resumable     bool     // false for stdin/text transfers
 }
 
 // FileAcceptDecision is the receiver's per-file response to a FILE_INFO.

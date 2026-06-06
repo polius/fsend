@@ -484,4 +484,3 @@ func printPath(f *flags, info connpath.Info) {
 		}
 	}
 }
-

@@ -276,4 +276,3 @@ func isBidi(r rune) bool {
 	}
 	return false
 }
-

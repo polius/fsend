@@ -79,11 +79,12 @@ func runSend(f *flags, paths []string) error {
 // send finishes — successfully or not — to remove the temp tar.
 //
 // Cases:
-//   --text                                 → synthetic SourceItem
-//   "-"                                    → stdin (one synthetic SourceItem)
-//   single regular file                    → single-file walk, no archive
-//   multiple regular files                 → multi-file walk, no archive
-//   any directory in the input set         → tar bundle, archive transfer
+//
+//	--text                                 → synthetic SourceItem
+//	"-"                                    → stdin (one synthetic SourceItem)
+//	single regular file                    → single-file walk, no archive
+//	multiple regular files                 → multi-file walk, no archive
+//	any directory in the input set         → tar bundle, archive transfer
 //
 // Bundling directories into a tar is the default-and-only behavior: it
 // gives us deterministic resume on huge trees (imohash works on the
@@ -482,4 +483,3 @@ func signalContext() (context.Context, context.CancelFunc) {
 	}()
 	return ctx, cancel
 }
-

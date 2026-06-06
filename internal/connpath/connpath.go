@@ -6,13 +6,13 @@
 // UX" → "Always show the data path":
 //
 //   - Local       — peers are on the same LAN. Either mDNS discovery
-//                   short-circuited the rendezvous path entirely, or ICE
-//                   selected a host↔host candidate pair (no NAT crossed).
+//     short-circuited the rendezvous path entirely, or ICE
+//     selected a host↔host candidate pair (no NAT crossed).
 //   - DirectSTUN  — ICE hole-punched through one or both NATs. At least
-//                   one side of the selected pair is a server-reflexive
-//                   (srflx) or peer-reflexive (prflx) candidate.
+//     one side of the selected pair is a server-reflexive
+//     (srflx) or peer-reflexive (prflx) candidate.
 //   - Relay       — ICE failed; QUIC is tunneled through the rendezvous
-//                   server's UDP relay.
+//     server's UDP relay.
 //
 // The classifier does not import pion/ice. Call sites that already hold
 // pion candidate types pass them in as plain strings ("host", "srflx",
@@ -69,12 +69,12 @@ func FromRelay(relayAddr string) Info {
 //
 // Rules:
 //   - relay anywhere     → KindRelay (a TURN-style allocation; not our
-//                          server-side relay path, but kept distinct from
-//                          a "direct" claim).
+//     server-side relay path, but kept distinct from
+//     a "direct" claim).
 //   - both host          → KindLocal (peers reached each other on
-//                          interface addresses; no NAT was crossed).
+//     interface addresses; no NAT was crossed).
 //   - anything else      → KindDirectSTUN (at least one srflx/prflx,
-//                          meaning a NAT was punched through).
+//     meaning a NAT was punched through).
 //
 // Unknown / empty inputs are conservatively classified as KindDirectSTUN
 // rather than KindLocal — we only claim "Local" when we're sure.

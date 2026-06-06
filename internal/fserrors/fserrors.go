@@ -228,7 +228,7 @@ var catalog = map[error]Entry{
 	ErrPartialMismatch: {
 		Code: "E019", Exit: 19,
 		Message: "The source file changed since the last attempt — stale partial discarded.",
-		Action: "Run the same command again to fetch a fresh copy from scratch.",
+		Action:  "Run the same command again to fetch a fresh copy from scratch.",
 	},
 	ErrTransientFailure: {
 		Code: "E020", Exit: 20,

@@ -138,4 +138,3 @@ func TestConnect_DefaultClearsServer(t *testing.T) {
 		t.Fatalf("server should have been cleared:\n%s", got)
 	}
 }
-

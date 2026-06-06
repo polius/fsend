@@ -21,19 +21,20 @@ import (
 // TestQUIC_OverRelay drives the headline integration test for fsend's
 // cross-internet path:
 //
-//   1. Start an in-process UDP relay (internal/relay.Server).
-//   2. Allocate a token.
-//   3. Both peers open their own UDP sockets and wrap them with relay.Conn.
-//   4. Hand each peer's relay.Conn to a quic-go Transport.
-//   5. Sender opens a QUIC listener via Transport.Listen.
-//   6. Receiver dials via Transport.Dial.
-//   7. internal/transfer runs the full file transfer through them.
-//   8. Verify byte-perfect.
+//  1. Start an in-process UDP relay (internal/relay.Server).
+//  2. Allocate a token.
+//  3. Both peers open their own UDP sockets and wrap them with relay.Conn.
+//  4. Hand each peer's relay.Conn to a quic-go Transport.
+//  5. Sender opens a QUIC listener via Transport.Listen.
+//  6. Receiver dials via Transport.Dial.
+//  7. internal/transfer runs the full file transfer through them.
+//  8. Verify byte-perfect.
 //
 // This proves end-to-end:
-//   real bytes → relay-framed → relay-server demux → relay-framed back →
-//   peer-side unframe → quic-go reads as a UDP datagram → QUIC handshake →
-//   TLS 1.3 → fsend wire protocol → file written to disk → BLAKE3 root match.
+//
+//	real bytes → relay-framed → relay-server demux → relay-framed back →
+//	peer-side unframe → quic-go reads as a UDP datagram → QUIC handshake →
+//	TLS 1.3 → fsend wire protocol → file written to disk → BLAKE3 root match.
 func TestQUIC_OverRelay(t *testing.T) {
 	const fileSize = 2 * 1024 * 1024 // 2 MB
 

@@ -15,10 +15,10 @@ import (
 // runConnect implements `fsend --connect ...` per PROJECT_SPEC.md
 // "Server configuration":
 //
-//   fsend --connect                  → print current config + default
-//   fsend --connect default          → revert to compiled-in default
-//   fsend --connect <host:port>      → set custom server
-//   fsend --connect <host:port> <pw> → set custom server + password
+//	fsend --connect                  → print current config + default
+//	fsend --connect default          → revert to compiled-in default
+//	fsend --connect <host:port>      → set custom server
+//	fsend --connect <host:port> <pw> → set custom server + password
 func runConnect(f *flags) error {
 	cfg, _ := config.Load() // ignore corruption error — we're about to overwrite anyway
 

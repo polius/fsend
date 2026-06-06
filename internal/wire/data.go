@@ -27,11 +27,11 @@ const chunkHeaderSize = 1 + 1 + 4 + 4 + 4 + 32 // type+flags+len+file_idx+chunk_
 
 // Chunk is the in-memory representation of one data-stream frame.
 type Chunk struct {
-	Flags      uint8     // FlagCompressed, FlagLastChunk
-	FileIndex  uint32    // matches FileInfo.Index
-	ChunkIndex uint32    // 0-based within the file
-	Blake3Hash [32]byte  // BLAKE3 of the *uncompressed* payload
-	Payload    []byte    // length ≤ MaxChunkSize (may be compressed if FlagCompressed)
+	Flags      uint8    // FlagCompressed, FlagLastChunk
+	FileIndex  uint32   // matches FileInfo.Index
+	ChunkIndex uint32   // 0-based within the file
+	Blake3Hash [32]byte // BLAKE3 of the *uncompressed* payload
+	Payload    []byte   // length ≤ MaxChunkSize (may be compressed if FlagCompressed)
 }
 
 // ErrChunkTooLarge is returned when a chunk's declared payload exceeds MaxChunkSize.

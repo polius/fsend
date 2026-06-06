@@ -310,7 +310,7 @@ func blakeHash32(b []byte) [32]byte {
 // that need real seek must pass a real *os.File.
 type readerSeeker struct{ r io.Reader }
 
-func readerToSeeker(r io.Reader) io.ReadSeeker { return &readerSeeker{r} }
+func readerToSeeker(r io.Reader) io.ReadSeeker      { return &readerSeeker{r} }
 func (rs *readerSeeker) Read(p []byte) (int, error) { return rs.r.Read(p) }
 func (rs *readerSeeker) Seek(offset int64, whence int) (int64, error) {
 	if offset != 0 || whence != io.SeekStart {

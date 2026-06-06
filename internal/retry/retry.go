@@ -171,7 +171,7 @@ var terminalSentinels = []error{
 	fserrors.ErrProtocolError,
 	fserrors.ErrTargetExists,
 	fserrors.ErrServerRetired,
-	fserrors.ErrWrongPassword,       // wrong password is one-shot per session
-	fserrors.ErrCodeAlreadyClaimed,  // sender already paired; no retry will recover
-	context.Canceled,                // user hit Ctrl-C
+	fserrors.ErrWrongPassword,      // wrong password is one-shot per session
+	fserrors.ErrCodeAlreadyClaimed, // sender already paired; no retry will recover
+	context.Canceled,               // user hit Ctrl-C
 }

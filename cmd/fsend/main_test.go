@@ -56,12 +56,12 @@ func TestNormalizeConnectArgs(t *testing.T) {
 
 func TestReadLine(t *testing.T) {
 	cases := map[string]string{
-		"y\n":      "y",
-		"Y\n":      "y",
+		"y\n":       "y",
+		"Y\n":       "y",
 		"  Yes  \n": "yes",
-		"\n":       "",
-		"":         "", // EOF → empty
-		"\r\n":     "",
+		"\n":        "",
+		"":          "", // EOF → empty
+		"\r\n":      "",
 	}
 	for in, want := range cases {
 		if got := readLine(strings.NewReader(in)); got != want {

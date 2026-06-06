@@ -32,10 +32,10 @@ import (
 // are deferred — a single accurate progress bar is more useful than two
 // half-broken ones at this stage.
 type Progress struct {
-	mp   *mpb.Progress
-	bar  *mpb.Bar
-	tty  bool
-	w    io.Writer
+	mp  *mpb.Progress
+	bar *mpb.Bar
+	tty bool
+	w   io.Writer
 }
 
 // New constructs a Progress that writes to stderr (the only sink the spec
@@ -148,4 +148,3 @@ func IsTTY(w io.Writer) bool {
 	}
 	return (info.Mode() & os.ModeCharDevice) != 0
 }
-

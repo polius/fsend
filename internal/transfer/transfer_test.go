@@ -158,7 +158,10 @@ func TestEmptyFileTransfer(t *testing.T) {
 	var sendErr, recvErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); sendErr = Send(context.Background(), &a, SendOptions{Items: items, TransferKind: wire.TransferSingleFile}) }()
+	go func() {
+		defer wg.Done()
+		sendErr = Send(context.Background(), &a, SendOptions{Items: items, TransferKind: wire.TransferSingleFile})
+	}()
 	go func() { defer wg.Done(); recvErr = Recv(context.Background(), &b, RecvOptions{TargetDir: dstDir}) }()
 	wg.Wait()
 	if sendErr != nil {

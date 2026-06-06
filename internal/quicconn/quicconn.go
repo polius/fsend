@@ -224,9 +224,11 @@ func (s *streamCloser) Close() error                { return s.stream.Close() }
 // uniInCloser adapts a quic.ReceiveStream (read-only) to io.ReadWriteCloser.
 type uniInCloser struct{ s *quic.ReceiveStream }
 
-func (u *uniInCloser) Read(p []byte) (int, error)  { return u.s.Read(p) }
-func (u *uniInCloser) Write(_ []byte) (int, error) { return 0, errors.New("quicconn: stream is receive-only") }
-func (u *uniInCloser) Close() error                { u.s.CancelRead(0); return nil }
+func (u *uniInCloser) Read(p []byte) (int, error) { return u.s.Read(p) }
+func (u *uniInCloser) Write(_ []byte) (int, error) {
+	return 0, errors.New("quicconn: stream is receive-only")
+}
+func (u *uniInCloser) Close() error { u.s.CancelRead(0); return nil }
 
 func wrapUniIn(s *quic.ReceiveStream) io.ReadWriteCloser { return &uniInCloser{s: s} }
 

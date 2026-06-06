@@ -20,8 +20,8 @@ func TestStartSpinner_NonTTY_PrintsStaticLineAndStopIsNilSafe(t *testing.T) {
 	if s == nil {
 		t.Fatal("StartSpinner returned nil")
 	}
-	s.Stop()  // first stop
-	s.Stop()  // double-stop must not panic or block
+	s.Stop() // first stop
+	s.Stop() // double-stop must not panic or block
 }
 
 func TestSpinner_NilReceiverStopIsNoOp(t *testing.T) {

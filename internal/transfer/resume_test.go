@@ -285,8 +285,8 @@ type controlSniffer struct {
 	saw   bool
 }
 
-func (s *controlSniffer) Read(p []byte) (int, error)  { return s.inner.Read(p) }
-func (s *controlSniffer) Close() error                { return s.inner.Close() }
+func (s *controlSniffer) Read(p []byte) (int, error) { return s.inner.Read(p) }
+func (s *controlSniffer) Close() error               { return s.inner.Close() }
 func (s *controlSniffer) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	s.buf.Write(p)

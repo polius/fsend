@@ -3,7 +3,7 @@
 // Dispatch follows PROJECT_SPEC.md "Dispatch rules":
 //   - fsend                  → help
 //   - fsend <code>           → receive (when <code> matches the code regex
-//                              and no file with that name is in CWD)
+//     and no file with that name is in CWD)
 //   - fsend <path>           → send
 //   - fsend -                → send from stdin
 //   - fsend --send / --receive force mode (skip auto-detect)

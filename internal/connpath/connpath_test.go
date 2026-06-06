@@ -4,11 +4,11 @@ import "testing"
 
 func TestFromICE_Classification(t *testing.T) {
 	cases := []struct {
-		name       string
-		local      string
-		remote     string
-		want       Kind
-		wantShort  string
+		name      string
+		local     string
+		remote    string
+		want      Kind
+		wantShort string
 	}{
 		// Spec rule: host ↔ host means peers reached each other on
 		// interface addresses, so we claim Local.

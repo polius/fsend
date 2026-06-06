@@ -23,13 +23,13 @@ import (
 
 // Config holds runtime tuning for the signaling server.
 type Config struct {
-	ServerVersion         string
-	UnpairedTTL           time.Duration // default 1h
-	PairedTTL             time.Duration // default 600s
-	LongPollTimeout       time.Duration // default 25s
-	MaxSessionsPerIP      int           // default 5
-	MaxNewSessionsPerMin  int           // default 30
-	Logger                *slog.Logger
+	ServerVersion        string
+	UnpairedTTL          time.Duration // default 1h
+	PairedTTL            time.Duration // default 600s
+	LongPollTimeout      time.Duration // default 25s
+	MaxSessionsPerIP     int           // default 5
+	MaxNewSessionsPerMin int           // default 30
+	Logger               *slog.Logger
 }
 
 // Default fills in zero values with sensible defaults.
@@ -65,18 +65,18 @@ func (c *Config) Default() {
 // typically), so contention is negligible. A janitor goroutine sweeps
 // expired entries every 10 seconds.
 type Server struct {
-	cfg        Config
-	started    time.Time
-	mu         sync.Mutex
-	byCode     map[string]*session
-	byID       map[string]*session
-	ipCounts   map[string]int         // active sessions per source IP
-	ipBucket   map[string]*rateBucket // new-session rate limiter per source IP
+	cfg      Config
+	started  time.Time
+	mu       sync.Mutex
+	byCode   map[string]*session
+	byID     map[string]*session
+	ipCounts map[string]int         // active sessions per source IP
+	ipBucket map[string]*rateBucket // new-session rate limiter per source IP
 
 	// Relay-fallback wiring (optional). When non-nil, the server exposes
 	// POST /v1/relay/allocate and returns RelayPublicAddr as the address
 	// clients should send framed datagrams to.
-	relayAllocator RelayAllocator
+	relayAllocator  RelayAllocator
 	relayPublicAddr string
 }
 
