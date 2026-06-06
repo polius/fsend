@@ -36,6 +36,13 @@ func runReceive(f *flags, c string) error {
 		return fmt.Errorf("%w: --quiet on receive requires --yes (no prompt to answer otherwise)", fserrors.ErrUsage)
 	}
 
+	// Bare --pass: hidden no-echo prompt. We're not the password's
+	// author — we have to type what the sender configured — so there's
+	// no point offering a random default here.
+	if err := resolvePassword(f, false); err != nil {
+		return err
+	}
+
 	ctx, cancel := signalContext()
 	defer cancel()
 

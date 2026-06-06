@@ -98,7 +98,7 @@ Examples:
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
 	c.Flags().StringVar(&f.passArg, "pass", "",
-		"password gate. Bare --pass prompts (no echo). Env: FSEND_PASS")
+		"password gate. Bare --pass prompts (sender: suggests a random default). Env: FSEND_PASS")
 	// Bare --pass (no value) collapses to this sentinel; the dispatch
 	// layer treats it as "ask interactively, with input hidden." We
 	// blank DefValue so cobra's --help doesn't print the sentinel.
@@ -177,8 +177,10 @@ EXAMPLES
     fsend --connect relay.mycompany.com:443
 
 COMMON FLAGS
-  --pass [password]      Require the receiver to enter a password.
-                         Bare --pass prompts (no echo). Env: FSEND_PASS.
+  --pass <password>      Require the receiver to enter a password.
+                         Bare --pass prompts interactively — sender side
+                         suggests a fresh random default (press Enter to
+                         accept). Env: FSEND_PASS.
   --out <dir>            Receive into this directory (default: current)
   --yes                  Auto-accept incoming transfers (no prompt)
   --overwrite            Overwrite existing files on receive
@@ -261,16 +263,9 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// value (matching every other CLI's override convention).
 	applyEnvFallbacks(f, cmd)
 
-	// Bare --pass (no value) → ask the user once, hidden. Done here so
-	// both send and receive paths benefit and the prompt happens before
-	// any network activity.
-	if f.passArg == passPromptSentinel {
-		pw, err := readPasswordHidden("Password for this transfer: ")
-		if err != nil {
-			return err
-		}
-		f.passArg = pw
-	}
+	// Bare --pass (no value) is resolved inside runSend / runReceive so
+	// each role can show the right prompt: the sender gets a random
+	// 16-char suggestion, the receiver gets a hidden no-echo prompt.
 
 	// Force mode short-circuits auto-detect.
 	if f.forceSend {

@@ -29,6 +29,52 @@ func TestHumanDuration_Tiers(t *testing.T) {
 	}
 }
 
+func TestNormalizePassArgs(t *testing.T) {
+	cases := []struct {
+		name     string
+		in, want []string
+	}{
+		{
+			name: "bare flag at end keeps NoOptDefVal sentinel firing",
+			in:   []string{"fsend", "report.pdf", "--pass"},
+			want: []string{"fsend", "report.pdf", "--pass"},
+		},
+		{
+			name: "bare flag followed by another flag stays bare",
+			in:   []string{"fsend", "--pass", "--quiet", "report.pdf"},
+			want: []string{"fsend", "--pass", "--quiet", "report.pdf"},
+		},
+		{
+			name: "value glued onto the flag with =",
+			in:   []string{"fsend", "--pass", "swordfish", "report.pdf"},
+			want: []string{"fsend", "--pass=swordfish", "report.pdf"},
+		},
+		{
+			name: "existing --pass=value form passes through untouched",
+			in:   []string{"fsend", "--pass=swordfish", "report.pdf"},
+			want: []string{"fsend", "--pass=swordfish", "report.pdf"},
+		},
+		{
+			name: "trailing --pass value with no following positional",
+			in:   []string{"fsend", "report.pdf", "--pass", "swordfish"},
+			want: []string{"fsend", "report.pdf", "--pass=swordfish"},
+		},
+		{
+			name: "unrelated flags pass through",
+			in:   []string{"fsend", "report.pdf"},
+			want: []string{"fsend", "report.pdf"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := normalizePassArgs(c.in)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("normalizePassArgs(%v) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeConnectArgs(t *testing.T) {
 	cases := []struct {
 		in, want []string

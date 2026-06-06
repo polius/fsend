@@ -430,8 +430,6 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	// confirmation, then the password line. Both readers use a fresh
 	// bufio.Reader on os.Stdin per call, but feeding them in order
 	// keeps the bytes aligned.
-	// --pass uses NoOptDefVal (bare --pass prompts), so the value must
-	// be passed with "=" to bind without cobra reading it as positional.
 	r := h.runPair(t,
 		[]string{"--pass=swordfish", srcFile},
 		dst,

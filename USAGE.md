@@ -66,7 +66,7 @@ You'll see a code like `abc-defg-jkm`. Share it with the receiver.
 | Flag | Purpose |
 |---|---|
 | `--text <string>` | Send a literal string instead of a file. |
-| `--pass <password>` | Require the receiver to supply this password before the transfer starts. Pass `--pass` with no value to be prompted interactively (no echo). See [Environment variables](#environment-variables) for `FSEND_PASS`. |
+| `--pass <password>` | Require the receiver to supply this password before the transfer starts. Pass `--pass` with no value to be prompted interactively — a fresh random password is suggested and accepted with Enter. See [Environment variables](#environment-variables) for `FSEND_PASS`. |
 | `--exclude <pattern>` | Glob patterns to skip when bundling a directory. Repeatable or comma-separated, e.g. `--exclude '*.log,node_modules'`. |
 | `--name <hostname>` | Override the hostname shown to the peer in the confirmation prompt. |
 
@@ -94,8 +94,9 @@ fsend --text "the wifi password is hunter2"
 # Gate the transfer with a password (visible in `ps`)
 fsend --pass swordfish ./secret.tar.gz
 
-# Or bare --pass to be prompted, with no echo
-fsend --pass ./secret.tar.gz
+# Or bare --pass after the file to be prompted, with a fresh random
+# default you can accept by pressing Enter
+fsend ./secret.tar.gz --pass
 ```
 
 ---

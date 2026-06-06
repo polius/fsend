@@ -31,6 +31,13 @@ func runSend(f *flags, paths []string) error {
 		return fmt.Errorf("%w: nothing to send (provide a file, a directory, or --text)", fserrors.ErrUsage)
 	}
 
+	// Bare --pass: suggest a random default the user can accept by
+	// pressing Enter. Done before any network setup so the prompt
+	// can't collide with the rendezvous spinner.
+	if err := resolvePassword(f, true); err != nil {
+		return err
+	}
+
 	items, kind, totalFiles, label, cleanupItems, err := collectItems(f, paths)
 	if err != nil {
 		return err

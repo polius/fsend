@@ -1,10 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 
@@ -39,6 +42,86 @@ func readPasswordHidden(prompt string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%w: password cannot be empty", fserrors.ErrUsage)
+}
+
+// resolvePassword expands the bare --pass sentinel into a concrete
+// password. No-op when --pass wasn't given bare.
+//
+// Sender side: shows a freshly-generated 16-char suggestion the user can
+// accept with <enter> (or override by typing one). The suggestion is
+// echoed in cleartext — the sender needs to read it back to share with
+// the receiver, and the input it shadows is shown in plaintext anyway.
+//
+// Receiver side: hidden no-echo prompt. The receiver must type whatever
+// the sender configured, so a "random default" makes no sense; we just
+// reuse the standard hidden-password reader.
+func resolvePassword(f *flags, sender bool) error {
+	if f.passArg != passPromptSentinel {
+		return nil
+	}
+	if sender {
+		pw, err := promptPasswordWithSuggestion()
+		if err != nil {
+			return err
+		}
+		f.passArg = pw
+		return nil
+	}
+	pw, err := readPasswordHidden("Password for this transfer: ")
+	if err != nil {
+		return err
+	}
+	f.passArg = pw
+	return nil
+}
+
+// promptPasswordWithSuggestion offers a freshly-generated random password
+// as the default. The suggestion is printed visibly (the sender needs to
+// see it to share it out-of-band) and a bare <enter> accepts it. Any
+// non-empty typed input replaces the suggestion.
+func promptPasswordWithSuggestion() (string, error) {
+	suggested, err := generateRandomPassword(16)
+	if err != nil {
+		return "", fmt.Errorf("generating suggested password: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "  Suggested password: %s\n", suggested)
+	fmt.Fprint(os.Stderr, "  Press Enter to use it, or type your own: ")
+
+	line, err := stdinReader().ReadString('\n')
+	if err != nil && line == "" {
+		// EOF on a piped stdin with no data: the caller can't interact.
+		// Be explicit rather than silently accepting the suggested
+		// value — a script that pipes nothing into fsend would never
+		// know what password was chosen.
+		if errors.Is(err, io.EOF) {
+			return "", fmt.Errorf("%w: no password supplied (stdin closed)", fserrors.ErrUsage)
+		}
+		return "", err
+	}
+	typed := strings.TrimRight(line, "\r\n")
+	typed = strings.TrimSpace(typed)
+	if typed == "" {
+		return suggested, nil
+	}
+	return typed, nil
+}
+
+// generateRandomPassword returns an n-character random string using a
+// human-readable alphabet (no ambiguous characters like 0/O/1/l). Uses
+// crypto/rand.Int for unbiased sampling — same pattern as
+// internal/code.Generate.
+func generateRandomPassword(n int) (string, error) {
+	const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+	b := make([]byte, n)
+	max := big.NewInt(int64(len(alphabet)))
+	for i := range b {
+		idx, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", err
+		}
+		b[i] = alphabet[idx.Int64()]
+	}
+	return string(b), nil
 }
 
 // readPasswordOnce performs a single hidden-input read. Returns "" with
