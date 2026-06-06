@@ -13,7 +13,12 @@ var Commit = "unknown"
 // Date is the build timestamp in RFC3339.
 var Date = "unknown"
 
-// String returns "fsend X.Y.Z (build abc1234, 2026-06-01)".
+// String returns "fsend X.Y.Z (build abc1234, 2026-06-01)" for release
+// builds. Dev builds (Commit/Date unset) collapse to "fsend dev" so the
+// parenthetical doesn't read "(build unknown, unknown)".
 func String() string {
+	if Commit == "" || Commit == "unknown" || Date == "" || Date == "unknown" {
+		return "fsend " + Version
+	}
 	return "fsend " + Version + " (build " + Commit + ", " + Date + ")"
 }

@@ -16,8 +16,10 @@ import (
 	"github.com/polius/fsend/internal/quicconn"
 	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/transfer"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 	"github.com/polius/fsend/internal/wire"
+	"unicode"
 )
 
 // runReceive executes the receive-side flow.
@@ -37,13 +39,13 @@ func runReceive(f *flags, c string) error {
 
 	// LAN discovery first.
 	if !f.quiet {
-		fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Looking for sender on local network…")
+		fmt.Fprintln(os.Stderr, uxlog.Spin(), "Looking for sender on local network…")
 	}
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
 		// LAN miss → try the rendezvous + relay path.
 		if !f.quiet {
-			fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Not on LAN — connecting via rendezvous server…")
+			fmt.Fprintln(os.Stderr, uxlog.Spin(), "Not on LAN — connecting via rendezvous server…")
 		}
 		cfg, _ := config.Load()
 		return runReceiveOverInternet(ctx, f, c, cfg)
@@ -51,7 +53,10 @@ func runReceive(f *flags, c string) error {
 
 	addr := q.IP.String() + ":" + strconv.Itoa(q.Port)
 	if !f.quiet {
-		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Found sender at", addr)
+		fmt.Fprintln(os.Stderr, uxlog.Check(), "Found sender on local network")
+		if f.debug {
+			fmt.Fprintln(os.Stderr, "    address:", addr)
+		}
 	}
 
 	hostname := f.hostname
@@ -67,9 +72,10 @@ func runReceive(f *flags, c string) error {
 		}
 	}
 
-	closeProg, accept, progressFn := newReceiverProgress(f)
+	closeProg, accept, progressFn, recvBytes := newReceiverProgress(f)
 	defer closeProg()
 
+	start := time.Now()
 	// Same retry shape as the internet receive path: a transient QUIC
 	// or transfer error rebuilds the QUIC connection (Dial opens a
 	// fresh UDP socket on each attempt) and the receiver's partial
@@ -83,9 +89,7 @@ func runReceive(f *flags, c string) error {
 		return err
 	}
 
-	if !f.quiet {
-		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Transfer complete")
-	}
+	printRecvSummary(f, recvBytes(), time.Since(start))
 	return nil
 }
 
@@ -158,53 +162,67 @@ func promptAccept(f *flags, h wire.SenderHello) bool {
 	if f.quiet {
 		return f.yes
 	}
+	pwChip := ""
+	if h.HasPassword {
+		pwChip = "  🔒 password required"
+	}
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  Receiving from", sanitizeRemote(h.Hostname))
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  ─────────────────────────────────────────────")
+	fmt.Fprintln(os.Stderr, "  "+separator())
 	fmt.Fprintln(os.Stderr)
 	switch h.TransferKind {
 	case wire.TransferSingleFile:
-		fmt.Fprintf(os.Stderr, "      (%s)\n", humanBytes(int64(h.TotalBytes)))
+		name := h.DisplayName
+		if name == "" {
+			name = "file"
+		}
+		fmt.Fprintf(os.Stderr, "      %s  (%s)%s\n", name, humanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferDirectory:
-		fmt.Fprintf(os.Stderr, "      directory  (%d files, %s)\n", h.TotalFiles, humanBytes(int64(h.TotalBytes)))
+		name := h.DisplayName
+		if name == "" {
+			name = "directory"
+		}
+		fmt.Fprintf(os.Stderr, "      %s  (%d files, %s)%s\n", name, h.TotalFiles, humanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferMultiFile:
-		fmt.Fprintf(os.Stderr, "      %d items  (%s)\n", h.TotalFiles, humanBytes(int64(h.TotalBytes)))
+		fmt.Fprintf(os.Stderr, "      %d items  (%s)%s\n", h.TotalFiles, humanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferText:
-		fmt.Fprintln(os.Stderr, "      a piece of text")
+		fmt.Fprintf(os.Stderr, "      a piece of text  (%s)%s\n", humanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferStdin:
-		fmt.Fprintln(os.Stderr, "      stream from stdin")
+		fmt.Fprintf(os.Stderr, "      stream from stdin  (%s)%s\n", humanBytes(int64(h.TotalBytes)), pwChip)
 	}
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  ─────────────────────────────────────────────")
+	fmt.Fprintln(os.Stderr, "  "+separator())
 	fmt.Fprintln(os.Stderr)
 
 	if f.yes {
-		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Accepting (--yes)")
+		fmt.Fprintln(os.Stderr, uxlog.Check(), "Accepting (--yes)")
 		return true
 	}
 	fmt.Fprint(os.Stderr, "  Save to current directory? [Y/n]: ")
-	var resp string
-	_, _ = fmt.Fscanln(os.Stdin, &resp)
-	switch resp {
-	case "n", "N", "no":
+	switch readLine(os.Stdin) {
+	case "n", "no":
 		return false
 	default:
 		return true
 	}
 }
 
-// sanitizeRemote removes control characters and ANSI sequences from peer-
-// supplied strings before display (per docs/security/threat-model.md T7).
+// sanitizeRemote removes control characters, ANSI sequences, and Unicode
+// format / bidirectional-override characters from peer-supplied strings
+// before display. Without the bidi filter, a peer can render a misleading
+// hostname using U+202E "RIGHT-TO-LEFT OVERRIDE" and friends, which is
+// the textbook display-spoofing trick.
 func sanitizeRemote(s string) string {
 	const maxLen = 64
 	out := make([]rune, 0, len(s))
 	for _, r := range s {
-		if r == '\n' || r == '\r' || r == '\t' || r < 0x20 || r == 0x7F {
+		switch {
+		case r < 0x20, r == 0x7F:
 			continue
-		}
-		// Reject ANSI Esc.
-		if r == 0x1B {
+		case isBidi(r):
+			continue
+		case unicode.Is(unicode.Cf, r): // any Unicode "Format" character
 			continue
 		}
 		out = append(out, r)
@@ -216,5 +234,19 @@ func sanitizeRemote(s string) string {
 		return "(unknown)"
 	}
 	return string(out)
+}
+
+// isBidi reports whether r is one of the bidirectional formatting
+// codepoints that can be abused to spoof display order.
+func isBidi(r rune) bool {
+	switch {
+	case r >= 0x202A && r <= 0x202E: // LRE, RLE, PDF, LRO, RLO
+		return true
+	case r >= 0x2066 && r <= 0x2069: // LRI, RLI, FSI, PDI
+		return true
+	case r == 0x200E || r == 0x200F: // LRM, RLM
+		return true
+	}
+	return false
 }
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/wire"
@@ -33,10 +33,10 @@ import (
 //  7. Run the transfer protocol.
 func runSend(f *flags, paths []string) error {
 	if f.textArg != "" && len(paths) > 0 {
-		return errors.New("--text cannot be combined with file arguments")
+		return fmt.Errorf("%w: --text cannot be combined with file arguments", fserrors.ErrUsage)
 	}
 	if f.textArg == "" && len(paths) == 0 {
-		return errors.New("nothing to send (provide a file, a directory, or --text)")
+		return fmt.Errorf("%w: nothing to send (provide a file, a directory, or --text)", fserrors.ErrUsage)
 	}
 
 	items, kind, totalFiles, label, cleanupItems, err := collectItems(f, paths)
@@ -131,9 +131,12 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		return nil, 0, 0, "", noop, err
 	}
 	if len(paths) == 1 {
-		return items, wire.TransferSingleFile, 0, "", noop, nil
+		// Surface the user-typed basename, not the walker's relative
+		// path (which may include subdirs when the user passed a
+		// directory-resolved file).
+		return items, wire.TransferSingleFile, 0, filepath.Base(paths[0]), noop, nil
 	}
-	return items, wire.TransferMultiFile, 0, "", noop, nil
+	return items, wire.TransferMultiFile, 0, fmt.Sprintf("%d items", len(paths)), noop, nil
 }
 
 // containsDirectory reports whether any of paths refers to a directory.
@@ -144,7 +147,7 @@ func containsDirectory(paths []string) (bool, error) {
 		st, err := os.Stat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return false, fmt.Errorf("no such file or directory: %s", p)
+				return false, fmt.Errorf("%w: %s", fserrors.ErrSourceNotFound, p)
 			}
 			return false, err
 		}
@@ -276,24 +279,29 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 		}
 		fmt.Fprintf(os.Stderr, "  Sending %s  (%d files, %s)\n", label, totalFiles, humanBytes(int64(total)))
 	case wire.TransferMultiFile:
-		fmt.Fprintf(os.Stderr, "  Sending %d items\n", len(items))
+		fmt.Fprintf(os.Stderr, "  Sending %d items  (%s)\n", len(items), humanBytes(totalBytes(items)))
 	case wire.TransferText:
-		fmt.Fprintln(os.Stderr, "  Sending text")
+		fmt.Fprintf(os.Stderr, "  Sending text  (%s)\n", humanBytes(totalBytes(items)))
 	case wire.TransferStdin:
-		fmt.Fprintln(os.Stderr, "  Sending from stdin")
+		fmt.Fprintf(os.Stderr, "  Sending from stdin  (%s)\n", humanBytes(totalBytes(items)))
 	}
+	sep := separator()
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  ─────────────────────────────────────────────")
+	fmt.Fprintln(os.Stderr, "  "+sep)
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "      %s\n", c)
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  On the other machine, run:")
 	fmt.Fprintf(os.Stderr, "      fsend %s\n", c)
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  ─────────────────────────────────────────────")
+	fmt.Fprintln(os.Stderr, "  "+sep)
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Waiting for receiver…")
+	fmt.Fprintln(os.Stderr, uxlog.Spin(), "Waiting for receiver…")
 }
+
+// separator is a CLI-facing alias for uxlog.Separator so callers don't
+// have to qualify it on every artifact line.
+func separator() string { return uxlog.Separator() }
 
 // totalBytes sums the payload bytes across items.
 func totalBytes(items []transfer.SourceItem) int64 {
@@ -306,21 +314,30 @@ func totalBytes(items []transfer.SourceItem) int64 {
 
 // newSenderProgress builds a per-file delta-accumulating ProgressFn that
 // drives a single overall progress bar. Returns a close func the caller
-// should defer (no-op when --quiet) and the ProgressFn for transfer.Send.
+// should defer (no-op when --quiet), the ProgressFn for transfer.Send,
+// and a sentBytes getter that callers use to render the post-transfer
+// summary — reflects actual bytes moved, which matters under resume.
 //
-// Returns (no-op closeFn, nil) when --quiet is set — callers pass nil
-// for ProgressFn so transfer.Send doesn't try to call into it.
-func newSenderProgress(f *flags, items []transfer.SourceItem) (func(), func(fileIndex uint32, bytesSent uint64)) {
+// Under --quiet the bar is suppressed but sentBytes still accumulates so
+// summary rendering (in non-quiet callers) stays accurate without
+// branching on the flag in two places.
+func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), progressFn func(fileIndex uint32, bytesSent uint64), sentBytes func() int64) {
+	prev := make(map[uint32]uint64)
+	var total int64
 	if f.quiet {
-		return func() {}, nil
+		return func() {}, func(fi uint32, b uint64) {
+			d := b - prev[fi]
+			prev[fi] = b
+			total += int64(d)
+		}, func() int64 { return total }
 	}
 	bar := uxlog.New(totalBytes(items))
-	prev := make(map[uint32]uint64)
-	return bar.Done, func(fileIndex uint32, bytesSent uint64) {
-		d := bytesSent - prev[fileIndex]
-		prev[fileIndex] = bytesSent
+	return bar.Done, func(fi uint32, b uint64) {
+		d := b - prev[fi]
+		prev[fi] = b
 		bar.Add(int64(d))
-	}
+		total += int64(d)
+	}, func() int64 { return total }
 }
 
 // newReceiverProgress is the receive-side counterpart. The bar can't be
@@ -328,12 +345,23 @@ func newSenderProgress(f *flags, items []transfer.SourceItem) (func(), func(file
 // so the returned Accept callback materializes the bar on accept.
 // uxlog.Progress methods are nil-safe, so the closed-over var can stay
 // nil for the rejected-accept path.
-func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello) bool, progressFn func(uint32, uint64)) {
-	if f.quiet {
-		return func() {}, func(h wire.SenderHello) bool { return promptAccept(f, h) }, nil
-	}
-	var bar *uxlog.Progress
+func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), recvBytes func() int64) {
 	prev := make(map[uint32]uint64)
+	var total int64
+	recvBytes = func() int64 { return total }
+
+	if f.quiet {
+		closeFn = func() {}
+		accept = func(h wire.SenderHello) bool { return promptAccept(f, h) }
+		progressFn = func(fi uint32, b uint64) {
+			d := b - prev[fi]
+			prev[fi] = b
+			total += int64(d)
+		}
+		return
+	}
+
+	var bar *uxlog.Progress
 	accept = func(h wire.SenderHello) bool {
 		ok := promptAccept(f, h)
 		if ok {
@@ -345,9 +373,61 @@ func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello
 		d := bytesWritten - prev[fileIndex]
 		prev[fileIndex] = bytesWritten
 		bar.Add(int64(d))
+		total += int64(d)
 	}
 	closeFn = func() { bar.Done() }
 	return
+}
+
+// humanRate renders a bytes-per-second figure in compact form.
+// A zero or sub-second elapsed window degrades gracefully to "—".
+func humanRate(bytes int64, elapsed time.Duration) string {
+	if elapsed <= 0 || bytes <= 0 {
+		return "—"
+	}
+	rate := float64(bytes) / elapsed.Seconds()
+	return humanBytes(int64(rate)) + "/s"
+}
+
+// humanDuration renders elapsed in compact form. Sub-second durations
+// show with milliseconds; longer durations switch to seconds with one
+// decimal, then minutes-and-seconds.
+func humanDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < 10*time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	m := int(d / time.Minute)
+	s := int((d % time.Minute) / time.Second)
+	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
+// printSendSummary renders the post-transfer success line on the sender.
+// Suppressed under --quiet (the bare code on stdout is the contract;
+// nothing on stderr).
+func printSendSummary(f *flags, bytes int64, elapsed time.Duration) {
+	if f.quiet {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s Sent %s in %s  (%s)\n",
+		uxlog.Check(), humanBytes(bytes), humanDuration(elapsed), humanRate(bytes, elapsed))
+}
+
+// printRecvSummary is the receive-side counterpart. The bytes figure is
+// the actual received payload, captured by the progress callback so the
+// number reflects what's on disk (post-resume, this can be less than the
+// sender's TotalBytes if a prefix was already present).
+func printRecvSummary(f *flags, bytes int64, elapsed time.Duration) {
+	if f.quiet {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s Received %s in %s  (%s)\n",
+		uxlog.Check(), humanBytes(bytes), humanDuration(elapsed), humanRate(bytes, elapsed))
 }
 
 // humanBytes renders a byte count in compact form.

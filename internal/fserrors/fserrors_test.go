@@ -83,6 +83,67 @@ func TestIsWarning(t *testing.T) {
 	}
 }
 
+func TestEntryRender_PrependsCode(t *testing.T) {
+	e := Entry{Code: "E001", Message: "Boom.", Action: "Try X."}
+	got := e.Render()
+	want := "[E001] Boom.\n  Try X."
+	if got != want {
+		t.Errorf("Render() = %q, want %q", got, want)
+	}
+}
+
+func TestEntryRender_NoActionStillIncludesCode(t *testing.T) {
+	e := Entry{Code: "E026", Message: "Cancelled."}
+	got := e.Render()
+	want := "[E026] Cancelled."
+	if got != want {
+		t.Errorf("Render() = %q, want %q", got, want)
+	}
+}
+
+func TestEntryRender_FallsBackWhenNoCode(t *testing.T) {
+	e := Entry{Message: "Boom."}
+	if got := e.Render(); got != "Boom." {
+		t.Errorf("Render() = %q, want %q", got, "Boom.")
+	}
+}
+
+func TestNewSentinels_LookupAndExit(t *testing.T) {
+	cases := []struct {
+		err  error
+		code string
+		exit int
+	}{
+		{ErrUsage, "E024", 4},
+		{ErrSourceNotFound, "E025", 10},
+		{ErrUserCancelled, "E026", 130},
+	}
+	for _, c := range cases {
+		entry, ok := Lookup(c.err)
+		if !ok {
+			t.Errorf("%v: expected catalog match", c.err)
+			continue
+		}
+		if entry.Code != c.code {
+			t.Errorf("%v: code = %q, want %q", c.err, entry.Code, c.code)
+		}
+		if entry.Exit != c.exit {
+			t.Errorf("%v: exit = %d, want %d", c.err, entry.Exit, c.exit)
+		}
+	}
+}
+
+func TestChain_WalksWrappers(t *testing.T) {
+	wrapped := fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", ErrUsage))
+	got := Chain(wrapped)
+	if len(got) != 3 {
+		t.Fatalf("chain length = %d, want 3; got %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "outer") || !strings.Contains(got[1], "inner") || got[2] != "usage error" {
+		t.Errorf("chain mismatch: %v", got)
+	}
+}
+
 func TestEntryFormat(t *testing.T) {
 	e := Entry{Message: "Boom.", Action: "Try X."}
 	got := e.Format()

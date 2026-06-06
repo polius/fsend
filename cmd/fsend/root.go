@@ -1,13 +1,13 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/polius/fsend/internal/code"
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/version"
 )
 
@@ -72,8 +72,22 @@ Examples:
 		},
 	}
 
+	// Route cobra's own flag-parse errors ("flag needs an argument",
+	// "unknown flag", ...) through ErrUsage so they render with the
+	// catalog [E024] line instead of dropping into the E099 "please
+	// file an issue" catchall.
+	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return fmt.Errorf("%w: %v", fserrors.ErrUsage, err)
+	})
+
 	c.SetVersionTemplate(version.String() + "\n")
 	c.Version = version.Version
+
+	// Hand-written help/usage layout, replacing cobra's alphabetised
+	// flag wall. Examples-first; common flags grouped semantically;
+	// advanced flags last; environment variables called out explicitly.
+	c.SetHelpTemplate(helpTemplate)
+	c.SetUsageTemplate(helpTemplate)
 
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
@@ -97,8 +111,13 @@ Examples:
 	c.Flags().BoolVar(&f.forceSend, "send", false, "force send mode (skip auto-detect)")
 	c.Flags().BoolVar(&f.forceReceive, "receive", false, "force receive mode (skip auto-detect)")
 
-	// Server selection
+	// Server selection. Bare --connect (no value) means "show current
+	// server" — same NoOptDefVal trick as --pass. The dispatcher
+	// recognises the sentinel and treats it as "no args".
 	c.Flags().StringSliceVar(&f.connectArgsRaw, "connect", nil, "set the rendezvous server: <host:port> [password] | 'default'")
+	connectFlag := c.Flags().Lookup("connect")
+	connectFlag.NoOptDefVal = connectShowSentinel
+	connectFlag.DefValue = ""
 
 	// Misc
 	c.Flags().BoolVar(&f.debug, "debug", false, "verbose logging to stderr")
@@ -126,6 +145,65 @@ const (
 	modeTURN  = "turn"
 )
 
+// helpTemplate is the single help/usage view. cobra invokes it for both
+// `fsend --help` and `fsend` (the no-args path that prints help). The
+// layout deliberately omits cobra's auto-generated flag wall — every
+// user-facing flag is listed by hand below so we control wording and
+// grouping.
+const helpTemplate = `fsend — peer-to-peer file transfer
+
+USAGE
+  fsend <file|dir>...              Send (one or more paths)
+  fsend <code>                     Receive (using a code like abc-defg-jkm)
+  fsend -                          Send from stdin
+  fsend --text "hello world"       Send a literal string
+
+EXAMPLES
+  Send a file:
+    fsend report.pdf
+  Receive:
+    fsend abc-defg-jkm
+  Send a whole folder:
+    fsend ./myproject
+  Send with extra password protection:
+    fsend report.pdf --pass "shared-secret"
+  Use a different server:
+    fsend --connect relay.mycompany.com:443
+
+COMMON FLAGS
+  --pass [password]      Require the receiver to enter a password.
+                         Bare --pass prompts (no echo). Env: FSEND_PASS.
+  --out <dir>            Receive into this directory (default: current)
+  --yes                  Auto-accept incoming transfers (no prompt)
+  --overwrite            Overwrite existing files on receive
+  --quiet                Suppress all non-error output
+  --name <string>        Override the hostname shown to the peer
+  --exclude <glob,…>     Skip entries matching these globs in a directory
+  --help                 Show this help
+  --version              Show version
+
+ADVANCED FLAGS
+  --connect              Show current rendezvous server
+  --connect <host:port> [password]
+                         Set the rendezvous server (persisted)
+  --connect default      Revert to the compiled-in default server
+  --send / --receive     Force mode (skip code/path auto-detect)
+  --text "<string>"      Send a literal string instead of a file
+  --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
+  --uninstall            Remove the fsend binary and its config dir
+
+ENVIRONMENT
+  FSEND_PASS             Used as --pass when the flag is not given
+                         (keeps the password out of argv)
+  FSEND_DEBUG=1          Same as --debug
+  NO_COLOR               Disable ANSI colour escapes
+  FORCE_COLOR=1          Force colour even on non-TTY stderr
+
+LEARN MORE
+  Docs    https://github.com/polius/fsend
+  Issues  https://github.com/polius/fsend/issues
+`
+
 // passPromptSentinel is the value cobra hands us when the user passes
 // bare --pass with no argument. The dispatch layer translates this into
 // an interactive no-echo prompt before any send/receive work begins.
@@ -135,10 +213,25 @@ const (
 // sentinel themselves.
 const passPromptSentinel = ":prompt:"
 
+// connectShowSentinel is the value cobra hands us when the user passes
+// bare --connect with no argument. Runs the "show current server" path.
+// Same caveat as passPromptSentinel: a literal `--connect ":show:"` is
+// indistinguishable, but typing the sentinel by hand is squarely on the
+// user.
+const connectShowSentinel = ":show:"
+
 // dispatch implements the rules in PROJECT_SPEC.md "Dispatch rules".
 func dispatch(cmd *cobra.Command, f *flags) error {
 	// Handle --connect (server configuration) before anything else.
+	// Reject pairings with transfer-mode flags so the user can't be
+	// surprised by "I asked for both --connect and --send and only the
+	// first ran."
 	if cmd.Flags().Changed("connect") {
+		for _, conflict := range []string{"send", "receive", "text", "pass", "yes", "out", "overwrite", "name", "uninstall"} {
+			if cmd.Flags().Changed(conflict) {
+				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
+			}
+		}
 		return runConnect(f)
 	}
 
@@ -148,7 +241,10 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	}
 
 	if !validMode(f.mode) {
-		return fmt.Errorf("invalid --mode %q (expected: local, stun, or turn)", f.mode)
+		return fmt.Errorf("%w: invalid --mode %q (expected: local, stun, or turn)", fserrors.ErrUsage, f.mode)
+	}
+	if f.forceSend && f.forceReceive {
+		return fmt.Errorf("%w: --send and --receive are mutually exclusive", fserrors.ErrUsage)
 	}
 
 	// Env-var fallback for the password (FSEND_PASS). Passing a secret via
@@ -175,13 +271,18 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	}
 	if f.forceReceive {
 		if len(f.posArgs) != 1 {
-			return errors.New("--receive requires exactly one positional argument (the code)")
+			return fmt.Errorf("%w: --receive requires exactly one positional argument (the code)", fserrors.ErrUsage)
 		}
 		return runReceive(f, f.posArgs[0])
 	}
 
-	// --text is unambiguously send mode.
-	if f.textArg != "" {
+	// --text is unambiguously send mode. An explicitly empty value
+	// (--text "") is a usage error, not a fall-through-to-help: the
+	// user clearly meant to send something.
+	if cmd.Flags().Changed("text") {
+		if f.textArg == "" {
+			return fmt.Errorf("%w: --text requires a non-empty string", fserrors.ErrUsage)
+		}
 		return runSend(f, nil)
 	}
 
@@ -227,18 +328,18 @@ func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
 // matches the code regex AND names a real file in CWD.
 func promptCodeOrPath(f *flags, arg string) error {
 	fmt.Fprintf(os.Stderr, "\n  %q matches a code AND is a local file.\n", arg)
-	fmt.Fprintf(os.Stderr, "  [s]end this file, or [r]eceive with this code? ")
+	fmt.Fprintf(os.Stderr, "  [s]end this file, or [r]eceive with this code? (r): ")
 
-	var resp string
-	if _, err := fmt.Fscanln(os.Stdin, &resp); err != nil {
-		return fmt.Errorf("reading response: %w", err)
-	}
+	resp := readLine(os.Stdin)
 	switch resp {
-	case "s", "S", "send":
+	case "s", "send":
 		return runSend(f, []string{arg})
-	case "r", "R", "receive":
+	case "r", "receive", "":
+		// Default on bare <enter>: receive. Codes are the surprising
+		// case (a filename happens to match the regex); receiving is
+		// almost always what the user meant.
 		return runReceive(f, arg)
 	default:
-		return errors.New("cancelled")
+		return fmt.Errorf("%w: choose 's' or 'r'", fserrors.ErrUsage)
 	}
 }

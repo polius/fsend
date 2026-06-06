@@ -23,6 +23,7 @@ import (
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/signaling"
 	"github.com/polius/fsend/internal/transfer"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -175,7 +176,7 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 		// One-shot info line so the user knows we're waiting on the
 		// sender rather than dropping into a silent retry loop.
 		if !noticed && !f.quiet {
-			fmt.Fprintln(os.Stderr, marker("⠋", "[*]"), "Waiting for sender to register code…")
+			fmt.Fprintln(os.Stderr, uxlog.Spin(), "Waiting for sender to register code…")
 			noticed = true
 		}
 		select {
@@ -351,18 +352,17 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		}
 	}
 
-	closeProg, accept, progressFn := newReceiverProgress(f)
+	closeProg, accept, progressFn, recvBytes := newReceiverProgress(f)
 	defer closeProg()
 
+	start := time.Now()
 	if err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
 		func(attempt int) error {
 			return runReceiverOneAttempt(ctx, tr, outDir, f, accept, progressFn, code)
 		}); err != nil {
 		return err
 	}
-	if !f.quiet {
-		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Transfer complete")
-	}
+	printRecvSummary(f, recvBytes(), time.Since(start))
 	return nil
 }
 
@@ -408,8 +408,8 @@ func retryNoticeFor(f *flags) func(attempt int, wait time.Duration, lastErr erro
 		return nil
 	}
 	return func(attempt int, wait time.Duration, lastErr error) {
-		fmt.Fprintf(os.Stderr, "  %s Connection interrupted (%v) — retrying in %s (attempt %d)\n",
-			marker("⟳", "[~]"), shortErr(lastErr), wait, attempt)
+		fmt.Fprintf(os.Stderr, "  %s Connection interrupted (%v) — retrying in %s (attempt %d/%d)\n",
+			uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts)
 	}
 }
 
@@ -449,8 +449,13 @@ func printPath(f *flags, info connpath.Info) {
 	if f.quiet {
 		return
 	}
-	utf8Glyph, asciiGlyph := info.Glyph()
-	fmt.Fprintln(os.Stderr, marker(utf8Glyph, asciiGlyph), info.Headline())
+	var prefix string
+	if info.Kind == connpath.KindRelay {
+		prefix = uxlog.Warn()
+	} else {
+		prefix = uxlog.Check()
+	}
+	fmt.Fprintln(os.Stderr, prefix, info.Headline())
 	if f.debug {
 		if d := info.Detail(); d != "" {
 			fmt.Fprintln(os.Stderr, "    ICE candidate pair:", d)

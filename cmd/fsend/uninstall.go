@@ -1,15 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/polius/fsend/internal/config"
+	"github.com/polius/fsend/internal/uxlog"
 )
 
 // runUninstall removes the fsend binary and config dir.
@@ -27,9 +26,9 @@ func runUninstall(f *flags) error {
 	if cfgPath != "" {
 		dir := filepath.Dir(cfgPath)
 		if err := os.RemoveAll(dir); err == nil {
-			fmt.Fprintf(os.Stderr, "  removed config dir: %s\n", dir)
+			fmt.Fprintf(os.Stderr, "  %s removed config dir: %s\n", uxlog.Check(), dir)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "  warning: could not remove %s: %v\n", dir, err)
+			fmt.Fprintf(os.Stderr, "  %s could not remove %s: %v\n", uxlog.Warn(), dir, err)
 		}
 	}
 
@@ -50,11 +49,11 @@ func runUninstall(f *flags) error {
 	}
 
 	if err := os.Remove(binPath); err != nil {
-		fmt.Fprintf(os.Stderr, "  could not remove binary at %s: %v\n", binPath, err)
+		fmt.Fprintf(os.Stderr, "  %s could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
 		fmt.Fprintln(os.Stderr, "    Remove it manually, possibly with sudo.")
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "  removed binary: %s\n", binPath)
+	fmt.Fprintf(os.Stderr, "  %s removed binary: %s\n", uxlog.Check(), binPath)
 	fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
 	return nil
 }
@@ -63,14 +62,25 @@ func confirmUninstall(f *flags) bool {
 	if f.yes {
 		return true
 	}
-	fmt.Fprintln(os.Stderr, "This will remove the fsend binary and ~/.config/fsend.")
-	fmt.Fprint(os.Stderr, "Continue? [y/N]: ")
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return false
+	// Resolve concrete paths so the user can see what's about to go.
+	binPath, _ := os.Executable()
+	if resolved, err := filepath.EvalSymlinks(binPath); err == nil && binPath != "" {
+		binPath = resolved
 	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
+	cfgPath, _ := config.Path()
+	cfgDir := ""
+	if cfgPath != "" {
+		cfgDir = filepath.Dir(cfgPath)
+	}
+	fmt.Fprintln(os.Stderr, "This will remove:")
+	if binPath != "" {
+		fmt.Fprintf(os.Stderr, "  • binary:     %s\n", binPath)
+	}
+	if cfgDir != "" {
+		fmt.Fprintf(os.Stderr, "  • config dir: %s\n", cfgDir)
+	}
+	fmt.Fprint(os.Stderr, "Continue? [y/N]: ")
+	switch readLine(os.Stdin) {
 	case "y", "yes":
 		return true
 	default:

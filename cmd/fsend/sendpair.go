@@ -23,6 +23,7 @@ import (
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/signaling"
 	"github.com/polius/fsend/internal/transfer"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -340,7 +341,7 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			// there is no other path, so the bare error is the whole story.
 			if !lanDownNoticed && !f.quiet && !serverDisabled {
 				lanDownNoticed = true
-				fmt.Fprintln(os.Stderr, marker("ℹ", "[i]"), "Local network unavailable — receiver must use a different network.")
+				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local network unavailable — receiver must use a different network.")
 			}
 
 		case res := <-serverCh:
@@ -360,7 +361,7 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			// be misleading.
 			if !serverDownNoticed && !f.quiet && !lanDisabled && isServerDown(serverErr) {
 				serverDownNoticed = true
-				fmt.Fprintln(os.Stderr, marker("⚠", "[!]"), "Rendezvous server unreachable — only same-LAN receivers can connect.")
+				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Rendezvous server unreachable — only same-LAN receivers can connect.")
 			}
 		}
 	}
@@ -374,19 +375,19 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 
 	if winner.lan != nil {
 		printPath(f, connpath.FromLAN())
-		return runSenderTransferOverLAN(ctx, f, items, kind, totalFiles, winner.lan)
+		return runSenderTransferOverLAN(ctx, f, items, kind, totalFiles, label, winner.lan)
 	}
 	printPath(f, winner.server.pathInfo)
-	return runSenderTransferOverInternet(ctx, f, items, kind, totalFiles, winner.server)
+	return runSenderTransferOverInternet(ctx, f, items, kind, totalFiles, label, winner.server)
 }
 
 // runSenderTransferOverLAN runs the transfer protocol on a paired LAN
 // connection. The first attempt uses the AcceptResult captured at pair
 // time; transient mid-transfer errors trigger a retry that re-Accepts
 // on the same listener (the receiver's own retry loop re-Dials).
-func runSenderTransferOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, pair *lanSenderPairing) error {
+func runSenderTransferOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, pair *lanSenderPairing) error {
 	defer pair.cleanup()
-	return runSenderTransferLoop(ctx, f, items, kind, totalFiles, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
+	return runSenderTransferLoop(ctx, f, items, kind, totalFiles, displayName, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		acceptCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		res, err := pair.listener.Accept(acceptCtx)
@@ -401,9 +402,9 @@ func runSenderTransferOverLAN(ctx context.Context, f *flags, items []transfer.So
 // retry shape as LAN: first attempt uses the captured AcceptResult,
 // subsequent attempts re-Accept on the same QUIC listener (the
 // underlying PacketConn is preserved across attempts).
-func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, pair *internetSenderPairing) error {
+func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, pair *internetSenderPairing) error {
 	defer pair.cleanup()
-	err := runSenderTransferLoop(ctx, f, items, kind, totalFiles, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
+	err := runSenderTransferLoop(ctx, f, items, kind, totalFiles, displayName, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		qc, err := pair.quicListener.Accept(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
@@ -421,10 +422,11 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transf
 // attempts call reaccept to get a fresh paired connection. Wrapping
 // both paths in this helper keeps the two transfer entry points purely
 // declarative.
-func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
-	closeProg, progressFn := newSenderProgress(f, items)
+func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
+	closeProg, progressFn, sentBytes := newSenderProgress(f, items)
 	defer closeProg()
 
+	start := time.Now()
 	current := firstRes
 	err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
 		func(attempt int) error {
@@ -445,6 +447,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 				ClientVersion: version.Version,
 				TransferKind:  kind,
 				TotalFiles:    totalFiles,
+				DisplayName:   displayName,
 				Password:      f.passArg,
 				ProgressFn:    progressFn,
 			})
@@ -452,9 +455,14 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	if err != nil {
 		return err
 	}
-	if !f.quiet {
-		fmt.Fprintln(os.Stderr, marker("✓", "[OK]"), "Transfer complete")
+	// Use the actual bytes counter so resumed transfers reflect what
+	// moved on the wire — not the full source size. printSendSummary
+	// no-ops under --quiet, so the outer guard isn't needed.
+	bytes := sentBytes()
+	if bytes == 0 {
+		bytes = totalBytes(items)
 	}
+	printSendSummary(f, bytes, time.Since(start))
 	return nil
 }
 

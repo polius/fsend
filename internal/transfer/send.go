@@ -30,8 +30,13 @@ type SendOptions struct {
 	// files packed into the tar so the receiver's prompt block shows
 	// the real file count instead of "1" (the tar wrapper).
 	TotalFiles uint32
-	Password   string                                   // empty → no password challenge
-	ProgressFn func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
+	// DisplayName is a peer-facing label rendered in the receiver's
+	// accept block: "report.pdf" for single-file, "myproject/" for a
+	// directory, "3 items" for multi-file. Empty for stdin/text — the
+	// receiver falls back to a kind-specific phrase.
+	DisplayName string
+	Password    string                                   // empty → no password challenge
+	ProgressFn  func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
 }
 
 // Send executes the full sender-side protocol over the supplied streams.
@@ -55,6 +60,7 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 		TotalFiles:      totalFiles,
 		HasPassword:     opts.Password != "",
 		CompressionHint: 1,
+		DisplayName:     opts.DisplayName,
 	}
 	for _, it := range opts.Items {
 		hello.TotalBytes += it.Info.Size

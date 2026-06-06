@@ -38,9 +38,13 @@ type Options struct {
 	OnRetry func(attempt int, wait time.Duration, lastErr error)
 }
 
+// DefaultAttempts is the attempt cap used when Options.Attempts is zero.
+// Exported so callers can display "(attempt n/N)" without re-deriving it.
+const DefaultAttempts = 3
+
 // defaultOptions returns the values used when fields are zero.
 func defaultOptions() Options {
-	return Options{Attempts: 3, Base: time.Second, Max: 30 * time.Second}
+	return Options{Attempts: DefaultAttempts, Base: time.Second, Max: 30 * time.Second}
 }
 
 // WithBackoff runs op until it succeeds, returns a non-transient error,

@@ -70,6 +70,15 @@ var (
 	// was torn down. Tells the user *why* the transfer stopped, instead
 	// of "connection interrupted, retrying" forever.
 	ErrRelayCapHit = errors.New("relay byte cap reached")
+	// E024 — any CLI usage error (bad flag, bad arg shape, conflicting
+	// modes). Routine; never asks the user to file a bug.
+	ErrUsage = errors.New("usage error")
+	// E025 — the local source path the user tried to send doesn't exist.
+	// Distinct from a read failure on an existing file (E010).
+	ErrSourceNotFound = errors.New("source not found")
+	// E026 — the user cancelled (Ctrl-C / SIGTERM). Exit 130 is the
+	// shell convention for "terminated by SIGINT".
+	ErrUserCancelled = errors.New("cancelled by user")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -88,6 +97,20 @@ func (e Entry) Format() string {
 		return e.Message
 	}
 	return e.Message + "\n  " + e.Action
+}
+
+// Render is the user-facing form: "[Exxx] <message>\n  <action>".
+// The catalog code is included as a stable identifier users can quote in
+// bug reports or scripts (exit codes are unique per entry, but a textual
+// tag is easier to refer to in chat).
+func (e Entry) Render() string {
+	if e.Code == "" {
+		return e.Format()
+	}
+	if e.Action == "" {
+		return "[" + e.Code + "] " + e.Message
+	}
+	return "[" + e.Code + "] " + e.Message + "\n  " + e.Action
 }
 
 // catalog maps each sentinel to its presentation. Keep in sync with
@@ -221,6 +244,20 @@ var catalog = map[error]Entry{
 			"    - Send from a different network so the peers can hole-punch directly.\n" +
 			"    - Self-host fsend-server and raise FSEND_MAX_RELAY_BYTES_PER_SESSION.",
 	},
+	ErrUsage: {
+		Code: "E024", Exit: 4,
+		Message: "Invalid usage.",
+		Action:  "Run `fsend --help` for the full command surface.",
+	},
+	ErrSourceNotFound: {
+		Code: "E025", Exit: 10,
+		Message: "Source not found.",
+		Action:  "Check the path and try again.",
+	},
+	ErrUserCancelled: {
+		Code: "E026", Exit: 130,
+		Message: "Cancelled.",
+	},
 }
 
 // Lookup returns the catalog entry for the sentinel (or its wrapped chain),
@@ -250,4 +287,15 @@ func Lookup(err error) (Entry, bool) {
 func IsWarning(err error) bool {
 	entry, ok := Lookup(err)
 	return ok && entry.Exit == 0
+}
+
+// Chain returns the full wrap chain of err as a slice of error strings,
+// outermost first. Used by --debug rendering to expose the underlying
+// technical details after the friendly catalog message.
+func Chain(err error) []string {
+	var out []string
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		out = append(out, e.Error())
+	}
+	return out
 }

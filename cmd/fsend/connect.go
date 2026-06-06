@@ -1,11 +1,15 @@
 package main
 
 import (
-	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/polius/fsend/internal/config"
+	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/uxlog"
 )
 
 // runConnect implements `fsend --connect ...` per PROJECT_SPEC.md
@@ -18,9 +22,17 @@ import (
 func runConnect(f *flags) error {
 	cfg, _ := config.Load() // ignore corruption error — we're about to overwrite anyway
 
-	args := f.connectArgsRaw
+	// Strip the bare-flag sentinel cobra synthesised when the user
+	// typed `fsend --connect` with no value. After filtering, an empty
+	// slice means "show current server".
+	args := make([]string, 0, len(f.connectArgsRaw))
+	for _, a := range f.connectArgsRaw {
+		if a == connectShowSentinel {
+			continue
+		}
+		args = append(args, a)
+	}
 
-	// No args: print current + default.
 	if len(args) == 0 {
 		printCurrentServer(cfg)
 		return nil
@@ -33,26 +45,51 @@ func runConnect(f *flags) error {
 		if err := config.Save(cfg); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
-		fmt.Fprintln(os.Stderr, "✓ Reverted to default server:", config.DefaultServer)
+		fmt.Fprintln(os.Stderr, uxlog.Check(), "Reverted to default server:", config.DefaultServer)
 		return nil
 	default:
-		// args[0] is host:port, args[1] (optional) is password.
+		if len(args) > 2 {
+			return fmt.Errorf("%w: --connect takes at most: <host:port> [password]", fserrors.ErrUsage)
+		}
 		host := args[0]
+		if err := validateHostPort(host); err != nil {
+			return fmt.Errorf("%w: %v", fserrors.ErrUsage, err)
+		}
 		password := ""
 		if len(args) >= 2 {
 			password = args[1]
-		}
-		if len(args) > 2 {
-			return errors.New("--connect takes at most: <host:port> [password]")
 		}
 		cfg.Server = host
 		cfg.ServerPassword = password
 		if err := config.Save(cfg); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
-		fmt.Fprintln(os.Stderr, "✓ Server set to:", host)
+		msg := "Server set to: " + host
+		if password != "" {
+			msg += "  (password set)"
+		}
+		fmt.Fprintln(os.Stderr, uxlog.Check(), msg)
 		return nil
 	}
+}
+
+// validateHostPort enforces "<host>:<port>" with a numeric port in range.
+// Hostnames are not resolved (we don't want a DNS round-trip here);
+// validating the shape catches "fsend --connect foo" before it persists
+// junk into the config and bewilders the next transfer with E001.
+func validateHostPort(s string) error {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return fmt.Errorf("expected <host>:<port>, got %q", s)
+	}
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("host part is empty in %q", s)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return fmt.Errorf("port must be 1-65535, got %q", port)
+	}
+	return nil
 }
 
 func printCurrentServer(cfg *config.Config) {
@@ -60,7 +97,11 @@ func printCurrentServer(cfg *config.Config) {
 	if cfg.IsDefault() {
 		fmt.Fprintln(os.Stderr, "  Current server:", config.DefaultServer, "(default)")
 	} else {
-		fmt.Fprintln(os.Stderr, "  Current server:", cfg.Server, "(custom)")
+		extra := ""
+		if cfg.ServerPassword != "" {
+			extra = "  (password set)"
+		}
+		fmt.Fprintln(os.Stderr, "  Current server:", cfg.Server, "(custom)"+extra)
 		fmt.Fprintln(os.Stderr, "  Default server:", config.DefaultServer)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  To revert to the default:  fsend --connect default")

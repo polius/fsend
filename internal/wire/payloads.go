@@ -18,6 +18,16 @@ type SenderHello struct {
 	TotalBytes      uint64       // sum of file sizes (0 if unknown, e.g. stdin)
 	HasPassword     bool         // true → expect PASSWORD_CHALLENGE after HELLO_ACK
 	CompressionHint uint8        // 0=none, 1=zstd-auto-per-chunk
+
+	// DisplayName is a peer-facing label the receiver renders in its
+	// accept block: the filename for single-file, the folder name for
+	// directory, or "N items" for multi-file. Empty for stdin/text.
+	//
+	// Wire-compatibility note: gob tolerates added fields — an older
+	// sender simply leaves this zero, in which case the receiver's UX
+	// falls back to its pre-DisplayName rendering. Bumping the protocol
+	// version is therefore not required for this field.
+	DisplayName string
 }
 
 // PasswordChallenge is sent by the sender right after a positive
