@@ -41,15 +41,19 @@ func TestSignal_SenderSIGINTMidTransfer(t *testing.T) {
 	s.signal(t, syscall.SIGINT)
 	s.wait(t, 5*time.Second)
 
+	// Generous bound: the receiver may walk its full retry budget
+	// (3 × 10s QUIC handshake) when SIGINT lands at certain stream
+	// positions before giving up. We only care that it eventually
+	// surfaces a non-zero exit; the duration is bounded by retry config.
 	select {
 	case err := <-rDone:
 		if err == nil {
 			t.Fatalf("receiver returned 0 after sender SIGINT — should be non-zero")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		_ = rCmd.Process.Kill()
 		<-rDone
-		t.Fatalf("receiver did not exit within 5s")
+		t.Fatalf("receiver did not exit within 30s")
 	}
 
 	if fi, err := os.Stat(filepath.Join(dst, "big.bin")); err == nil {

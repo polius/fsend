@@ -321,6 +321,13 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if reason := tryReadPeerError(s.Control); reason != nil {
+					if errors.Is(reason, fserrors.ErrPartialMismatch) {
+						// Source changed since our partial was written;
+						// the stale bytes can't be reconciled. Drop the
+						// sidecar so the next run is a clean full fetch.
+						_ = f.Close()
+						_ = os.Remove(partial)
+					}
 					return reason
 				}
 				return fmt.Errorf("recv: stream closed mid-file: %w", fserrors.ErrConnectFailed)

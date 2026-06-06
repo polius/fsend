@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/gob"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/zeebo/blake3"
 
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -190,6 +192,81 @@ func TestResume_TamperedPrefixDetected(t *testing.T) {
 
 	if good == bad {
 		t.Fatal("BLAKE3 root collision on a single-bit flip — verification is no-op")
+	}
+}
+
+// TestResume_SourceChangedDiscardsPartial covers the auto-discard path:
+// when the receiver's partial doesn't match the sender's source prefix,
+// the sender reports ErrCodePartialMismatch and the receiver MUST remove
+// the stale sidecar so the next attempt is a clean full fetch.
+func TestResume_SourceChangedDiscardsPartial(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "big.bin")
+
+	size := 4 * wire.MaxChunkSize
+	payload := make([]byte, size)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(srcPath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plant a partial whose bytes do NOT match the source prefix.
+	target := filepath.Join(dstDir, "big.bin")
+	partial := target + partialSuffix
+	stale := make([]byte, 2*wire.MaxChunkSize)
+	if _, err := rand.Read(stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partial, stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := Walk([]string{srcPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, b := pipePair()
+	defer a.Close()
+	defer b.Close()
+
+	var sendErr, recvErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sendErr = Send(context.Background(), &a, SendOptions{
+			Items:        items,
+			TransferKind: wire.TransferSingleFile,
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		recvErr = Recv(context.Background(), &b, RecvOptions{
+			TargetDir: dstDir,
+		})
+	}()
+	wg.Wait()
+
+	// Both sides should report the mismatch as ErrPartialMismatch.
+	if !errors.Is(sendErr, fserrors.ErrPartialMismatch) {
+		t.Errorf("sender: want ErrPartialMismatch, got %v", sendErr)
+	}
+	if !errors.Is(recvErr, fserrors.ErrPartialMismatch) {
+		t.Errorf("receiver: want ErrPartialMismatch, got %v", recvErr)
+	}
+
+	// The stale partial must be gone — a re-run would otherwise hit the
+	// same mismatch and loop the user.
+	if _, err := os.Stat(partial); !os.IsNotExist(err) {
+		t.Errorf("expected partial sidecar to be auto-discarded, stat err=%v", err)
+	}
+	// The target itself must not exist (we never had a clean copy).
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("expected target not to exist, stat err=%v", err)
 	}
 }
 

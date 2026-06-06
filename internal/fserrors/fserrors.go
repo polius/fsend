@@ -191,9 +191,8 @@ var catalog = map[error]Entry{
 	},
 	ErrPartialMismatch: {
 		Code: "E019", Exit: 19,
-		Message: "Cannot resume — the source file has changed since the last attempt.",
-		Action: "Delete the .fsend-partial file in your target directory and try again,\n" +
-			"  or use --out <dir> to start fresh in a clean directory.",
+		Message: "The source file changed since the last attempt — stale partial discarded.",
+		Action: "Run the same command again to fetch a fresh copy from scratch.",
 	},
 	ErrTransientFailure: {
 		Code: "E020", Exit: 20,

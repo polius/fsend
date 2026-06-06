@@ -166,6 +166,15 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 			return fmt.Errorf("%w: imohash source prefix: %v", fserrors.ErrReadFailed, err)
 		}
 		if got != decision.PartialImohash {
+			// Close data first so the receiver's chunk-read EOFs and
+			// falls through to its peek-control path. Without this, an
+			// unbuffered transport (e.g. the in-memory pipe used in
+			// tests) deadlocks: the sender blocks writing the error
+			// frame on control while the receiver blocks reading from
+			// data. QUIC's per-stream buffers paper over the order in
+			// production, but the protocol contract is cleaner with the
+			// EOF signal sent explicitly.
+			_ = s.Data.Close()
 			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
 				Code:    wire.ErrCodePartialMismatch,
 				Message: "receiver's partial does not match source",

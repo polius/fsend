@@ -135,9 +135,9 @@ FSEND_PASS=swordfish fsend --yes abc-defg-hjk
 ```
 
 If you cancel a transfer mid-flight, a `.fsend-partial` sidecar is kept and
-the next run resumes from where it left off — as long as the sender's file
-hasn't changed (otherwise you'll see `E019`; delete the sidecar to start
-over).
+the next run resumes from where it left off. If the sender's file has
+changed since then, fsend discards the stale sidecar automatically and
+asks you to re-run — the next attempt fetches a fresh copy.
 
 ---
 
@@ -261,7 +261,7 @@ specific failure.
 | `15` | `E015` — protocol error (incompatible versions). |
 | `17` | `E017` — rate limited. |
 | `18` | `E018` — default server retired. |
-| `19` | `E019` — cannot resume, source file changed. |
+| `19` | `E019` — source file changed; stale partial auto-discarded, re-run to fetch a fresh copy. |
 | `20` | `E020` — transient transfer failure (retries exhausted). |
 | `21` | `E021` — wrong password. |
 | `22` | `E022` — peer authentication failed (code mismatch or tampering). |
