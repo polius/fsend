@@ -25,7 +25,17 @@ type Server struct {
 
 	mu        sync.RWMutex
 	allocs    map[Token]*allocation
-	tombstone map[Token]string // recently evicted tokens + reason; cleaned by janitor
+	tombstone map[Token]tombstoneEntry // recently evicted tokens + reason; janitor expires by age
+}
+
+// tombstoneEntry records why an allocation was evicted, with the
+// monotonic-ish unix-nanos timestamp the janitor uses to expire it.
+// A bare reason string (previous shape) couldn't be aged out, so we
+// were forced to wipe the entire map under a 1024-entry safety valve —
+// losing every status lookup during a burst.
+type tombstoneEntry struct {
+	reason    string
+	expiresAt int64 // unix nanos
 }
 
 // TombstoneTTL is how long an evicted token's reason stays around for
@@ -67,7 +77,6 @@ type allocation struct {
 	bytes        atomic.Uint64
 	lastActivity atomic.Int64 // unix nanos
 	createdAt    time.Time
-	evictedAt    atomic.Int64 // unix nanos; 0 = live
 }
 
 // NewServer constructs a Server bound to the given net.PacketConn.
@@ -80,7 +89,7 @@ func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 		cfg:       cfg,
 		logger:    cfg.Logger,
 		allocs:    make(map[Token]*allocation),
-		tombstone: make(map[Token]string),
+		tombstone: make(map[Token]tombstoneEntry),
 	}
 }
 
@@ -95,8 +104,8 @@ func (s *Server) Status(t Token) string {
 	if _, live := s.allocs[t]; live {
 		return ""
 	}
-	if reason, ok := s.tombstone[t]; ok {
-		return reason
+	if entry, ok := s.tombstone[t]; ok {
+		return entry.reason
 	}
 	return ""
 }
@@ -216,7 +225,10 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 func (s *Server) evict(t Token, reason string) {
 	s.mu.Lock()
 	delete(s.allocs, t)
-	s.tombstone[t] = reason
+	s.tombstone[t] = tombstoneEntry{
+		reason:    reason,
+		expiresAt: time.Now().Add(TombstoneTTL).UnixNano(),
+	}
 	s.mu.Unlock()
 	s.logger.Debug("relay: evicted", "token", t.String(), "reason", reason)
 }
@@ -230,25 +242,25 @@ func (s *Server) janitor(ctx context.Context) {
 			return
 		case now := <-t.C:
 			cutoff := now.Add(-s.cfg.SessionIdleTimeout).UnixNano()
-			tombCutoff := now.Add(-TombstoneTTL).UnixNano()
+			nowNanos := now.UnixNano()
 			s.mu.Lock()
 			for tok, a := range s.allocs {
 				if a.lastActivity.Load() < cutoff {
 					delete(s.allocs, tok)
-					s.tombstone[tok] = ReasonIdle
-					a.evictedAt.Store(now.UnixNano())
+					s.tombstone[tok] = tombstoneEntry{
+						reason:    ReasonIdle,
+						expiresAt: now.Add(TombstoneTTL).UnixNano(),
+					}
 				}
 			}
-			// Tombstones expire on age; we approximate via a counter map
-			// would be heavier than this. Walk + cheap-clear.
-			if len(s.tombstone) > 1024 {
-				// Safety valve only — under steady-state load the size
-				// is bounded by max simultaneous sessions * TombstoneTTL.
-				for tok := range s.tombstone {
+			// Expire tombstones by per-entry age — no bulk-wipe, so a
+			// burst of evictions can't blind every subsequent status
+			// lookup.
+			for tok, entry := range s.tombstone {
+				if entry.expiresAt < nowNanos {
 					delete(s.tombstone, tok)
 				}
 			}
-			_ = tombCutoff
 			s.mu.Unlock()
 		}
 	}
