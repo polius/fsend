@@ -6,14 +6,19 @@
 # or:
 #   wget -qO- https://fs.alzina.dev/install.sh | sh
 #
-# Flags (set via env var):
-#   PREFIX=/path/to/dir   Install location. If unset, picked automatically:
-#                         a user-writable directory is preferred so no sudo
-#                         is required. On Linux/macOS/*BSD: /usr/local/bin
-#                         when writable (or running as root), else
-#                         $HOME/.local/bin. On Windows shells (MSYS/Git Bash):
-#                         $HOME/bin.
-#   FSEND_VERSION=v0.1.0  Version to install (default: latest)
+# Options (flags, or equivalent env vars):
+#   -p DIR  | PREFIX=DIR          Install location. If unset, picked
+#                                 automatically: a user-writable directory is
+#                                 preferred so no sudo is required. On
+#                                 Linux/macOS/*BSD: /usr/local/bin when
+#                                 writable (or running as root), else
+#                                 $HOME/.local/bin. On Windows shells
+#                                 (MSYS/Git Bash): $HOME/bin.
+#   -v VER  | FSEND_VERSION=VER   Version to install (default: latest)
+#   -h                            Show help and exit
+#
+# To pass flags through `curl | sh`, use `sh -s --`:
+#   curl -fsSL https://fs.alzina.dev/install.sh | sh -s -- -p /opt/bin
 #
 # Works on Linux, macOS, FreeBSD, and Windows under Git Bash / MSYS2 / Cygwin.
 # Native Windows users without a POSIX shell should grab the .zip from the
@@ -29,14 +34,15 @@ set -eu
 REPO="polius/fsend"
 BINARY="fsend"
 FSEND_VERSION="${FSEND_VERSION:-latest}"
+PREFIX="${PREFIX:-}"
 
-# Track whether the user explicitly chose PREFIX. If they did, we respect it
-# and use elevation when needed; if they didn't, we auto-pick a writable dir.
-if [ "${PREFIX+set}" = "set" ] && [ -n "$PREFIX" ]; then
+# Track whether the user explicitly chose PREFIX (env var or -p flag). If they
+# did, we respect it and use elevation when needed; if not, we auto-pick a
+# writable dir later via default_prefix(). Flag parsing may flip this to 1.
+if [ -n "$PREFIX" ]; then
     PREFIX_EXPLICIT=1
 else
     PREFIX_EXPLICIT=0
-    PREFIX=""
 fi
 
 # ---------- Helpers ----------
@@ -45,6 +51,26 @@ err()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m›\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[33m!\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*" >&2; }
+
+usage() {
+    cat <<'EOF'
+fsend installer
+
+Usage:
+  curl -fsSL https://fs.alzina.dev/install.sh | sh
+  curl -fsSL https://fs.alzina.dev/install.sh | sh -s -- [-p DIR] [-v VERSION]
+
+Flags:
+  -p DIR        Install location (default: auto-pick a writable dir)
+  -v VERSION    Version to install (default: latest)
+  -h            Show this help and exit
+
+Environment variables (overridden by the matching flag):
+  PREFIX, FSEND_VERSION
+
+Source: https://github.com/polius/fsend/blob/main/install.sh
+EOF
+}
 
 need() {
     command -v "$1" >/dev/null 2>&1 || err "missing required command: $1"
@@ -319,5 +345,17 @@ main() {
     printf 'Next: send a file with  fsend <path>\n'
     printf '      see all options:  fsend --help\n'
 }
+
+# Parse flags. -p and -v override the matching env vars; -h prints usage.
+while getopts ":p:v:h" opt; do
+    case "$opt" in
+        p)  PREFIX="$OPTARG"; PREFIX_EXPLICIT=1 ;;
+        v)  FSEND_VERSION="$OPTARG" ;;
+        h)  usage; exit 0 ;;
+        :)  err "option -$OPTARG requires an argument (use -h for help)" ;;
+        \?) err "unknown option: -$OPTARG (use -h for help)" ;;
+    esac
+done
+shift $((OPTIND - 1))
 
 main "$@"
