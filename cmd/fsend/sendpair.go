@@ -186,7 +186,14 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 // success it returns the ICE-owning PacketConn; on failure it allocates
 // a server-side relay and returns a relay PacketConn. The pathInfo
 // reflects the choice for UX rendering.
+//
+// The debug --mode flag short-circuits the ladder:
+//   - modeSTUN: only ICE; surface the ICE error if it fails (no relay fallback).
+//   - modeTURN: skip ICE entirely; allocate the relay immediately.
 func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *server.CreateSessionResponse, waitResp *server.WaitResponse, serverAddr string) (net.PacketConn, connpath.Info, error) {
+	if f != nil && f.mode == modeTURN {
+		return allocAndDialRelay(ctx, client, created.SessionID)
+	}
 	stunHost := stunHostFromServer(serverAddr)
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, created.RoleToken, iceconn.Options{
 		LocalUfrag:  created.IceCredentials.Ufrag,
@@ -201,7 +208,17 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if f != nil && f.debug {
 		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
 	}
-	alloc, err := client.AllocateRelay(ctx, created.SessionID)
+	if f != nil && f.mode == modeSTUN {
+		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=stun: %v", fserrors.ErrConnectFailed, iceErr)
+	}
+	return allocAndDialRelay(ctx, client, created.SessionID)
+}
+
+// allocAndDialRelay performs the relay allocation + dial steps. Shared
+// between the default ICE-failure fallback and the debug --mode=turn
+// short-circuit so both produce identical errors and pathInfo.
+func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID string) (net.PacketConn, connpath.Info, error) {
+	alloc, err := client.AllocateRelay(ctx, sessionID)
 	if err != nil {
 		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}
@@ -270,14 +287,24 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 	lanCh := make(chan sendPairOutcome, 1)
 	serverCh := make(chan sendPairOutcome, 1)
 
-	go func() {
-		p, err := pairOverLAN(pairCtx, code)
-		lanCh <- sendPairOutcome{lan: p, err: err}
-	}()
-	go func() {
-		p, err := pairOverInternet(pairCtx, f, code, cfg)
-		serverCh <- sendPairOutcome{server: p, err: err}
-	}()
+	// --mode collapses the LAN+internet race to a single path. The
+	// disabled side is marked done upfront and its goroutine never starts,
+	// so the coordinator only ever picks a winner from the enabled side.
+	lanDisabled := f.mode == modeSTUN || f.mode == modeTURN
+	serverDisabled := f.mode == modeLocal
+
+	if !lanDisabled {
+		go func() {
+			p, err := pairOverLAN(pairCtx, code)
+			lanCh <- sendPairOutcome{lan: p, err: err}
+		}()
+	}
+	if !serverDisabled {
+		go func() {
+			p, err := pairOverInternet(pairCtx, f, code, cfg)
+			serverCh <- sendPairOutcome{server: p, err: err}
+		}()
+	}
 
 	var (
 		lanDone, serverDone bool
@@ -287,6 +314,8 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 		winner              sendPairOutcome
 		winnerPicked        bool
 	)
+	lanDone = lanDisabled
+	serverDone = serverDisabled
 
 	for !winnerPicked && (!lanDone || !serverDone) {
 		select {
@@ -306,7 +335,10 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			if errors.Is(lanErr, context.Canceled) {
 				continue
 			}
-			if !lanDownNoticed && !f.quiet {
+			// Don't print the "must use a different network" notice when the
+			// user explicitly forced the LAN path with --mode=local:
+			// there is no other path, so the bare error is the whole story.
+			if !lanDownNoticed && !f.quiet && !serverDisabled {
 				lanDownNoticed = true
 				fmt.Fprintln(os.Stderr, marker("ℹ", "[i]"), "Local network unavailable — receiver must use a different network.")
 			}
@@ -322,7 +354,11 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			if errors.Is(serverErr, context.Canceled) {
 				continue
 			}
-			if !serverDownNoticed && !f.quiet && isServerDown(serverErr) {
+			// Don't print the "only same-LAN receivers can connect" notice
+			// when the user explicitly forced the internet path with
+			// --mode=stun/turn: LAN is disabled, so the notice would
+			// be misleading.
+			if !serverDownNoticed && !f.quiet && !lanDisabled && isServerDown(serverErr) {
 				serverDownNoticed = true
 				fmt.Fprintln(os.Stderr, marker("⚠", "[!]"), "Rendezvous server unreachable — only same-LAN receivers can connect.")
 			}

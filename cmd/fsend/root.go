@@ -34,6 +34,11 @@ type flags struct {
 	// back; "no flag" vs "empty flag" is distinguished via Flags().Changed.
 	connectArgsRaw []string
 
+	// Debug-only sender path override: "local" | "stun" | "turn".
+	// Forces a specific data path instead of the default LAN+rendezvous
+	// race with ICE-then-relay fallback. Hidden from --help, undocumented.
+	mode string
+
 	// Misc
 	quiet     bool
 	debug     bool
@@ -99,8 +104,27 @@ Examples:
 	c.Flags().BoolVar(&f.debug, "debug", false, "verbose logging to stderr")
 	c.Flags().BoolVar(&f.uninstall, "uninstall", false, "remove the fsend binary and config dir")
 
+	c.Flags().StringVar(&f.mode, "mode", "", "")
+	_ = c.Flags().MarkHidden("mode")
+
 	return c
 }
+
+// validMode reports whether s is an accepted --mode value.
+// "" means "no override" (default auto-selection).
+func validMode(s string) bool {
+	switch s {
+	case "", modeLocal, modeSTUN, modeTURN:
+		return true
+	}
+	return false
+}
+
+const (
+	modeLocal = "local"
+	modeSTUN  = "stun"
+	modeTURN  = "turn"
+)
 
 // passPromptSentinel is the value cobra hands us when the user passes
 // bare --pass with no argument. The dispatch layer translates this into
@@ -121,6 +145,10 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// --uninstall is a maintenance command; never combine with transfer.
 	if f.uninstall {
 		return runUninstall(f)
+	}
+
+	if !validMode(f.mode) {
+		return fmt.Errorf("invalid --mode %q (expected: local, stun, or turn)", f.mode)
 	}
 
 	// Env-var fallback for the password (FSEND_PASS). Passing a secret via
