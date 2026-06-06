@@ -165,7 +165,7 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
-	ver, token, payload, ok := Parse(datagram)
+	ver, token, _, ok := Parse(datagram)
 	if !ok {
 		return // silently drop malformed
 	}
@@ -219,7 +219,6 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 	if _, err := s.conn.WriteTo(datagram, dst); err != nil {
 		s.logger.Debug("relay: write failed", "err", err)
 	}
-	_ = payload // referenced for any future per-payload accounting
 }
 
 func (s *Server) evict(t Token, reason string) {

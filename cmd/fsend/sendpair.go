@@ -91,7 +91,7 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", fserrors.ErrLANListenerFailed, err)
 	}
-	mdnsConn, err := landisc.Announce(code, landisc.PreferredLocalIP(), port)
+	mdnsConn, err := landisc.Announce(code, landisc.PreferredLocalIP())
 	if err != nil {
 		_ = ln.Close()
 		return nil, fmt.Errorf("%w: mDNS announce: %v", fserrors.ErrLANListenerFailed, err)

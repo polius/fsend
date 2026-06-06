@@ -35,22 +35,17 @@ func serviceName(code string) string {
 // name. Call Close on the returned *mdns.Conn to stop announcing.
 //
 // The sender calls this just before listening for QUIC connections, so the
-// receiver can discover it.
+// receiver can discover it. ip is the address we want receivers to dial —
+// usually the first non-loopback IPv4 on this machine.
 //
-// port is the UDP port of the sender's QUIC listener. ip is the address we
-// want receivers to dial — usually the first non-loopback IPv4 on this
-// machine.
-func Announce(code string, ip net.IP, port int) (*mdns.Conn, error) {
+// The port is not part of the announcement: pion/mdns only carries the
+// IP, and both sides derive the UDP port from the code via PortForCode.
+func Announce(code string, ip net.IP) (*mdns.Conn, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {
 		return nil, fmt.Errorf("landisc: opening multicast: %w", err)
 	}
 
-	// pion/mdns answers address queries for any LocalName we register. Both
-	// peers use the well-known serviceName(code) name; the port is shared
-	// via the deterministic PortForCode hash so the receiver doesn't need
-	// to read it out of the discovery response.
-	_ = port
 	name := serviceName(code)
 
 	cfg := &mdns.Config{
@@ -102,25 +97,10 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 	qCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Try names with various port suffixes — the announce side embedded
-	// the port in the name. We don't know it, so we instead announce a
-	// fixed sentinel name and use TXT-equivalent embedding via the
-	// last-known-port. For v1 simplicity, we encode port in the name as
-	// fsend-<code>-<port>.local and brute-force common ports. A cleaner
-	// approach is below in the LAN MVP wiring: the sender posts on a
-	// well-known announced port carried in the name itself, and the
-	// receiver parses by querying a wildcard suffix.
-	//
-	// pion/mdns doesn't expose service-browsing primitives — only name
-	// queries. So we use a different strategy: the announce-side encodes
-	// the port directly in a fixed-format name fsend-<code>-port<n>.local,
-	// and the receiver tries common QUIC ports.
-	//
-	// SIMPLIFIED LAN-MVP STRATEGY: the sender always listens on a port
-	// derived deterministically from the code (between 50000 and 50999;
-	// 10 bits of code → port-in-range). This means the receiver can
-	// query the well-known service name AND know the port without a
-	// second exchange. See PortForCode below.
+	// pion/mdns doesn't expose service-browsing — only name queries. So
+	// the port is not part of the announcement: both sides derive it
+	// from the code via PortForCode, and we just query the well-known
+	// service name to discover the sender's IP.
 	port := PortForCode(code)
 	name := serviceName(code)
 

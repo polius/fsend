@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/json"
 	"errors"
@@ -580,29 +581,19 @@ func bearerToken(r *http.Request) string {
 }
 
 // sideForToken identifies which peer a bearer token belongs to.
-// Constant-time compare keeps the auth check from leaking timing.
+// crypto/subtle.ConstantTimeCompare keeps the auth check from leaking
+// timing — it also handles the length-mismatch short-circuit safely.
 func (s *session) sideForToken(tok string) (string, bool) {
 	if tok == "" {
 		return "", false
 	}
-	if s.SenderToken != "" && subtleEqual(s.SenderToken, tok) {
+	if s.SenderToken != "" && subtle.ConstantTimeCompare([]byte(s.SenderToken), []byte(tok)) == 1 {
 		return "sender", true
 	}
-	if s.ReceiverToken != "" && subtleEqual(s.ReceiverToken, tok) {
+	if s.ReceiverToken != "" && subtle.ConstantTimeCompare([]byte(s.ReceiverToken), []byte(tok)) == 1 {
 		return "receiver", true
 	}
 	return "", false
-}
-
-func subtleEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := 0; i < len(a); i++ {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
 }
 
 // newIceCreds returns a fresh ICE ufrag+pwd pair. ICE expects ufrag at
