@@ -1,37 +1,29 @@
-# Multi-stage Dockerfile for fsend-server.
+# Multi-stage build for fsend-server. The final image is FROM scratch
+# with just the static binary.
 #
-# Final image: FROM scratch with just the static binary. Distroless,
-# tiny attack surface, fast cold-start.
-#
-# Build:
 #   docker build -t fsend-server .
-# Run:
 #   docker run -p 443:443/udp -p 8080:8080/tcp fsend-server
 
 # ---------- builder ----------
 FROM golang:1.25-alpine AS builder
 
-# CGO_ENABLED=0 → fully static binary that runs in FROM scratch.
+# Fully static binary so it can run in FROM scratch (no libc).
 ENV CGO_ENABLED=0 GOOS=linux
 
 WORKDIR /src
 
-# Cache go.mod / go.sum layer separately from source — this layer only
-# invalidates when deps change.
+# Separate layer for deps — only invalidates when go.mod/go.sum change.
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Source tree.
 COPY . .
 
-# Inject version metadata at build time. Caller passes --build-arg
-# VERSION=0.1.0 (etc.) — defaults to "dev" if unset.
+# Version metadata injected at build time via --build-arg.
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
 
-# -trimpath + -ldflags strip paths and symbols for a reproducible,
-# minimal binary.
+# -trimpath + -s -w: reproducible build with stripped symbols.
 RUN go build -trimpath \
     -ldflags="-s -w -buildid= \
       -X github.com/polius/fsend/internal/version.Version=${VERSION} \
@@ -42,11 +34,10 @@ RUN go build -trimpath \
 # ---------- final ----------
 FROM scratch
 
-# CA certs are needed for outbound HTTPS (e.g. if a future feature talks
-# to GitHub). The server itself does NOT need certs for its own listener:
-# TLS termination is the operator's reverse proxy's job.
+# CA certs for any outbound HTTPS the server might make. The server's
+# own listener is plaintext HTTP — TLS terminates at the operator's
+# reverse proxy.
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-
 COPY --from=builder /out/fsend-server /fsend-server
 
 EXPOSE 8080/tcp
