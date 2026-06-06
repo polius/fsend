@@ -1,7 +1,8 @@
-# golangci-lint config for fsend.
+# golangci-lint config for fsend (v2 schema).
+
+version: "2"
 
 run:
-  timeout: 5m
   tests: true
 
 linters:
@@ -11,22 +12,20 @@ linters:
     - gosec
     - staticcheck
     - revive
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: exported
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
 
 formatters:
   enable:
     - gofmt
     - goimports
-
-linters-settings:
-  revive:
-    rules:
-      - name: var-naming
-      - name: package-comments
-      - name: exported
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
