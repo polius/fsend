@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -86,8 +87,13 @@ Examples:
 	// Hand-written help/usage layout, replacing cobra's alphabetised
 	// flag wall. Examples-first; common flags grouped semantically;
 	// advanced flags last; environment variables called out explicitly.
-	c.SetHelpTemplate(helpTemplate)
-	c.SetUsageTemplate(helpTemplate)
+	//
+	// The header carries the build version so users see what they're
+	// running on every `--help` — saves a round-trip to `--version`
+	// when writing a bug report.
+	ht := strings.Replace(helpTemplate, "fsend —", "fsend "+version.Version+" —", 1)
+	c.SetHelpTemplate(ht)
+	c.SetUsageTemplate(ht)
 
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
@@ -114,7 +120,7 @@ Examples:
 	// Server selection. Bare --connect (no value) means "show current
 	// server" — same NoOptDefVal trick as --pass. The dispatcher
 	// recognises the sentinel and treats it as "no args".
-	c.Flags().StringSliceVar(&f.connectArgsRaw, "connect", nil, "set the rendezvous server: <host:port> [password] | 'default'")
+	c.Flags().StringSliceVar(&f.connectArgsRaw, "connect", nil, "set the server: <host:port> [password] | 'default'")
 	connectFlag := c.Flags().Lookup("connect")
 	connectFlag.NoOptDefVal = connectShowSentinel
 	connectFlag.DefValue = ""
@@ -183,9 +189,9 @@ COMMON FLAGS
   --version              Show version
 
 ADVANCED FLAGS
-  --connect              Show current rendezvous server
+  --connect              Show current server
   --connect <host:port> [password]
-                         Set the rendezvous server (persisted)
+                         Set the server (persisted)
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
   --text "<string>"      Send a literal string instead of a file
@@ -258,7 +264,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// both send and receive paths benefit and the prompt happens before
 	// any network activity.
 	if f.passArg == passPromptSentinel {
-		pw, err := readPasswordHidden("Enter password: ")
+		pw, err := readPasswordHidden("Password for this transfer: ")
 		if err != nil {
 			return err
 		}
@@ -309,6 +315,16 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 			return promptCodeOrPath(f, arg)
 		}
 		return runReceive(f, arg)
+	}
+	// Codes copied through iMessage / WhatsApp / Slack often have the
+	// first letter auto-capitalized. If the lowercased form is a valid
+	// code AND there's no file with the original name, accept it as a
+	// receive — anything else (file exists, or lowercased still doesn't
+	// match the regex) falls through to send.
+	if lowered := strings.ToLower(arg); lowered != arg && code.IsCode(lowered) {
+		if _, err := os.Stat(arg); os.IsNotExist(err) {
+			return runReceive(f, lowered)
+		}
 	}
 	return runSend(f, []string{arg})
 }

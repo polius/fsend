@@ -57,7 +57,10 @@ func runSend(f *flags, paths []string) error {
 	// before any path is attempted. Both LAN and internet paths use the
 	// same locally-generated code — LAN announces it via mDNS, and the
 	// rendezvous server adopts it via the suggested-code field on Create.
-	printSendArtifact(f, c, items, kind, totalFiles, label)
+	// The returned spinner animates "Waiting for receiver" until the
+	// pair coordinator stops it (on pair success or before printing an
+	// intermediate notice).
+	waitSpin := printSendArtifact(f, c, items, kind, totalFiles, label)
 
 	// Both paths run in parallel from T+0. Whichever pairs first wins;
 	// the loser is cancelled and torn down. See sendpair.go for the
@@ -67,7 +70,7 @@ func runSend(f *flags, paths []string) error {
 	// race against the server path, and cross-network receivers don't
 	// wait on any timer.
 	cfg, _ := config.Load()
-	return runSendParallel(ctx, f, items, kind, totalFiles, label, c, cfg)
+	return runSendParallel(ctx, f, items, kind, totalFiles, label, c, cfg, waitSpin)
 }
 
 // collectItems resolves CLI args into the SourceItem list the wire
@@ -253,15 +256,17 @@ func shortRand() string {
 }
 
 // printSendArtifact renders the "code + receive command" block on stderr
-// per PROJECT_SPEC.md "Send-side terminal UX" state 1.
+// per PROJECT_SPEC.md "Send-side terminal UX" state 1, then starts an
+// animated "Waiting for receiver" spinner and returns it. Callers must
+// Stop the spinner before printing anything else to stderr.
 //
 // Honors the locked output rules:
-//   - --quiet: bare code on stdout, nothing on stderr
-func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label string) {
+//   - --quiet: bare code on stdout, nothing on stderr, nil spinner.
+func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label string) *uxlog.Spinner {
 	if f.quiet {
 		// Pipeline-friendly: just the code on stdout.
 		fmt.Fprintln(os.Stdout, c)
-		return
+		return nil
 	}
 
 	fmt.Fprintln(os.Stderr)
@@ -296,7 +301,7 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  "+sep)
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, uxlog.Spin(), "Waiting for receiver…")
+	return uxlog.StartSpinner("Waiting for receiver")
 }
 
 // separator is a CLI-facing alias for uxlog.Separator so callers don't
@@ -380,10 +385,14 @@ func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello
 }
 
 // humanRate renders a bytes-per-second figure in compact form.
-// A zero or sub-second elapsed window degrades gracefully to "—".
+// Returns "" when the figure would be meaningless (zero bytes, or an
+// elapsed window too small to measure) so callers can omit the
+// trailing "(<rate>)" clause cleanly instead of printing a placeholder.
 func humanRate(bytes int64, elapsed time.Duration) string {
-	if elapsed <= 0 || bytes <= 0 {
-		return "—"
+	// Below ~100 ms the rate is dominated by handshake noise and reads
+	// as nonsense ("4.2 GB/s for a 12 KB transfer"). Hide it.
+	if elapsed < 100*time.Millisecond || bytes <= 0 {
+		return ""
 	}
 	rate := float64(bytes) / elapsed.Seconds()
 	return humanBytes(int64(rate)) + "/s"
@@ -391,7 +400,7 @@ func humanRate(bytes int64, elapsed time.Duration) string {
 
 // humanDuration renders elapsed in compact form. Sub-second durations
 // show with milliseconds; longer durations switch to seconds with one
-// decimal, then minutes-and-seconds.
+// decimal, then minutes-and-seconds, then hours-minutes-seconds.
 func humanDuration(d time.Duration) string {
 	if d < time.Second {
 		return fmt.Sprintf("%dms", d.Milliseconds())
@@ -402,9 +411,15 @@ func humanDuration(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
-	m := int(d / time.Minute)
+	if d < time.Hour {
+		m := int(d / time.Minute)
+		s := int((d % time.Minute) / time.Second)
+		return fmt.Sprintf("%dm%02ds", m, s)
+	}
+	h := int(d / time.Hour)
+	m := int((d % time.Hour) / time.Minute)
 	s := int((d % time.Minute) / time.Second)
-	return fmt.Sprintf("%dm%02ds", m, s)
+	return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
 }
 
 // printSendSummary renders the post-transfer success line on the sender.
@@ -414,8 +429,8 @@ func printSendSummary(f *flags, bytes int64, elapsed time.Duration) {
 	if f.quiet {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s Sent %s in %s  (%s)\n",
-		uxlog.Check(), humanBytes(bytes), humanDuration(elapsed), humanRate(bytes, elapsed))
+	fmt.Fprintf(os.Stderr, "%s Sent %s in %s%s\n",
+		uxlog.Check(), humanBytes(bytes), humanDuration(elapsed), rateSuffix(bytes, elapsed))
 }
 
 // printRecvSummary is the receive-side counterpart. The bytes figure is
@@ -426,8 +441,19 @@ func printRecvSummary(f *flags, bytes int64, elapsed time.Duration) {
 	if f.quiet {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s Received %s in %s  (%s)\n",
-		uxlog.Check(), humanBytes(bytes), humanDuration(elapsed), humanRate(bytes, elapsed))
+	fmt.Fprintf(os.Stderr, "%s Received %s in %s%s\n",
+		uxlog.Check(), humanBytes(bytes), humanDuration(elapsed), rateSuffix(bytes, elapsed))
+}
+
+// rateSuffix returns "  (<rate>)" when humanRate has a meaningful value,
+// otherwise "". Lets the summary line read as e.g. "Sent 4.2 MB in 8.1s"
+// without a placeholder dash when the transfer was too quick to time.
+func rateSuffix(bytes int64, elapsed time.Duration) string {
+	r := humanRate(bytes, elapsed)
+	if r == "" {
+		return ""
+	}
+	return "  (" + r + ")"
 }
 
 // humanBytes renders a byte count in compact form.

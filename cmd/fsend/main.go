@@ -112,13 +112,22 @@ func renderError(err error, debug bool) int {
 		}
 	}
 
+	// Pick the leading glyph based on severity: warnings (Exit==0, e.g.
+	// ErrConfigCorrupted) get ⚠, real failures get ✗. Without this,
+	// every catalog entry — including "this is fine, falling back to
+	// defaults" — would be flagged with a red cross.
+	glyph := uxlog.Cross()
+	if entry.Exit == 0 {
+		glyph = uxlog.Warn()
+	}
+
 	if detail != "" {
-		fmt.Fprintf(os.Stderr, "%s [%s] %s\n  %s\n", uxlog.Cross(), entry.Code, entry.Message, detail)
+		fmt.Fprintf(os.Stderr, "%s [%s] %s\n  %s\n", glyph, entry.Code, entry.Message, detail)
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "%s %s\n", uxlog.Cross(), entry.Render())
+		fmt.Fprintf(os.Stderr, "%s %s\n", glyph, entry.Render())
 	}
 
 	if debug {

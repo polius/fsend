@@ -33,30 +33,42 @@ func runReceive(f *flags, c string) error {
 	if err := code.Validate(c); err != nil {
 		return fserrors.ErrInvalidCodeFormat
 	}
+	// --quiet suppresses the accept prompt. Without --yes there's no way
+	// for the user to answer it, and the receive engine would silently
+	// decline. Fail fast with a clear hint instead.
+	if f.quiet && !f.yes {
+		return fmt.Errorf("%w: --quiet on receive requires --yes (no prompt to answer otherwise)", fserrors.ErrUsage)
+	}
 
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// LAN discovery first.
+	// LAN discovery first. An animated spinner makes the 300 ms wait feel
+	// alive instead of frozen — and the same spinner can swap message
+	// without dropping a stale "Looking…" line on screen if we fall
+	// through to the rendezvous server.
+	var spin *uxlog.Spinner
 	if !f.quiet {
-		fmt.Fprintln(os.Stderr, uxlog.Spin(), "Looking for sender on local network…")
+		spin = uxlog.StartSpinner("Looking for sender on local network")
 	}
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
-		// LAN miss → try the rendezvous + relay path.
-		if !f.quiet {
-			fmt.Fprintln(os.Stderr, uxlog.Spin(), "Not on LAN — connecting via rendezvous server…")
+		// LAN miss → try the rendezvous + relay path. Swap the spinner
+		// message without leaving the first line as a static artifact.
+		// runReceiveOverInternet owns the spinner's lifetime from here —
+		// it stops it once Join lands.
+		if spin != nil {
+			spin.Stop()
+			spin = uxlog.StartSpinner("Not on local network — connecting via server")
 		}
 		cfg, _ := config.Load()
-		return runReceiveOverInternet(ctx, f, c, cfg)
+		return runReceiveOverInternet(ctx, f, c, cfg, spin)
 	}
+	spin.Stop()
 
 	addr := q.IP.String() + ":" + strconv.Itoa(q.Port)
-	if !f.quiet {
-		fmt.Fprintln(os.Stderr, uxlog.Check(), "Found sender on local network")
-		if f.debug {
-			fmt.Fprintln(os.Stderr, "    address:", addr)
-		}
+	if f.debug && !f.quiet {
+		fmt.Fprintln(os.Stderr, "    sender address:", addr)
 	}
 
 	hostname := f.hostname
@@ -199,13 +211,25 @@ func promptAccept(f *flags, h wire.SenderHello) bool {
 		fmt.Fprintln(os.Stderr, uxlog.Check(), "Accepting (--yes)")
 		return true
 	}
-	fmt.Fprint(os.Stderr, "  Save to current directory? [Y/n]: ")
+	fmt.Fprintf(os.Stderr, "  Save to %s? [Y/n]: ", saveTargetLabel(f))
 	switch readLine(os.Stdin) {
 	case "n", "no":
 		return false
 	default:
 		return true
 	}
+}
+
+// saveTargetLabel renders the receive destination for the accept prompt.
+// We don't expand "." to the absolute cwd here: most users live in their
+// shell with relative paths, and an unexpanded "./report.pdf" reads as
+// less surprising than "/Users/.../report.pdf". For an explicit --out we
+// echo the user's path verbatim — same justification.
+func saveTargetLabel(f *flags) string {
+	if f.outDir == "" {
+		return "current directory"
+	}
+	return f.outDir + "/"
 }
 
 // sanitizeRemote removes control characters, ANSI sequences, and Unicode
@@ -231,7 +255,10 @@ func sanitizeRemote(s string) string {
 		}
 	}
 	if len(out) == 0 {
-		return "(unknown)"
+		// "peer" reads as a neutral placeholder instead of "(unknown)",
+		// which can scan as "fsend failed to detect something". The
+		// transfer is fine; we just don't have a hostname to display.
+		return "peer"
 	}
 	return string(out)
 }

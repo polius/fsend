@@ -15,8 +15,8 @@ func TestLookup_KnownSentinel(t *testing.T) {
 	if entry.Code != "E001" {
 		t.Errorf("expected code E001, got %q", entry.Code)
 	}
-	if entry.Exit != 2 {
-		t.Errorf("expected exit 2, got %d", entry.Exit)
+	if entry.Exit != 1 {
+		t.Errorf("expected exit 1, got %d", entry.Exit)
 	}
 }
 
@@ -55,11 +55,12 @@ func TestLookup_NilError(t *testing.T) {
 }
 
 func TestCatalog_UniqueCodes(t *testing.T) {
-	// Codes must be unique (each is a distinct catalog entry).
-	// Exit codes may overlap across closely-related entries (per
-	// docs/ux/help-text.md: E002 and E003 both exit 3 — "session not found"
-	// family). We check codes for uniqueness, but only sanity-check exits.
+	// Both the textual code (Exxx) and the numeric exit must be unique.
+	// The only exceptions are warnings (Exit 0, e.g. E016) and the
+	// SIGINT convention (Exit 130, e.g. E026) — those are allowed to
+	// share their special value.
 	seenCode := make(map[string]error)
+	seenExit := make(map[int]error)
 	for sentinel, entry := range catalog {
 		if entry.Code == "" {
 			t.Errorf("entry for %v has empty Code", sentinel)
@@ -71,6 +72,13 @@ func TestCatalog_UniqueCodes(t *testing.T) {
 		if entry.Exit < 0 {
 			t.Errorf("negative Exit for %v: %d", sentinel, entry.Exit)
 		}
+		if entry.Exit == 0 || entry.Exit == 130 {
+			continue
+		}
+		if existing, ok := seenExit[entry.Exit]; ok {
+			t.Errorf("duplicate Exit %d: %v and %v", entry.Exit, existing, sentinel)
+		}
+		seenExit[entry.Exit] = sentinel
 	}
 }
 
@@ -114,8 +122,8 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 		code string
 		exit int
 	}{
-		{ErrUsage, "E024", 4},
-		{ErrSourceNotFound, "E025", 10},
+		{ErrUsage, "E024", 24},
+		{ErrSourceNotFound, "E025", 25},
 		{ErrUserCancelled, "E026", 130},
 	}
 	for _, c := range cases {

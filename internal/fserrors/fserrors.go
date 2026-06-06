@@ -31,8 +31,11 @@ var (
 	ErrInvalidCodeFormat = errors.New("invalid code format")
 	// E006
 	ErrReceiverDeclined = errors.New("receiver declined")
-	// E007
-	ErrPromptTimeout = errors.New("prompt timeout")
+	// E007 — the rendezvous server reaped the sender's session before a
+	// receiver paired (server-side UnpairedTTL hit). Distinct from E002
+	// "code not found" because the failure is on the sender's side; the
+	// receiver had nothing to look up to begin with.
+	ErrSessionExpired = errors.New("session expired")
 	// E008
 	ErrDiskFull = errors.New("disk full")
 	// E009
@@ -79,6 +82,11 @@ var (
 	// E026 — the user cancelled (Ctrl-C / SIGTERM). Exit 130 is the
 	// shell convention for "terminated by SIGINT".
 	ErrUserCancelled = errors.New("cancelled by user")
+	// E027 — could not open the local-network listener (typically the
+	// deterministic per-code UDP port is already bound, or mDNS init
+	// failed). Distinct from E014 ("could not reach the other peer")
+	// because the failure is on this side, before any peer is involved.
+	ErrLANListenerFailed = errors.New("local network listener failed")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -113,22 +121,26 @@ func (e Entry) Render() string {
 	return "[" + e.Code + "] " + e.Message + "\n  " + e.Action
 }
 
-// catalog maps each sentinel to its presentation. Keep in sync with
-// docs/ux/help-text.md.
+// catalog maps each sentinel to its presentation.
+//
+// Exit codes are kept in lockstep with the Exxx number (E001 → exit 1,
+// E024 → exit 24, etc.) so scripts can match on either. The only
+// exceptions are E016 (a non-fatal warning, exit 0) and E026 (Ctrl-C,
+// exit 130 by shell convention). Codes are stable from v1.0 onward.
 //
 // Placeholders like {addr}, {code}, {path} are filled in by the caller via
 // fmt.Sprintf when known; we use plain text so unknown contexts still render.
 var catalog = map[error]Entry{
 	ErrServerUnreachable: {
-		Code: "E001", Exit: 2,
-		Message: "Could not reach rendezvous server (timeout).",
+		Code: "E001", Exit: 1,
+		Message: "Could not reach the server (timeout).",
 		Action: "Check your internet connection, or use a different server:\n" +
 			"    fsend --connect <host:port>",
 	},
 	ErrCodeNotFound: {
-		Code: "E002", Exit: 3,
+		Code: "E002", Exit: 2,
 		Message: "That code was not found.",
-		Action:  "Ask the sender to re-run their command — codes expire after 60 seconds.",
+		Action:  "Double-check the code with the sender and make sure their fsend is still running.",
 	},
 	ErrCodeAlreadyClaimed: {
 		Code: "E003", Exit: 3,
@@ -144,9 +156,10 @@ var catalog = map[error]Entry{
 		Code: "E006", Exit: 6,
 		Message: "Receiver declined the transfer.",
 	},
-	ErrPromptTimeout: {
+	ErrSessionExpired: {
 		Code: "E007", Exit: 7,
-		Message: "No response received within 30 seconds. Transfer aborted.",
+		Message: "The session expired on the server before a receiver paired.",
+		Action:  "Re-run your command to publish a fresh code.",
 	},
 	ErrDiskFull: {
 		Code: "E008", Exit: 8,
@@ -245,18 +258,24 @@ var catalog = map[error]Entry{
 			"    - Self-host fsend-server and raise FSEND_MAX_RELAY_BYTES_PER_SESSION.",
 	},
 	ErrUsage: {
-		Code: "E024", Exit: 4,
+		Code: "E024", Exit: 24,
 		Message: "Invalid usage.",
 		Action:  "Run `fsend --help` for the full command surface.",
 	},
 	ErrSourceNotFound: {
-		Code: "E025", Exit: 10,
+		Code: "E025", Exit: 25,
 		Message: "Source not found.",
 		Action:  "Check the path and try again.",
 	},
 	ErrUserCancelled: {
 		Code: "E026", Exit: 130,
 		Message: "Cancelled.",
+	},
+	ErrLANListenerFailed: {
+		Code: "E027", Exit: 27,
+		Message: "Could not open the local-network listener.",
+		Action: "Another fsend (or another program) may already be using the port.\n" +
+			"  Try again — most codes use a different port.",
 	},
 }
 
@@ -277,9 +296,8 @@ func Lookup(err error) (Entry, bool) {
 		Code:    "E099",
 		Exit:    99,
 		Message: fmt.Sprintf("Unexpected error: %v", err),
-		Action: "Please report this at:\n" +
-			"    https://github.com/polius/fsend/issues\n" +
-			"  Include the output of:  rerun your command with --debug",
+		Action: "Re-run with --debug and include the output when filing the issue:\n" +
+			"    https://github.com/polius/fsend/issues",
 	}, false
 }
 

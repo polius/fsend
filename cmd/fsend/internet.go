@@ -87,9 +87,18 @@ var joinRetryBudget = 15 * time.Second
 //
 // Mirror of runSendOverInternet: try ICE direct first (receiver =
 // controlled), fall back to relay on failure.
-func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config) error {
+//
+// connSpin, when non-nil, is the "connecting to rendezvous server"
+// spinner the caller already started. We adopt it (stop it once Join
+// either lands or hands us off to joinWithRetry's own spinner) so the
+// user sees a single continuous animation rather than two static lines.
+func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config, connSpin *uxlog.Spinner) error {
 	client, serverAddr := signalingClient(cfg)
 
+	// joinWithRetry starts its own "waiting for sender" spinner if it
+	// has to long-poll; either way the outer connect-spinner should stop
+	// before that takes over to avoid two spinners writing to stderr.
+	connSpin.Stop()
 	joined, err := joinWithRetry(ctx, client, c, f)
 	if err != nil {
 		return err
@@ -164,7 +173,11 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID 
 func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags) (*server.JoinSessionResponse, error) {
 	deadline := time.Now().Add(joinRetryBudget)
 	delay := 200 * time.Millisecond
-	noticed := false
+	var spin *uxlog.Spinner
+	// Close over the variable so a spinner started inside the loop is
+	// still Stopped on return — a plain `defer spin.Stop()` would only
+	// stop the nil pointer captured at defer-time.
+	defer func() { spin.Stop() }()
 	for {
 		joined, err := client.Join(ctx, code)
 		if err == nil {
@@ -173,11 +186,10 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 		if !errors.Is(err, fserrors.ErrCodeNotFound) || time.Now().After(deadline) {
 			return nil, err
 		}
-		// One-shot info line so the user knows we're waiting on the
-		// sender rather than dropping into a silent retry loop.
-		if !noticed && !f.quiet {
-			fmt.Fprintln(os.Stderr, uxlog.Spin(), "Waiting for sender to register code…")
-			noticed = true
+		// Animate a single line for the duration of the wait so the
+		// user knows we're holding for the sender rather than stuck.
+		if spin == nil && !f.quiet {
+			spin = uxlog.StartSpinner("Waiting for sender to register code")
 		}
 		select {
 		case <-ctx.Done():
@@ -403,13 +415,23 @@ func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir strin
 // retryNoticeFor returns an OnRetry callback that prints the standard
 // "retrying" notice to stderr. Returns nil when --quiet is set so we
 // don't break pipeline-mode output.
+//
+// The default rendering keeps the technical cause out of the user's
+// face — most "idle timeout"/"connection reset" strings are noise to
+// anyone not debugging. Pass --debug to surface the underlying error
+// in parentheses for bug reports.
 func retryNoticeFor(f *flags) func(attempt int, wait time.Duration, lastErr error) {
 	if f.quiet {
 		return nil
 	}
 	return func(attempt int, wait time.Duration, lastErr error) {
-		fmt.Fprintf(os.Stderr, "  %s Connection interrupted (%v) — retrying in %s (attempt %d/%d)\n",
-			uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts)
+		if f.debug {
+			fmt.Fprintf(os.Stderr, "  %s Connection interrupted (%s) — retrying in %s (attempt %d/%d)\n",
+				uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "  %s Connection interrupted — retrying in %s (attempt %d/%d)\n",
+			uxlog.Retry(), wait, attempt, retry.DefaultAttempts)
 	}
 }
 

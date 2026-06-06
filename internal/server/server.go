@@ -23,7 +23,7 @@ import (
 // Config holds runtime tuning for the signaling server.
 type Config struct {
 	ServerVersion         string
-	UnpairedTTL           time.Duration // default 60s
+	UnpairedTTL           time.Duration // default 1h
 	PairedTTL             time.Duration // default 600s
 	LongPollTimeout       time.Duration // default 25s
 	MaxSessionsPerIP      int           // default 5
@@ -34,7 +34,11 @@ type Config struct {
 // Default fills in zero values with sensible defaults.
 func (c *Config) Default() {
 	if c.UnpairedTTL == 0 {
-		c.UnpairedTTL = 60 * time.Second
+		// One hour. The sender is expected to hold the terminal open for
+		// as long as they're waiting for a receiver; a tight cap here
+		// would surface as a confusing "code expired" failure even when
+		// the sender's process is still alive.
+		c.UnpairedTTL = time.Hour
 	}
 	if c.PairedTTL == 0 {
 		c.PairedTTL = 600 * time.Second

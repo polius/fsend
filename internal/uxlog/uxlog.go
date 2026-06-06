@@ -116,17 +116,21 @@ func (p *Progress) SetTotal(total int64, complete bool) {
 // Done marks the bar complete and waits for mpb to flush. Always call
 // this before the caller exits.
 //
-// Bars that never reached their declared total — e.g. when a transfer
-// aborts mid-handshake — would block mpb.Wait forever waiting for 100%.
-// We force-complete via SetTotal(current,true) for the happy path *and*
-// call Abort(false) defensively so an incomplete bar still releases the
-// container and Wait returns instead of hanging.
+// Two paths so the success case still renders the OnComplete suffix
+// (" done") instead of being silently aborted:
+//
+//   - Bar already at 100% (Completed reports true): the final Add()
+//     already triggered OnComplete; just Wait for mpb to flush.
+//   - Bar below 100% (aborted mid-transfer): Abort(false) so mpb
+//     releases the bar and Wait returns instead of hanging forever
+//     waiting for the bar to reach its declared total. We deliberately
+//     don't SetTotal here — that would render a misleading "done" on
+//     a partial bar.
 func (p *Progress) Done() {
 	if p == nil || p.mp == nil {
 		return
 	}
-	if p.bar != nil {
-		p.bar.SetTotal(p.bar.Current(), true)
+	if p.bar != nil && !p.bar.Completed() {
 		p.bar.Abort(false)
 	}
 	p.mp.Wait()

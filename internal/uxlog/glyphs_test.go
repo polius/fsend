@@ -14,7 +14,7 @@ func TestMarker_NonTTYFallback(t *testing.T) {
 		want string
 	}{
 		{Check, "Check", "[OK]"},
-		{Cross, "Cross", "FAIL"},
+		{Cross, "Cross", "[FAIL]"},
 		{Warn, "Warn", "[!]"},
 		{Info, "Info", "[i]"},
 		{Retry, "Retry", "[~]"},

@@ -40,6 +40,10 @@ func runConnect(f *flags) error {
 
 	switch args[0] {
 	case "default":
+		if cfg.IsDefault() {
+			fmt.Fprintln(os.Stderr, uxlog.Info(), "Already on the default server:", config.DefaultServer)
+			return nil
+		}
 		cfg.Server = ""
 		cfg.ServerPassword = ""
 		if err := config.Save(cfg); err != nil {
@@ -96,6 +100,8 @@ func printCurrentServer(cfg *config.Config) {
 	fmt.Fprintln(os.Stderr)
 	if cfg.IsDefault() {
 		fmt.Fprintln(os.Stderr, "  Current server:", config.DefaultServer, "(default)")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "  To set a custom server:  fsend --connect <host:port> [password]")
 	} else {
 		extra := ""
 		if cfg.ServerPassword != "" {

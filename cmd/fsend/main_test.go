@@ -4,7 +4,30 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestHumanDuration_Tiers(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{50 * time.Millisecond, "50ms"},
+		{1500 * time.Millisecond, "1.5s"},
+		{15 * time.Second, "15s"},
+		{90 * time.Second, "1m30s"},
+		{59*time.Minute + 59*time.Second, "59m59s"},
+		{time.Hour + 30*time.Minute + 2*time.Second, "1h30m02s"},
+		// Sanity check: the old code rendered this as "90m02s" — make
+		// sure we don't regress into that.
+		{time.Hour + 30*time.Minute + 2*time.Second, "1h30m02s"},
+	}
+	for _, c := range cases {
+		if got := humanDuration(c.d); got != c.want {
+			t.Errorf("humanDuration(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
 
 func TestNormalizeConnectArgs(t *testing.T) {
 	cases := []struct {

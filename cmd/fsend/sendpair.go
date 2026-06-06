@@ -89,12 +89,12 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 	port := landisc.PortForCode(code)
 	ln, err := quicconn.ListenAddr(":"+strconv.Itoa(port), code)
 	if err != nil {
-		return nil, fmt.Errorf("LAN listener: %w", err)
+		return nil, fmt.Errorf("%w: %v", fserrors.ErrLANListenerFailed, err)
 	}
 	mdnsConn, err := landisc.Announce(code, landisc.PreferredLocalIP(), port)
 	if err != nil {
 		_ = ln.Close()
-		return nil, fmt.Errorf("mDNS announce: %w", err)
+		return nil, fmt.Errorf("%w: mDNS announce: %v", fserrors.ErrLANListenerFailed, err)
 	}
 	var stopMDNSOnce sync.Once
 	stopMDNS := func() { stopMDNSOnce.Do(func() { _ = mdnsConn.Close() }) }
@@ -138,20 +138,28 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 	// ctx may already be cancelled (e.g., the LAN path won the race).
 	deleteSession := func() { _ = client.Delete(context.Background(), created.SessionID) }
 
-	// Long-poll until the receiver pairs or the session TTL expires.
-	deadline := time.Now().Add(time.Duration(created.TTLSeconds) * time.Second)
+	// Long-poll indefinitely until the receiver pairs, the user
+	// cancels, or the server reaps the session. The server's per-call
+	// long-poll timeout returns nil periodically; we just re-issue.
+	// There is no client-side deadline — the user controls the wait
+	// duration by keeping the terminal open.
+	//
+	// If the server reaps the session out from under us (unpaired TTL
+	// hit on the server side; ErrCodeNotFound from Wait), we surface a
+	// dedicated "session expired" error instead of the receiver-side
+	// E002 wording.
 	var waitResp *server.WaitResponse
-	for time.Now().Before(deadline) && waitResp == nil {
+	for waitResp == nil {
 		resp, err := client.Wait(ctx, created.Code)
 		if err != nil {
+			if errors.Is(err, fserrors.ErrCodeNotFound) {
+				deleteSession()
+				return nil, fserrors.ErrSessionExpired
+			}
 			deleteSession()
 			return nil, err
 		}
 		waitResp = resp
-	}
-	if waitResp == nil {
-		deleteSession()
-		return nil, fmt.Errorf("%w: receiver did not arrive within %ds", fserrors.ErrPromptTimeout, created.TTLSeconds)
 	}
 
 	// Establish the underlying data path: ICE-direct first, relay fallback.
@@ -281,9 +289,15 @@ func senderQUICAccept(ctx context.Context, pc net.PacketConn, code string) (*qui
 //     ⚠ line so the user knows only same-LAN receivers can connect now.
 //   - Both fail: return the most informative error (E001 if the server
 //     was unreachable, otherwise the LAN error).
-func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label, code string, cfg *config.Config) error {
+func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
 	pairCtx, cancelPair := context.WithCancel(ctx)
 	defer cancelPair()
+	// Belt-and-braces: if we exit through an unusual path (panic-recover,
+	// ctx cancel before any branch), make sure the spinner goroutine isn't
+	// left scribbling on the screen. waitSpin gets reassigned on notice
+	// swaps, so the defer must close over the variable, not its value at
+	// defer-time.
+	defer func() { waitSpin.Stop() }()
 
 	lanCh := make(chan sendPairOutcome, 1)
 	serverCh := make(chan sendPairOutcome, 1)
@@ -321,6 +335,7 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 	for !winnerPicked && (!lanDone || !serverDone) {
 		select {
 		case <-ctx.Done():
+			waitSpin.Stop()
 			cancelPair()
 			drainBoth(lanCh, serverCh, lanDone, serverDone)
 			return ctx.Err()
@@ -341,7 +356,14 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			// there is no other path, so the bare error is the whole story.
 			if !lanDownNoticed && !f.quiet && !serverDisabled {
 				lanDownNoticed = true
+				// Pause the spinner so the notice prints on a clean
+				// line, then restart it for the remaining (server)
+				// path. The next pair outcome will either flip
+				// winnerPicked (and Stop fires via deferred cleanup)
+				// or trigger another notice.
+				waitSpin.Stop()
 				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local network unavailable — receiver must use a different network.")
+				waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
 			}
 
 		case res := <-serverCh:
@@ -361,17 +383,23 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			// be misleading.
 			if !serverDownNoticed && !f.quiet && !lanDisabled && isServerDown(serverErr) {
 				serverDownNoticed = true
-				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Rendezvous server unreachable — only same-LAN receivers can connect.")
+				waitSpin.Stop()
+				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unreachable — only same-LAN receivers can connect.")
+				waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 			}
 		}
 	}
 
 	if !winnerPicked {
+		waitSpin.Stop()
 		return pickFinalSendError(lanErr, serverErr)
 	}
 
 	cancelPair()
 	drainLoser(lanCh, serverCh, winner, lanDone, serverDone)
+	// Stop the wait spinner now so the path headline and progress bar
+	// land on a clean line. The deferred Stop above is idempotent.
+	waitSpin.Stop()
 
 	if winner.lan != nil {
 		printPath(f, connpath.FromLAN())
@@ -379,6 +407,16 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 	}
 	printPath(f, winner.server.pathInfo)
 	return runSenderTransferOverInternet(ctx, f, items, kind, totalFiles, label, winner.server)
+}
+
+// startWaitSpinner returns a quiet-aware spinner. In --quiet mode we
+// emit no animation and return nil; Stop is nil-safe so call sites stay
+// free of branches.
+func startWaitSpinner(f *flags, msg string) *uxlog.Spinner {
+	if f.quiet {
+		return nil
+	}
+	return uxlog.StartSpinner(msg)
 }
 
 // runSenderTransferOverLAN runs the transfer protocol on a paired LAN

@@ -51,15 +51,22 @@ func glyphForKind(k glyphKind) (utf8, ascii, color string) {
 	case gCheck:
 		return "✓", "[OK]", colorGreen
 	case gCross:
-		return "✗", "FAIL", colorRed
+		return "✗", "[FAIL]", colorRed
 	case gWarn:
 		return "⚠", "[!]", colorYellow
 	case gInfo:
-		return "ℹ", "[i]", colorDim
+		// Cyan reads as "neutral status update" — distinct from green
+		// (success) and yellow (warning). Dim looks like noise.
+		return "ℹ", "[i]", colorCyan
 	case gRetry:
-		return "⟳", "[~]", colorDim
+		// Yellow signals "in-flight recovery" — same family as warn,
+		// brighter than dim so the retry line catches the eye.
+		return "⟳", "[~]", colorYellow
 	case gSpin:
-		return "…", "[*]", colorDim
+		// The animated spinner glyph (Spinner type) carries its own
+		// rendering; this static fallback is only used in the rare
+		// non-animated paths (e.g. tests). Cyan to match Info.
+		return "…", "[*]", colorCyan
 	}
 	return "", "", ""
 }
@@ -80,6 +87,7 @@ const (
 	colorRed    = "\x1b[31m"
 	colorGreen  = "\x1b[32m"
 	colorYellow = "\x1b[33m"
+	colorCyan   = "\x1b[36m"
 	colorDim    = "\x1b[2m"
 )
 
