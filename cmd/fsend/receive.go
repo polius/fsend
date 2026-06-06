@@ -154,6 +154,10 @@ func runReceiverLANOneAttempt(ctx context.Context, addr, code, outDir, hostname 
 // Input is read with no echo when stdin is a TTY (golang.org/x/term).
 // Non-interactive callers should pass --pass or FSEND_PASS so the
 // prompt never fires.
+//
+// Timing: the progress bar is constructed lazily on first byte (see
+// newReceiverProgress), so this prompt fires before any bar exists —
+// no risk of mpb rendering on top of the password input line.
 func receiverPasswordPrompt(f *flags) func() (string, error) {
 	if f.quiet {
 		return nil

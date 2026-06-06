@@ -406,6 +406,65 @@ func TestDispatch_ForceReceive(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "z"))
 }
 
+// TestPassword_NoBarCollisionOnPrompt drives the receiver's full
+// interactive flow when the sender used --pass and pins two related
+// UX properties:
+//
+//  1. Prompt ordering: the "Save to ...?" confirmation comes first,
+//     then the password prompt. This matches the rest of the receiver
+//     UX (decide whether you want it, then go through gates).
+//  2. No progress-bar collision: the bar is materialized lazily on the
+//     first chunk, so mpb's stderr repaint can't overlap the password
+//     input line. A regression would re-introduce a garbled line like
+//     "Password required by sender:   0 % [---]   0.00 b" — what the
+//     original UX bug report flagged.
+func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "secret.txt")
+	if err := os.WriteFile(srcFile, []byte("classified payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Receiver stdin order matches the prompt order: "Y" for the save
+	// confirmation, then the password line. Both readers use a fresh
+	// bufio.Reader on os.Stdin per call, but feeding them in order
+	// keeps the bytes aligned.
+	// --pass uses NoOptDefVal (bare --pass prompts), so the value must
+	// be passed with "=" to bind without cobra reading it as positional.
+	r := h.runPair(t,
+		[]string{"--pass=swordfish", srcFile},
+		dst,
+		nil, // no extra receiver flags — exercise the full interactive path
+		"Y\nswordfish\n",
+	)
+	r.requireSuccess(t)
+
+	saveIdx := strings.Index(r.receiverErr, "Save to")
+	passwordIdx := strings.Index(r.receiverErr, "Password required by sender:")
+	if saveIdx < 0 {
+		t.Fatalf("save prompt not found in receiver stderr:\n%s", r.receiverErr)
+	}
+	if passwordIdx < 0 {
+		t.Fatalf("password prompt not found in receiver stderr:\n%s", r.receiverErr)
+	}
+	if saveIdx >= passwordIdx {
+		t.Fatalf("save prompt (idx %d) should appear before password prompt (idx %d):\n%s",
+			saveIdx, passwordIdx, r.receiverErr)
+	}
+
+	// Bar collision regression: the line containing the password prompt
+	// must not also contain progress-bar tokens. "% [" is the leading
+	// fragment mpb emits ("  X % [######...").
+	for _, line := range strings.Split(r.receiverErr, "\n") {
+		if strings.Contains(line, "Password required by sender:") && strings.Contains(line, "% [") {
+			t.Fatalf("progress bar rendered on password prompt line: %q", line)
+		}
+	}
+
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "secret.txt"))
+}
+
 // runFsendIn runs fsend in dir with args (no positional code prepended).
 // Used by tests that drove the sender manually and need a vanilla
 // receiver call.

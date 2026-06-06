@@ -353,11 +353,19 @@ func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), p
 		}
 }
 
-// newReceiverProgress is the receive-side counterpart. The bar can't be
-// constructed until the HELLO arrives (that's when we learn TotalBytes),
-// so the returned Accept callback materializes the bar on accept.
-// uxlog.Progress methods are nil-safe, so the closed-over var can stay
-// nil for the rejected-accept path.
+// newReceiverProgress is the receive-side counterpart. The bar is
+// materialized lazily on the first ProgressFn call rather than at
+// Accept time. This matters because:
+//
+//   - Between Accept returning true and the first chunk arriving, the
+//     transfer engine runs the password handshake (when the sender used
+//     --pass). The handshake calls PromptPass, which writes a prompt to
+//     stderr and reads a line back. If mpb were already drawing the bar
+//     at Accept time, its 10 Hz repaint goroutine would step on the
+//     password prompt line.
+//   - Deferring also means a rejected transfer (Accept false, wrong
+//     password, sender abort before any chunk) leaves no half-rendered
+//     bar on screen — closeFn is a no-op if the bar was never created.
 func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), recvBytes func() int64) {
 	prev := make(map[uint32]uint64)
 	var total int64
@@ -375,6 +383,7 @@ func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello
 	}
 
 	var bar *uxlog.Progress
+	var totalBytesHint int64
 	// streamingTotal is true when the sender's HELLO carried TotalBytes=0,
 	// which today only happens for piped stdin. The bar then renders
 	// without ETA/percentage; at close we latch it to the accumulated
@@ -383,18 +392,24 @@ func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello
 	accept = func(h wire.SenderHello) bool {
 		ok := promptAccept(f, h)
 		if ok {
-			bar = uxlog.New(int64(h.TotalBytes))
+			totalBytesHint = int64(h.TotalBytes)
 			streamingTotal = h.TotalBytes == 0
 		}
 		return ok
 	}
 	progressFn = func(fileIndex uint32, bytesWritten uint64) {
+		if bar == nil {
+			bar = uxlog.New(totalBytesHint)
+		}
 		d := bytesWritten - prev[fileIndex]
 		prev[fileIndex] = bytesWritten
 		bar.Add(int64(d))
 		total += int64(d)
 	}
 	closeFn = func() {
+		if bar == nil {
+			return
+		}
 		if streamingTotal && total > 0 {
 			bar.SetTotal(total, true)
 		}

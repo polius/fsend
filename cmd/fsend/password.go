@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -56,10 +55,11 @@ func readPasswordOnce(prompt string) (string, error) {
 		}
 		return string(b), nil
 	}
-	// Non-TTY: read one line (no echo possible).
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadString('\n')
-	if err != nil {
+	// Non-TTY: read one line (no echo possible). Use the package-level
+	// shared bufio.Reader on os.Stdin so an earlier readLine() call
+	// hasn't left buffered bytes in a now-discarded reader.
+	line, err := stdinReader().ReadString('\n')
+	if err != nil && line == "" {
 		return "", err
 	}
 	// Trim trailing newline / CRLF.
