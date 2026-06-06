@@ -246,7 +246,12 @@ type senderProc struct {
 	stdout *safeBuffer
 	stderr *safeBuffer
 
+	// waitOnce guards launching the single cmd.Wait goroutine.
+	// waitDone is closed once that goroutine returns, after which waitErr
+	// and cmd.ProcessState are safe to read. Concurrent calls to wait
+	// observe the same channel and never race on ProcessState directly.
 	waitOnce sync.Once
+	waitDone chan struct{}
 	waitErr  error
 }
 
@@ -303,25 +308,24 @@ func (s *senderProc) signal(t *testing.T, sig os.Signal) {
 }
 
 // wait blocks until the sender exits or timeout elapses. On timeout the
-// process is killed and -1 is returned. Safe to call multiple times.
+// process is killed and -1 is returned. Safe to call multiple times —
+// subsequent calls observe the same waitDone channel and never touch
+// cmd.ProcessState concurrently with the Wait goroutine that owns it.
 func (s *senderProc) wait(t *testing.T, timeout time.Duration) int {
 	t.Helper()
-	done := make(chan struct{})
 	s.waitOnce.Do(func() {
+		s.waitDone = make(chan struct{})
 		go func() {
 			s.waitErr = s.cmd.Wait()
-			close(done)
+			close(s.waitDone)
 		}()
 	})
-	if s.cmd.ProcessState != nil {
-		return s.cmd.ProcessState.ExitCode()
-	}
 	select {
-	case <-done:
+	case <-s.waitDone:
 		return exitCodeOrZero(s.waitErr)
 	case <-time.After(timeout):
 		_ = s.cmd.Process.Kill()
-		<-done
+		<-s.waitDone
 		return -1
 	}
 }
