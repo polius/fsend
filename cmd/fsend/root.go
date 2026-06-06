@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/fserrors"
@@ -53,7 +54,7 @@ func rootCmd() *cobra.Command {
 	f := &flags{}
 
 	c := &cobra.Command{
-		Use:   "fsend [file|dir|code|-]...",
+		Use:   "fsend [file|dir|code]...",
 		Short: "Peer-to-peer file transfer",
 		Long: `fsend transfers files directly between two computers.
 
@@ -61,7 +62,7 @@ Examples:
   Send:      fsend report.pdf
   Receive:   fsend abc-defg-jkm
   Folder:    fsend ./myproject
-  Stdin:     cat file | fsend -
+  Stdin:     cat file | fsend
   Text:      fsend --text "hello world"`,
 		Args:               cobra.ArbitraryArgs,
 		SilenceUsage:       true,
@@ -161,7 +162,7 @@ const helpTemplate = `fsend — peer-to-peer file transfer
 USAGE
   fsend <file|dir>...              Send (one or more paths)
   fsend <code>                     Receive (using a code like abc-defg-jkm)
-  fsend -                          Send from stdin
+  cmd | fsend                      Send from a pipe (or: fsend < file)
   fsend --text "hello world"       Send a literal string
 
 EXAMPLES
@@ -266,6 +267,14 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// Bare --pass (no value) is resolved inside runSend / runReceive so
 	// each role can show the right prompt: the sender gets a random
 	// 16-char suggestion, the receiver gets a hidden no-echo prompt.
+
+	// Implicit stdin: no args + non-TTY stdin (pipe or redirected file)
+	// means "send what's coming in". Bare `fsend` in an interactive
+	// shell hits the help path below because stdin is a TTY there.
+	if len(f.posArgs) == 0 && !f.forceReceive && !cmd.Flags().Changed("text") &&
+		!term.IsTerminal(int(os.Stdin.Fd())) {
+		f.posArgs = []string{"-"}
+	}
 
 	// Force mode short-circuits auto-detect.
 	if f.forceSend {

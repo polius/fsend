@@ -112,7 +112,7 @@ func TestStreamingTransfer_Roundtrip(t *testing.T) {
 }
 
 // TestStreamingTransfer_LiveProducer simulates a slow producer (pg_dump |
-// fsend -) where bytes trickle in over time. The sender must not block
+// fsend) where bytes trickle in over time. The sender must not block
 // waiting for the full payload before emitting chunks: it has to drain
 // the pipe end-to-end. We assert progress callbacks fire incrementally
 // rather than all at once at EOF.

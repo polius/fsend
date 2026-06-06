@@ -151,10 +151,10 @@ func TestSend_Stdin(t *testing.T) {
 }
 
 // TestSend_StdinStreaming pipes a multi-MiB random payload from a slow
-// producer (two halves with a pause in between) through `fsend -`. The
-// streaming path must move the bytes without buffering the whole stream
-// in memory and the receiver must end up with the exact bytes the
-// producer wrote.
+// producer (two halves with a pause in between) through fsend's stdin
+// path. The streaming path must move the bytes without buffering the
+// whole stream in memory and the receiver must end up with the exact
+// bytes the producer wrote.
 func TestSend_StdinStreaming(t *testing.T) {
 	requireE2E(t)
 

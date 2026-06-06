@@ -1,11 +1,11 @@
 // Command fsend is the user-facing CLI for peer-to-peer file transfers.
 //
 // Dispatch rules (see root.go for the implementation):
-//   - fsend                  → help
+//   - fsend                  → help (when stdin is a TTY)
+//   - fsend                  → send from stdin (when stdin is piped/redirected)
 //   - fsend <code>           → receive (when <code> matches the code regex
 //     and no file with that name is in CWD)
 //   - fsend <path>           → send
-//   - fsend -                → send from stdin
 //   - fsend --send / --receive force mode (skip auto-detect)
 package main
 

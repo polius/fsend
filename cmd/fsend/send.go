@@ -220,7 +220,7 @@ func synthesizeStdin() ([]transfer.SourceItem, error) {
 	// Stream stdin directly to the wire: chunks are emitted as bytes
 	// arrive and the EOF chunk is marked with FlagLastChunk. The wire
 	// FileInfo carries Streaming=true so the receiver doesn't expect a
-	// pre-declared Size. This lets `pg_dump | fsend -`-style pipelines
+	// pre-declared Size. This lets `pg_dump | fsend`-style pipelines
 	// run with a bounded memory footprint and live progress instead of
 	// silently buffering the entire stream before the transfer starts.
 	//

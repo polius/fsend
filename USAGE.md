@@ -28,7 +28,7 @@ Complete reference for the `fsend` client and the `fsend-server` daemon.
 | Send a file | `fsend report.pdf` |
 | Send a folder | `fsend ./project` |
 | Send multiple files | `fsend a.txt b.txt c.txt` |
-| Send from stdin | `cat file.bin \| fsend -` |
+| Send from stdin | `cat file.bin \| fsend` |
 | Send a literal string | `fsend --text "hello world"` |
 | Receive | `fsend abc-defg-jkm` |
 | Receive without prompt | `fsend --yes abc-defg-jkm` |
@@ -56,10 +56,13 @@ that prompt, pass `--send` or `--receive` to commit up front.
 ## Sending
 
 ```text
-fsend [file|dir|-]... [flags]
+fsend [file|dir]... [flags]
 ```
 
 You'll see a code like `abc-defg-jkm`. Share it with the receiver.
+
+When stdin is piped or redirected (`echo hi | fsend`, `fsend < file.bin`),
+`fsend` sends what's coming in — no positional argument needed.
 
 ### Sender flags
 
@@ -86,7 +89,8 @@ fsend ./project
 fsend ./project --exclude 'node_modules,*.log,.git'
 
 # From stdin (no file on disk)
-tar c ./build | fsend -
+tar c ./build | fsend
+fsend < big.iso
 
 # A literal string (great for sharing snippets)
 fsend --text "the wifi password is hunter2"
