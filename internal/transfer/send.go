@@ -114,13 +114,29 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 		return fmt.Errorf("send: file-info %d: %w", it.Info.Index, err)
 	}
 
-	var decision wire.FileAcceptDecision
-	ft, err := wire.ReadControl(s.Control, &decision)
+	ft, body, err := wire.ReadControlRaw(s.Control)
 	if err != nil {
 		return fmt.Errorf("send: file-accept: %w", err)
 	}
+	if ft == wire.TypeError {
+		// Receiver declined for a specific reason. Translate the wire
+		// code into a user-visible sentinel so the CLI surfaces it
+		// (rather than a generic "protocol error").
+		var ef wire.ErrorFrame
+		_ = wire.Decode(body, &ef)
+		switch ef.Code {
+		case wire.ErrCodeTargetExists:
+			return fserrors.ErrTargetExists
+		default:
+			return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
+		}
+	}
 	if ft != wire.TypeFileAccept {
 		return fmt.Errorf("%w: expected FILE_ACCEPT, got %v", fserrors.ErrProtocolError, ft)
+	}
+	var decision wire.FileAcceptDecision
+	if err := wire.Decode(body, &decision); err != nil {
+		return fmt.Errorf("send: decode file-accept: %w", err)
 	}
 
 	switch decision.Action {

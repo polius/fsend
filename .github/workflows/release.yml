@@ -1,0 +1,53 @@
+# Release pipeline.
+#
+# Triggered when a semver tag is pushed (e.g. `git tag v0.1.0 && git
+# push --tags`). goreleaser reads .goreleaser.yml, cross-compiles both
+# binaries for every target listed there, archives them with the naming
+# convention install.sh expects, generates checksums.txt, and creates
+# the GitHub release with everything attached.
+#
+# Smoke-test the config locally before pushing a tag:
+#   goreleaser release --snapshot --clean
+#
+# To run a manual release from a branch (e.g. testing the workflow
+# itself), use the `workflow_dispatch` trigger from the Actions UI.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # Create the GH release and attach assets.
+  id-token: write   # Keyless cosign — sign checksums.txt against GitHub OIDC.
+
+jobs:
+  goreleaser:
+    name: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # goreleaser's changelog needs the full git history.
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

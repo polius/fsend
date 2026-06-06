@@ -131,7 +131,7 @@ HTTPS in front of signaling.
 | Port             | Direction | Purpose                                         |
 |------------------|-----------|-------------------------------------------------|
 | `8080/tcp`       | inbound   | Signaling HTTP API (clients POST session/join)  |
-| `443/udp`        | inbound   | Relay fallback (opaque QUIC datagrams)          |
+| `443/udp`        | inbound   | ICE STUN-style reflection + relay fallback (opaque QUIC datagrams) |
 
 Clients then connect with `fsend --connect http://host:8080`. If you change
 `FSEND_UDP_ADDR`, also set `FSEND_PUBLIC_ADDR=host:port` to the address clients
@@ -143,7 +143,7 @@ public-internet deployment; matches the `deploy/compose/` stack):
 | Port             | Direction | Purpose                                              |
 |------------------|-----------|------------------------------------------------------|
 | `443/tcp`        | inbound   | HTTPS signaling — terminated by Caddy/nginx/Traefik  |
-| `443/udp`        | inbound   | Relay fallback — goes **directly** to fsend-server   |
+| `443/udp`        | inbound   | ICE STUN-style reflection + relay fallback — goes **directly** to fsend-server |
 | `80/tcp`         | inbound   | Let's Encrypt ACME HTTP-01 challenge (cert issue/renew) |
 | `8080/tcp`       | internal  | fsend-server signaling — only reachable by the proxy |
 

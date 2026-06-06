@@ -180,6 +180,18 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		return wire.WriteControl(s.Control, wire.TypeFileAccept, &decision)
 	}
 
+	// Refuse to clobber an existing target unless the user opted in with
+	// --overwrite. We check the real target (not the .partial sidecar) so
+	// a previous interrupted run can still be resumed.
+	if !archiveMode && !opts.Overwrite {
+		if st, err := os.Stat(target); err == nil && !st.IsDir() {
+			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+				Code: wire.ErrCodeTargetExists, Message: "target exists",
+			})
+			return fserrors.ErrTargetExists
+		}
+	}
+
 	// Regular file: write through a `.fsend-partial` sidecar and rename
 	// to the real target only after the BLAKE3 root hash passes. That
 	// way an interrupted transfer leaves a self-describing artifact the
@@ -269,17 +281,22 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		}
 	}
 
-	// On a fresh transfer we accumulate a BLAKE3 root over every byte
-	// and compare to info.Blake3Root at the end. On a resume we skip
-	// the root check entirely: the prefix was verified at receive-time
-	// (per-chunk BLAKE3) when it was originally written, and the
-	// sender just confirmed the imohash matches its source's prefix.
-	// Re-reading the on-disk prefix only to feed the BLAKE3 verifier
-	// would defeat the whole point of imohash resume.
+	// Accumulate a BLAKE3 root over the new bytes. On resume we
+	// pre-hash the on-disk prefix into the same verifier so the final
+	// root check covers the assembled file end-to-end. The imohash
+	// check on the FILE_ACCEPT already gives the sender a fast way to
+	// abort on a clearly-changed source; this is the cryptographic
+	// safety net behind it.
 	resumed := resumeOffset > 0
 	var verifier *blake3.Hasher
-	if !resumed {
-		verifier = blake3.New()
+	verifier = blake3.New()
+	if resumed {
+		if err := hashPrefixInto(verifier, f, int64(resumeOffset)); err != nil {
+			return fmt.Errorf("%w: verify prefix: %v", fserrors.ErrReadFailed, err)
+		}
+		if _, err := f.Seek(int64(resumeOffset), io.SeekStart); err != nil {
+			return fmt.Errorf("%w: seek: %v", fserrors.ErrWriteFailed, err)
+		}
 	}
 
 	var bytesWritten uint64 = resumeOffset
@@ -351,18 +368,10 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		}
 	}
 
-	// Final root hash check. Skipped in three cases:
-	//
-	//   - resumed transfers: the kept prefix was verified by per-chunk
-	//     BLAKE3 the first time it was received, and the sender
-	//     confirmed our imohash matches its source. New chunks are
-	//     verified per-chunk as they arrive (above). The Merkle root
-	//     would be the only thing left to check, but its information is
-	//     fully covered by those two together.
-	//   - synthetic items (stdin / --text): the sender can't pre-compute
-	//     a digest over a stream of unknown size, so Blake3Root is left
-	//     zero and Resumable is false. Per-chunk hashes already cover
-	//     integrity.
+	// Final root hash check. Skipped only for synthetic items
+	// (stdin / --text): the sender can't pre-compute a digest over a
+	// stream of unknown size, so Blake3Root is left zero and Resumable
+	// is false. Per-chunk hashes already cover integrity there.
 	if verifier != nil {
 		var got [32]byte
 		copy(got[:], verifier.Sum(nil))

@@ -1,0 +1,31 @@
+# Dependabot configuration.
+#
+# Daily scans for both Go module updates and GitHub Actions pin updates.
+# fsend's dependency surface includes cryptographic libraries (pion,
+# quic-go, schollz/pake) where CVE turnaround time matters — daily is
+# the right cadence even though it's noisier than weekly.
+#
+# Grouped updates keep PR volume manageable: all minor/patch bumps land
+# in one PR per ecosystem per day, majors stay individual so they get
+# reviewed deliberately.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    groups:
+      go-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"

@@ -70,34 +70,58 @@ func WriteControl(w io.Writer, ft FrameType, payload any) error {
 // header has been read — callers can distinguish "wrong frame type" from
 // "bad version."
 func ReadControl(r io.Reader, payloadPtr any) (FrameType, error) {
+	ft, body, err := ReadControlRaw(r)
+	if err != nil {
+		return ft, err
+	}
+	if len(body) == 0 || payloadPtr == nil {
+		return ft, nil
+	}
+	if err := gob.NewDecoder(bytes.NewReader(body)).Decode(payloadPtr); err != nil {
+		return ft, fmt.Errorf("wire: decoding %T: %w", payloadPtr, err)
+	}
+	return ft, nil
+}
+
+// ReadControlRaw reads one control frame from r and returns its type
+// and the still-gob-encoded body. Callers that need to dispatch on
+// FrameType before decoding (e.g. the sender's FILE_INFO loop, which
+// may receive FILE_ACCEPT or ERROR) use this to avoid a wasted decode
+// against the wrong target type.
+func ReadControlRaw(r io.Reader) (FrameType, []byte, error) {
 	var header [controlHeaderSize]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return 0, err // surface EOF / connection-closed unwrapped
+		return 0, nil, err // surface EOF / connection-closed unwrapped
 	}
 	ver := header[0]
 	ft := FrameType(header[1])
 	length := binary.BigEndian.Uint32(header[2:6])
 
 	if ver != ProtocolVersion {
-		return ft, fmt.Errorf("%w: peer sent version %d, we speak %d", ErrUnsupportedVersion, ver, ProtocolVersion)
+		return ft, nil, fmt.Errorf("%w: peer sent version %d, we speak %d", ErrUnsupportedVersion, ver, ProtocolVersion)
 	}
 	if length > MaxControlFrameSize {
-		return ft, fmt.Errorf("%w: declared %d bytes exceeds limit %d", ErrFrameTooLarge, length, MaxControlFrameSize)
+		return ft, nil, fmt.Errorf("%w: declared %d bytes exceeds limit %d", ErrFrameTooLarge, length, MaxControlFrameSize)
 	}
-
 	if length == 0 {
-		// Empty body (e.g. TransferComplete, Abort).
-		return ft, nil
+		return ft, nil, nil
 	}
-
 	body := make([]byte, length)
 	if _, err := io.ReadFull(r, body); err != nil {
-		return ft, fmt.Errorf("wire: reading body: %w", err)
+		return ft, nil, fmt.Errorf("wire: reading body: %w", err)
 	}
-	if payloadPtr != nil {
-		if err := gob.NewDecoder(bytes.NewReader(body)).Decode(payloadPtr); err != nil {
-			return ft, fmt.Errorf("wire: decoding %T: %w", payloadPtr, err)
-		}
+	return ft, body, nil
+}
+
+// Decode parses a raw control body into the supplied pointer. Used in
+// conjunction with ReadControlRaw when the caller already knows the
+// frame type and wants to decode the body into the matching struct.
+func Decode(body []byte, payloadPtr any) error {
+	if len(body) == 0 || payloadPtr == nil {
+		return nil
 	}
-	return ft, nil
+	if err := gob.NewDecoder(bytes.NewReader(body)).Decode(payloadPtr); err != nil {
+		return fmt.Errorf("wire: decoding %T: %w", payloadPtr, err)
+	}
+	return nil
 }

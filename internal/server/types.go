@@ -28,13 +28,19 @@ type CreateSessionRequest struct {
 }
 
 // CreateSessionResponse is the success body of POST /v1/session.
+//
+// RoleToken is an opaque bearer credential the sender includes on
+// subsequent /candidates calls so the server can route candidate batches
+// to the right side without relying on source IP. Without this, two
+// peers behind the same NAT can't disambiguate.
 type CreateSessionResponse struct {
-	SessionID        string      `json:"session_id"`
-	Code             string      `json:"code"`
-	YourObservedAddr string      `json:"your_observed_addr"`
-	IceCredentials   IceCreds    `json:"ice_credentials"`
-	TTLSeconds       int         `json:"ttl_seconds"`
-	ServerVersion    string      `json:"server_version"`
+	SessionID        string   `json:"session_id"`
+	Code             string   `json:"code"`
+	YourObservedAddr string   `json:"your_observed_addr"`
+	IceCredentials   IceCreds `json:"ice_credentials"`
+	TTLSeconds       int      `json:"ttl_seconds"`
+	ServerVersion    string   `json:"server_version"`
+	RoleToken        string   `json:"role_token"`
 }
 
 // JoinSessionRequest is the body of POST /v1/session/<code>/join.
@@ -49,6 +55,7 @@ type JoinSessionResponse struct {
 	PeerObservedAddr   string   `json:"peer_observed_addr"`
 	PeerIceCredentials IceCreds `json:"peer_ice_credentials"`
 	YourIceCredentials IceCreds `json:"your_ice_credentials"`
+	RoleToken          string   `json:"role_token"`
 }
 
 // WaitRequest is the body of POST /v1/session/<code>/wait.
@@ -93,6 +100,21 @@ type HealthResponse struct {
 	UptimeSeconds int64  `json:"uptime_seconds"`
 }
 
+// RelayStatusResponse is the body of GET /v1/relay/status.
+//
+// State is one of:
+//
+//	active   – allocation is live, forwarding traffic
+//	evicted  – allocation was torn down (see Reason)
+//	unknown  – no allocation for this session_id
+//
+// Reason is set only when State == "evicted"; valid values are
+// relay.ReasonCapHit and relay.ReasonIdle.
+type RelayStatusResponse struct {
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // ErrorResponse is the body of any 4xx/5xx response.
 type ErrorResponse struct {
 	Error string `json:"error"`
@@ -110,8 +132,10 @@ type session struct {
 	Code               string
 	SenderAddr         string
 	SenderICE          IceCreds
+	SenderToken        string
 	ReceiverAddr       string
 	ReceiverICE        IceCreds
+	ReceiverToken      string
 	State              string // "waiting" | "paired" | "complete"
 	CreatedAt          time.Time
 	PairedAt           time.Time

@@ -96,7 +96,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 
 	// --- Try ICE direct path ---
 	stunHost := stunHostFromServer(serverAddr)
-	iceConn, icePath, iceErr := iceEstablish(ctx, client, joined.SessionID, iceconn.Options{
+	iceConn, icePath, iceErr := iceEstablish(ctx, client, joined.SessionID, joined.RoleToken, iceconn.Options{
 		LocalUfrag:  joined.YourIceCredentials.Ufrag,
 		LocalPwd:    joined.YourIceCredentials.Pwd,
 		RemoteUfrag: joined.PeerIceCredentials.Ufrag,
@@ -123,7 +123,30 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}
 	defer relayConn.Close()
 	printPath(f, connpath.FromRelay(alloc.RelayAddr))
-	return runReceiverQUICOver(ctx, f, relayConn, c)
+	return classifyRelayDrop(ctx, client, joined.SessionID,
+		runReceiverQUICOver(ctx, f, relayConn, c))
+}
+
+// classifyRelayDrop probes the relay-status endpoint when a relay-path
+// transfer ends in a transient-looking error. If the relay tells us
+// the allocation was evicted for a known reason, we promote the error
+// to the corresponding non-transient sentinel so the user sees what
+// actually happened instead of a "retrying…" loop.
+func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID string, runErr error) error {
+	if runErr == nil {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	status, err := client.RelayStatus(probeCtx, sessionID)
+	if err != nil || status == nil || status.State != "evicted" {
+		return runErr
+	}
+	switch status.Reason {
+	case relay.ReasonCapHit:
+		return fserrors.ErrRelayCapHit
+	}
+	return runErr
 }
 
 // joinWithRetry calls Join, retrying only on ErrCodeNotFound. The
@@ -176,7 +199,7 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 //
 // controlling=true → sender role (calls Dial).
 // controlling=false → receiver role (calls Accept).
-func iceEstablish(parent context.Context, sig *signaling.Client, sessionID string, opts iceconn.Options, controlling bool) (net.PacketConn, connpath.Info, error) {
+func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, roleToken string, opts iceconn.Options, controlling bool) (net.PacketConn, connpath.Info, error) {
 	ctx, cancel := context.WithTimeout(parent, iceBudget)
 	defer cancel()
 
@@ -202,7 +225,7 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID strin
 			if pumpCtx.Err() != nil {
 				return
 			}
-			if err := sig.PushCandidates(pumpCtx, sessionID, []string{cstr}); err != nil {
+			if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, []string{cstr}); err != nil {
 				// Best-effort: pion's ICE will keep going with whatever
 				// candidates have already crossed; surface in --debug only.
 				_ = err
@@ -224,7 +247,7 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID strin
 				return
 			case <-t.C:
 			}
-			resp, err := sig.PullCandidates(pumpCtx, sessionID, since)
+			resp, err := sig.PullCandidates(pumpCtx, sessionID, roleToken, since)
 			if err != nil || resp == nil {
 				continue
 			}
@@ -253,23 +276,16 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID strin
 		_ = agent.Close()
 		return nil, connpath.Info{}, dialErr
 	}
-	// On success, ownership of the agent passes to the returned conn —
-	// closing the conn (which the caller does) tears down the ice.Conn
-	// but the agent itself still owns the gathered sockets. We close the
-	// agent when the conn is closed by hooking a wrapper around it.
-	//
-	// Classify the path from the selected candidate pair so the caller
-	// can render it. If pion didn't surface a pair (shouldn't happen post
-	// Dial/Accept, but guard anyway), fall back to DirectSTUN — strictly
-	// safer than overclaiming "local".
+	// Classify the path from the selected candidate pair. If pion didn't
+	// surface a pair (shouldn't happen post Dial/Accept, but guard anyway),
+	// treat ICE as failed and let the caller fall through to relay — we
+	// won't fabricate a "direct" badge we can't verify.
 	localCT, remoteCT, ok := agent.SelectedPair()
-	var info connpath.Info
-	if ok {
-		info = connpath.FromICE(localCT, remoteCT)
-	} else {
-		info = connpath.Info{Kind: connpath.KindDirectSTUN}
+	if !ok {
+		_ = agent.Close()
+		return nil, connpath.Info{}, fmt.Errorf("ice: no selected candidate pair")
 	}
-	return &iceOwningConn{PacketConn: conn, agent: agent}, info, nil
+	return &iceOwningConn{PacketConn: conn, agent: agent}, connpath.FromICE(localCT, remoteCT), nil
 }
 
 // iceOwningConn keeps the ICE Agent alive for the lifetime of the

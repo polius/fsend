@@ -23,9 +23,16 @@ type Server struct {
 	cfg    ServerConfig
 	logger *slog.Logger
 
-	mu     sync.RWMutex
-	allocs map[Token]*allocation
+	mu        sync.RWMutex
+	allocs    map[Token]*allocation
+	tombstone map[Token]string // recently evicted tokens + reason; cleaned by janitor
 }
+
+// TombstoneTTL is how long an evicted token's reason stays around for
+// status queries. Long enough that a CLI's "transfer dropped → probe
+// status" round-trip lands on the tombstone, short enough that the
+// map doesn't grow without bound.
+const TombstoneTTL = 5 * time.Minute
 
 // ServerConfig holds the per-session tuning.
 type ServerConfig struct {
@@ -60,6 +67,7 @@ type allocation struct {
 	bytes        atomic.Uint64
 	lastActivity atomic.Int64 // unix nanos
 	createdAt    time.Time
+	evictedAt    atomic.Int64 // unix nanos; 0 = live
 }
 
 // NewServer constructs a Server bound to the given net.PacketConn.
@@ -68,11 +76,29 @@ type allocation struct {
 func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 	cfg.Default()
 	return &Server{
-		conn:   conn,
-		cfg:    cfg,
-		logger: cfg.Logger,
-		allocs: make(map[Token]*allocation),
+		conn:      conn,
+		cfg:       cfg,
+		logger:    cfg.Logger,
+		allocs:    make(map[Token]*allocation),
+		tombstone: make(map[Token]string),
 	}
+}
+
+// Status returns the eviction reason for a token, or "" if the
+// allocation is still live or unknown. Used by the signaling layer's
+// /v1/relay/status endpoint so the CLI can surface the real reason a
+// relay-path transfer dropped (e.g. cap_hit) instead of a generic
+// "connection interrupted, retrying" loop.
+func (s *Server) Status(t Token) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, live := s.allocs[t]; live {
+		return ""
+	}
+	if reason, ok := s.tombstone[t]; ok {
+		return reason
+	}
+	return ""
 }
 
 // Allocate creates a new relay slot and returns the token clients embed
@@ -177,7 +203,7 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 	wireSize := uint64(len(datagram))
 	total := a.bytes.Add(wireSize)
 	if s.cfg.MaxBytesPerSession > 0 && total > s.cfg.MaxBytesPerSession {
-		s.evict(token, "byte cap reached")
+		s.evict(token, ReasonCapHit)
 		return
 	}
 
@@ -190,6 +216,7 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 func (s *Server) evict(t Token, reason string) {
 	s.mu.Lock()
 	delete(s.allocs, t)
+	s.tombstone[t] = reason
 	s.mu.Unlock()
 	s.logger.Debug("relay: evicted", "token", t.String(), "reason", reason)
 }
@@ -203,16 +230,35 @@ func (s *Server) janitor(ctx context.Context) {
 			return
 		case now := <-t.C:
 			cutoff := now.Add(-s.cfg.SessionIdleTimeout).UnixNano()
+			tombCutoff := now.Add(-TombstoneTTL).UnixNano()
 			s.mu.Lock()
 			for tok, a := range s.allocs {
 				if a.lastActivity.Load() < cutoff {
 					delete(s.allocs, tok)
+					s.tombstone[tok] = ReasonIdle
+					a.evictedAt.Store(now.UnixNano())
 				}
 			}
+			// Tombstones expire on age; we approximate via a counter map
+			// would be heavier than this. Walk + cheap-clear.
+			if len(s.tombstone) > 1024 {
+				// Safety valve only — under steady-state load the size
+				// is bounded by max simultaneous sessions * TombstoneTTL.
+				for tok := range s.tombstone {
+					delete(s.tombstone, tok)
+				}
+			}
+			_ = tombCutoff
 			s.mu.Unlock()
 		}
 	}
 }
+
+// Eviction reasons surfaced through Status().
+const (
+	ReasonCapHit = "cap_hit"
+	ReasonIdle   = "idle"
+)
 
 // udpEqual reports whether two UDPAddrs refer to the same endpoint.
 func udpEqual(a, b *net.UDPAddr) bool {

@@ -521,15 +521,26 @@ accidentally sharing the code in the wrong chat, screen-share leaks
 mid-meeting. The password is shared out of band (different channel from
 the code) and acts as "are you the person I expect?" confirmation.
 
-Implementation: sender sends `HMAC-SHA256(password, exporter_key)` as the
-first encrypted message after the TLS handshake, where `exporter_key` is
-the 32-byte output of the TLS 1.3 RFC 5705 exporter with label
-`"EXPORTER-fsend-pwd-challenge"` and empty context. Receiver computes the
-same value from the password the user types and compares with
-`crypto/subtle.ConstantTimeCompare`. The password itself never crosses
-the wire, and the exporter binding prevents replay across sessions.
+Implementation: the sender sends a `PASSWORD_CHALLENGE` frame containing
+a fresh 32-byte `crypto/rand` nonce. The receiver replies with
+`PASSWORD_RESPONSE{HMAC-SHA256(password, nonce)}`. The sender re-derives
+the expected HMAC from its copy of the password and compares with
+`crypto/subtle.ConstantTimeCompare`. On match it sends
+`PASSWORD_VERIFIED`; on mismatch it sends `ERROR{ErrCodeWrongPassword}`
+and tears down the connection. The password itself never crosses the
+wire; the per-session nonce prevents replay across sessions.
+
+The whole exchange flows over the QUIC stream that the PAKE + TLS
+exporter check already bound to the channel, so a relay or in-path
+MITM cannot replay an old challenge from a different session. The
+earlier draft of this spec bound the HMAC directly to the RFC 5705
+exporter; that was dropped because the PAKE channel-binding step had
+already established session uniqueness and the second binding added no
+new security.
+
 See [`docs/decisions/wire-protocol.md`](docs/decisions/wire-protocol.md)
-for the on-the-wire frame format (`PASSWORD_CHALLENGE` / `PASSWORD_RESPONSE`).
+for the on-the-wire frame format (`PASSWORD_CHALLENGE` /
+`PASSWORD_RESPONSE` / `PASSWORD_VERIFIED`).
 
 **Compression behavior:** the sender peeks at the first chunk of each file
 and tries zstd. If the result is smaller by ≥10%, the rest of the file is
@@ -630,7 +641,7 @@ that handle HTTPS + cert renewal.
 The standard install is one command, no flags:
 
 ```
-docker run -p 443:443/udp -p 8080:8080/tcp ghcr.io/polius/fsend-server
+docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend-server
 ```
 
 That's it. The server picks sane defaults for everything and writes logs

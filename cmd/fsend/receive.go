@@ -139,21 +139,16 @@ func runReceiverLANOneAttempt(ctx context.Context, addr, code, outDir, hostname 
 // engine immediately fails with ErrWrongPassword instead of blocking on
 // a prompt that nobody will see.
 //
-// The input is echoed in v1: we deliberately avoid pulling in golang.org/x/term
-// for the minor UX win of no-echo on TTYs. The expectation is that
-// non-interactive flows use --pass or FSEND_PASS; the prompt is a fallback.
+// Input is read with no echo when stdin is a TTY (golang.org/x/term).
+// Non-interactive callers should pass --pass or FSEND_PASS so the
+// prompt never fires.
 func receiverPasswordPrompt(f *flags) func() (string, error) {
 	if f.quiet {
 		return nil
 	}
 	return func() (string, error) {
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprint(os.Stderr, "  Password required by sender: ")
-		var pw string
-		if _, err := fmt.Fscanln(os.Stdin, &pw); err != nil {
-			return "", err
-		}
-		return pw, nil
+		return readPasswordHidden("  Password required by sender: ")
 	}
 }
 

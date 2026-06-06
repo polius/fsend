@@ -261,7 +261,7 @@ USAGE
 
 EXAMPLE
   Standard Docker run (zero-config):
-    docker run -p 443:443/udp -p 8080:8080/tcp ghcr.io/polius/fsend-server
+    docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend-server
 
 CONFIGURATION (environment variables — all optional)
   FSEND_HTTP_ADDR                       Default :8080

@@ -85,17 +85,19 @@ func (c *Client) Wait(ctx context.Context, code string) (*server.WaitResponse, e
 }
 
 // PushCandidates uploads a batch of ICE candidates for this peer.
-func (c *Client) PushCandidates(ctx context.Context, sessionID string, candidates []string) error {
+// roleToken is the bearer credential returned from Create/Join; it
+// tells the server which side this caller is, independent of source IP.
+func (c *Client) PushCandidates(ctx context.Context, sessionID, roleToken string, candidates []string) error {
 	return c.do(ctx, http.MethodPost, "/v1/session/"+sessionID+"/candidates",
-		server.CandidatesPushRequest{Candidates: candidates}, nil, nil)
+		server.CandidatesPushRequest{Candidates: candidates}, nil, withAuth(roleToken))
 }
 
 // PullCandidates fetches candidates the peer has pushed since the `since`
 // index. Returns (nil, nil) if nothing new is available yet.
-func (c *Client) PullCandidates(ctx context.Context, sessionID string, since int) (*server.CandidatesPullResponse, error) {
+func (c *Client) PullCandidates(ctx context.Context, sessionID, roleToken string, since int) (*server.CandidatesPullResponse, error) {
 	var out server.CandidatesPullResponse
 	path := fmt.Sprintf("/v1/session/%s/candidates?since=%d", sessionID, since)
-	err := c.do(ctx, http.MethodGet, path, nil, &out, allowNoContent())
+	err := c.do(ctx, http.MethodGet, path, nil, &out, withAuth(roleToken).withNoContent())
 	if errors.Is(err, errNoContent) {
 		return nil, nil
 	}
@@ -118,6 +120,22 @@ func (c *Client) AllocateRelay(ctx context.Context, sessionID string) (*server.R
 	return &out, err
 }
 
+// RelayStatus probes the rendezvous server for the current state of a
+// relay allocation. Used after a relay-path drop to surface the real
+// reason (e.g. cap_hit) instead of looping on retry forever.
+//
+// Network errors are treated as "unknown" — we don't want a probe
+// failure to mask the underlying transfer failure the caller is
+// already handling.
+func (c *Client) RelayStatus(ctx context.Context, sessionID string) (*server.RelayStatusResponse, error) {
+	var out server.RelayStatusResponse
+	path := "/v1/relay/status?session_id=" + sessionID
+	if err := c.do(ctx, http.MethodGet, path, nil, &out, nil); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Health pings /v1/health and returns the parsed response.
 func (c *Client) Health(ctx context.Context) (*server.HealthResponse, error) {
 	var out server.HealthResponse
@@ -131,12 +149,23 @@ func (c *Client) Health(ctx context.Context) (*server.HealthResponse, error) {
 var errNoContent = errors.New("signaling: no content")
 
 // doOption mutates the request behavior. Used to surface optional
-// 204-handling without growing the do() signature.
+// 204-handling and bearer-auth without growing the do() signature.
 type doOption struct {
 	noContentOK bool
+	bearerToken string
 }
 
 func allowNoContent() *doOption { return &doOption{noContentOK: true} }
+
+func withAuth(token string) *doOption { return &doOption{bearerToken: token} }
+
+func (o *doOption) withNoContent() *doOption {
+	if o == nil {
+		return allowNoContent()
+	}
+	o.noContentOK = true
+	return o
+}
 
 // do is the common path for "send JSON, expect JSON" round-trips.
 //
@@ -167,6 +196,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("User-Agent", "fsend/"+c.version)
+	if opt != nil && opt.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+opt.bearerToken)
+	}
 
 	resp, err := c.hc.Do(req)
 	if err != nil {

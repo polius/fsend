@@ -89,7 +89,7 @@ USAGE
 
 EXAMPLE
   Standard Docker run (zero-config):
-    docker run -p 443:443/udp -p 8080:8080/tcp ghcr.io/polius/fsend-server
+    docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend-server
 
   Behind Caddy with auto-TLS (see docker-compose.yml in the repo):
     docker compose up

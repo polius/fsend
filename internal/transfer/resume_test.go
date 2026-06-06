@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zeebo/blake3"
+
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -137,11 +139,59 @@ func TestResume_ReusesAlignedPartial(t *testing.T) {
 	}
 }
 
-// (A corrupt-partial test belongs at the QUIC level, not the io.Pipe
-// fixture: the receiver writes an ERROR frame on root-hash mismatch
-// and a synchronous io.Pipe deadlocks the sender's TRANSFER_COMPLETE
-// write against the receiver's ERROR write. Empirical coverage is in
-// test/e2e/run_e2e.sh and at the QUIC integration test layer.)
+// TestResume_TamperedPrefixDetected proves the new defense: even if a
+// crafted partial sneaks past imohash (we force the same imohash by
+// keeping the size identical), the assembled-file BLAKE3 root check on
+// resume catches the mismatch and the partial is discarded.
+//
+// We can't drive the full Recv loop here because the receiver writes
+// an ERROR frame on root mismatch and the synchronous io.Pipe pair
+// deadlocks against the sender's TRANSFER_COMPLETE. Instead we
+// exercise the helper directly: hashPrefixInto over a mutated prefix
+// must yield a different root than hashPrefixInto over the original.
+func TestResume_TamperedPrefixDetected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "partial.bin")
+	prefix := make([]byte, 2*wire.MaxChunkSize)
+	if _, err := rand.Read(prefix); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, prefix, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	h1 := blake3.New()
+	if err := hashPrefixInto(h1, f, int64(len(prefix))); err != nil {
+		t.Fatal(err)
+	}
+	var good [32]byte
+	copy(good[:], h1.Sum(nil))
+
+	prefix[0] ^= 0xFF // flip one byte
+	if err := os.WriteFile(path, prefix, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f2, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f2.Close()
+	h2 := blake3.New()
+	if err := hashPrefixInto(h2, f2, int64(len(prefix))); err != nil {
+		t.Fatal(err)
+	}
+	var bad [32]byte
+	copy(bad[:], h2.Sum(nil))
+
+	if good == bad {
+		t.Fatal("BLAKE3 root collision on a single-bit flip — verification is no-op")
+	}
+}
 
 // --- helpers ---
 

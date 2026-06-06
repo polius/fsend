@@ -60,6 +60,12 @@ type internetSenderPairing struct {
 	code         string
 	pathInfo     connpath.Info
 	cleanup      func()
+
+	// sigClient and sessionID let the post-transfer error path probe
+	// the rendezvous server for a relay eviction reason. Without this,
+	// a 100 MiB-cap-hit looks identical to a flaky network.
+	sigClient *signaling.Client
+	sessionID string
 }
 
 // sendPairOutcome is what a pair goroutine reports back.
@@ -167,6 +173,8 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 		firstRes:     res,
 		code:         created.Code,
 		pathInfo:     pathInfo,
+		sigClient:    client,
+		sessionID:    created.SessionID,
 		cleanup: func() {
 			teardown()
 			deleteSession()
@@ -180,7 +188,7 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 // reflects the choice for UX rendering.
 func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *server.CreateSessionResponse, waitResp *server.WaitResponse, serverAddr string) (net.PacketConn, connpath.Info, error) {
 	stunHost := stunHostFromServer(serverAddr)
-	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, iceconn.Options{
+	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, created.RoleToken, iceconn.Options{
 		LocalUfrag:  created.IceCredentials.Ufrag,
 		LocalPwd:    created.IceCredentials.Pwd,
 		RemoteUfrag: waitResp.PeerIceCredentials.Ufrag,
@@ -359,13 +367,17 @@ func runSenderTransferOverLAN(ctx context.Context, f *flags, items []transfer.So
 // underlying PacketConn is preserved across attempts).
 func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, pair *internetSenderPairing) error {
 	defer pair.cleanup()
-	return runSenderTransferLoop(ctx, f, items, kind, totalFiles, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
+	err := runSenderTransferLoop(ctx, f, items, kind, totalFiles, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		qc, err := pair.quicListener.Accept(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
 		}
 		return quicconn.SenderHandshake(ctx, qc, pair.code)
 	})
+	if pair.pathInfo.Kind == connpath.KindRelay {
+		return classifyRelayDrop(ctx, pair.sigClient, pair.sessionID, err)
+	}
+	return err
 }
 
 // runSenderTransferLoop is the shared inner loop. It runs transfer.Send

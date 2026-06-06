@@ -239,6 +239,79 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// TestCandidates_RoutedByRoleToken proves the demux works for two peers
+// sharing a public IP (same NAT) — the old source-IP heuristic mis-
+// attributed every push to the first arrival and stranded the receiver
+// with zero remote candidates. The bearer token decouples routing from
+// IP entirely.
+func TestCandidates_RoutedByRoleToken(t *testing.T) {
+	srv := newTestServer(t)
+
+	cResp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
+	defer cResp.Body.Close()
+	var c CreateSessionResponse
+	_ = json.NewDecoder(cResp.Body).Decode(&c)
+
+	jResp := postJSON(t, srv.URL+"/v1/session/"+c.Code+"/join", JoinSessionRequest{})
+	defer jResp.Body.Close()
+	var j JoinSessionResponse
+	_ = json.NewDecoder(jResp.Body).Decode(&j)
+
+	push := func(token, candidate string) int {
+		body, _ := json.Marshal(CandidatesPushRequest{Candidates: []string{candidate}})
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/session/"+c.SessionID+"/candidates", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	pull := func(token string) []string {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/session/"+c.SessionID+"/candidates?since=0", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == 204 {
+			return nil
+		}
+		var out CandidatesPullResponse
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return out.Candidates
+	}
+
+	if got := push(c.RoleToken, "sender-cand-1"); got != 204 {
+		t.Fatalf("sender push status %d", got)
+	}
+	if got := push(j.RoleToken, "receiver-cand-1"); got != 204 {
+		t.Fatalf("receiver push status %d", got)
+	}
+
+	senderSees := pull(c.RoleToken) // should see receiver's
+	receiverSees := pull(j.RoleToken)
+	if len(senderSees) != 1 || senderSees[0] != "receiver-cand-1" {
+		t.Errorf("sender saw %v, want [receiver-cand-1]", senderSees)
+	}
+	if len(receiverSees) != 1 || receiverSees[0] != "sender-cand-1" {
+		t.Errorf("receiver saw %v, want [sender-cand-1]", receiverSees)
+	}
+
+	// No token / wrong token → 401.
+	body, _ := json.Marshal(CandidatesPushRequest{Candidates: []string{"x"}})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/session/"+c.SessionID+"/candidates", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("missing token: status = %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestDeleteSession(t *testing.T) {
 	srv := newTestServer(t)
 	create := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})

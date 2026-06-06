@@ -25,7 +25,10 @@
 
 services:
   fsend-server:
-    image: ghcr.io/polius/fsend-server:latest
+    # Pin a major.minor in production so unattended-upgrades don't
+    # surprise you on a breaking release. Bump it manually when you
+    # want a new feature: docker compose pull, then up -d.
+    image: poliuscorp/fsend-server:0.1
     container_name: fsend-server
     restart: unless-stopped
     # The container exposes :8080 (HTTP signaling) to Caddy via the internal

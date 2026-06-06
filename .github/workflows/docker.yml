@@ -1,0 +1,125 @@
+# Docker publish workflow.
+#
+# Publishes poliuscorp/fsend-server (rendezvous + relay, for self-hosters)
+# on each v* tag push. The CLI is shipped only as a native binary —
+# inside Docker on macOS/Windows the LAN/mDNS path silently degrades to
+# rendezvous-only, so a Docker-packaged CLI wears the fsend name while
+# delivering a meaningfully worse product on the most common hosts.
+#
+# Triggered on the same v* tag as the binary release pipeline so the
+# server image and the GitHub-Release binaries always carry the same
+# version. workflow_dispatch is also wired so the image can be rebuilt
+# manually from main without cutting a release.
+#
+# Tagging strategy (via docker/metadata-action):
+#   poliuscorp/<image>:0.1.0      # exact semver
+#   poliuscorp/<image>:0.1        # major.minor
+#   poliuscorp/<image>:0          # major
+#   poliuscorp/<image>:latest     # only on stable releases (no `-`)
+#
+# Prereleases (e.g. v1.0.0-rc.1) get the exact-semver tag only — no
+# `latest` movement until the stable release ships.
+#
+# Auth: the `poliuscorp` Docker Hub account is the publisher. A personal
+# access token must exist in repo secrets as DOCKER_ACCESS_TOKEN. Matches
+# the pattern in polius/wally.
+#
+# Provenance: each pushed image is paired with a signed SLSA-style
+# attestation pinning the digest to this exact source revision.
+name: docker
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write    # cosign / attest-build-provenance
+  attestations: write
+
+jobs:
+  build-and-push:
+    name: poliuscorp/fsend-server
+    runs-on: ubuntu-latest
+
+    env:
+      IMAGE: poliuscorp/fsend-server
+      DOCKERFILE: ./Dockerfile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive build metadata
+        id: meta_args
+        run: |
+          # Strip the leading "v" from a tag like v0.1.0 so the value
+          # injected into internal/version.Version matches what
+          # goreleaser writes ("0.1.0", not "v0.1.0"). For
+          # workflow_dispatch runs (no tag), fall back to the short SHA.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "commit=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: poliuscorp
+          password: ${{ secrets.DOCKER_ACCESS_TOKEN }}
+
+      - name: Docker tag plan
+        id: tags
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          # linux/amd64 covers VPSes and dev; linux/arm64 covers
+          # Raspberry Pi 4/5, AWS Graviton, and Apple Silicon hosts.
+          # 32-bit ARM/x86 are deliberately excluded for the same reason
+          # as the release binaries (we don't want to ship what we
+          # can't test).
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: ${{ steps.tags.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta_args.outputs.version }}
+            COMMIT=${{ steps.meta_args.outputs.commit }}
+            DATE=${{ steps.meta_args.outputs.date }}
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}
+
+      - name: Attest build provenance
+        # Generates a SLSA-style attestation pinning the pushed image
+        # digest to this exact workflow run + source revision. Lets
+        # consumers verify the image with `cosign verify-attestation`.
+        # Matches the pattern in polius/wally.
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: index.docker.io/${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

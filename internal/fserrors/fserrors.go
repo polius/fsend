@@ -66,6 +66,10 @@ var (
 	// E022 — peers did not agree on the short code (or someone in the
 	// middle tried to MITM): SPAKE2-derived key + TLS exporter mismatch.
 	ErrPeerAuthFailed = errors.New("peer authentication failed")
+	// E023 — relay's per-session byte cap was hit and the allocation
+	// was torn down. Tells the user *why* the transfer stopped, instead
+	// of "connection interrupted, retrying" forever.
+	ErrRelayCapHit = errors.New("relay byte cap reached")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -208,6 +212,15 @@ var catalog = map[error]Entry{
 		Message: "Could not authenticate the other peer.",
 		Action: "Either the codes don't match or something in the network path\n" +
 			"  tampered with the connection. Re-share the code and try again.",
+	},
+	ErrRelayCapHit: {
+		Code: "E023", Exit: 23,
+		Message: "The relay server's per-session byte cap was reached. Transfer aborted.",
+		Action: "The default public relay caps relayed transfers at 100 MiB to keep it\n" +
+			"  available for everyone. Same-LAN and NAT-hole-punched transfers are\n" +
+			"  uncapped. Workarounds:\n" +
+			"    - Send from a different network so the peers can hole-punch directly.\n" +
+			"    - Self-host fsend-server and raise FSEND_MAX_RELAY_BYTES_PER_SESSION.",
 	},
 }
 

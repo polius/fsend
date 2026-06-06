@@ -30,14 +30,14 @@ type flags struct {
 	outDir    string
 	overwrite bool
 
-	// Server selection
-	connectArg    string
-	connectGiven  bool
+	// Server selection — connectArgsRaw is the raw slice cobra hands
+	// back; "no flag" vs "empty flag" is distinguished via Flags().Changed.
 	connectArgsRaw []string
 
 	// Misc
-	quiet bool
-	debug bool
+	quiet     bool
+	debug     bool
+	uninstall bool
 
 	// First-positional args, recorded after parsing.
 	posArgs []string
@@ -73,7 +73,13 @@ Examples:
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
 	c.Flags().StringVar(&f.passArg, "pass", "",
-		"password gate. Sender: require the receiver to match it. Receiver: supply non-interactively. Env: FSEND_PASS")
+		"password gate. Bare --pass prompts (no echo). Env: FSEND_PASS")
+	// Bare --pass (no value) collapses to this sentinel; the dispatch
+	// layer treats it as "ask interactively, with input hidden." We
+	// blank DefValue so cobra's --help doesn't print the sentinel.
+	passFlag := c.Flags().Lookup("pass")
+	passFlag.NoOptDefVal = passPromptSentinel
+	passFlag.DefValue = ""
 	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers")
 	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files on receive")
@@ -88,15 +94,22 @@ Examples:
 
 	// Server selection
 	c.Flags().StringSliceVar(&f.connectArgsRaw, "connect", nil, "set the rendezvous server: <host:port> [password] | 'default'")
-	// connectGiven tells us whether the flag was passed at all (vs default
-	// "no value"); cobra represents an empty slice and an unset slice
-	// identically, so we look at Changed() in dispatch.
 
 	// Misc
 	c.Flags().BoolVar(&f.debug, "debug", false, "verbose logging to stderr")
+	c.Flags().BoolVar(&f.uninstall, "uninstall", false, "remove the fsend binary and config dir")
 
 	return c
 }
+
+// passPromptSentinel is the value cobra hands us when the user passes
+// bare --pass with no argument. The dispatch layer translates this into
+// an interactive no-echo prompt before any send/receive work begins.
+//
+// Note: a user who explicitly passes --pass=":prompt:" gets the same
+// hidden prompt — surprising-but-fine, since they typed the literal
+// sentinel themselves.
+const passPromptSentinel = ":prompt:"
 
 // dispatch implements the rules in PROJECT_SPEC.md "Dispatch rules".
 func dispatch(cmd *cobra.Command, f *flags) error {
@@ -105,12 +118,28 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		return runConnect(f)
 	}
 
+	// --uninstall is a maintenance command; never combine with transfer.
+	if f.uninstall {
+		return runUninstall(f)
+	}
+
 	// Env-var fallback for the password (FSEND_PASS). Passing a secret via
 	// flag leaks it through /proc/<pid>/cmdline and `ps -ef`; the env var
 	// lets users keep it out of argv. We only consult it when the flag
 	// wasn't explicitly given, so scripts that set both keep the flag's
 	// value (matching every other CLI's override convention).
 	applyEnvFallbacks(f, cmd)
+
+	// Bare --pass (no value) → ask the user once, hidden. Done here so
+	// both send and receive paths benefit and the prompt happens before
+	// any network activity.
+	if f.passArg == passPromptSentinel {
+		pw, err := readPasswordHidden("Enter password: ")
+		if err != nil {
+			return err
+		}
+		f.passArg = pw
+	}
 
 	// Force mode short-circuits auto-detect.
 	if f.forceSend {

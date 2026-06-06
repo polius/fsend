@@ -299,6 +299,45 @@ func TestReceiverDeclines(t *testing.T) {
 	}
 }
 
+// TestOverwriteRefused asserts the receiver refuses to clobber an
+// existing target file when --overwrite is off, and accepts it when on.
+func TestOverwriteRefused(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x.txt")
+	_ = os.WriteFile(srcPath, []byte("new"), 0o644)
+	existing := filepath.Join(dstDir, "x.txt")
+	_ = os.WriteFile(existing, []byte("old"), 0o644)
+	items, _ := Walk([]string{srcPath})
+
+	a, b := pipePair()
+	defer a.Close()
+	defer b.Close()
+
+	var sendErr, recvErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sendErr = Send(context.Background(), &a, SendOptions{Items: items, TransferKind: wire.TransferSingleFile})
+	}()
+	go func() {
+		defer wg.Done()
+		recvErr = Recv(context.Background(), &b, RecvOptions{TargetDir: dstDir})
+	}()
+	wg.Wait()
+	if !errors.Is(recvErr, fserrors.ErrTargetExists) {
+		t.Errorf("recv err = %v, want ErrTargetExists", recvErr)
+	}
+	if !errors.Is(sendErr, fserrors.ErrTargetExists) {
+		t.Errorf("send err = %v, want ErrTargetExists", sendErr)
+	}
+	got, _ := os.ReadFile(existing)
+	if string(got) != "old" {
+		t.Errorf("existing file was clobbered: %q", got)
+	}
+}
+
 // TestPathTraversalRejected confirms that a malicious peer attempting to
 // write outside the target dir is blocked by SanitizeRelativePath.
 func TestSanitizeRelativePath(t *testing.T) {

@@ -91,6 +91,9 @@ const (
 	// Almost always means the source file changed since the previous
 	// attempt; the receiver should discard its partial and retry.
 	ErrCodePartialMismatch ErrorCode = 11
+	// ErrCodeTargetExists — receiver refused to clobber an existing file
+	// because the user did not pass --overwrite.
+	ErrCodeTargetExists ErrorCode = 12
 )
 
 // Chunk-frame flag bits.

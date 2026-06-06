@@ -80,6 +80,7 @@ type Server struct {
 // without standing up real UDP sockets.
 type RelayAllocator interface {
 	Allocate() (relay.Token, error)
+	Status(relay.Token) string
 }
 
 // WithRelay wires a relay allocator and its public address into the
@@ -134,8 +135,39 @@ func (s *Server) Handler() *http.ServeMux {
 	m.HandleFunc("GET /v1/session/{id}/candidates", s.pullCandidates)
 	m.HandleFunc("DELETE /v1/session/{id}", s.deleteSession)
 	m.HandleFunc("POST /v1/relay/allocate", s.allocateRelay)
+	m.HandleFunc("GET /v1/relay/status", s.relayStatus)
 	m.HandleFunc("GET /v1/health", s.health)
 	return m
+}
+
+// relayStatus reports the eviction reason for a relay allocation,
+// keyed by the session's token. Used by the CLI to translate an opaque
+// "relay path dropped" into an actionable message (cap hit, idle).
+func (s *Server) relayStatus(w http.ResponseWriter, r *http.Request) {
+	if s.relayAllocator == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "relay not enabled")
+		return
+	}
+	id := r.URL.Query().Get("session_id")
+	if id == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session_id")
+		return
+	}
+	s.mu.Lock()
+	sess, ok := s.byID[id]
+	if !ok || !sess.relayTokenSet {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusOK, RelayStatusResponse{State: "unknown"})
+		return
+	}
+	tok := sess.relayToken
+	s.mu.Unlock()
+	reason := s.relayAllocator.Status(tok)
+	if reason == "" {
+		writeJSON(w, http.StatusOK, RelayStatusResponse{State: "active"})
+		return
+	}
+	writeJSON(w, http.StatusOK, RelayStatusResponse{State: "evicted", Reason: reason})
 }
 
 func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
@@ -274,14 +306,16 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sid := ulid.Make().String()
+	senderTok := newRoleToken()
 	sess := &session{
-		ID:         sid,
-		Code:       c,
-		SenderAddr: clientIP,
-		SenderICE:  newIceCreds(),
-		State:      "waiting",
-		CreatedAt:  time.Now(),
-		waiters:    make(chan struct{}),
+		ID:          sid,
+		Code:        c,
+		SenderAddr:  clientIP,
+		SenderICE:   newIceCreds(),
+		SenderToken: senderTok,
+		State:       "waiting",
+		CreatedAt:   time.Now(),
+		waiters:     make(chan struct{}),
 	}
 	s.byCode[c] = sess
 	s.byID[sid] = sess
@@ -295,6 +329,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		IceCredentials:   sess.SenderICE,
 		TTLSeconds:       int(s.cfg.UnpairedTTL.Seconds()),
 		ServerVersion:    s.cfg.ServerVersion,
+		RoleToken:        senderTok,
 	})
 }
 
@@ -321,6 +356,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	}
 	sess.ReceiverAddr = clientIP
 	sess.ReceiverICE = newIceCreds()
+	sess.ReceiverToken = newRoleToken()
 	sess.State = "paired"
 	sess.PairedAt = time.Now()
 	s.ipCounts[clientIP]++
@@ -331,6 +367,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		PeerObservedAddr:   sess.SenderAddr,
 		PeerIceCredentials: sess.SenderICE,
 		YourIceCredentials: sess.ReceiverICE,
+		RoleToken:          sess.ReceiverToken,
 	}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, resp)
@@ -394,6 +431,7 @@ func (s *Server) pushCandidates(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "bad json")
 		return
 	}
+	tok := bearerToken(r)
 	s.mu.Lock()
 	sess, ok := s.byID[id]
 	if !ok {
@@ -401,13 +439,15 @@ func (s *Server) pushCandidates(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	// Determine which side this caller is by source IP — sloppy but fine
-	// for v0.1.0 (single NAT box behind a single public IP is the typical
-	// case anyway).
-	cip := clientIP(r)
-	if cip == sess.SenderAddr {
+	side, ok := sess.sideForToken(tok)
+	if !ok {
+		s.mu.Unlock()
+		writeJSONError(w, http.StatusUnauthorized, "missing or invalid role token")
+		return
+	}
+	if side == "sender" {
 		sess.SenderCandidates = append(sess.SenderCandidates, body.Candidates...)
-	} else if cip == sess.ReceiverAddr {
+	} else {
 		sess.ReceiverCandidates = append(sess.ReceiverCandidates, body.Candidates...)
 	}
 	s.mu.Unlock()
@@ -421,6 +461,7 @@ func (s *Server) pullCandidates(w http.ResponseWriter, r *http.Request) {
 		// Skip silently on parse error.
 		fmt.Sscanf(v, "%d", &since)
 	}
+	tok := bearerToken(r)
 	s.mu.Lock()
 	sess, ok := s.byID[id]
 	if !ok {
@@ -428,9 +469,14 @@ func (s *Server) pullCandidates(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	cip := clientIP(r)
+	side, ok := sess.sideForToken(tok)
+	if !ok {
+		s.mu.Unlock()
+		writeJSONError(w, http.StatusUnauthorized, "missing or invalid role token")
+		return
+	}
 	var theirs []string
-	if cip == sess.SenderAddr {
+	if side == "sender" {
 		theirs = sess.ReceiverCandidates
 	} else {
 		theirs = sess.SenderCandidates
@@ -503,6 +549,57 @@ func (s *Server) generateUniqueCode() (string, error) {
 // credential strings.
 var iceCredEnc = base32.NewEncoding("ABCDEFGHJKMNPQRSTVWXYZ0123456789").
 	WithPadding(base32.NoPadding)
+
+// newRoleToken returns an opaque 128-bit bearer credential used to
+// identify which side (sender/receiver) is making a candidate call.
+// Replaces the older source-IP heuristic that broke whenever both
+// peers shared a public IP (same NAT, corporate network, VPN exit).
+func newRoleToken() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return iceCredEnc.EncodeToString(b[:])
+}
+
+// bearerToken extracts the bearer token from the Authorization header.
+// Returns "" if the header is missing or malformed; callers treat that
+// as "no token supplied" and respond with 401.
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if h == "" {
+		return ""
+	}
+	const prefix = "Bearer "
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return ""
+	}
+	return h[len(prefix):]
+}
+
+// sideForToken identifies which peer a bearer token belongs to.
+// Constant-time compare keeps the auth check from leaking timing.
+func (s *session) sideForToken(tok string) (string, bool) {
+	if tok == "" {
+		return "", false
+	}
+	if s.SenderToken != "" && subtleEqual(s.SenderToken, tok) {
+		return "sender", true
+	}
+	if s.ReceiverToken != "" && subtleEqual(s.ReceiverToken, tok) {
+		return "receiver", true
+	}
+	return "", false
+}
+
+func subtleEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var v byte
+	for i := 0; i < len(a); i++ {
+		v |= a[i] ^ b[i]
+	}
+	return v == 0
+}
 
 // newIceCreds returns a fresh ICE ufrag+pwd pair. ICE expects ufrag at
 // least 4 chars and pwd at least 22 chars (RFC 5245 §15.4).

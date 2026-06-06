@@ -97,7 +97,11 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		return synthesizeText(f.textArg), wire.TransferText, 0, "", noop, nil
 	}
 	if len(paths) == 1 && paths[0] == "-" {
-		return synthesizeStdin(), wire.TransferStdin, 0, "", noop, nil
+		items, err := synthesizeStdin()
+		if err != nil {
+			return nil, 0, 0, "", noop, err
+		}
+		return items, wire.TransferStdin, 0, "", noop, nil
 	}
 
 	hasDir, err := containsDirectory(paths)
@@ -205,7 +209,7 @@ func synthesizeText(s string) []transfer.SourceItem {
 	}
 }
 
-func synthesizeStdin() []transfer.SourceItem {
+func synthesizeStdin() ([]transfer.SourceItem, error) {
 	name := "fsend-stdin-" + shortRand()
 	// The wire protocol's per-file size is known upfront — sendOneFile
 	// uses Size to decide its chunk loop. Stdin must therefore be
@@ -214,8 +218,7 @@ func synthesizeStdin() []transfer.SourceItem {
 	// Size = 0 ⇒ "unknown" sentinel in the wire protocol.
 	buf, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		// Failures here surface as a CLI error before any wire activity.
-		buf = nil
+		return nil, fmt.Errorf("reading stdin: %w", err)
 	}
 	return []transfer.SourceItem{
 		{
@@ -229,7 +232,7 @@ func synthesizeStdin() []transfer.SourceItem {
 			},
 			Reader: bytes.NewReader(buf),
 		},
-	}
+	}, nil
 }
 
 // shortRand returns an 8-char crypto-random alphanumeric string for

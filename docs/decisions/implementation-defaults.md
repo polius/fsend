@@ -153,7 +153,7 @@ Two workflows:
    - Goreleaser: build full matrix, create archives, generate checksums
    - cosign sign the checksums file
    - Publish to GitHub Releases
-   - Build + push Docker image for `fsend-server` to `ghcr.io/polius/fsend-server`
+   - Build + push Docker image for `fsend-server` to `poliuscorp/fsend-server`
    - Update `latest` tag
 
 No publishing to Homebrew, apt repos, or AUR in v0.1.0. The `curl | sh`

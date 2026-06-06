@@ -1,0 +1,170 @@
+# goreleaser config for fsend.
+#
+# This project ships two binaries from one repo:
+#   - fsend         (CLI, end users)
+#   - fsend-server  (rendezvous/relay, self-hosters)
+#
+# Each is built for the OS/arch combos that install.sh's detect_os /
+# detect_arch can resolve. Archive naming is locked to the convention
+# install.sh hard-codes:
+#
+#   fsend_<version>_<os>_<arch>.<ext>
+#   fsend-server_<version>_<os>_<arch>.<ext>
+#
+# where <version> has the leading `v` stripped (matching the URL
+# install.sh constructs) and <ext> is .zip on Windows, .tar.gz everywhere
+# else.
+#
+# Verify locally with:  goreleaser release --snapshot --clean
+version: 2
+
+project_name: fsend
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  # fsend (CLI). The supported install.sh targets are the union of the
+  # arches detect_arch maps (amd64, arm64, armv7, 386) and the OSes
+  # detect_os maps (linux, darwin, freebsd, windows). Some pairs don't
+  # exist in upstream Go (e.g. darwin/386) and are pruned via `ignore`.
+  - id: fsend
+    binary: fsend
+    main: ./cmd/fsend
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -buildid=
+      - -X github.com/polius/fsend/internal/version.Version={{.Version}}
+      - -X github.com/polius/fsend/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/polius/fsend/internal/version.Date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
+      - "386"
+      - arm
+    goarm:
+      - "7"
+    ignore:
+      # Upstream Go has no darwin/386 since 1.15 and no darwin/arm (only arm64).
+      - { goos: darwin,  goarch: "386" }
+      - { goos: darwin,  goarch: arm }
+      # No freebsd/386 or freebsd/arm in install.sh's targets.
+      - { goos: freebsd, goarch: "386" }
+      - { goos: freebsd, goarch: arm }
+      # No windows/arm in install.sh (only arm64).
+      - { goos: windows, goarch: arm }
+
+  # fsend-server (self-hosted rendezvous + relay). Same flags and
+  # version-injection scheme. Narrower arch matrix: realistically nobody
+  # runs the server on 32-bit ARM/x86, and we don't want to ship binaries
+  # we won't test. amd64 + arm64 across the same OS list covers
+  # Linux VPSes, macOS development, Windows dev, and FreeBSD jails.
+  - id: fsend-server
+    binary: fsend-server
+    main: ./cmd/fsend-server
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -buildid=
+      - -X github.com/polius/fsend/internal/version.Version={{.Version}}
+      - -X github.com/polius/fsend/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/polius/fsend/internal/version.Date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # Each binary gets its own archive set. Name templates are locked to
+  # what install.sh expects: <project>_<version>_<os>_<arch>[<armv7>].<ext>
+  # — no leading `v` on the version, .zip for Windows, .tar.gz elsewhere.
+  - id: fsend
+    ids:
+      - fsend
+    name_template: 'fsend_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}'
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+  - id: fsend-server
+    ids:
+      - fsend-server
+    name_template: 'fsend-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}'
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+# Single checksums.txt covering all archives — install.sh fetches this
+# from <repo>/releases/download/<tag>/checksums.txt to verify downloads.
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+# Keyless cosign signatures for every released archive and checksums.txt.
+# The release workflow runs in GitHub Actions with id-token:write, so
+# cosign signs against the GitHub OIDC identity — no long-lived keys.
+# Verify a download with:
+#
+#   cosign verify-blob \
+#     --certificate-identity-regexp='^https://github.com/polius/fsend/' \
+#     --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+#     --signature <file>.sig \
+#     --certificate <file>.pem \
+#     <file>
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+
+# Snapshots (run via `goreleaser release --snapshot`) get a synthetic
+# version suffix so the artifacts never collide with a real release.
+snapshot:
+  version_template: '{{ incpatch .Version }}-snapshot'
+
+release:
+  github:
+    owner: polius
+    name: fsend
+  draft: false
+  # Tags like v1.0.0-rc.1 → prerelease; v1.0.0 → stable release.
+  prerelease: auto
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - 'Merge pull request'
+      - 'Merge branch'
