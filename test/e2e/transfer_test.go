@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"bytes"
+	"crypto/rand"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,6 +147,60 @@ func TestSend_Stdin(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "hello-stdin-12345") {
 		t.Fatalf("payload mismatch: %q", body)
+	}
+}
+
+// TestSend_StdinStreaming pipes a multi-MiB random payload from a slow
+// producer (two halves with a pause in between) through `fsend -`. The
+// streaming path must move the bytes without buffering the whole stream
+// in memory and the receiver must end up with the exact bytes the
+// producer wrote.
+func TestSend_StdinStreaming(t *testing.T) {
+	requireE2E(t)
+
+	// 3 × MaxChunkSize keeps the test fast while still crossing several
+	// chunk boundaries — enough to catch a regression where the sender
+	// silently reverts to "read everything before sending."
+	const payloadSize = 3 * 1024 * 1024
+	payload := make([]byte, payloadSize)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	pr, pw := io.Pipe()
+	// Producer: emit the payload in two halves with a small pause so the
+	// sender is forced to process bytes before EOF arrives. A buffered
+	// implementation would block here waiting for the second write.
+	go func() {
+		defer pw.Close()
+		_, _ = pw.Write(payload[:payloadSize/2])
+		time.Sleep(100 * time.Millisecond)
+		_, _ = pw.Write(payload[payloadSize/2:])
+	}()
+
+	dst := t.TempDir()
+	xdg := h.newXDG(t)
+
+	s := h.startSenderStdinReader(t, xdg, pr, "-")
+	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
+	code := s.waitForCode(t, 5*time.Second)
+
+	rOut, rErr, exit := h.runFsendIn(t, xdg, dst, "--yes", code)
+	s.wait(t, 15*time.Second)
+	if exit != 0 {
+		t.Fatalf("receiver exit %d\n%s\n%s", exit, rOut, rErr)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dst, "fsend-stdin-*"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no fsend-stdin-* file in %s", dst)
+	}
+	got, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("streamed payload mismatch: %d bytes received, %d sent", len(got), len(payload))
 	}
 }
 

@@ -461,7 +461,7 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transf
 // both paths in this helper keeps the two transfer entry points purely
 // declarative.
 func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
-	closeProg, progressFn, sentBytes := newSenderProgress(f, items)
+	closeProg, progressFn, sentBytes, onStreamingEOF := newSenderProgress(f, items)
 	defer closeProg()
 
 	start := time.Now()
@@ -479,15 +479,16 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 			current = nil
 			defer res.Close()
 			return transfer.Send(ctx, &res.Streams, transfer.SendOptions{
-				Items:         items,
-				Hostname:      hostnameOrDefault(f.hostname),
-				OS:            runtime.GOOS,
-				ClientVersion: version.Version,
-				TransferKind:  kind,
-				TotalFiles:    totalFiles,
-				DisplayName:   displayName,
-				Password:      f.passArg,
-				ProgressFn:    progressFn,
+				Items:          items,
+				Hostname:       hostnameOrDefault(f.hostname),
+				OS:             runtime.GOOS,
+				ClientVersion:  version.Version,
+				TransferKind:   kind,
+				TotalFiles:     totalFiles,
+				DisplayName:    displayName,
+				Password:       f.passArg,
+				ProgressFn:     progressFn,
+				OnStreamingEOF: onStreamingEOF,
 			})
 		})
 	if err != nil {

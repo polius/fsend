@@ -201,7 +201,14 @@ func promptAccept(f *flags, h wire.SenderHello) bool {
 	case wire.TransferText:
 		fmt.Fprintf(os.Stderr, "      a piece of text  (%s)%s\n", humanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferStdin:
-		fmt.Fprintf(os.Stderr, "      stream from stdin  (%s)%s\n", humanBytes(int64(h.TotalBytes)), pwChip)
+		// Streamed stdin: sender's HELLO has TotalBytes=0 because the
+		// size is only known at EOF on the producer side. Show "size
+		// unknown" instead of "(0 B)".
+		size := humanBytes(int64(h.TotalBytes))
+		if h.TotalBytes == 0 {
+			size = "size unknown"
+		}
+		fmt.Fprintf(os.Stderr, "      stream from stdin  (%s)%s\n", size, pwChip)
 	}
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  "+separator())

@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -218,26 +216,26 @@ func synthesizeText(s string) []transfer.SourceItem {
 
 func synthesizeStdin() ([]transfer.SourceItem, error) {
 	name := "fsend-stdin-" + shortRand()
-	// The wire protocol's per-file size is known upfront — sendOneFile
-	// uses Size to decide its chunk loop. Stdin must therefore be
-	// drained into a buffer before the transfer starts. For v0.1.0 this
-	// is acceptable; a future streaming-stdin path would need a
-	// Size = 0 ⇒ "unknown" sentinel in the wire protocol.
-	buf, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		return nil, fmt.Errorf("reading stdin: %w", err)
-	}
+	// Stream stdin directly to the wire: chunks are emitted as bytes
+	// arrive and the EOF chunk is marked with FlagLastChunk. The wire
+	// FileInfo carries Streaming=true so the receiver doesn't expect a
+	// pre-declared Size. This lets `pg_dump | fsend -`-style pipelines
+	// run with a bounded memory footprint and live progress instead of
+	// silently buffering the entire stream before the transfer starts.
+	//
+	// Blake3Root is left zero; per-chunk hashes still cover integrity.
 	return []transfer.SourceItem{
 		{
 			Info: wire.FileInfo{
 				Index:        0,
 				RelativePath: name,
-				Size:         uint64(len(buf)),
+				Size:         0,
 				Mode:         0o644,
 				ModTime:      time.Now().UnixNano(),
 				Resumable:    false,
+				Streaming:    true,
 			},
-			Reader: bytes.NewReader(buf),
+			Reader: os.Stdin,
 		},
 	}, nil
 }
@@ -289,7 +287,10 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 	case wire.TransferText:
 		fmt.Fprintf(os.Stderr, "  Sending text  (%s)\n", humanBytes(totalBytes(items)))
 	case wire.TransferStdin:
-		fmt.Fprintf(os.Stderr, "  Sending from stdin  (%s)\n", humanBytes(totalBytes(items)))
+		// Stdin is streamed: size isn't known until the producer EOFs.
+		// Print a placeholder; the progress bar carries the live byte
+		// count.
+		fmt.Fprintln(os.Stderr, "  Sending from stdin  (streaming)")
 	}
 	sep := separator()
 	fmt.Fprintln(os.Stderr)
@@ -321,29 +322,42 @@ func totalBytes(items []transfer.SourceItem) int64 {
 // newSenderProgress builds a per-file delta-accumulating ProgressFn that
 // drives a single overall progress bar. Returns a close func the caller
 // should defer (no-op when --quiet), the ProgressFn for transfer.Send,
-// and a sentBytes getter that callers use to render the post-transfer
-// summary — reflects actual bytes moved, which matters under resume.
+// a sentBytes getter that callers use to render the post-transfer summary
+// — reflects actual bytes moved, which matters under resume —, and an
+// onStreamingEOF hook that latches the bar to the real total when an
+// unknown-size streaming item EOFs.
 //
 // Under --quiet the bar is suppressed but sentBytes still accumulates so
 // summary rendering (in non-quiet callers) stays accurate without
 // branching on the flag in two places.
-func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), progressFn func(fileIndex uint32, bytesSent uint64), sentBytes func() int64) {
+func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), progressFn func(fileIndex uint32, bytesSent uint64), sentBytes func() int64, onStreamingEOF func(fileIndex uint32, finalBytes uint64)) {
 	prev := make(map[uint32]uint64)
 	var total int64
 	if f.quiet {
-		return func() {}, func(fi uint32, b uint64) {
+		return func() {},
+			func(fi uint32, b uint64) {
+				d := b - prev[fi]
+				prev[fi] = b
+				total += int64(d)
+			},
+			func() int64 { return total },
+			func(uint32, uint64) {}
+	}
+	// For streaming items the up-front total is 0 (size unknown). The
+	// bar renders an indeterminate progress; SetTotal is called from
+	// onStreamingEOF once the producer EOFs.
+	bar := uxlog.New(totalBytes(items))
+	return bar.Done,
+		func(fi uint32, b uint64) {
 			d := b - prev[fi]
 			prev[fi] = b
+			bar.Add(int64(d))
 			total += int64(d)
-		}, func() int64 { return total }
-	}
-	bar := uxlog.New(totalBytes(items))
-	return bar.Done, func(fi uint32, b uint64) {
-		d := b - prev[fi]
-		prev[fi] = b
-		bar.Add(int64(d))
-		total += int64(d)
-	}, func() int64 { return total }
+		},
+		func() int64 { return total },
+		func(_ uint32, finalBytes uint64) {
+			bar.SetTotal(int64(finalBytes), true)
+		}
 }
 
 // newReceiverProgress is the receive-side counterpart. The bar can't be
@@ -368,10 +382,16 @@ func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello
 	}
 
 	var bar *uxlog.Progress
+	// streamingTotal is true when the sender's HELLO carried TotalBytes=0,
+	// which today only happens for piped stdin. The bar then renders
+	// without ETA/percentage; at close we latch it to the accumulated
+	// count so the trailing " done" suffix prints instead of "aborted".
+	var streamingTotal bool
 	accept = func(h wire.SenderHello) bool {
 		ok := promptAccept(f, h)
 		if ok {
 			bar = uxlog.New(int64(h.TotalBytes))
+			streamingTotal = h.TotalBytes == 0
 		}
 		return ok
 	}
@@ -381,7 +401,12 @@ func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello
 		bar.Add(int64(d))
 		total += int64(d)
 	}
-	closeFn = func() { bar.Done() }
+	closeFn = func() {
+		if streamingTotal && total > 0 {
+			bar.SetTotal(total, true)
+		}
+		bar.Done()
+	}
 	return
 }
 

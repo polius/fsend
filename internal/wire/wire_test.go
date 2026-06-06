@@ -106,6 +106,35 @@ func TestControl_FileInfoWithBigPaths(t *testing.T) {
 	}
 }
 
+// TestControl_FileInfoStreaming exercises the additive Streaming field.
+// On the streaming path Size and Blake3Root are zero; Resumable is false.
+// The round-trip must preserve the flag so an older receiver (Streaming
+// not present in its decoded struct) still observes the expected zero
+// default for the unrelated size-driven fields.
+func TestControl_FileInfoStreaming(t *testing.T) {
+	want := FileInfo{
+		Index:        0,
+		RelativePath: "fsend-stdin-abc12345",
+		Mode:         0o644,
+		ModTime:      1717414800000000000,
+		Streaming:    true,
+	}
+	var buf bytes.Buffer
+	if err := WriteControl(&buf, TypeFileInfo, &want); err != nil {
+		t.Fatal(err)
+	}
+	var got FileInfo
+	if _, err := ReadControl(&buf, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("Streaming FileInfo roundtrip mismatch:\ngot:  %+v\nwant: %+v", got, want)
+	}
+	if got.Size != 0 || got.Blake3Root != [32]byte{} || got.Resumable {
+		t.Errorf("streaming preconditions violated on decode: %+v", got)
+	}
+}
+
 func TestChunk_Roundtrip(t *testing.T) {
 	original := &Chunk{
 		Flags:      FlagCompressed | FlagLastChunk,

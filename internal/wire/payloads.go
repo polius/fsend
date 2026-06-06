@@ -55,17 +55,28 @@ type ReceiverHello struct {
 
 // FileInfo describes one file (or directory entry, or symlink) in the
 // transfer. The sender emits these in walk order before any chunks flow.
+//
+// Streaming is the "size not known up front" mode used for piped stdin:
+// the sender emits chunks as bytes arrive and marks the EOF chunk with
+// FlagLastChunk. When Streaming is true, Size is meaningless until the
+// last chunk lands, Resumable must be false, and Blake3Root must be
+// zero (the sender can't pre-hash an unknown-length stream).
+//
+// Gob-compatibility: adding Streaming is an additive field. A peer
+// running an older binary decodes it as the zero value (false), which
+// matches the pre-streaming behavior exactly.
 type FileInfo struct {
 	Index         uint32   // 0-based within the transfer
 	RelativePath  string   // forward-slash, no leading slash, no .. segments
-	Size          uint64   // bytes (0 for empty files, dirs, symlinks)
+	Size          uint64   // bytes (0 for empty files, dirs, symlinks; meaningless when Streaming)
 	Mode          uint32   // unix mode bits; mapped to closest equivalent on Windows
 	ModTime       int64    // unix nanoseconds
 	IsDir         bool     // true → no data, just create the directory
 	IsSymlink     bool     // true → SymlinkTarget set, no data
 	SymlinkTarget string   // only if IsSymlink
-	Blake3Root    [32]byte // BLAKE3 hash of the full plaintext file
+	Blake3Root    [32]byte // BLAKE3 hash of the full plaintext file (zero when Streaming)
 	Resumable     bool     // false for stdin/text transfers
+	Streaming     bool     // true → unknown size; receiver reads until FlagLastChunk
 }
 
 // FileAcceptDecision is the receiver's per-file response to a FILE_INFO.

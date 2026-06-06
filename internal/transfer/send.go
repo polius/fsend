@@ -37,6 +37,12 @@ type SendOptions struct {
 	DisplayName string
 	Password    string                                   // empty → no password challenge
 	ProgressFn  func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
+
+	// OnStreamingEOF fires exactly once per streaming item, immediately
+	// after the EOF chunk has been written. The CLI uses this hook to
+	// latch the progress bar's total to the real byte count (which is
+	// only knowable at EOF for unknown-length streams). Nil-safe.
+	OnStreamingEOF func(fileIndex uint32, finalBytes uint64)
 }
 
 // Send executes the full sender-side protocol over the supplied streams.
@@ -231,6 +237,14 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 	}
 	defer enc.Close()
 
+	// Streaming items (e.g. piped stdin): size is not known up front.
+	// Read until EOF, mark the EOF chunk with FlagLastChunk. Resume is
+	// disabled and Blake3Root is zero — verification is per-chunk only,
+	// which matches the prior buffered-stdin behavior.
+	if it.Info.Streaming {
+		return sendStreamingChunks(ctx, s, &it.Info, src, buf, chunkIndex, enc, opts)
+	}
+
 	totalSize := it.Info.Size
 
 	// Edge case: empty file — emit one zero-length FlagLastChunk frame so
@@ -269,6 +283,53 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 	}
 
 	return nil
+}
+
+// sendStreamingChunks drains src until EOF, emitting chunks of up to
+// MaxChunkSize each. The final (possibly empty) chunk carries
+// FlagLastChunk so the receiver knows the file is done.
+//
+// We treat io.EOF and io.ErrUnexpectedEOF identically: both mean "this
+// is the tail of the stream." A short read of exactly MaxChunkSize that
+// happens to align with EOF is rare in practice but handled correctly —
+// we'll emit one extra zero-length last chunk, which the receiver's
+// "len(plain) > 0" guard already tolerates.
+func sendStreamingChunks(
+	ctx context.Context,
+	s *Streams,
+	info *wire.FileInfo,
+	src io.Reader,
+	buf []byte,
+	startChunkIndex uint32,
+	enc *zstd.Encoder,
+	opts SendOptions,
+) error {
+	chunkIndex := startChunkIndex
+	var bytesSent uint64
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, readErr := io.ReadFull(src, buf)
+		isLast := readErr == io.EOF || readErr == io.ErrUnexpectedEOF
+		if readErr != nil && !isLast {
+			return fmt.Errorf("%w: read: %v", fserrors.ErrReadFailed, readErr)
+		}
+		bytesSent += uint64(n)
+		if err := writeChunk(s, info, chunkIndex, buf[:n], isLast, enc); err != nil {
+			return err
+		}
+		chunkIndex++
+		if opts.ProgressFn != nil && n > 0 {
+			opts.ProgressFn(info.Index, bytesSent)
+		}
+		if isLast {
+			if opts.OnStreamingEOF != nil {
+				opts.OnStreamingEOF(info.Index, bytesSent)
+			}
+			return nil
+		}
+	}
 }
 
 func writeChunk(s *Streams, info *wire.FileInfo, chunkIndex uint32, plain []byte, isLast bool, enc *zstd.Encoder) error {

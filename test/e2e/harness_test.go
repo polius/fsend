@@ -264,13 +264,26 @@ func (hh *harness) startSender(t *testing.T, xdgHome string, args ...string) *se
 // startSenderStdin is like startSender but pipes stdin into the sender.
 func (hh *harness) startSenderStdin(t *testing.T, xdgHome, stdin string, args ...string) *senderProc {
 	t.Helper()
+	var r io.Reader
+	if stdin != "" {
+		r = strings.NewReader(stdin)
+	}
+	return hh.startSenderStdinReader(t, xdgHome, r, args...)
+}
+
+// startSenderStdinReader is like startSenderStdin but accepts an
+// arbitrary io.Reader for stdin. Used by tests that want to drive a
+// producer (e.g. a goroutine that writes in chunks with delays) into
+// the sender to exercise the streaming path.
+func (hh *harness) startSenderStdinReader(t *testing.T, xdgHome string, stdin io.Reader, args ...string) *senderProc {
+	t.Helper()
 	s := &senderProc{
 		cmd:    hh.fsendCmd(xdgHome, args...),
 		stdout: &safeBuffer{},
 		stderr: &safeBuffer{},
 	}
-	if stdin != "" {
-		s.cmd.Stdin = strings.NewReader(stdin)
+	if stdin != nil {
+		s.cmd.Stdin = stdin
 	}
 	s.cmd.Stdout = s.stdout
 	s.cmd.Stderr = s.stderr
