@@ -103,7 +103,7 @@ func renderError(err error, debug bool) int {
 	// having to enable --debug.
 	detail := ""
 	if known && (errors.Is(err, fserrors.ErrUsage) || errors.Is(err, fserrors.ErrSourceNotFound)) {
-		if extra := extractDetail(err.Error(), entry.Message); extra != "" {
+		if extra := extractDetail(err.Error()); extra != "" {
 			detail = extra
 		}
 	}
@@ -137,18 +137,14 @@ func renderError(err error, debug bool) int {
 // extractDetail pulls the wrapper context out of a wrapped sentinel's
 // Error() string. For `fmt.Errorf("%w: <ctx>", sentinel)`, .Error() is
 // "<sentinel-msg>: <ctx>" — we strip the leading sentinel text so the
-// user sees just the contextual part.
-func extractDetail(full, catalogMsg string) string {
-	// Find the first ": " — that's the boundary the %w + %v wrapper
-	// produces. Whatever comes after is the caller's context.
+// user sees just the contextual part. Returns "" when there is no
+// wrapper context, so callers can omit the detail line cleanly.
+func extractDetail(full string) string {
 	for i := 0; i+1 < len(full); i++ {
 		if full[i] == ':' && full[i+1] == ' ' {
 			return full[i+2:]
 		}
 	}
-	// No wrapper context; fall back to nothing extra. We deliberately
-	// don't echo the catalog message back to the user.
-	_ = catalogMsg
 	return ""
 }
 

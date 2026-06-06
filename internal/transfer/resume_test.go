@@ -51,9 +51,10 @@ func TestResume_ReusesAlignedPartial(t *testing.T) {
 	if err := os.WriteFile(partial, payload[:prefix], 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Capture mtime + inode so we can later prove we didn't re-write.
-	stBefore, err := os.Stat(partial)
-	if err != nil {
+	// Stat the planted partial so its existence is asserted before the
+	// transfer runs — a typo in WriteFile above would otherwise show up
+	// as a confusing "resume produced wrong size" downstream.
+	if _, err := os.Stat(partial); err != nil {
 		t.Fatal(err)
 	}
 
@@ -122,19 +123,14 @@ func TestResume_ReusesAlignedPartial(t *testing.T) {
 
 	// The renamed target should share inode/mtime with the original
 	// partial (because rename preserves both on POSIX). This is the
-	// "we didn't re-write the prefix" proof: if the receiver had
-	// O_TRUNC'd and rewritten, mtime would update and the file would
-	// have a fresh inode.
+	// We don't assert on ModTime: writing the latter half of the file
+	// after the prefix legitimately updates mtime. Inode preservation
+	// across rename is the real invariant, but Go's os.FileInfo doesn't
+	// expose inode portably — the size check below is the proof we can
+	// make portably.
 	stAfter, err := os.Stat(target)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !stAfter.ModTime().Equal(stBefore.ModTime()) {
-		// mtime changed because we wrote the *latter* half of the file
-		// after the prefix. So mtime is expected to change. Skip this
-		// assertion. Inode preservation across rename is the real
-		// invariant — but Go's os.FileInfo doesn't expose inode
-		// portably, so we settle for the size-based proof below.
 	}
 	if uint64(stAfter.Size()) != uint64(size) {
 		t.Errorf("final size %d != source size %d", stAfter.Size(), size)

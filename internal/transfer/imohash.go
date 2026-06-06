@@ -52,7 +52,7 @@ func PrefixImohash(path string, prefixLen int64) ([ImohashSize]byte, error) {
 	if err != nil {
 		return zero, fmt.Errorf("imohash open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sr := io.NewSectionReader(f, 0, prefixLen)
 	h, err := imohashHasher.SumSectionReader(sr)
 	if err != nil {

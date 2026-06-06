@@ -1,3 +1,11 @@
+// Package transfer implements fsend's end-to-end transfer protocol: HELLO
+// negotiation, optional password gating, per-file metadata + acceptance,
+// chunked data streaming with BLAKE3 verification, resume via imohash on
+// partial sidecars, and deterministic tar bundling for directories.
+//
+// The Send and Recv entry points operate on a Streams pair (one control,
+// one data) — production wires them to QUIC streams, tests wire them to
+// in-memory io.Pipes.
 package transfer
 
 import "io"

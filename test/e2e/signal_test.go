@@ -127,8 +127,7 @@ func TestSignal_NoPartialAfterSuccess(t *testing.T) {
 // Receiver1 is killed once the sender is gone instead of waited on —
 // its retry budget (3 attempts × 10s QUIC handshake) would otherwise
 // stretch this test to ~25s, and its clean exit is not part of the
-// coverage goal. The partial sidecar that resume relies on has already
-// been written by the time chunks have flowed for 400ms.
+// coverage goal.
 func TestSignal_ResumeAfterSIGINT(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
@@ -147,17 +146,24 @@ func TestSignal_ResumeAfterSIGINT(t *testing.T) {
 	if err := r1.Start(); err != nil {
 		t.Fatalf("start recv1: %v", err)
 	}
-	time.Sleep(400 * time.Millisecond)
+
+	// Poll for the sidecar instead of sleeping. Its existence proves
+	// the receiver has gone past the QUIC handshake and is writing
+	// chunks — i.e. the SIGINT that follows will actually interrupt a
+	// transfer in flight, which is the property under test. A fixed
+	// sleep (the old 400 ms) was below CI's noise floor and produced
+	// flakes on loaded runners.
+	if !waitForSidecar(dst, 5*time.Second) {
+		_ = s.cmd.Process.Kill()
+		_ = r1.Process.Kill()
+		_ = r1.Wait()
+		t.Fatal("no .fsend-partial sidecar appeared within 5s — receiver never started writing")
+	}
+
 	s.signal(t, syscall.SIGINT)
 	s.wait(t, 5*time.Second)
 	_ = r1.Process.Kill()
 	_ = r1.Wait()
-
-	// Confirm a partial sidecar landed; otherwise attempt 2 isn't a
-	// real resume and the test would be silently degenerate.
-	if matches, _ := filepath.Glob(filepath.Join(dst, "*.fsend-partial")); len(matches) == 0 {
-		t.Fatal("no .fsend-partial sidecar after attempt 1 — resume coverage degenerate")
-	}
 
 	// Brief settle so the LAN port is fully released.
 	time.Sleep(250 * time.Millisecond)
@@ -166,6 +172,22 @@ func TestSignal_ResumeAfterSIGINT(t *testing.T) {
 	r := h.runPair(t, []string{srcFile}, dst, []string{"--yes"}, "")
 	r.requireSuccess(t)
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "big.bin"))
+}
+
+// waitForSidecar polls for any *.fsend-partial under dir, returning
+// true once one appears or false on timeout. 25 ms cadence is short
+// enough to catch a transfer that bursts past in <100 ms without
+// busy-spinning.
+func waitForSidecar(dir string, budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*.fsend-partial"))
+		if len(matches) > 0 {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return false
 }
 
 // Plant a chunk-aligned partial sidecar and confirm the receiver elects

@@ -80,7 +80,7 @@ func TestExtractDetail_StripsSentinelPrefix(t *testing.T) {
 		{"plain error with no colon", ""},
 	}
 	for _, c := range cases {
-		got := extractDetail(c.in, "ignored")
+		got := extractDetail(c.in)
 		if got != c.want {
 			t.Errorf("extractDetail(%q) = %q, want %q", c.in, got, c.want)
 		}

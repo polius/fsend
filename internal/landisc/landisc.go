@@ -93,7 +93,7 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 	if err != nil {
 		return nil, fmt.Errorf("landisc: mdns server: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	qCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -118,10 +118,12 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 // We hash the code into the 50000-50999 range (1000 ports, far enough
 // above 49152 to avoid OS ephemeral port conflicts on most systems).
 //
-// Collisions across two sessions on the same LAN are rare (1-in-1000)
-// and benign — at worst the second sender fails to bind and falls back
-// to picking another random port. v2 can do mDNS service-browsing
-// properly.
+// Collisions across two concurrent sessions on the same LAN are rare
+// (1-in-1000). When they happen, the second sender's bind fails and the
+// LAN path returns ErrLANListenerFailed; the internet path keeps running
+// (sendpair.go always races the two) so the transfer still completes,
+// just without the same-LAN shortcut. A proper fix would require mDNS
+// service-browsing, which pion/mdns doesn't expose today.
 func PortForCode(code string) int {
 	var sum uint32
 	for i := 0; i < len(code); i++ {

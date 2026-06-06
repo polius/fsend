@@ -71,7 +71,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("relay UDP listen on %s: %w", cfg.udpAddr, err)
 	}
-	defer udpListener.Close()
+	defer func() { _ = udpListener.Close() }()
 	relaySrv := relay.NewServer(udpListener, relay.ServerConfig{
 		MaxBytesPerSession: cfg.maxBytesPerSession,
 		SessionIdleTimeout: cfg.sessionIdleTimeout,
@@ -246,7 +246,7 @@ func healthCheck() error {
 	if err != nil {
 		return fmt.Errorf("health: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health: status %d", resp.StatusCode)
 	}

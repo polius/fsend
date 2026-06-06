@@ -91,7 +91,7 @@ func blake3FileHash(path string) ([32]byte, error) {
 	if err != nil {
 		return zero, fmt.Errorf("walk: open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := blake3.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return zero, fmt.Errorf("walk: hashing %s: %w", path, err)

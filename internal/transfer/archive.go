@@ -267,7 +267,7 @@ func ExtractArchive(tarPath, targetDir string) error {
 	if err != nil {
 		return fmt.Errorf("extract: open %s: %w", tarPath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	tr := tar.NewReader(f)
 
 	for {

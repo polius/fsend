@@ -49,8 +49,12 @@ func NewClient(underlying net.PacketConn, relayAddr *net.UDPAddr, token Token) *
 func (c *Conn) LocalAddr() net.Addr { return c.underlying.LocalAddr() }
 
 // SetDeadline plumbs through to the underlying socket.
-func (c *Conn) SetDeadline(t time.Time) error      { return c.underlying.SetDeadline(t) }
-func (c *Conn) SetReadDeadline(t time.Time) error  { return c.underlying.SetReadDeadline(t) }
+func (c *Conn) SetDeadline(t time.Time) error { return c.underlying.SetDeadline(t) }
+
+// SetReadDeadline plumbs through to the underlying socket.
+func (c *Conn) SetReadDeadline(t time.Time) error { return c.underlying.SetReadDeadline(t) }
+
+// SetWriteDeadline plumbs through to the underlying socket.
 func (c *Conn) SetWriteDeadline(t time.Time) error { return c.underlying.SetWriteDeadline(t) }
 
 // Close shuts the underlying socket. Idempotent.

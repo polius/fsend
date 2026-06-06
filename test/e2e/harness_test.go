@@ -103,6 +103,14 @@ func startHarness() (*harness, error) {
 		"FSEND_UDP_ADDR=:"+strconv.Itoa(hh.udpPort),
 		"FSEND_PUBLIC_ADDR=127.0.0.1:"+strconv.Itoa(hh.udpPort),
 		"FSEND_LOG_LEVEL=warn",
+		// Both peers in this harness come from 127.0.0.1, so a single
+		// pair burns two slots against one bucket. The suite runs
+		// dozens of pairs back-to-back, especially under -count=N;
+		// the production default of 30/min would throttle the harness
+		// itself. Production sender/receiver come from distinct IPs
+		// and each get their own bucket.
+		"FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN=10000",
+		"FSEND_MAX_SESSIONS_PER_IP=1000",
 	)
 	hh.serverCmd.Stdout = &hh.serverOutput
 	hh.serverCmd.Stderr = &hh.serverOutput

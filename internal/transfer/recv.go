@@ -281,7 +281,7 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	if err != nil {
 		return fmt.Errorf("%w: open partial: %v", fserrors.ErrWriteFailed, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Drop any bytes past the chunk boundary so what's on disk lines up
 	// with what the sender will start writing from resumeOffset.
@@ -301,8 +301,7 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	// abort on a clearly-changed source; this is the cryptographic
 	// safety net behind it.
 	resumed := resumeOffset > 0
-	var verifier *blake3.Hasher
-	verifier = blake3.New()
+	verifier := blake3.New()
 	if resumed {
 		if err := hashPrefixInto(verifier, f, int64(resumeOffset)); err != nil {
 			return fmt.Errorf("%w: verify prefix: %v", fserrors.ErrReadFailed, err)
@@ -312,7 +311,7 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		}
 	}
 
-	var bytesWritten uint64 = resumeOffset
+	bytesWritten := resumeOffset
 	var dec *zstd.Decoder
 	defer func() {
 		if dec != nil {
@@ -334,10 +333,15 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if reason := tryReadPeerError(s.Control); reason != nil {
-					if errors.Is(reason, fserrors.ErrPartialMismatch) {
-						// Source changed since our partial was written;
-						// the stale bytes can't be reconciled. Drop the
-						// sidecar so the next run is a clean full fetch.
+					// Discard the partial whenever the peer reports a
+					// content-correctness failure — either the source
+					// changed (ErrPartialMismatch) or the bytes we
+					// already received don't match the source's hash
+					// (ErrHashMismatch). In both cases the on-disk
+					// prefix is unreconcilable; resuming from it would
+					// just reproduce the same failure.
+					if errors.Is(reason, fserrors.ErrPartialMismatch) ||
+						errors.Is(reason, fserrors.ErrHashMismatch) {
 						_ = f.Close()
 						_ = os.Remove(partial)
 					}
@@ -374,9 +378,10 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 			if _, err := f.Write(plain); err != nil {
 				return fmt.Errorf("%w: write: %v", fserrors.ErrWriteFailed, err)
 			}
-			if verifier != nil {
-				verifier.Write(plain)
-			}
+			// blake3.Hasher.Write never returns an error — it just
+			// appends bytes to an internal buffer. The errcheck nag is
+			// satisfied by ignoring explicitly.
+			_, _ = verifier.Write(plain)
 			bytesWritten += uint64(len(plain))
 			if opts.ProgressFn != nil {
 				opts.ProgressFn(info.Index, bytesWritten)
@@ -392,23 +397,21 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	// (stdin / --text): the sender can't pre-compute a digest over a
 	// stream of unknown size, so Blake3Root is left zero and Resumable
 	// is false. Per-chunk hashes already cover integrity there.
-	if verifier != nil {
-		var got [32]byte
-		copy(got[:], verifier.Sum(nil))
-		var zero [32]byte
-		syntheticSkip := !info.Resumable && info.Blake3Root == zero
-		if !syntheticSkip && got != info.Blake3Root {
-			// Discard the partial — its contents are corrupt or the source
-			// changed mid-flight. Next attempt starts fresh.
-			_ = f.Close()
-			_ = os.Remove(partial)
-			// Notify peer so its TRANSFER_ACK read can fail fast instead of
-			// blocking on QUIC idle timeout.
-			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-				Code: wire.ErrCodeFileHashMismatch, Message: "root hash mismatch",
-			})
-			return fserrors.ErrHashMismatch
-		}
+	var got [32]byte
+	copy(got[:], verifier.Sum(nil))
+	var zero [32]byte
+	syntheticSkip := !info.Resumable && info.Blake3Root == zero
+	if !syntheticSkip && got != info.Blake3Root {
+		// Discard the partial — its contents are corrupt or the source
+		// changed mid-flight. Next attempt starts fresh.
+		_ = f.Close()
+		_ = os.Remove(partial)
+		// Notify peer so its TRANSFER_ACK read can fail fast instead of
+		// blocking on QUIC idle timeout.
+		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+			Code: wire.ErrCodeFileHashMismatch, Message: "root hash mismatch",
+		})
+		return fserrors.ErrHashMismatch
 	}
 
 	if err := f.Close(); err != nil {

@@ -1,4 +1,10 @@
 # golangci-lint config for fsend (v2 schema).
+#
+# Philosophy: keep the linter strict on things that catch real bugs
+# (errcheck, staticcheck, revive, go vet), and suppress only the gosec
+# rules whose risks we've reviewed and accepted in code. Every exclusion
+# below has a reason — if a rule starts firing for an unrelated reason,
+# revisit before muting it further.
 
 version: "2"
 
@@ -18,6 +24,33 @@ linters:
         - name: var-naming
         - name: package-comments
         - name: exported
+    gosec:
+      # Suppressions documented one per code:
+      #   G110 – decompression bomb on tar extract. Sender is peer-authenticated
+      #          via PAKE + RFC5705 channel binding; this is a trusted-input path,
+      #          not unsigned untrusted input.
+      #   G115 – int conversions. Every conversion in this codebase is either
+      #          bounded by a wire-level limit (MaxChunkSize, MaxControlFrameSize)
+      #          or by a stable platform invariant (file offsets, indices). Adding
+      #          //nolint per site is line noise.
+      #   G301 – directory perms 0o755. Receiver mirrors the sender's POSIX
+      #          convention; tighter perms break common workflows.
+      #   G304 – file inclusion via variable. All paths reach Open/Create after
+      #          SanitizeRelativePath / safeJoin / pathIsUnder, which enforce
+      #          containment.
+      #   G305 – false positive: ExtractArchive's symlink target check IS run
+      #          through safeJoin before the symlink is written.
+      #   G402 – InsecureSkipVerify on the receiver TLS. PAKE + channel binding
+      #          is the trust anchor; see internal/quicconn/auth.go.
+      #   G602 – false positive on fixed-size [N]byte array indexing.
+      excludes:
+        - G110
+        - G115
+        - G301
+        - G304
+        - G305
+        - G402
+        - G602
   exclusions:
     rules:
       - path: _test\.go

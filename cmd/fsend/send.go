@@ -256,8 +256,10 @@ func shortRand() string {
 //   - --quiet: bare code on stdout, nothing on stderr, nil spinner.
 func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label string) *uxlog.Spinner {
 	if f.quiet {
-		// Pipeline-friendly: just the code on stdout.
-		fmt.Fprintln(os.Stdout, c)
+		// Pipeline-friendly: just the code on stdout. If stdout is gone
+		// (broken pipe to head, etc.) there's nothing useful to do; the
+		// caller will surface its own error from the transfer path.
+		_, _ = fmt.Fprintln(os.Stdout, c)
 		return nil
 	}
 

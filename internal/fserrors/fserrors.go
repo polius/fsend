@@ -250,9 +250,8 @@ var catalog = map[error]Entry{
 	ErrRelayCapHit: {
 		Code: "E023", Exit: 23,
 		Message: "The relay server's per-session byte cap was reached. Transfer aborted.",
-		Action: "The default public relay caps relayed transfers at 100 MiB to keep it\n" +
-			"  available for everyone. Same-LAN and NAT-hole-punched transfers are\n" +
-			"  uncapped. Workarounds:\n" +
+		Action: "Same-LAN and NAT-hole-punched transfers are uncapped; only the relay\n" +
+			"  fallback is metered. Workarounds:\n" +
 			"    - Send from a different network so the peers can hole-punch directly.\n" +
 			"    - Self-host fsend-server and raise FSEND_MAX_RELAY_BYTES_PER_SESSION.",
 	},

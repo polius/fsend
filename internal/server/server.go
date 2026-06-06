@@ -58,6 +58,25 @@ func (c *Config) Default() {
 	}
 }
 
+// Resource limits on signaling requests. Constants rather than Config
+// fields because no operator should ever need to tune them — they exist
+// to keep one buggy or malicious peer from exhausting server memory,
+// not to express a product knob.
+const (
+	// maxRequestBodyBytes caps any inbound JSON body. Every legitimate
+	// request payload (CreateSessionRequest, JoinSessionRequest,
+	// CandidatesPushRequest, RelayAllocateRequest, WaitRequest) is well
+	// under 1 KiB; 16 KiB leaves several orders of magnitude of headroom
+	// for ICE candidate batches without admitting a multi-MB push.
+	maxRequestBodyBytes = 16 * 1024
+
+	// maxCandidatesPerSide bounds how many ICE candidates one peer can
+	// accumulate on the rendezvous before further pushes are rejected.
+	// pion typically gathers fewer than 10 (host + srflx pairs across
+	// interfaces); 64 is generous and still cheap to keep in memory.
+	maxCandidatesPerSide = 64
+)
+
 // Server implements the HTTP signaling layer.
 //
 // Concurrency model: a single sync.Mutex guards the session table. The
@@ -181,7 +200,7 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body RelayAllocateRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSON(r, &body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -189,6 +208,7 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing session_id")
 		return
 	}
+	tok := bearerToken(r)
 	s.mu.Lock()
 	sess, ok := s.byID[body.SessionID]
 	if !ok {
@@ -196,24 +216,34 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// Bearer-gate the alloc: a session_id is a ULID and effectively
+	// unguessable, but defense-in-depth — without this check, a leaked
+	// or sniffed session_id alone would let a third party mint the relay
+	// token and race the legitimate peer to register as peerA on the
+	// relay's UDP demux.
+	if _, ok := sess.sideForToken(tok); !ok {
+		s.mu.Unlock()
+		writeJSONError(w, http.StatusUnauthorized, "missing or invalid role token")
+		return
+	}
 	// One token per session: both peers must end up with the same value
 	// so the relay's source-addr de-mux pairs them. Allocate lazily on
 	// first call; subsequent calls reuse.
 	if !sess.relayTokenSet {
-		tok, err := s.relayAllocator.Allocate()
+		t, err := s.relayAllocator.Allocate()
 		if err != nil {
 			s.mu.Unlock()
 			writeJSONError(w, http.StatusInternalServerError, "alloc failed")
 			return
 		}
-		sess.relayToken = tok
+		sess.relayToken = t
 		sess.relayTokenSet = true
 	}
-	tok := sess.relayToken
+	relayTok := sess.relayToken
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, RelayAllocateResponse{
 		RelayAddr:    s.relayPublicAddr,
-		SessionToken: tok.String(),
+		SessionToken: relayTok.String(),
 		TTLSeconds:   600,
 	})
 }
@@ -272,7 +302,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// fall back to server-side generation as before.
 	var body CreateSessionRequest
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body) // bad json → treat as empty body
+		_ = decodeJSON(r, &body) // bad json → treat as empty body
 	}
 
 	s.mu.Lock()
@@ -343,6 +373,15 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	clientIP := clientIP(r)
 
 	s.mu.Lock()
+	// Rate-limit symmetrically with createSession: a join is the same
+	// shape of new-session activity from the server's perspective, and
+	// without this an attacker could probe the code space (or churn
+	// joins against a known code) at line rate.
+	if !s.allowNewSession(clientIP, time.Now()) {
+		s.mu.Unlock()
+		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
+		return
+	}
 	sess, ok := s.byCode[c]
 	if !ok {
 		s.mu.Unlock()
@@ -432,7 +471,7 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) pushCandidates(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body CandidatesPushRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSON(r, &body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -450,11 +489,20 @@ func (s *Server) pushCandidates(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "missing or invalid role token")
 		return
 	}
-	if side == "sender" {
-		sess.SenderCandidates = append(sess.SenderCandidates, body.Candidates...)
-	} else {
-		sess.ReceiverCandidates = append(sess.ReceiverCandidates, body.Candidates...)
+	target := &sess.SenderCandidates
+	if side == "receiver" {
+		target = &sess.ReceiverCandidates
 	}
+	// Cap the accumulated count per side. A legitimate peer never gathers
+	// near maxCandidatesPerSide; a peer that does is either misbehaving
+	// or compromised. Reject the whole batch rather than silently truncating
+	// so the client surfaces the misconfiguration in --debug.
+	if len(*target)+len(body.Candidates) > maxCandidatesPerSide {
+		s.mu.Unlock()
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "candidate cap reached")
+		return
+	}
+	*target = append(*target, body.Candidates...)
 	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -463,8 +511,9 @@ func (s *Server) pullCandidates(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	since := 0
 	if v := r.URL.Query().Get("since"); v != "" {
-		// Skip silently on parse error.
-		fmt.Sscanf(v, "%d", &since)
+		// Skip silently on parse error — clients that send garbage just
+		// get the full candidate list starting at 0, which is harmless.
+		_, _ = fmt.Sscanf(v, "%d", &since)
 	}
 	tok := bearerToken(r)
 	s.mu.Lock()
@@ -635,4 +684,12 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 
 func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, ErrorResponse{Error: msg})
+}
+
+// decodeJSON reads at most maxRequestBodyBytes from r.Body and decodes
+// it into v. Callers handle the error as a 400 — we don't try to
+// distinguish "malformed JSON" from "body too large" because either way
+// the right response is the same.
+func decodeJSON(r *http.Request, v any) error {
+	return json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxRequestBodyBytes)).Decode(v)
 }

@@ -201,7 +201,7 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 //   - modeTURN: skip ICE entirely; allocate the relay immediately.
 func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *server.CreateSessionResponse, waitResp *server.WaitResponse, serverAddr string) (net.PacketConn, connpath.Info, error) {
 	if f != nil && f.mode == modeTURN {
-		return allocAndDialRelay(ctx, client, created.SessionID)
+		return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 	}
 	stunHost := stunHostFromServer(serverAddr)
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, created.RoleToken, iceconn.Options{
@@ -220,14 +220,14 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if f != nil && f.mode == modeSTUN {
 		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=stun: %v", fserrors.ErrConnectFailed, iceErr)
 	}
-	return allocAndDialRelay(ctx, client, created.SessionID)
+	return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 }
 
 // allocAndDialRelay performs the relay allocation + dial steps. Shared
 // between the default ICE-failure fallback and the debug --mode=turn
 // short-circuit so both produce identical errors and pathInfo.
-func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID string) (net.PacketConn, connpath.Info, error) {
-	alloc, err := client.AllocateRelay(ctx, sessionID)
+func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID, roleToken string) (net.PacketConn, connpath.Info, error) {
+	alloc, err := client.AllocateRelay(ctx, sessionID, roleToken)
 	if err != nil {
 		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}

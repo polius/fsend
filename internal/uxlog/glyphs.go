@@ -38,13 +38,23 @@ func Marker(kind glyphKind) string {
 	return utf8
 }
 
-// Public helpers — call sites read more naturally than passing a kind.
+// Check returns the success glyph (✓ or [OK]).
 func Check() string { return Marker(gCheck) }
+
+// Cross returns the failure glyph (✗ or [FAIL]).
 func Cross() string { return Marker(gCross) }
-func Warn() string  { return Marker(gWarn) }
-func Info() string  { return Marker(gInfo) }
+
+// Warn returns the warning glyph (⚠ or [WARN]).
+func Warn() string { return Marker(gWarn) }
+
+// Info returns the informational glyph (ℹ or [INFO]).
+func Info() string { return Marker(gInfo) }
+
+// Retry returns the retry glyph (↻ or [RETRY]).
 func Retry() string { return Marker(gRetry) }
-func Spin() string  { return Marker(gSpin) }
+
+// Spin returns the inert spinner glyph used on non-TTYs.
+func Spin() string { return Marker(gSpin) }
 
 func glyphForKind(k glyphKind) (utf8, ascii, color string) {
 	switch k {

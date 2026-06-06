@@ -61,8 +61,9 @@ func StartSpinner(msg string) *Spinner {
 	}
 	if !s.tty {
 		// Non-TTY: print one static "[*] msg" line and we're done.
-		// Stop will be a no-op.
-		fmt.Fprintln(s.w, Marker(gSpin), msg)
+		// Stop will be a no-op. A stderr write failure is non-actionable
+		// from a UX helper, so the error is intentionally ignored.
+		_, _ = fmt.Fprintln(s.w, Marker(gSpin), msg)
 		close(s.done)
 		return s
 	}
@@ -95,17 +96,19 @@ func (s *Spinner) run() {
 // glyphs; on a dark background it reads as "active wait" without
 // shouting like a yellow warn would.
 func (s *Spinner) draw(frame string) {
+	// Stderr write failures inside the UX layer are non-actionable —
+	// the caller has bigger problems than an unrendered spinner.
 	if colorEnabled() {
-		fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s", colorCyan, frame, colorReset, s.msg)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s", colorCyan, frame, colorReset, s.msg)
 	} else {
-		fmt.Fprintf(s.w, "\r\x1b[2K%s %s", frame, s.msg)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s", frame, s.msg)
 	}
 }
 
 // clear wipes the spinner line and leaves the cursor at column 0 so the
 // caller's next write starts on a clean line.
 func (s *Spinner) clear() {
-	fmt.Fprint(s.w, "\r\x1b[2K")
+	_, _ = fmt.Fprint(s.w, "\r\x1b[2K")
 }
 
 // Stop halts the animation and clears the line on TTYs. On non-TTYs it

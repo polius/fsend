@@ -113,10 +113,14 @@ func (c *Client) Delete(ctx context.Context, sessionID string) error {
 }
 
 // AllocateRelay asks the server for a relay token for this session.
-func (c *Client) AllocateRelay(ctx context.Context, sessionID string) (*server.RelayAllocateResponse, error) {
+//
+// roleToken is the bearer credential the caller obtained from Create or
+// Join. The server uses it to confirm the caller is actually one of the
+// session's peers before minting a relay token.
+func (c *Client) AllocateRelay(ctx context.Context, sessionID, roleToken string) (*server.RelayAllocateResponse, error) {
 	var out server.RelayAllocateResponse
 	err := c.do(ctx, http.MethodPost, "/v1/relay/allocate",
-		server.RelayAllocateRequest{SessionID: sessionID}, &out, nil)
+		server.RelayAllocateRequest{SessionID: sessionID}, &out, withAuth(roleToken))
 	return &out, err
 }
 
@@ -204,7 +208,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *
 	if err != nil {
 		return mapNetworkErr(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNoContent {
 		if opt != nil && opt.noContentOK {

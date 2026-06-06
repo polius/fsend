@@ -113,7 +113,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 		STUNHost:    stunHost,
 	}, false /* controlled */)
 	if iceErr == nil {
-		defer iceConn.Close()
+		defer func() { _ = iceConn.Close() }()
 		printPath(f, icePath)
 		return runReceiverQUICOver(ctx, f, iceConn, c)
 	}
@@ -122,7 +122,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}
 
 	// --- Fall back to relay ---
-	alloc, err := client.AllocateRelay(ctx, joined.SessionID)
+	alloc, err := client.AllocateRelay(ctx, joined.SessionID, joined.RoleToken)
 	if err != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}
@@ -130,7 +130,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	if err != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}
-	defer relayConn.Close()
+	defer func() { _ = relayConn.Close() }()
 	printPath(f, connpath.FromRelay(alloc.RelayAddr))
 	return classifyRelayDrop(ctx, client, joined.SessionID,
 		runReceiverQUICOver(ctx, f, relayConn, c))
@@ -352,7 +352,7 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 // it, and streams the remainder.
 func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string) error {
 	tr := &quic.Transport{Conn: pc}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	outDir := f.outDir
 	if outDir == "" {

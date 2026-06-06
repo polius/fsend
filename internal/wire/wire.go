@@ -25,11 +25,13 @@ const MaxControlFrameSize = 64 * 1024 // 64 KiB
 // MaxChunkSize bounds the plaintext payload in a data CHUNK frame.
 const MaxChunkSize = 1024 * 1024 // 1 MiB
 
-// Frame type bytes.
+// FrameType is the one-byte tag that identifies a frame on the control
+// or data stream.
 type FrameType uint8
 
+// Control-stream frame types. Inline comments document the direction
+// (sender → receiver or vice versa) and any preconditions.
 const (
-	// Control stream frame types.
 	TypeHello             FrameType = 0x01 // sender → receiver
 	TypeHelloAck          FrameType = 0x02 // receiver → sender
 	TypePasswordChallenge FrameType = 0x03 // sender → receiver (only if HELLO.HasPassword)
@@ -41,14 +43,19 @@ const (
 	TypePasswordVerified  FrameType = 0x09 // sender → receiver (positive ack of password)
 	TypeError             FrameType = 0xFE
 	TypeAbort             FrameType = 0xFF
+)
 
-	// Data stream frame types.
+// Data-stream frame types.
+const (
 	TypeChunk FrameType = 0x10
 )
 
 // TransferKind tells the receiver how to interpret the upcoming payload.
 type TransferKind uint8
 
+// TransferKind values. TransferDirectory is the only kind that triggers
+// the tar-wrapping path on the receiver; all others stream into one
+// destination file (or stdout) each.
 const (
 	TransferSingleFile TransferKind = 1
 	TransferMultiFile  TransferKind = 2
@@ -60,6 +67,8 @@ const (
 // FileAcceptAction is how the receiver responds to a FILE_INFO.
 type FileAcceptAction uint8
 
+// FileAcceptAction values. ActionResume carries a chunk-aligned offset;
+// every other action ignores the offset.
 const (
 	ActionAcceptFull FileAcceptAction = 0
 	ActionResume     FileAcceptAction = 1
@@ -70,6 +79,9 @@ const (
 // ErrorCode is the catalog of error codes carried in TypeError frames.
 type ErrorCode uint16
 
+// ErrorCode values reported in TypeError frames. ErrCodePartialMismatch
+// and ErrCodeTargetExists are the two codes the receiver acts on by
+// removing or preserving the destination; everything else is informational.
 const (
 	ErrCodeUnsupportedVersion ErrorCode = 1
 	ErrCodeWrongPassword      ErrorCode = 2

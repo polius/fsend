@@ -210,7 +210,7 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 		src = f
 		closeFn = f.Close
 	}
-	defer closeFn()
+	defer func() { _ = closeFn() }()
 
 	// Seek to resume offset if requested.
 	if decision.Action == wire.ActionResume && decision.ResumeOffset > 0 {
@@ -233,7 +233,7 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 	if err != nil {
 		return fmt.Errorf("send: zstd writer: %w", err)
 	}
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 
 	// Streaming items (e.g. piped stdin): size is not known up front.
 	// Read until EOF, mark the EOF chunk with FlagLastChunk. Resume is
@@ -358,7 +358,8 @@ func writeChunk(s *Streams, info *wire.FileInfo, chunkIndex uint32, plain []byte
 
 func blakeHash32(b []byte) [32]byte {
 	h := blake3.New()
-	h.Write(b)
+	// blake3.Hasher.Write never returns an error.
+	_, _ = h.Write(b)
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"time"
+	"unicode"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
@@ -19,7 +20,6 @@ import (
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 	"github.com/polius/fsend/internal/wire"
-	"unicode"
 )
 
 // runReceive executes the receive-side flow: a 300 ms mDNS query for a
