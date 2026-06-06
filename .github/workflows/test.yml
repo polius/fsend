@@ -48,11 +48,11 @@ jobs:
           version: latest
           args: --timeout=5m
 
-  # Cross-compile sanity: build both binaries for every OS/arch combo the
-  # release pipeline and install.sh target. Catches GOOS/GOARCH-specific
+  # Cross-compile sanity: build the fsend binary for every OS/arch combo
+  # the release pipeline and install.sh target. Catches GOOS/GOARCH-specific
   # breakage (missing build tags, syscall divergence, CGO assumptions) at
   # PR time rather than at tag time. CGO_ENABLED=0 matches the release
-  # build flags; static binaries with no libc dependency.
+  # build flags; static binary with no libc dependency.
   cross-compile:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
     runs-on: ubuntu-latest
@@ -77,12 +77,10 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
-      - name: Build fsend + fsend-server
+      - name: Build fsend
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
-        run: |
-          go build -o /dev/null ./cmd/fsend
-          go build -o /dev/null ./cmd/fsend-server
+        run: go build -o /dev/null ./cmd/fsend

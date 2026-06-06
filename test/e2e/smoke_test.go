@@ -32,16 +32,20 @@ func TestCLI_Version(t *testing.T) {
 	}
 }
 
-func TestCLI_NoArgsShowsHelp(t *testing.T) {
+func TestCLI_HelpFlagShowsHelp(t *testing.T) {
+	// Bare `fsend` with no args only prints help when stdin is a TTY;
+	// when stdin is redirected (the e2e harness wires it to /dev/null
+	// via exec.Cmd defaults), dispatch correctly treats that as
+	// "send from stdin" and waits for a peer. We exercise the rendered
+	// help surface via --help, which is independent of stdin shape.
 	requireE2E(t)
-	out, errOut, code := h.runFsend(t, h.newXDG(t))
-	// fsend may print help to either stream depending on cobra's mode.
+	out, errOut, code := h.runFsend(t, h.newXDG(t), "--help")
 	combined := strings.ToLower(out + errOut)
 	if code != 0 {
-		t.Fatalf("exit %d (expected 0 for help)", code)
+		t.Fatalf("exit %d (expected 0 for --help)", code)
 	}
 	if !strings.Contains(combined, "usage") && !strings.Contains(combined, "examples") {
-		t.Fatalf("expected help text on no-args invocation:\n%s\n%s", out, errOut)
+		t.Fatalf("expected help text on --help:\n%s\n%s", out, errOut)
 	}
 }
 
@@ -62,12 +66,12 @@ func TestCLI_UnknownFlagFails(t *testing.T) {
 }
 
 // --------------------------------------------------------------------
-// fsend-server
+// fsend server (subcommand)
 // --------------------------------------------------------------------
 
 func TestServer_Help(t *testing.T) {
 	requireE2E(t)
-	out, err := exec.Command(h.fsendServerBin, "--help").CombinedOutput()
+	out, err := exec.Command(h.fsendBin, "server", "--help").CombinedOutput()
 	if err != nil {
 		t.Fatalf("server --help: %v\n%s", err, out)
 	}
@@ -77,20 +81,9 @@ func TestServer_Help(t *testing.T) {
 	}
 }
 
-func TestServer_Version(t *testing.T) {
-	requireE2E(t)
-	out, err := exec.Command(h.fsendServerBin, "--version").CombinedOutput()
-	if err != nil {
-		t.Fatalf("server --version: %v\n%s", err, out)
-	}
-	if !strings.HasPrefix(string(out), "fsend ") {
-		t.Fatalf("server --version output: %q", out)
-	}
-}
-
 func TestServer_HealthCheck(t *testing.T) {
 	requireE2E(t)
-	cmd := exec.Command(h.fsendServerBin, "--health-check")
+	cmd := exec.Command(h.fsendBin, "server", "--health-check")
 	cmd.Env = append(os.Environ(), "FSEND_HTTP_ADDR=:"+strconv.Itoa(h.httpPort))
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("--health-check exit: %v", err)

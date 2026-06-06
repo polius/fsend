@@ -1,10 +1,11 @@
 # Docker publish workflow.
 #
-# Publishes poliuscorp/fsend-server (rendezvous + relay, for self-hosters)
-# on each v* tag push. The CLI is shipped only as a native binary —
+# Publishes poliuscorp/fsend (the same single binary the CLI ships, with
+# the container's ENTRYPOINT pinned to `fsend server`). Triggered on each
+# v* tag push. The CLI is intended to be installed as a native binary —
 # inside Docker on macOS/Windows the LAN/mDNS path silently degrades to
-# rendezvous-only, so a Docker-packaged CLI wears the fsend name while
-# delivering a meaningfully worse product on the most common hosts.
+# rendezvous-only, so this image is positioned as the server-side
+# distribution channel.
 #
 # Triggered on the same v* tag as the binary release pipeline so the
 # server image and the GitHub-Release binaries always carry the same
@@ -41,11 +42,11 @@ permissions:
 
 jobs:
   build-and-push:
-    name: poliuscorp/fsend-server
+    name: poliuscorp/fsend
     runs-on: ubuntu-latest
 
     env:
-      IMAGE: poliuscorp/fsend-server
+      IMAGE: poliuscorp/fsend
       DOCKERFILE: ./Dockerfile
 
     steps:

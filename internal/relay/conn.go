@@ -14,7 +14,7 @@ import (
 // It satisfies net.PacketConn, which is the interface quic-go's Transport
 // accepts via Transport.Conn. That means we can run QUIC end-to-end
 // between two peers, with all packets transparently relayed through
-// fsend-server — the relay only sees opaque ciphertext after the QUIC
+// the server — the relay only sees opaque ciphertext after the QUIC
 // handshake completes.
 //
 // Concurrency: ReadFrom / WriteTo / Close may all be called from

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Server is the UDP-relay half of fsend-server.
+// Server is the UDP-relay half of `fsend server`.
 //
 // It owns a single net.PacketConn (the UDP/443 listener). For each
 // allocation, it tracks the two peers' addresses (set on first datagram

@@ -149,7 +149,7 @@ func (b *rateBucket) allow(now time.Time, limit int, window time.Duration) bool 
 	return true
 }
 
-// Handler returns the *http.ServeMux that fsend-server should serve.
+// Handler returns the *http.ServeMux that the server should expose.
 func (s *Server) Handler() *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("POST /v1/session", s.createSession)
@@ -659,7 +659,7 @@ func newIceCreds() IceCreds {
 }
 
 // clientIP extracts the client's source IP, preferring the X-Real-IP
-// header injected by Caddy when fsend-server is behind a reverse proxy.
+// header injected by Caddy when the server is behind a reverse proxy.
 func clientIP(r *http.Request) string {
 	if v := r.Header.Get("X-Real-IP"); v != "" {
 		return v

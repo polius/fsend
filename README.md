@@ -269,7 +269,7 @@ fsend --connect fs.example.com:443    # on each client
 
 ### Ports
 
-fsend-server has two listeners: a **TCP HTTP signaling API** (`FSEND_HTTP_ADDR`,
+The `fsend server` process has two listeners: a **TCP HTTP signaling API** (`FSEND_HTTP_ADDR`,
 default `:8080`) and a **UDP relay** (`FSEND_UDP_ADDR`, default `:443`). The
 UDP relay only carries opaque QUIC ciphertext between peers — TLS terminates at
 the peers, not at the server — so it is the same listener whether or not you put
@@ -293,15 +293,15 @@ public-internet deployment; matches the `deploy/compose/` stack):
 | Port             | Direction | Purpose                                              |
 |------------------|-----------|------------------------------------------------------|
 | `443/tcp`        | inbound   | HTTPS signaling — terminated by Caddy/nginx/Traefik  |
-| `443/udp`        | inbound   | ICE STUN-style reflection + relay fallback — goes **directly** to fsend-server |
+| `443/udp`        | inbound   | ICE STUN-style reflection + relay fallback — goes **directly** to the fsend container |
 | `80/tcp`         | inbound   | Let's Encrypt ACME HTTP-01 challenge (cert issue/renew) |
-| `8080/tcp`       | internal  | fsend-server signaling — only reachable by the proxy |
+| `8080/tcp`       | internal  | fsend signaling — only reachable by the proxy |
 
 Clients then connect with `fsend --connect fs.example.com:443` (HTTPS is the
 default scheme for non-local hosts). TCP/443 and UDP/443 share the same port
 number but are different protocols, so both can bind simultaneously.
 
-No outbound ports beyond what your OS/Docker needs. fsend-server makes no
+No outbound ports beyond what your OS/Docker needs. The server makes no
 outbound connections to clients.
 
 ## Documentation

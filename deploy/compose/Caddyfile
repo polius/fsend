@@ -1,10 +1,10 @@
-# Caddy config for the reference fsend-server self-host stack.
+# Caddy config for the reference fsend self-host stack.
 # {$FSEND_DOMAIN} is injected by docker-compose.yml; Caddy auto-provisions
 # a Let's Encrypt cert for it.
 
 {$FSEND_DOMAIN} {
-    reverse_proxy fsend-server:8080 {
-        # Forward the real client IP so fsend-server's rate-limiter and
+    reverse_proxy fsend:8080 {
+        # Forward the real client IP so the server's rate-limiter and
         # STUN reflection see peers, not Caddy.
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}

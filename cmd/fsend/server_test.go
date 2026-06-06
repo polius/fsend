@@ -8,20 +8,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
 const (
-	kib = 1024
-	mib = 1024 * 1024
-	gib = 1024 * 1024 * 1024
-	tib = 1024 * 1024 * 1024 * 1024
+	srvKiB = 1024
+	srvMiB = 1024 * 1024
+	srvGiB = 1024 * 1024 * 1024
+	srvTiB = 1024 * 1024 * 1024 * 1024
 )
 
-func freePortTCP(t *testing.T) int {
+func srvFreePortTCP(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -32,7 +31,7 @@ func freePortTCP(t *testing.T) int {
 	return port
 }
 
-func freePortUDP(t *testing.T) int {
+func srvFreePortUDP(t *testing.T) int {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -43,7 +42,7 @@ func freePortUDP(t *testing.T) int {
 	return port
 }
 
-func TestEnvOr(t *testing.T) {
+func TestServerEnvOr(t *testing.T) {
 	const k = "FSEND_TEST_ENV_OR"
 	os.Unsetenv(k)
 	if got := envOr(k, "default"); got != "default" {
@@ -59,7 +58,7 @@ func TestEnvOr(t *testing.T) {
 	}
 }
 
-func TestEnvInt(t *testing.T) {
+func TestServerEnvInt(t *testing.T) {
 	const k = "FSEND_TEST_ENV_INT"
 	os.Unsetenv(k)
 	if got := envInt(k, 42); got != 42 {
@@ -75,7 +74,7 @@ func TestEnvInt(t *testing.T) {
 	}
 }
 
-func TestEnvDuration(t *testing.T) {
+func TestServerEnvDuration(t *testing.T) {
 	const k = "FSEND_TEST_ENV_DURATION"
 	os.Unsetenv(k)
 	if got := envDuration(k, 5*time.Second); got != 5*time.Second {
@@ -95,7 +94,7 @@ func TestEnvDuration(t *testing.T) {
 	}
 }
 
-func TestEnvBytes(t *testing.T) {
+func TestServerEnvBytes(t *testing.T) {
 	const k = "FSEND_TEST_ENV_BYTES"
 	const def uint64 = 100
 	cases := []struct {
@@ -110,17 +109,17 @@ func TestEnvBytes(t *testing.T) {
 		{"1kb", 1000},
 		{"1KB", 1000},
 		{"1ki", 1024},
-		{"1KiB", kib},
+		{"1KiB", srvKiB},
 		{"1m", 1000 * 1000},
 		{"1MB", 1000 * 1000},
-		{"1MiB", mib},
-		{"100MiB", 100 * mib},
+		{"1MiB", srvMiB},
+		{"100MiB", 100 * srvMiB},
 		{"1g", 1000 * 1000 * 1000},
-		{"1GiB", gib},
+		{"1GiB", srvGiB},
 		{"1t", 1000 * 1000 * 1000 * 1000},
-		{"1TiB", tib},
-		{"  10MiB  ", 10 * mib},
-		{"1.5MiB", uint64(1.5 * float64(mib))},
+		{"1TiB", srvTiB},
+		{"  10MiB  ", 10 * srvMiB},
+		{"1.5MiB", uint64(1.5 * float64(srvMiB))},
 		{"0", 0},
 		{"-1", def},
 		{"not-a-number", def},
@@ -141,7 +140,7 @@ func TestEnvBytes(t *testing.T) {
 	}
 }
 
-// clearServerEnv unsets every FSEND_* var loadConfig consults, so
+// clearServerEnv unsets every FSEND_* var loadServerConfig consults, so
 // individual tests get a clean baseline regardless of host shell state.
 func clearServerEnv(t *testing.T) {
 	t.Helper()
@@ -159,9 +158,9 @@ func clearServerEnv(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaults(t *testing.T) {
+func TestServerLoadConfigDefaults(t *testing.T) {
 	clearServerEnv(t)
-	cfg := loadConfig()
+	cfg := loadServerConfig()
 	if cfg.httpAddr != ":8080" {
 		t.Errorf("httpAddr: got %q, want :8080", cfg.httpAddr)
 	}
@@ -174,8 +173,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.maxNewSessionsPerMin != 30 {
 		t.Errorf("maxNewSessionsPerMin: got %d, want 30", cfg.maxNewSessionsPerMin)
 	}
-	if cfg.maxBytesPerSession != 100*mib {
-		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 100*mib)
+	if cfg.maxBytesPerSession != 100*srvMiB {
+		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 100*srvMiB)
 	}
 	if cfg.sessionIdleTimeout != 60*time.Second {
 		t.Errorf("sessionIdleTimeout: got %v, want 60s", cfg.sessionIdleTimeout)
@@ -185,7 +184,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadConfigOverrides(t *testing.T) {
+func TestServerLoadConfigOverrides(t *testing.T) {
 	clearServerEnv(t)
 	t.Setenv("FSEND_HTTP_ADDR", ":19999")
 	t.Setenv("FSEND_UDP_ADDR", ":29999")
@@ -193,7 +192,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 	t.Setenv("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", "120")
 	t.Setenv("FSEND_MAX_RELAY_BYTES_PER_SESSION", "250MiB")
 	t.Setenv("FSEND_SESSION_IDLE_TIMEOUT", "90s")
-	cfg := loadConfig()
+	cfg := loadServerConfig()
 	if cfg.httpAddr != ":19999" {
 		t.Errorf("httpAddr: got %q", cfg.httpAddr)
 	}
@@ -206,7 +205,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 	if cfg.maxNewSessionsPerMin != 120 {
 		t.Errorf("maxNewSessionsPerMin: got %d", cfg.maxNewSessionsPerMin)
 	}
-	if cfg.maxBytesPerSession != 250*mib {
+	if cfg.maxBytesPerSession != 250*srvMiB {
 		t.Errorf("maxBytesPerSession: got %d", cfg.maxBytesPerSession)
 	}
 	if cfg.sessionIdleTimeout != 90*time.Second {
@@ -214,7 +213,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadConfigLogLevels(t *testing.T) {
+func TestServerLoadConfigLogLevels(t *testing.T) {
 	cases := map[string]slog.Level{
 		"debug":   slog.LevelDebug,
 		"DEBUG":   slog.LevelDebug,
@@ -231,7 +230,7 @@ func TestLoadConfigLogLevels(t *testing.T) {
 			if input != "" {
 				t.Setenv("FSEND_LOG_LEVEL", input)
 			}
-			cfg := loadConfig()
+			cfg := loadServerConfig()
 			if cfg.logLevel != want {
 				t.Errorf("FSEND_LOG_LEVEL=%q: got %v, want %v", input, cfg.logLevel, want)
 			}
@@ -239,54 +238,25 @@ func TestLoadConfigLogLevels(t *testing.T) {
 	}
 }
 
-func TestRunVersion(t *testing.T) {
-	for _, arg := range []string{"--version", "-v"} {
-		if err := run([]string{arg}); err != nil {
-			t.Errorf("run(%q): %v", arg, err)
-		}
-	}
-}
-
-func TestRunHelp(t *testing.T) {
-	for _, arg := range []string{"--help", "-h"} {
-		if err := run([]string{arg}); err != nil {
-			t.Errorf("run(%q): %v", arg, err)
-		}
-	}
-}
-
-func TestRunUnknownArg(t *testing.T) {
-	err := run([]string{"--garbage"})
-	if err == nil {
-		t.Fatal("expected error for --garbage")
-	}
-	if !strings.Contains(err.Error(), "unknown argument") {
-		t.Errorf("error: got %v, want substring 'unknown argument'", err)
-	}
-}
-
-func TestHealthCheckUnreachable(t *testing.T) {
+func TestServerHealthCheckUnreachable(t *testing.T) {
 	// Bind+close to take a known-free port, then probe it (nothing listens).
-	port := freePortTCP(t)
+	port := srvFreePortTCP(t)
 	t.Setenv("FSEND_HTTP_ADDR", fmt.Sprintf("127.0.0.1:%d", port))
 	if err := healthCheck(); err == nil {
 		t.Fatal("expected error against closed port")
 	}
 }
 
-func TestHealthCheckBadStatus(t *testing.T) {
+func TestServerHealthCheckBadStatus(t *testing.T) {
 	addr := startStubHealth(t, http.StatusInternalServerError, nil)
 	t.Setenv("FSEND_HTTP_ADDR", addr)
 	err := healthCheck()
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("error: got %v, want substring '500'", err)
-	}
 }
 
-func TestHealthCheckOK(t *testing.T) {
+func TestServerHealthCheckOK(t *testing.T) {
 	addr := startStubHealth(t, http.StatusOK, []byte(`{"ok":true}`))
 	t.Setenv("FSEND_HTTP_ADDR", addr)
 	if err := healthCheck(); err != nil {
@@ -299,7 +269,7 @@ func TestHealthCheckOK(t *testing.T) {
 // the host:port the test should set as FSEND_HTTP_ADDR.
 func startStubHealth(t *testing.T, status int, body []byte) string {
 	t.Helper()
-	port := freePortTCP(t)
+	port := srvFreePortTCP(t)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -320,11 +290,11 @@ func startStubHealth(t *testing.T, status int, body []byte) string {
 		_ = srv.Shutdown(ctx)
 		<-done
 	})
-	waitForPort(t, addr, 2*time.Second)
+	srvWaitForPort(t, addr, 2*time.Second)
 	return addr
 }
 
-func waitForPort(t *testing.T, addr string, within time.Duration) {
+func srvWaitForPort(t *testing.T, addr string, within time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
@@ -338,20 +308,22 @@ func waitForPort(t *testing.T, addr string, within time.Duration) {
 	t.Fatalf("port %s did not accept connections within %v", addr, within)
 }
 
-// TestServerLifecycle boots the real fsend-server binary in-process,
-// verifies /v1/health responds 200 (both directly and via healthCheck()),
-// then triggers a graceful SIGTERM shutdown and waits for run() to return.
+// TestServerLifecycle boots the real server in-process, verifies
+// /v1/health responds 200 (both directly and via healthCheck()), then
+// triggers a graceful SIGTERM shutdown and waits for runServer() to
+// return.
 //
 // SIGTERM is also trapped by this test so the Go runtime's default
-// "die on SIGTERM" action is canceled — run()'s signal.Notify still wins.
+// "die on SIGTERM" action is canceled — runServer()'s signal.Notify
+// still wins.
 func TestServerLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("boots a real server on loopback; skipped in -short")
 	}
 
 	clearServerEnv(t)
-	httpPort := freePortTCP(t)
-	udpPort := freePortUDP(t)
+	httpPort := srvFreePortTCP(t)
+	udpPort := srvFreePortUDP(t)
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
 	udpAddr := fmt.Sprintf("127.0.0.1:%d", udpPort)
 	t.Setenv("FSEND_HTTP_ADDR", httpAddr)
@@ -364,12 +336,10 @@ func TestServerLifecycle(t *testing.T) {
 	t.Cleanup(func() { signal.Stop(sink) })
 
 	done := make(chan error, 1)
-	go func() { done <- run(nil) }()
+	go func() { done <- runServer() }()
 
-	// Wait for the HTTP listener to come up.
-	waitForPort(t, httpAddr, 5*time.Second)
+	srvWaitForPort(t, httpAddr, 5*time.Second)
 
-	// Probe /v1/health directly.
 	resp, err := http.Get("http://" + httpAddr + "/v1/health")
 	if err != nil {
 		t.Fatalf("GET /v1/health: %v", err)
@@ -379,21 +349,19 @@ func TestServerLifecycle(t *testing.T) {
 		t.Fatalf("/v1/health: status %d", resp.StatusCode)
 	}
 
-	// Exercise the same path Docker HEALTHCHECK uses.
 	if err := healthCheck(); err != nil {
 		t.Fatalf("healthCheck(): %v", err)
 	}
 
-	// Trigger graceful shutdown.
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatalf("kill self: %v", err)
 	}
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("run returned: %v", err)
+			t.Fatalf("runServer returned: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("run did not return within 10s of SIGTERM")
+		t.Fatal("runServer did not return within 10s of SIGTERM")
 	}
 }

@@ -1,10 +1,9 @@
-// Package e2e exercises the built fsend and fsend-server binaries
-// end-to-end.
+// Package e2e exercises the built fsend binary end-to-end.
 //
-// TestMain compiles both binaries from the current working tree into a
-// temp dir, starts an isolated fsend-server on loopback, and exposes a
-// shared harness via the package-level h. The suite skips under
-// `go test -short`.
+// TestMain compiles the binary from the current working tree into a
+// temp dir, starts an isolated `fsend server` process on loopback, and
+// exposes a shared harness via the package-level h. The suite skips
+// under `go test -short`.
 package e2e
 
 import (
@@ -37,11 +36,10 @@ var codeRegex = regexp.MustCompile(`[a-hjkmnp-z]{3}-[a-hjkmnp-z]{4}-[a-hjkmnp-z]
 var h *harness
 
 type harness struct {
-	repoDir        string
-	fsendBin       string
-	fsendServerBin string
-	httpPort       int
-	udpPort        int
+	repoDir  string
+	fsendBin string
+	httpPort int
+	udpPort  int
 
 	serverCmd    *exec.Cmd
 	serverOutput bytes.Buffer
@@ -76,16 +74,12 @@ func startHarness() (*harness, error) {
 	}
 
 	hh := &harness{
-		repoDir:        repoDir,
-		fsendBin:       filepath.Join(binDir, "fsend"),
-		fsendServerBin: filepath.Join(binDir, "fsend-server"),
+		repoDir:  repoDir,
+		fsendBin: filepath.Join(binDir, "fsend"),
 	}
 
 	if err := goBuild(repoDir, hh.fsendBin, "./cmd/fsend"); err != nil {
 		return nil, fmt.Errorf("build fsend: %w", err)
-	}
-	if err := goBuild(repoDir, hh.fsendServerBin, "./cmd/fsend-server"); err != nil {
-		return nil, fmt.Errorf("build fsend-server: %w", err)
 	}
 
 	hh.httpPort, err = freePort()
@@ -97,7 +91,7 @@ func startHarness() (*harness, error) {
 		return nil, fmt.Errorf("pick udp port: %w", err)
 	}
 
-	hh.serverCmd = exec.Command(hh.fsendServerBin)
+	hh.serverCmd = exec.Command(hh.fsendBin, "server")
 	hh.serverCmd.Env = append(os.Environ(),
 		"FSEND_HTTP_ADDR=:"+strconv.Itoa(hh.httpPort),
 		"FSEND_UDP_ADDR=:"+strconv.Itoa(hh.udpPort),
@@ -116,11 +110,11 @@ func startHarness() (*harness, error) {
 	hh.serverCmd.Stderr = &hh.serverOutput
 
 	if err := hh.serverCmd.Start(); err != nil {
-		return nil, fmt.Errorf("start fsend-server: %w", err)
+		return nil, fmt.Errorf("start fsend server: %w", err)
 	}
 	if err := waitTCP("127.0.0.1:"+strconv.Itoa(hh.httpPort), 5*time.Second); err != nil {
 		hh.shutdown()
-		return nil, fmt.Errorf("fsend-server not ready: %w\n--- server output ---\n%s",
+		return nil, fmt.Errorf("fsend server not ready: %w\n--- server output ---\n%s",
 			err, hh.serverOutput.String())
 	}
 	return hh, nil
@@ -195,9 +189,9 @@ func requireE2E(t *testing.T) {
 }
 
 // newXDG returns a fresh XDG_CONFIG_HOME pre-seeded with a config that
-// points fsend at our local fsend-server. Use this for any fsend
-// invocation so the user's real config is untouched and tests don't
-// reach out to the public rendezvous.
+// points fsend at our local server. Use this for any fsend invocation
+// so the user's real config is untouched and tests don't reach out to
+// the public rendezvous.
 func (hh *harness) newXDG(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -381,7 +375,7 @@ type pairResult struct {
 // and returns captured streams.
 //
 // Both sides use the same isolated XDG so they hit the same local
-// fsend-server.
+// server.
 //
 // recvStdin, if non-empty, is piped into the receiver — used for the
 // interactive prompt cases.

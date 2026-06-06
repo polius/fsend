@@ -1,5 +1,6 @@
 // Package server implements the rendezvous + relay-allocation HTTP
-// signaling endpoints for fsend-server. All endpoints are under /v1/...
+// signaling endpoints served by `fsend server`. All endpoints are
+// under /v1/...
 package server
 
 import (

@@ -1,8 +1,9 @@
 # Development
 
-How to build and test `fsend` and `fsend-server` from the current source
-tree on your local machine — no release binaries, no Docker, just `go
-build` from whatever's checked out right now.
+How to build and test `fsend` (CLI **and** server — same binary, the
+server is the `fsend server` subcommand) from the current source tree
+on your local machine — no release binaries, no Docker, just `go build`
+from whatever's checked out right now.
 
 ## Prerequisites
 
@@ -12,18 +13,17 @@ build` from whatever's checked out right now.
 Optional:
 - **Docker** + **docker compose v2**, only if you want to test the
   reverse-proxy stack in `deploy/compose/`. For ordinary dev you don't
-  need it — you can run `fsend-server` as a plain process.
+  need it — you can run `fsend server` as a plain process.
 
 ## 1 · Build from source
 
 From the repo root:
 
 ```sh
-go build -o /tmp/fsend        ./cmd/fsend
-go build -o /tmp/fsend-server ./cmd/fsend-server
+go build -o /tmp/fsend ./cmd/fsend
 ```
 
-Both binaries link statically (pure Go) and report `version dev` —
+The binary links statically (pure Go) and reports `version dev` —
 `internal/version.Version` is only overridden by the release build via
 `-ldflags`. That's fine for development; nothing in the protocol cares
 about the version string.
@@ -31,18 +31,17 @@ about the version string.
 Quick sanity check:
 
 ```sh
-/tmp/fsend        --version    # → fsend dev (build unknown, unknown)
-/tmp/fsend-server --version
+/tmp/fsend --version          # → fsend dev (build unknown, unknown)
+/tmp/fsend server --help      # show the server's env-var config
 ```
 
 `/tmp/` is just a convention for manual testing; you can put the
-binaries anywhere. The E2E suite builds its own copies into a temp dir
-and does not look at `/tmp/`.
+binary anywhere. The E2E suite builds its own copy into a temp dir and
+does not look at `/tmp/`.
 
-> Tip: while iterating, `go install ./cmd/fsend ./cmd/fsend-server` puts
-> them in `$GOBIN` (or `$GOPATH/bin`) on your `PATH`, so you can just
-> type `fsend` instead of `/tmp/fsend`. Use whichever workflow you
-> prefer.
+> Tip: while iterating, `go install ./cmd/fsend` puts the binary in
+> `$GOBIN` (or `$GOPATH/bin`) on your `PATH`, so you can just type
+> `fsend` instead of `/tmp/fsend`. Use whichever workflow you prefer.
 
 ## 2 · Test it works without a server (LAN only)
 
@@ -67,18 +66,19 @@ cat hello.txt
 If that works, your build is functional. No server, no internet, no
 config.
 
-## 3 · Run `fsend-server` locally
+## 3 · Run the server locally
 
 For internet transfers (one peer behind NAT, etc.) `fsend` needs a
 rendezvous server. To test changes to server code, or to test the full
-client↔server↔client path locally, run the server you just built:
+client↔server↔client path locally, run the same binary with the
+`server` subcommand:
 
 ```sh
 FSEND_HTTP_ADDR=":18080" \
 FSEND_UDP_ADDR=":18443" \
 FSEND_PUBLIC_ADDR="127.0.0.1:18443" \
 FSEND_LOG_LEVEL=debug \
-/tmp/fsend-server
+/tmp/fsend server
 ```
 
 Why non-standard ports: `:443` requires root on Linux/macOS, and `:8080`
@@ -107,7 +107,7 @@ Then send/receive as in §2. To go back to the public default later:
 Verify the server is alive at any time:
 
 ```sh
-FSEND_HTTP_ADDR=":18080" /tmp/fsend-server --health-check
+FSEND_HTTP_ADDR=":18080" /tmp/fsend server --health-check
 echo $?    # 0 means healthy
 ```
 
@@ -124,7 +124,7 @@ All optional; defaults shown in parentheses.
 | `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | `500m`, `1GiB`, etc. |
 | `FSEND_SESSION_IDLE_TIMEOUT` | `60s` | Go duration |
 
-Run `/tmp/fsend-server --help` for the full list.
+Run `/tmp/fsend server --help` for the full list.
 
 ## 4 · Iterate on changes
 
@@ -140,10 +140,10 @@ If you want a one-liner that rebuilds and re-runs while you edit:
 ```sh
 # requires `entr` (brew install entr)
 find cmd internal -name '*.go' | entr -r sh -c \
-  'go build -o /tmp/fsend-server ./cmd/fsend-server && \
+  'go build -o /tmp/fsend ./cmd/fsend && \
    FSEND_HTTP_ADDR=:18080 FSEND_UDP_ADDR=:18443 \
    FSEND_PUBLIC_ADDR=127.0.0.1:18443 FSEND_LOG_LEVEL=debug \
-   /tmp/fsend-server'
+   /tmp/fsend server'
 ```
 
 ## 5 · Tests
@@ -153,9 +153,9 @@ go test ./...
 ```
 
 Runs everything: the per-package unit tests **and** the end-to-end
-suite under `test/e2e/`. The E2E suite builds both binaries into a
-temp dir, brings up an isolated `fsend-server` on loopback, and drives
-real subprocess transfers — no shell wrapper, no pre-built binaries
+suite under `test/e2e/`. The E2E suite builds the binary into a temp
+dir, brings up an isolated `fsend server` on loopback, and drives real
+subprocess transfers — no shell wrapper, no pre-built binaries
 required.
 
 The whole thing takes roughly 30 seconds. For fast inner-loop
@@ -196,6 +196,6 @@ XDG_CONFIG_HOME=/tmp/fsend-dev-xdg /tmp/fsend --connect http://127.0.0.1:18080
 ## 7 · Cleaning up
 
 ```sh
-rm /tmp/fsend /tmp/fsend-server
+rm /tmp/fsend
 go clean -cache -testcache        # only if you want to force-rebuild deps
 ```

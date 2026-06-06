@@ -1,6 +1,6 @@
 # Usage
 
-Complete reference for the `fsend` client and the `fsend-server` daemon.
+Complete reference for the `fsend` CLI and its `server` subcommand.
 
 - [Usage](#usage)
   - [Quick reference](#quick-reference)
@@ -13,7 +13,7 @@ Complete reference for the `fsend` client and the `fsend-server` daemon.
   - [Choosing a server (`--connect`)](#choosing-a-server---connect)
   - [Environment variables](#environment-variables)
   - [Shared flags](#shared-flags)
-  - [`fsend-server` reference](#fsend-server-reference)
+  - [`fsend server` reference](#fsend-server-reference)
     - [Server environment variables (all optional)](#server-environment-variables-all-optional)
     - [Running the server](#running-the-server)
   - [Exit codes](#exit-codes)
@@ -199,16 +199,18 @@ These work in both directions:
 
 ---
 
-## `fsend-server` reference
+## `fsend server` reference
 
-The server has no positional arguments and only three flags. Everything else
-is configured via environment variables.
+The same `fsend` binary runs as the pairing + relay server when invoked
+with the `server` subcommand. It has no positional arguments and only
+one server-specific flag (`--health-check`); everything else is
+configured via environment variables.
 
 ```text
-fsend-server                 Run the server
-fsend-server --help          Show help
-fsend-server --version       Show version
-fsend-server --health-check  Probe /v1/health and exit 0 if healthy
+fsend server                 Run the server
+fsend server --help          Show help
+fsend server --health-check  Probe /v1/health and exit 0 if healthy
+fsend --version              Print version (shared with the CLI)
 ```
 
 ### Server environment variables (all optional)
@@ -232,10 +234,10 @@ FSEND_HTTP_ADDR=":18080" \
 FSEND_UDP_ADDR=":18443" \
 FSEND_PUBLIC_ADDR="127.0.0.1:18443" \
 FSEND_LOG_LEVEL=debug \
-fsend-server
+fsend server
 
 # Docker (zero-config, public ports)
-docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend-server
+docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
 
 # Full stack with HTTPS + Let's Encrypt
 # See deploy/compose/docker-compose.yml

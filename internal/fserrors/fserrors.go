@@ -253,7 +253,7 @@ var catalog = map[error]Entry{
 		Action: "Same-LAN and NAT-hole-punched transfers are uncapped; only the relay\n" +
 			"  fallback is metered. Workarounds:\n" +
 			"    - Send from a different network so the peers can hole-punch directly.\n" +
-			"    - Self-host fsend-server and raise FSEND_MAX_RELAY_BYTES_PER_SESSION.",
+			"    - Self-host your own server (`fsend server`) and raise FSEND_MAX_RELAY_BYTES_PER_SESSION.",
 	},
 	ErrUsage: {
 		Code: "E024", Exit: 24,

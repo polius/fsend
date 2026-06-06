@@ -1,8 +1,14 @@
-# Multi-stage build for fsend-server. The final image is FROM scratch
-# with just the static binary.
+# Multi-stage build for the fsend binary. The final image is FROM scratch
+# with just the static binary; ENTRYPOINT is `fsend` so the image stays
+# usable both as the CLI and (with `command: ["server"]` in compose, or
+# `docker run ... fsend server`) as the rendezvous + relay daemon.
 #
-#   docker build -t fsend-server .
-#   docker run -p 443:443/udp -p 8080:8080/tcp fsend-server
+#   # Run as server:
+#   docker build -t fsend .
+#   docker run -p 443:443/udp -p 8080:8080/tcp fsend server
+#
+#   # Run as CLI:
+#   docker run --rm fsend --version
 
 # ---------- builder ----------
 FROM golang:1.25-alpine AS builder
@@ -29,7 +35,7 @@ RUN go build -trimpath \
       -X github.com/polius/fsend/internal/version.Version=${VERSION} \
       -X github.com/polius/fsend/internal/version.Commit=${COMMIT} \
       -X github.com/polius/fsend/internal/version.Date=${DATE}" \
-    -o /out/fsend-server ./cmd/fsend-server
+    -o /out/fsend ./cmd/fsend
 
 # ---------- final ----------
 FROM scratch
@@ -38,12 +44,14 @@ FROM scratch
 # own listener is plaintext HTTP — TLS terminates at the operator's
 # reverse proxy.
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /out/fsend-server /fsend-server
+COPY --from=builder /out/fsend /fsend
 
+# Ports documented here are server-mode only; the CLI doesn't bind any.
 EXPOSE 8080/tcp
 EXPOSE 443/udp
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/fsend-server", "--health-check"]
+# HEALTHCHECK lives in deploy/compose/docker-compose.yml — only the
+# operator running this image as a server can meaningfully define
+# "healthy". Hard-coding it here would mark CLI invocations unhealthy.
 
-ENTRYPOINT ["/fsend-server"]
+ENTRYPOINT ["/fsend"]

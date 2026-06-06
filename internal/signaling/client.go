@@ -24,7 +24,7 @@ import (
 // endpoints set their own timeouts via context.
 const DefaultRequestTimeout = 30 * time.Second
 
-// Client talks to an fsend-server signaling endpoint.
+// Client talks to a fsend signaling endpoint.
 type Client struct {
 	baseURL string
 	hc      *http.Client

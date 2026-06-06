@@ -133,6 +133,8 @@ Examples:
 	c.Flags().StringVar(&f.mode, "mode", "", "")
 	_ = c.Flags().MarkHidden("mode")
 
+	c.AddCommand(serverCmd())
+
 	return c
 }
 
@@ -207,6 +209,10 @@ ENVIRONMENT
   FSEND_DEBUG=1          Same as --debug
   NO_COLOR               Disable ANSI colour escapes
   FORCE_COLOR=1          Force colour even on non-TTY stderr
+
+SELF-HOSTING
+  fsend server                 Run your own pairing + relay server
+                               (env-var config — see "fsend server --help")
 
 LEARN MORE
   Docs    https://github.com/polius/fsend

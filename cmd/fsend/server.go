@@ -1,9 +1,3 @@
-// Command fsend-server is the rendezvous + relay-fallback service that
-// fsend CLIs use when peers are not on the same LAN.
-//
-// Configuration is entirely env-var driven (see internal/server for the
-// supported variables and their defaults). There are no operational
-// flags — just --version, --help, --health-check.
 package main
 
 import (
@@ -11,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,38 +14,52 @@ import (
 	"syscall"
 	"time"
 
-	"net"
+	"github.com/spf13/cobra"
 
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/version"
 )
 
-func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "fsend-server:", err)
-		os.Exit(1)
+// serverCmd is the rendezvous + relay-fallback service that fsend
+// clients use when peers are not on the same LAN. Invoked as
+// `fsend server`.
+//
+// Configuration is entirely env-var driven (see internal/server for the
+// supported variables and their defaults). The only flag is
+// --health-check, used by Docker HEALTHCHECK.
+func serverCmd() *cobra.Command {
+	var healthCheckFlag bool
+
+	c := &cobra.Command{
+		Use:           "server",
+		Short:         "Run the fsend pairing + relay server",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if healthCheckFlag {
+				// Used as a Docker HEALTHCHECK probe — see deploy/compose/.
+				return healthCheck()
+			}
+			return runServer()
+		},
 	}
+
+	c.Flags().BoolVar(&healthCheckFlag, "health-check", false,
+		"probe /v1/health and exit 0 if healthy (for Docker)")
+
+	c.SetHelpTemplate(serverHelpTemplate)
+	c.SetUsageTemplate(serverHelpTemplate)
+
+	return c
 }
 
-func run(args []string) error {
-	for _, a := range args {
-		switch a {
-		case "--version", "-v":
-			fmt.Println(version.String())
-			return nil
-		case "--help", "-h":
-			printHelp()
-			return nil
-		case "--health-check":
-			// Used as a Docker HEALTHCHECK probe — see deploy/compose/.
-			return healthCheck()
-		default:
-			return fmt.Errorf("unknown argument: %s (use --help)", a)
-		}
-	}
-
-	cfg := loadConfig()
+// runServer wires up the HTTP signaling listener and UDP relay listener
+// from environment-driven config, traps SIGINT/SIGTERM, and blocks until
+// shutdown.
+func runServer() error {
+	cfg := loadServerConfig()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.logLevel}))
 	slog.SetDefault(logger)
 
@@ -65,8 +74,6 @@ func run(args []string) error {
 	defer cancel()
 	go s.StartJanitor(ctx)
 
-	// Bring up the UDP relay listener on cfg.udpAddr and wire it into
-	// the signaling layer so /v1/relay/allocate works.
 	udpListener, err := net.ListenPacket("udp", cfg.udpAddr)
 	if err != nil {
 		return fmt.Errorf("relay UDP listen on %s: %w", cfg.udpAddr, err)
@@ -96,13 +103,12 @@ func run(args []string) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// Trap SIGINT/SIGTERM for graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("fsend-server starting", "http", cfg.httpAddr, "version", version.Version)
+		logger.Info("fsend server starting", "http", cfg.httpAddr, "version", version.Version)
 		errCh <- httpSrv.ListenAndServe()
 	}()
 
@@ -122,8 +128,8 @@ func run(args []string) error {
 	return nil
 }
 
-// runtimeConfig is the parsed environment.
-type runtimeConfig struct {
+// serverRuntimeConfig is the parsed environment for `fsend server`.
+type serverRuntimeConfig struct {
 	httpAddr             string
 	udpAddr              string
 	logLevel             slog.Level
@@ -133,8 +139,8 @@ type runtimeConfig struct {
 	sessionIdleTimeout   time.Duration
 }
 
-func loadConfig() runtimeConfig {
-	cfg := runtimeConfig{
+func loadServerConfig() serverRuntimeConfig {
+	cfg := serverRuntimeConfig{
 		httpAddr:             envOr("FSEND_HTTP_ADDR", ":8080"),
 		udpAddr:              envOr("FSEND_UDP_ADDR", ":443"),
 		maxSessionsPerIP:     envInt("FSEND_MAX_SESSIONS_PER_IP", 5),
@@ -195,7 +201,6 @@ func envBytes(name string, def uint64) uint64 {
 	if v == "" {
 		return def
 	}
-	// Find suffix boundary.
 	i := 0
 	for i < len(v) && (v[i] == '.' || (v[i] >= '0' && v[i] <= '9')) {
 		i++
@@ -253,15 +258,19 @@ func healthCheck() error {
 	return nil
 }
 
-func printHelp() {
-	fmt.Print(`fsend-server — pairing + relay server for fsend
+// serverHelpTemplate is the hand-written help for `fsend server`. Same
+// shape as the root help: examples-first, env vars called out, no cobra
+// auto-flag-wall.
+const serverHelpTemplate = `fsend server — pairing + relay server for fsend
 
 USAGE
-  fsend-server                 Run the server (config via env vars)
+  fsend server                 Run the server (config via env vars)
+  fsend server --health-check  Probe /v1/health and exit 0 if healthy
+  fsend server --help          Show this help
 
 EXAMPLE
   Standard Docker run (zero-config):
-    docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend-server
+    docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
 
 CONFIGURATION (environment variables — all optional)
   FSEND_HTTP_ADDR                       Default :8080
@@ -273,12 +282,6 @@ CONFIGURATION (environment variables — all optional)
   FSEND_SESSION_IDLE_TIMEOUT            Default 60s (Go duration: 30s, 5m, 1h)
   FSEND_PUBLIC_ADDR                     host:port clients dial for relay; defaults to FSEND_UDP_ADDR
 
-FLAGS
-  --help          Show this help
-  --version       Show version
-  --health-check  Probe /v1/health and exit 0 if healthy (for Docker)
-
 LEARN MORE
   https://github.com/polius/fsend
-`)
-}
+`

@@ -7,10 +7,12 @@
 #   4. Docker + docker-compose v2
 #
 # What this stack does:
-#   - fsend-server runs on internal ports (HTTP signaling :8080, UDP relay :443)
+#   - The fsend container runs `fsend server` on internal ports
+#     (HTTP signaling :8080, UDP relay :443)
 #   - Caddy terminates HTTPS on TCP/443 with automatic Let's Encrypt certs
-#   - Caddy forwards signaling HTTP requests to fsend-server
-#   - UDP/443 goes directly to fsend-server (TLS terminates at the peers, not us)
+#   - Caddy forwards signaling HTTP requests to the fsend container
+#   - UDP/443 goes directly to the fsend container
+#     (TLS terminates at the peers, not us)
 #
 # Usage:
 #   export FSEND_DOMAIN=fs.example.com
@@ -24,12 +26,16 @@
 # See https://github.com/polius/fsend for documentation.
 
 services:
-  fsend-server:
+  fsend:
     # Pin a major.minor in production so unattended-upgrades don't
     # surprise you on a breaking release. Bump it manually when you
     # want a new feature: docker compose pull, then up -d.
-    image: poliuscorp/fsend-server:0.1
-    container_name: fsend-server
+    image: poliuscorp/fsend:0.1
+    container_name: fsend
+    # The image's ENTRYPOINT is just `fsend`; `command` selects the
+    # server subcommand so the same image can be reused as the CLI
+    # elsewhere.
+    command: ["server"]
     restart: unless-stopped
     # The container exposes :8080 (HTTP signaling) to Caddy via the internal
     # network, and :443/udp directly to the host so peers' UDP datagrams
@@ -51,7 +57,7 @@ services:
     networks:
       - fsend-net
     healthcheck:
-      test: ["CMD", "/fsend-server", "--health-check"]
+      test: ["CMD", "/fsend", "server", "--health-check"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -71,7 +77,7 @@ services:
     environment:
       FSEND_DOMAIN: "${FSEND_DOMAIN:?Set FSEND_DOMAIN to your public hostname (e.g. fs.example.com)}"
     depends_on:
-      - fsend-server
+      - fsend
     networks:
       - fsend-net
 
