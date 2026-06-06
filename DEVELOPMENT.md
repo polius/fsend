@@ -7,8 +7,7 @@ build` from whatever's checked out right now.
 ## Prerequisites
 
 - **Go ≥ 1.25.5** (matches `go.mod`). Check with `go version`.
-- A POSIX shell. The E2E harness (`test/e2e/run_e2e.sh`) is bash.
-- That's it. No CGo, no system libraries.
+- That's it. No CGo, no system libraries, no shell-script harness.
 
 Optional:
 - **Docker** + **docker compose v2**, only if you want to test the
@@ -36,10 +35,9 @@ Quick sanity check:
 /tmp/fsend-server --version
 ```
 
-Putting the binaries in `/tmp/` matches what `test/e2e/run_e2e.sh`
-expects by default, so the same builds drive both manual testing and the
-E2E suite. Pick a different prefix if you prefer — see the env vars
-below.
+`/tmp/` is just a convention for manual testing; you can put the
+binaries anywhere. The E2E suite builds its own copies into a temp dir
+and does not look at `/tmp/`.
 
 > Tip: while iterating, `go install ./cmd/fsend ./cmd/fsend-server` puts
 > them in `$GOBIN` (or `$GOPATH/bin`) on your `PATH`, so you can just
@@ -150,30 +148,29 @@ find cmd internal -name '*.go' | entr -r sh -c \
 
 ## 5 · Tests
 
-### Unit tests
-
 ```sh
 go test ./...
 ```
 
-Fast (<10s) and covers every internal package.
+Runs everything: the per-package unit tests **and** the end-to-end
+suite under `test/e2e/`. The E2E suite builds both binaries into a
+temp dir, brings up an isolated `fsend-server` on loopback, and drives
+real subprocess transfers — no shell wrapper, no pre-built binaries
+required.
 
-### End-to-end suite
-
-`test/e2e/run_e2e.sh` brings up a fresh `fsend-server`, drives the
-client through every dispatch path, and asserts byte-for-byte transfers.
-It expects the binaries to already exist at `/tmp/fsend` and
-`/tmp/fsend-server`, so build first:
+The whole thing takes roughly 30 seconds. For fast inner-loop
+iteration, skip E2E with:
 
 ```sh
-go build -o /tmp/fsend        ./cmd/fsend
-go build -o /tmp/fsend-server ./cmd/fsend-server
-./test/e2e/run_e2e.sh
+go test -short ./...           # under a second; E2E tests self-skip
 ```
 
-Override paths or ports via env vars (`FSEND`, `FSEND_SERVER`,
-`HTTP_PORT`, `UDP_PORT`, `WORKDIR`). The harness preserves `$WORKDIR`
-on failure so you can inspect logs.
+### Targeting just the E2E suite
+
+```sh
+go test -v ./test/e2e/
+go test -v -run TestLAN_TransferSizes ./test/e2e/
+```
 
 ### Race detector / verbose runs
 
@@ -190,7 +187,7 @@ Your dev `fsend` writes config to the standard XDG location:
 - Windows: `%APPDATA%\fsend\config.toml`
 
 `--connect default` resets it. To run an isolated client that doesn't
-touch your real config (the E2E harness does this):
+touch your real config:
 
 ```sh
 XDG_CONFIG_HOME=/tmp/fsend-dev-xdg /tmp/fsend --connect http://127.0.0.1:18080
@@ -200,6 +197,5 @@ XDG_CONFIG_HOME=/tmp/fsend-dev-xdg /tmp/fsend --connect http://127.0.0.1:18080
 
 ```sh
 rm /tmp/fsend /tmp/fsend-server
-rm -rf /tmp/fsend-e2e-*           # leftover E2E workdirs (if any)
 go clean -cache -testcache        # only if you want to force-rebuild deps
 ```
