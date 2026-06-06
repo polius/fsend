@@ -29,8 +29,7 @@ import (
 )
 
 // iceBudget caps the total time we'll spend trying to establish a direct
-// path before falling back to the relay. Matches the budget in
-// PROJECT_SPEC.md "Timeouts" → "ICE connectivity checks".
+// path before falling back to the relay.
 const iceBudget = 15 * time.Second
 
 // signalingClient builds a client pointed at the configured server.
@@ -457,8 +456,7 @@ func hostnameOrDefault(s string) string {
 	return h
 }
 
-// printPath renders the connection-path status line per PROJECT_SPEC.md
-// "Always show the data path". Tri-state:
+// printPath renders the connection-path status line. Tri-state:
 //
 //	✓ direct (local) — same LAN, no NAT crossed
 //	✓ direct (STUN) — NAT hole-punched

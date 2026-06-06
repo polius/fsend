@@ -9,7 +9,7 @@ import (
 	"io"
 )
 
-// Control-frame header layout (per docs/decisions/wire-protocol.md):
+// Control-frame header layout:
 //
 //   +--------+--------+--------+--------+--------+--------+
 //   | ver(1) |   type(1)       |   length(uint32 BE)     |

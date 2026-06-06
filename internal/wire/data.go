@@ -7,7 +7,7 @@ import (
 	"io"
 )
 
-// Data-stream chunk frame layout (per docs/decisions/wire-protocol.md):
+// Data-stream chunk frame layout:
 //
 //   +--------+--------+--------+--------+--------+--------+--------+--------+
 //   |  type(1) = 0x10  |  flags(1)     |     chunk_length(uint32 BE)         |

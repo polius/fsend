@@ -16,8 +16,8 @@ import (
 //
 // It owns a single net.PacketConn (the UDP/443 listener). For each
 // allocation, it tracks the two peers' addresses (set on first datagram
-// from each) and forwards traffic between them. See
-// docs/decisions/relay-protocol.md for the design rationale.
+// from each) and forwards traffic between them. The wire format is
+// documented in framing.go.
 type Server struct {
 	conn   net.PacketConn
 	cfg    ServerConfig

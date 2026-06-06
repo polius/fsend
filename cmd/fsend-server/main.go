@@ -1,9 +1,9 @@
 // Command fsend-server is the rendezvous + relay-fallback service that
 // fsend CLIs use when peers are not on the same LAN.
 //
-// Configuration is entirely env-var driven (see docs/decisions/
-// implementation-defaults.md and PROJECT_SPEC.md "Server operation").
-// There are no operational flags — just --version, --help, --health-check.
+// Configuration is entirely env-var driven (see internal/server for the
+// supported variables and their defaults). There are no operational
+// flags — just --version, --help, --health-check.
 package main
 
 import (

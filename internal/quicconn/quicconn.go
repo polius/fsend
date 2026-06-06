@@ -1,10 +1,10 @@
 // Package quicconn wraps quic-go to expose the two logical streams
 // (control + data) that the transfer engine consumes.
 //
-// Critical wiring note (from PROJECT_SPEC.md "Critical implementation
-// note"): when the underlying socket comes from an ICE-established UDP
-// connection, we hand it to quic-go via Transport.Conn — we do NOT let
-// quic-go open its own socket, or the punched NAT mapping is wasted.
+// Critical wiring note: when the underlying socket comes from an
+// ICE-established UDP connection, we hand it to quic-go via
+// Transport.Conn — we do NOT let quic-go open its own socket, or the
+// punched NAT mapping is wasted.
 //
 // This package supports both modes:
 //

@@ -21,7 +21,7 @@ import (
 )
 
 // Options configures one WithBackoff invocation. Zero values pick the
-// fsend defaults documented in PROJECT_SPEC.md "Auto-retry".
+// fsend defaults (3 attempts, 1 s base, 3× multiplier).
 type Options struct {
 	// Attempts caps the total number of tries (including the first).
 	// 0 → use the default (3).

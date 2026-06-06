@@ -2,13 +2,13 @@
 // can use to establish a direct UDP path between two peers, then hand the
 // resulting socket to quic-go's Transport.
 //
-// Critical wiring note (from PROJECT_SPEC.md "Critical implementation
-// note"): pion's *ice.Agent produces an *ice.Conn after Dial/Accept that
-// is stream-shaped (net.Conn). quic-go's Transport expects a
-// net.PacketConn. Because each ice.Conn.Write produces exactly one UDP
-// datagram on the wire (and each Read returns exactly one), we can adapt
-// the two with a thin wrapper that injects a synthetic peer address —
-// the same trick internal/relay.Conn uses on the relay path.
+// Critical wiring note: pion's *ice.Agent produces an *ice.Conn after
+// Dial/Accept that is stream-shaped (net.Conn). quic-go's Transport
+// expects a net.PacketConn. Because each ice.Conn.Write produces
+// exactly one UDP datagram on the wire (and each Read returns exactly
+// one), we can adapt the two with a thin wrapper that injects a
+// synthetic peer address — the same trick internal/relay.Conn uses on
+// the relay path.
 //
 // The PacketConn handed to quic.Transport must NOT be the agent's
 // gathered candidate socket directly — it must be the post-Dial/Accept
@@ -83,9 +83,8 @@ type Agent struct {
 	closeOnce sync.Once
 }
 
-// defaultTimeouts captures the values in
-// docs/decisions/implementation-defaults.md "Pion ICE configuration".
-// Kept as a function so callers can't mutate the package's defaults.
+// defaultTimeouts returns fsend's pion ICE agent timings. Kept as a
+// function so callers can't mutate the package's defaults.
 func defaultTimeouts() (disconnected, failed, keepalive time.Duration) {
 	return 5 * time.Second, 15 * time.Second, 2 * time.Second
 }

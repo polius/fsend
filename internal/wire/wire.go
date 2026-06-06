@@ -1,7 +1,5 @@
 // Package wire implements fsend's on-the-wire framing between peers.
 //
-// See docs/decisions/wire-protocol.md for the full specification.
-//
 // Two frame styles:
 //   - Control frames (gob-encoded payloads) for session metadata, file
 //     info, completion, errors. Used on the control stream.
@@ -14,9 +12,8 @@ package wire
 
 // ProtocolVersion is the current wire protocol version byte.
 //
-// Bumping this is a major-version change for fsend (see PROJECT_SPEC.md
-// "Versioning + compatibility promise"). New optional frame types can be
-// added without bumping by giving them unused type bytes.
+// Bumping this is a major-version change for fsend. New optional frame
+// types can be added without bumping by giving them unused type bytes.
 const ProtocolVersion = 0x01
 
 // MaxControlFrameSize bounds gob payload size on control frames. One
@@ -26,14 +23,13 @@ const ProtocolVersion = 0x01
 const MaxControlFrameSize = 64 * 1024 // 64 KiB
 
 // MaxChunkSize bounds the plaintext payload in a data CHUNK frame.
-// 1 MiB is the chunk size locked in docs/decisions/wire-protocol.md.
 const MaxChunkSize = 1024 * 1024 // 1 MiB
 
 // Frame type bytes.
 type FrameType uint8
 
 const (
-	// Control stream frame types (per docs/decisions/wire-protocol.md).
+	// Control stream frame types.
 	TypeHello             FrameType = 0x01 // sender → receiver
 	TypeHelloAck          FrameType = 0x02 // receiver → sender
 	TypePasswordChallenge FrameType = 0x03 // sender → receiver (only if HELLO.HasPassword)
@@ -72,7 +68,6 @@ const (
 )
 
 // ErrorCode is the catalog of error codes carried in TypeError frames.
-// See docs/decisions/wire-protocol.md "Error catalog".
 type ErrorCode uint16
 
 const (

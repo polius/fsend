@@ -1,8 +1,5 @@
 // Package server implements the rendezvous + relay-allocation HTTP
-// signaling endpoints for fsend-server.
-//
-// API surface and JSON shapes follow docs/decisions/signaling-protocol.md.
-// All endpoints are under /v1/...
+// signaling endpoints for fsend-server. All endpoints are under /v1/...
 package server
 
 import (

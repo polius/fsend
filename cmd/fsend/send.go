@@ -19,16 +19,10 @@ import (
 	"github.com/polius/fsend/internal/wire"
 )
 
-// runSend executes the send-side flow.
-//
-// v0.1.0 LAN-only path:
-//  1. Walk the input paths.
-//  2. Generate (or accept) a code.
-//  3. Compute the deterministic LAN port from the code.
-//  4. Bind a QUIC listener on that port.
-//  5. Announce via mDNS.
-//  6. Accept the first incoming QUIC connection.
-//  7. Run the transfer protocol.
+// runSend executes the send-side flow. The LAN listener (mDNS-announced
+// QUIC port derived from the code) and the rendezvous session are
+// started in parallel; whichever the receiver reaches first wins. See
+// sendpair.go for the coordinator.
 func runSend(f *flags, paths []string) error {
 	if f.textArg != "" && len(paths) > 0 {
 		return fmt.Errorf("%w: --text cannot be combined with file arguments", fserrors.ErrUsage)
@@ -255,11 +249,10 @@ func shortRand() string {
 }
 
 // printSendArtifact renders the "code + receive command" block on stderr
-// per PROJECT_SPEC.md "Send-side terminal UX" state 1, then starts an
-// animated "Waiting for receiver" spinner and returns it. Callers must
+// and starts an animated "Waiting for receiver" spinner. Callers must
 // Stop the spinner before printing anything else to stderr.
 //
-// Honors the locked output rules:
+// Output rules:
 //   - --quiet: bare code on stdout, nothing on stderr, nil spinner.
 func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label string) *uxlog.Spinner {
 	if f.quiet {

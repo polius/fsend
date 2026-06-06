@@ -1,5 +1,4 @@
 # golangci-lint config for fsend.
-# See docs/decisions/implementation-defaults.md "Linting".
 
 run:
   timeout: 5m

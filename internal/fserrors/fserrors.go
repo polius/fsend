@@ -1,12 +1,11 @@
 // Package fserrors defines the user-facing error catalog for fsend.
 //
-// Each sentinel error here corresponds to a numbered entry in
-// docs/ux/help-text.md. The User function maps any wrapped error back to a
-// catalog entry (with exit code, message, and action hint) so the CLI can
-// render consistent, helpful errors regardless of where in the call stack
-// they originated.
+// The User function maps any wrapped error back to a catalog entry
+// (with exit code, message, and action hint) so the CLI can render
+// consistent, helpful errors regardless of where in the call stack they
+// originated.
 //
-// Design rules (see docs/ux/help-text.md):
+// Design rules:
 //   - First line says what failed in user terms.
 //   - Second line gives an actionable next step.
 //   - Never blame the user.

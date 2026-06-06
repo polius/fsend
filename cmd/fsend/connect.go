@@ -12,8 +12,7 @@ import (
 	"github.com/polius/fsend/internal/uxlog"
 )
 
-// runConnect implements `fsend --connect ...` per PROJECT_SPEC.md
-// "Server configuration":
+// runConnect implements `fsend --connect ...`:
 //
 //	fsend --connect                  → print current config + default
 //	fsend --connect default          → revert to compiled-in default

@@ -1,7 +1,6 @@
 // Package relay implements fsend-server's UDP relay-fallback path AND
-// the client-side framing/unframing used to send through it.
-//
-// See docs/decisions/relay-protocol.md for the byte-level format.
+// the client-side framing/unframing used to send through it. The
+// byte-level format is documented inline in this file.
 package relay
 
 import (

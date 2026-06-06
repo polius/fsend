@@ -75,8 +75,9 @@ type QueryResult struct {
 // rendezvous path).
 //
 // pion/mdns's QueryAddr blocks until it gets a response or the context
-// expires, retrying on QueryInterval. We use a 300 ms timeout per
-// docs/decisions/implementation-defaults.md.
+// expires, retrying on QueryInterval. Callers pass a short timeout
+// (300 ms is fsend's default) so a LAN miss doesn't block the
+// rendezvous fallback.
 func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResult, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {

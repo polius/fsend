@@ -2,8 +2,7 @@
 // peers was actually established and renders that classification for the
 // user-facing UX layer.
 //
-// The classification is tri-state, per PROJECT_SPEC.md "Send-side terminal
-// UX" → "Always show the data path":
+// The classification is tri-state:
 //
 //   - Local       — peers are on the same LAN. Either mDNS discovery
 //     short-circuited the rendezvous path entirely, or ICE

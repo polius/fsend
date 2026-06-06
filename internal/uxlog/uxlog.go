@@ -1,14 +1,12 @@
-// Package uxlog renders the user-facing terminal UX defined in
-// PROJECT_SPEC.md "Send-side terminal UX" + "Receive-side terminal UX",
-// and docs/ux/failure-states.md.
+// Package uxlog renders fsend's user-facing terminal UX.
 //
 // The CLI layer (cmd/fsend) owns the artifact/status block printing.
 // This package owns the mid-transfer progress bar and the optional
 // spinner — anything that needs cursor management or live updates.
 //
-// All output goes to stderr (per design rule "Stderr for everything
-// visual"). When stderr is not a TTY (piping, CI logs), the renderer
-// degrades to plain-text periodic updates with no cursor manipulation.
+// All output goes to stderr. When stderr is not a TTY (piping, CI logs),
+// the renderer degrades to plain-text periodic updates with no cursor
+// manipulation.
 //
 // Quiet mode is handled by callers: they simply do not construct a
 // Progress instance. The package itself does not consult any flag — it
@@ -24,13 +22,9 @@ import (
 	"github.com/vbauerster/mpb/v8/decor"
 )
 
-// Progress wraps an mpb.Progress + a single bar for the active file
-// (single-file mode) or the overall transfer (multi-file/directory mode).
-//
-// For v0.1.0 we render one bar regardless of mode: it tracks total bytes
-// across all files. Per-file bars (the directory-mode display in the spec)
-// are deferred — a single accurate progress bar is more useful than two
-// half-broken ones at this stage.
+// Progress wraps an mpb.Progress + a single bar that tracks total bytes
+// across the whole transfer regardless of mode (single file, multi-file,
+// or tar-bundled directory).
 type Progress struct {
 	mp  *mpb.Progress
 	bar *mpb.Bar

@@ -226,7 +226,8 @@ const passPromptSentinel = ":prompt:"
 // user.
 const connectShowSentinel = ":show:"
 
-// dispatch implements the rules in PROJECT_SPEC.md "Dispatch rules".
+// dispatch implements the CLI dispatch rules documented on the main.go
+// package comment.
 func dispatch(cmd *cobra.Command, f *flags) error {
 	// Handle --connect (server configuration) before anything else.
 	// Reject pairings with transfer-mode flags so the user can't be

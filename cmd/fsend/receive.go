@@ -22,13 +22,9 @@ import (
 	"unicode"
 )
 
-// runReceive executes the receive-side flow.
-//
-// v0.1.0 LAN-only path:
-//  1. Validate the code shape.
-//  2. mDNS query for the sender (300ms timeout).
-//  3. Dial QUIC at the discovered IP:port.
-//  4. Run the transfer protocol with prompt callback.
+// runReceive executes the receive-side flow: a 300 ms mDNS query for a
+// same-LAN sender, and on miss a fall-through to the rendezvous + relay
+// path in runReceiveOverInternet.
 func runReceive(f *flags, c string) error {
 	if err := code.Validate(c); err != nil {
 		return fserrors.ErrInvalidCodeFormat

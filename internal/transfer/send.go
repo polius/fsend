@@ -45,9 +45,7 @@ type SendOptions struct {
 	OnStreamingEOF func(fileIndex uint32, finalBytes uint64)
 }
 
-// Send executes the full sender-side protocol over the supplied streams.
-//
-// Order of operations matches docs/decisions/wire-protocol.md:
+// Send executes the full sender-side protocol over the supplied streams:
 //  1. Write HELLO
 //  2. Read HELLO_ACK (abort if receiver declined)
 //  3. For each file: write FILE_INFO, read FILE_ACCEPT, stream chunks if accepted

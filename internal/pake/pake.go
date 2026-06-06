@@ -2,7 +2,7 @@
 //
 // Both peers feed the same short code in; after exchanging one message
 // each, both derive the same 32-byte key. The code itself never crosses
-// the wire. See PROJECT_SPEC.md "PAKE decision".
+// the wire.
 package pake
 
 import (

@@ -1,16 +1,12 @@
 // Command fsend is the user-facing CLI for peer-to-peer file transfers.
 //
-// Dispatch follows PROJECT_SPEC.md "Dispatch rules":
+// Dispatch rules (see root.go for the implementation):
 //   - fsend                  → help
 //   - fsend <code>           → receive (when <code> matches the code regex
 //     and no file with that name is in CWD)
 //   - fsend <path>           → send
 //   - fsend -                → send from stdin
 //   - fsend --send / --receive force mode (skip auto-detect)
-//
-// v0.1.0 supports LAN-only operation (mDNS discovery + QUIC transfer).
-// Rendezvous, ICE, and relay layers wire in later under the same CLI
-// surface — no user-visible API changes when they land.
 package main
 
 import (
