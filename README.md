@@ -99,25 +99,26 @@ differences above only apply to cross-network transfers.
 ### Security
 
 Both tools end-to-end encrypt the file: a network observer who doesn't
-know the code can't decrypt captured traffic from either. Two
-implementation differences are worth flagging:
+know the code can't decrypt captured traffic from either, and **neither
+relay can read your filenames, file sizes, hashes, or content**. The
+differences are in the cryptographic substrate underneath.
 
-- **PAKE protocol.** fsend uses symmetric SPAKE2 (RFC 9382), an
-  IETF-standardized password-authenticated key exchange. croc's PAKE
-  library (`schollz/pake`) implements a non-standardized construction
-  derived from Boneh & Shoup's cryptography textbook (pg. 789).
-  No public attack is known against either; the difference is the
-  protocol's standardization and peer-review surface.
-- **Data-channel encryption.** fsend transports file bytes inside a
-  TLS 1.3 session over QUIC, with the SPAKE2-derived secret bound to
-  that session via the RFC 5705 exporter — this defeats an active MITM
-  on the self-signed TLS handshake. The Go toolchain fsend builds with
-  (≥ 1.24) defaults the TLS 1.3 key exchange to a post-quantum hybrid
-  (X25519 + ML-KEM-768), so ciphertext recorded today is not
-  retroactively decryptable by a future large-scale quantum computer.
-  croc encrypts file bytes directly with a PAKE-derived AEAD (AES-GCM
-  or XChaCha20-Poly1305) using classical elliptic-curve cryptography
-  only.
+|                                  | fsend                                              | croc                                              |
+|----------------------------------|----------------------------------------------------|---------------------------------------------------|
+| End-to-end encrypted             | ✓                                                  | ✓                                                 |
+| PAKE protocol                    | SPAKE2 (RFC 9382, IETF-standardized)               | `schollz/pake` (non-standardized, Boneh-Shoup textbook construction) |
+| Crypto layers over the wire      | TLS 1.3 over QUIC **plus** SPAKE2, channel-bound via the RFC 5705 exporter | Single AEAD (AES-GCM or XChaCha20-Poly1305) keyed directly from PAKE |
+| Post-quantum forward secrecy     | ✓ (X25519 + ML-KEM-768 hybrid, Go 1.24+ default)   | ✗ (classical ECC only)                            |
+| MITM defense                     | Two layers — TLS catches a network MITM, SPAKE2 binding catches a TLS-handshake MITM | Single layer — PAKE alone                         |
+| Relay sees the file              | ✗ — relay only forwards opaque UDP datagrams; QUIC/TLS terminate at the peers | ✗ — relay only forwards ciphertext after PAKE     |
+| How often the relay is in path   | Fallback only (used when ICE hole-punching fails)  | Every cross-network transfer                      |
+
+The two-layer story is the load-bearing one: in fsend you'd have to
+break **both** TLS 1.3 and SPAKE2 to compromise a transfer; in croc you
+only have to break the one PAKE-derived AEAD. And because fsend's
+TLS 1.3 layer uses a post-quantum hybrid KEX by default, ciphertext
+captured today is not retroactively decryptable by a future large-scale
+quantum computer — recorded croc traffic is.
 
 ## How it works
 
