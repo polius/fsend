@@ -265,6 +265,71 @@ func TestReceive_Overwrite(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
+// Interactive: receiver answers "y" to the accept prompt and "y" again
+// to the overwrite confirmation. File is clobbered, both sides exit 0.
+func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 16*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Two y's: one for accept, one for overwrite.
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\ny\n")
+	r.requireSuccess(t)
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
+}
+
+// Interactive: receiver accepts the transfer but declines the overwrite.
+// Existing file is preserved; receiver sees E013, sender sees E013.
+func TestReceive_OverwriteDeclinedInteractively(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 16*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nn\n")
+	if r.receiverExitCode != 13 || r.senderExitCode != 13 {
+		t.Errorf("exits: sender=%d receiver=%d, want 13/13\nsender stderr:\n%s\nreceiver stderr:\n%s",
+			r.senderExitCode, r.receiverExitCode, r.senderErr, r.receiverErr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
+		t.Errorf("destination file was clobbered: %q", got)
+	}
+}
+
+// Regression: when the receiver rejects with target-exists, the sender
+// must see E013 — not E099 ("Application error 0x0"). The fix is the
+// symmetric shutdown in recv.go around the ErrCodeTargetExists frame;
+// without it, the receiver's deferred QUIC close races the frame and
+// the sender sees a transport-level error. The pipe-based unit test
+// TestOverwriteRefused can't reproduce the race because pipes don't
+// have QUIC's application close.
+func TestReceive_OverwriteRefused_SenderSeesE013(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 64*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := h.runPair(t, []string{srcFile}, dst, []string{"--yes"}, "")
+	if r.receiverExitCode != 13 {
+		t.Errorf("receiver exit = %d, want 13 (E013)\nstderr:\n%s",
+			r.receiverExitCode, r.receiverErr)
+	}
+	if r.senderExitCode != 13 {
+		t.Errorf("sender exit = %d, want 13 (E013) — likely the recv-side TargetExists frame raced QUIC close\nstderr:\n%s",
+			r.senderExitCode, r.senderErr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
+		t.Errorf("destination file was clobbered: %q", got)
+	}
+}
+
 func TestReceive_NameSurfacesToPeer(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()

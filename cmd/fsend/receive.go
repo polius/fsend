@@ -45,28 +45,23 @@ func runReceive(f *flags, c string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// LAN discovery first. An animated spinner makes the 300 ms wait feel
-	// alive instead of frozen — and the same spinner can swap message
-	// without dropping a stale "Looking…" line on screen if we fall
-	// through to the pairing server.
-	var spin *uxlog.Spinner
-	if !f.quiet {
-		spin = uxlog.StartSpinner("Looking for sender on local network")
-	}
+	// LAN discovery is a 300 ms probe — short enough that showing a
+	// spinner only flashes a line that immediately gets cleared on miss,
+	// which reads as glitchy. Stay silent through the probe; only show a
+	// spinner once we know we're going down the longer internet path.
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
-		// LAN miss → try the pairing + relay path. Swap the spinner
-		// message without leaving the first line as a static artifact.
-		// runReceiveOverInternet owns the spinner's lifetime from here —
-		// it stops it once Join lands.
-		if spin != nil {
-			spin.Stop()
-			spin = uxlog.StartSpinner("Not on local network — connecting via server")
+		// LAN miss → internet path. A single "Connecting" spinner runs
+		// from here through Join + ICE/relay setup, replacing what used
+		// to be a sequence of brief flashes. runReceiveOverInternet
+		// owns its lifetime and stops it just before printPath.
+		var spin *uxlog.Spinner
+		if !f.quiet {
+			spin = uxlog.StartSpinner("Connecting")
 		}
 		cfg, _ := config.Load()
 		return runReceiveOverInternet(ctx, f, c, cfg, spin)
 	}
-	spin.Stop()
 
 	addr := q.IP.String() + ":" + strconv.Itoa(q.Port)
 	if f.debug && !f.quiet {
@@ -101,7 +96,7 @@ func runReceive(f *flags, c string) error {
 		}
 		var connSpin *uxlog.Spinner
 		if !f.quiet {
-			connSpin = uxlog.StartSpinner("Connecting via server")
+			connSpin = uxlog.StartSpinner("Connecting")
 		}
 		cfg, _ := config.Load()
 		return runReceiveOverInternet(ctx, f, c, cfg, connSpin)
@@ -130,15 +125,16 @@ func runReceive(f *flags, c string) error {
 			current = nil
 			defer res.Close()
 			return transfer.Recv(ctx, &res.Streams, transfer.RecvOptions{
-				Hostname:      hostname,
-				OS:            runtime.GOOS,
-				ClientVersion: version.Version,
-				TargetDir:     outDir,
-				Overwrite:     f.overwrite,
-				Accept:        accept,
-				Password:      f.passArg,
-				PromptPass:    receiverPasswordPrompt(f),
-				ProgressFn:    progressFn,
+				Hostname:         hostname,
+				OS:               runtime.GOOS,
+				ClientVersion:    version.Version,
+				TargetDir:        outDir,
+				Overwrite:        f.overwrite,
+				Accept:           accept,
+				Password:         f.passArg,
+				PromptPass:       receiverPasswordPrompt(f),
+				ConfirmOverwrite: confirmOverwritePrompt(f),
+				ProgressFn:       progressFn,
 			})
 		}); err != nil {
 		return err
@@ -146,6 +142,27 @@ func runReceive(f *flags, c string) error {
 
 	printRecvSummary(f, recvBytes(), time.Since(start))
 	return nil
+}
+
+// confirmOverwritePrompt returns the per-file overwrite prompt callback,
+// or nil under --quiet / --yes. EOF stdin reads as "" → the safe N
+// default, so scripts still get E013 unless they explicitly pipe "y".
+func confirmOverwritePrompt(f *flags) func(string, int64, uint64) bool {
+	if f.quiet || f.yes {
+		return nil
+	}
+	return func(relPath string, existing int64, incoming uint64) bool {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "  %s already exists (local: %s, incoming: %s).\n",
+			relPath, humanBytes(existing), humanBytes(int64(incoming)))
+		fmt.Fprint(os.Stderr, "  Overwrite? [y/N]: ")
+		switch readLine(os.Stdin) {
+		case "y", "yes":
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 // receiverPasswordPrompt returns a callback that reads a password from

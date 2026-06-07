@@ -272,8 +272,14 @@ USAGE
   fsend server --help          Show this help
 
 EXAMPLE
-  Standard Docker run (zero-config):
+  Local / LAN test (no TLS — do not expose to the internet):
     docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
+
+  Internet-exposed: put a TLS-terminating reverse proxy in front of :8080.
+  File data over UDP/443 is already end-to-end encrypted, but the HTTP
+  pairing channel carries the share code, bearer tokens, and the
+  FSEND_SERVER_PASSWORD header in plaintext.
+  See deploy/compose/docker-compose.yml for a Caddy + Let's Encrypt setup.
 
 CONFIGURATION (environment variables — all optional)
   FSEND_HTTP_ADDR                       Default :8080

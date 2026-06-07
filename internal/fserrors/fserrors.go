@@ -266,8 +266,7 @@ var catalog = map[error]Entry{
 	},
 	ErrSourceNotFound: {
 		Code: "E025", Exit: 25,
-		Message: "Source not found.",
-		Action:  "Check the path and try again.",
+		Message: "No such file or directory.",
 	},
 	ErrUserCancelled: {
 		Code: "E026", Exit: 130,

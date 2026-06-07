@@ -164,7 +164,7 @@ const helpTemplate = `fsend — peer-to-peer file transfer
 USAGE
   fsend <file|dir>...              Send (one or more paths)
   fsend <code>                     Receive (using a code like abc-defg-jkm)
-  cmd | fsend                      Send from a pipe (or: fsend < file)
+  cat file.txt | fsend             Send from a pipe (or: fsend < file)
   fsend --text "hello world"       Send a literal string
 
 EXAMPLES
@@ -180,6 +180,7 @@ EXAMPLES
     fsend --connect relay.mycompany.com:443
 
 COMMON FLAGS
+  --text "<string>"      Send a literal string instead of a file
   --pass <password>      Require the receiver to enter a password.
                          Bare --pass prompts interactively — sender side
                          suggests a fresh random default (press Enter to
@@ -199,16 +200,12 @@ ADVANCED FLAGS
                          Set the server (persisted)
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
-  --text "<string>"      Send a literal string instead of a file
   --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
   --uninstall            Remove the fsend binary and its config dir
 
 ENVIRONMENT
   FSEND_PASS             Used as --pass when the flag is not given
                          (keeps the password out of argv)
-  FSEND_DEBUG=1          Same as --debug
-  NO_COLOR               Disable ANSI colour escapes
-  FORCE_COLOR=1          Force colour even on non-TTY stderr
 
 SELF-HOSTING
   fsend server                 Run your own pairing + relay server

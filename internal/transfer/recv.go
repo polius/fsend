@@ -28,6 +28,10 @@ type RecvOptions struct {
 	Password      string                                      // pre-supplied (--pass or FSEND_PASS); used when sender requires a password
 	PromptPass    func() (string, error)                      // fallback when sender requires a password and Password is empty
 	ProgressFn    func(fileIndex uint32, bytesWritten uint64) // optional
+	// ConfirmOverwrite is called when an incoming file would clobber an
+	// existing one and Overwrite is false. true → accept this file as if
+	// Overwrite were set; false or nil → E013 reject.
+	ConfirmOverwrite func(relativePath string, existingSize int64, incomingSize uint64) bool
 }
 
 // Recv executes the full receiver-side protocol over the supplied streams.
@@ -194,14 +198,23 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	}
 
 	// Refuse to clobber an existing target unless the user opted in with
-	// --overwrite. We check the real target (not the .partial sidecar) so
-	// a previous interrupted run can still be resumed.
+	// --overwrite (or confirms interactively). We check the real target,
+	// not the .partial sidecar, so a previous interrupted run can resume.
 	if !archiveMode && !opts.Overwrite {
 		if st, err := os.Stat(target); err == nil && !st.IsDir() {
-			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-				Code: wire.ErrCodeTargetExists, Message: "target exists",
-			})
-			return fserrors.ErrTargetExists
+			confirmed := opts.ConfirmOverwrite != nil &&
+				opts.ConfirmOverwrite(info.RelativePath, st.Size(), info.Size)
+			if !confirmed {
+				_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+					Code: wire.ErrCodeTargetExists, Message: "target exists",
+				})
+				// Symmetric shutdown so the ERROR frame's FIN reaches the
+				// sender before the deferred QUIC close, which would
+				// otherwise surface as E099 "Application error 0x0".
+				_ = s.Control.Close()
+				_, _ = io.Copy(io.Discard, s.Control)
+				return fserrors.ErrTargetExists
+			}
 		}
 	}
 

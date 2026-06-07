@@ -35,7 +35,7 @@ func TestJoinWithRetry_SucceedsWhenSenderArrivesLate(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, joinErr = joinWithRetry(ctx, receiverClient, code, &flags{quiet: true})
+		_, joinErr = joinWithRetry(ctx, receiverClient, code, &flags{quiet: true}, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // ~2-3 retry cycles
@@ -62,7 +62,7 @@ func TestJoinWithRetry_GivesUpAfterBudget(t *testing.T) {
 	joinRetryBudget = 500 * time.Millisecond
 
 	start := time.Now()
-	_, err := joinWithRetry(context.Background(), client, "abc-defg-jkm", &flags{quiet: true})
+	_, err := joinWithRetry(context.Background(), client, "abc-defg-jkm", &flags{quiet: true}, nil)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, fserrors.ErrCodeNotFound) {
@@ -79,7 +79,7 @@ func TestJoinWithRetry_NonRetriableErrorPropagatesImmediately(t *testing.T) {
 	// Bogus port → connection refused → ErrServerUnreachable.
 	client := signaling.New("http://127.0.0.1:1", "test")
 	start := time.Now()
-	_, err := joinWithRetry(context.Background(), client, "abc-defg-jkm", &flags{quiet: true})
+	_, err := joinWithRetry(context.Background(), client, "abc-defg-jkm", &flags{quiet: true}, nil)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, fserrors.ErrServerUnreachable) {

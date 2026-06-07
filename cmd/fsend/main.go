@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/uxlog"
@@ -140,8 +141,7 @@ func renderError(err error, debug bool) int {
 
 	// For usage / source-not-found errors the wrap context is the
 	// useful part ("invalid --mode \"foo\"", "/path/to/missing.txt").
-	// Splice it under the catalog Message so users see WHY without
-	// having to enable --debug.
+	// Surface it so users see WHY without having to enable --debug.
 	detail := ""
 	if known && (errors.Is(err, fserrors.ErrUsage) || errors.Is(err, fserrors.ErrSourceNotFound)) {
 		if extra := extractDetail(err.Error()); extra != "" {
@@ -158,12 +158,22 @@ func renderError(err error, debug bool) int {
 		glyph = uxlog.Warn()
 	}
 
-	if detail != "" {
+	switch {
+	case detail != "" && errors.Is(err, fserrors.ErrSourceNotFound):
+		// Inline the missing path into the message: the catalog message
+		// ends in "." which we strip so it reads as one sentence —
+		// "[E025] No such file or directory: hola".
+		msg := strings.TrimSuffix(entry.Message, ".")
+		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, msg, detail)
+		if entry.Action != "" {
+			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
+		}
+	case detail != "":
 		fmt.Fprintf(os.Stderr, "%s [%s] %s\n  %s\n", glyph, entry.Code, entry.Message, detail)
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}
-	} else {
+	default:
 		fmt.Fprintf(os.Stderr, "%s %s\n", glyph, entry.Render())
 	}
 

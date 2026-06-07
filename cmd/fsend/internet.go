@@ -89,18 +89,17 @@ var joinRetryBudget = 15 * time.Second
 // Mirror of runSendOverInternet: try ICE direct first (receiver =
 // controlled), fall back to relay on failure.
 //
-// connSpin, when non-nil, is the "connecting to pairing server"
-// spinner the caller already started. We adopt it (stop it once Join
-// either lands or hands us off to joinWithRetry's own spinner) so the
-// user sees a single continuous animation rather than two static lines.
+// connSpin, when non-nil, is the "Connecting" spinner the caller
+// started. We keep it animating through Join + ICE/relay setup and stop
+// it just before printPath — the first user-visible status line. This
+// replaces what used to be a sequence of brief spinner flashes that read
+// as glitchy. The deferred Stop covers error returns; Stop is idempotent
+// (sync.Once), so explicit stops before printPath don't double-close.
 func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config, connSpin *uxlog.Spinner) error {
 	client, serverAddr := signalingClient(cfg)
+	defer connSpin.Stop()
 
-	// joinWithRetry starts its own "waiting for sender" spinner if it
-	// has to long-poll; either way the outer connect-spinner should stop
-	// before that takes over to avoid two spinners writing to stderr.
-	connSpin.Stop()
-	joined, err := joinWithRetry(ctx, client, c, f)
+	joined, err := joinWithRetry(ctx, client, c, f, connSpin)
 	if err != nil {
 		return err
 	}
@@ -116,6 +115,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}, false /* controlled */)
 	if iceErr == nil {
 		defer func() { _ = iceConn.Close() }()
+		connSpin.Stop()
 		printPath(f, icePath)
 		return runReceiverQUICOver(ctx, f, iceConn, c)
 	}
@@ -133,6 +133,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}
 	defer func() { _ = relayConn.Close() }()
+	connSpin.Stop()
 	printPath(f, connpath.FromRelay(alloc.RelayAddr))
 	return classifyRelayDrop(ctx, client, joined.SessionID,
 		runReceiverQUICOver(ctx, f, relayConn, c))
@@ -171,7 +172,7 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID 
 // Other errors propagate immediately: code-already-claimed,
 // server-unreachable, ctx-cancelled, etc., are not transient and the
 // caller should hear about them on the first try.
-func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags) (*server.JoinSessionResponse, error) {
+func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags, existing *uxlog.Spinner) (*server.JoinSessionResponse, error) {
 	deadline := time.Now().Add(joinRetryBudget)
 	delay := 200 * time.Millisecond
 	var spin *uxlog.Spinner
@@ -189,7 +190,9 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 		}
 		// Animate a single line for the duration of the wait so the
 		// user knows we're holding for the sender rather than stuck.
-		if spin == nil && !f.quiet {
+		// If the caller already gave us a running spinner, leave it
+		// alone — two spinners would fight each other on stderr.
+		if spin == nil && existing == nil && !f.quiet {
 			spin = uxlog.StartSpinner("Waiting for sender to register code")
 		}
 		select {
@@ -401,15 +404,16 @@ func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir strin
 	defer res.Close()
 
 	return transfer.Recv(ctx, &res.Streams, transfer.RecvOptions{
-		Hostname:      hostnameOrDefault(f.hostname),
-		OS:            runtime.GOOS,
-		ClientVersion: version.Version,
-		TargetDir:     outDir,
-		Overwrite:     f.overwrite,
-		Accept:        accept,
-		Password:      f.passArg,
-		PromptPass:    receiverPasswordPrompt(f),
-		ProgressFn:    progressFn,
+		Hostname:         hostnameOrDefault(f.hostname),
+		OS:               runtime.GOOS,
+		ClientVersion:    version.Version,
+		TargetDir:        outDir,
+		Overwrite:        f.overwrite,
+		Accept:           accept,
+		Password:         f.passArg,
+		PromptPass:       receiverPasswordPrompt(f),
+		ConfirmOverwrite: confirmOverwritePrompt(f),
+		ProgressFn:       progressFn,
 	})
 }
 
