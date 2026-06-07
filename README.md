@@ -11,12 +11,13 @@
 </p>
 
 ```bash
-# Sender — prints a code to share with the receiver
+# Sender
 $ fsend report.pdf
-  Share this code:  abc-defg-jkm
+Share this code:  abc-defg-jkm
 
-# Receiver — uses that code
+# Receiver — same command, code instead of file
 $ fsend abc-defg-jkm
+✓ Saved to ~/Downloads  ·  2.4 MB
 ```
 
 ## About
@@ -30,7 +31,7 @@ fsend lets any two computers transfer files **directly** to each other — no ac
 - **No ports to open** — works on any network, no router or firewall setup
 - **End-to-end encrypted** — two independent layers; even the fallback relay never sees the file
 - **Password-protected** — gate any transfer with `--pass`; receiver supplies it to unlock
-- **Post-quantum** — X25519 + ML-KEM-768 (NIST standard); even tomorrow's quantum computers can't decrypt today's transfer
+- **Post-quantum** — X25519 + ML-KEM-768 (NIST); future quantum computers can't decrypt today's transfer
 - **Runs anywhere** — single static binary on Linux, macOS, FreeBSD, Windows; x86 and ARM
 - **Self-hostable** — same ~20 MB binary, no database
 
@@ -40,15 +41,20 @@ fsend lets any two computers transfer files **directly** to each other — no ac
 curl -fsSL https://getfsend.alzina.dev | sh
 ```
 
-Linux, macOS, FreeBSD, and Windows (Git Bash / MSYS2). Inspect the script first with `curl -fsSL https://getfsend.alzina.dev`.
+Works on Linux, macOS, FreeBSD, and Windows — x86 and ARM.
 
-Or install from source:
+<details>
+<summary>Other install methods</summary>
+
+From source:
 
 ```bash
 go install github.com/polius/fsend/cmd/fsend@latest
 ```
 
 Or grab a release binary from [the releases page](https://github.com/polius/fsend/releases).
+
+</details>
 
 ## Examples
 
