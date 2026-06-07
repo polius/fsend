@@ -2,7 +2,7 @@
   <img src="docs/assets/icon.svg" alt="fsend" width="250">
 </p>
 
-<p align="center"><strong>Peer-to-peer file transfer. Direct and end-to-end encrypted.</strong></p>
+<p align="center"><strong>Direct, end-to-end encrypted file transfer.</strong></p>
 
 <p align="center">
   <a href="https://github.com/polius/fsend/actions/workflows/test.yml"><img src="https://github.com/polius/fsend/actions/workflows/test.yml/badge.svg" alt="CI"></a>
