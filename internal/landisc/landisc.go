@@ -7,7 +7,7 @@
 // This package only does discovery — the actual connection is established
 // via internal/quicconn after we have an address.
 //
-// LAN discovery short-circuits the rendezvous + ICE path entirely: when
+// LAN discovery short-circuits the pairing-server + ICE path entirely: when
 // both peers are on the same broadcast domain, we never hit the internet.
 package landisc
 
@@ -72,12 +72,12 @@ type QueryResult struct {
 //
 // Returns a QueryResult if found; otherwise an error (usually
 // context.DeadlineExceeded — the caller should fall through to the
-// rendezvous path).
+// pairing-server path).
 //
 // pion/mdns's QueryAddr blocks until it gets a response or the context
 // expires, retrying on QueryInterval. Callers pass a short timeout
 // (300 ms is fsend's default) so a LAN miss doesn't block the
-// rendezvous fallback.
+// pairing-server fallback.
 func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResult, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {

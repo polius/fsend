@@ -42,7 +42,7 @@ import (
 // likewise come from the peer's signaling response. Both pairs are short
 // random strings; see internal/server.newIceCreds.
 //
-// STUNHost is the rendezvous server's host (no port — Port is hard-coded
+// STUNHost is the pairing server's host (no port — Port is hard-coded
 // to 443 to match the server's UDP listener). Empty disables STUN-based
 // server-reflexive gathering, which limits us to host candidates only —
 // useful in tests, not in production.
@@ -52,11 +52,11 @@ type Options struct {
 	RemoteUfrag string
 	RemotePwd   string
 
-	// STUNHost is the rendezvous server's hostname. Used for STUN-style
+	// STUNHost is the pairing server's hostname. Used for STUN-style
 	// reflection (server-reflexive candidates). Empty disables srflx
 	// gathering.
 	STUNHost string
-	// STUNPort is the rendezvous server's UDP port. Defaults to 443.
+	// STUNPort is the pairing server's UDP port. Defaults to 443.
 	STUNPort int
 }
 

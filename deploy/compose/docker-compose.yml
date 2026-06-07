@@ -1,4 +1,4 @@
-# Reference docker-compose for self-hosting an fsend rendezvous + relay server.
+# Reference docker-compose for self-hosting an fsend pairing + relay server.
 #
 # Prerequisites:
 #   1. A box with public IPv4 (ideally IPv6 too)
