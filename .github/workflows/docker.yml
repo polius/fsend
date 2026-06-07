@@ -43,7 +43,7 @@ jobs:
           labels: ${{ steps.tags.outputs.labels }}
           cache-from: type=gha,scope=${{ env.IMAGE }}
           cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-name: index.docker.io/${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
