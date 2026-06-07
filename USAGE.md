@@ -1,25 +1,7 @@
 # Usage
 
-Complete reference for the `fsend` CLI and its `server` subcommand.
-
-- [Usage](#usage)
-  - [Quick reference](#quick-reference)
-  - [Sending](#sending)
-    - [Sender flags](#sender-flags)
-    - [Sender examples](#sender-examples)
-  - [Receiving](#receiving)
-    - [Receiver flags](#receiver-flags)
-    - [Receiver examples](#receiver-examples)
-  - [Choosing a server (`--connect`)](#choosing-a-server---connect)
-  - [Environment variables](#environment-variables)
-  - [Shared flags](#shared-flags)
-  - [`fsend server` reference](#fsend-server-reference)
-    - [Server environment variables (all optional)](#server-environment-variables-all-optional)
-    - [Running the server](#running-the-server)
-  - [Exit codes](#exit-codes)
-  - [Codes](#codes)
-
----
+Reference for the `fsend` CLI and its `server` subcommand. For inline
+help, run `fsend --help` or `fsend server --help`.
 
 ## Quick reference
 
@@ -35,23 +17,11 @@ Complete reference for the `fsend` CLI and its `server` subcommand.
 | Use your own server | `fsend --connect fs.example.com:443` |
 | Reset to default server | `fsend --connect default` |
 | Show current server | `fsend --connect` |
-| Help / version | `fsend --help` / `fsend --version` |
 
-`fsend` decides whether to send or receive automatically:
-
-- An argument that **looks like a code** (three letter-groups separated by `-`,
-  using the alphabet `abcdefghjkmnpqrstuvwxyz`) → receive mode.
-- Anything else → send mode.
-
-If an argument is *both* a valid code **and** the name of a file in your
-current directory, `fsend` detects the collision and asks
-`[s]end this file, or [r]eceive with this code?` before doing anything. You'll
-never silently send the wrong thing.
-
-For scripts and other non-interactive runs where there's no terminal to answer
-that prompt, pass `--send` or `--receive` to commit up front.
-
----
+`fsend` picks send or receive automatically — a `abc-defg-jkm` shape
+means receive, anything else means send. If an arg is both a valid code
+and a real path, you'll be asked. Use `--send` / `--receive` to commit
+up front in scripts.
 
 ## Sending
 
@@ -59,51 +29,23 @@ that prompt, pass `--send` or `--receive` to commit up front.
 fsend [file|dir]... [flags]
 ```
 
-You'll see a code like `abc-defg-jkm`. Share it with the receiver.
-
-When stdin is piped or redirected (`echo hi | fsend`, `fsend < file.bin`),
-`fsend` sends what's coming in — no positional argument needed.
-
-### Sender flags
+Share the code (`abc-defg-jkm`) with the receiver. Piped stdin is sent
+without a positional argument.
 
 | Flag | Purpose |
 |---|---|
 | `--text <string>` | Send a literal string instead of a file. |
-| `--pass <password>` | Require the receiver to supply this password before the transfer starts. Pass `--pass` with no value to be prompted interactively — a fresh random password is suggested and accepted with Enter. See [Environment variables](#environment-variables) for `FSEND_PASS`. |
-| `--exclude <pattern>` | Glob patterns to skip when bundling a directory. Repeatable or comma-separated, e.g. `--exclude '*.log,node_modules'`. |
-| `--name <hostname>` | Override the hostname shown to the peer in the confirmation prompt. |
-
-### Sender examples
+| `--pass <password>` | Require the receiver to supply this password. Bare `--pass` prompts interactively with a random default. Also `FSEND_PASS`. |
+| `--exclude <glob,…>` | Skip entries when bundling a directory. |
+| `--name <hostname>` | Override the hostname shown to the peer. |
 
 ```sh
-# Single file
 fsend report.pdf
-
-# Multiple files (received as separate files)
-fsend a.txt b.txt c.txt
-
-# Folder — bundled into a single archive, unpacked on the other side
-fsend ./project
-
-# Folder, skipping noise
 fsend ./project --exclude 'node_modules,*.log,.git'
-
-# From stdin (no file on disk)
 tar c ./build | fsend
-fsend < big.iso
-
-# A literal string (great for sharing snippets)
 fsend --text "the wifi password is hunter2"
-
-# Gate the transfer with a password (visible in `ps`)
-fsend --pass swordfish ./secret.tar.gz
-
-# Or bare --pass after the file to be prompted, with a fresh random
-# default you can accept by pressing Enter
-fsend ./secret.tar.gz --pass
+fsend ./secret.tar.gz --pass         # prompts with a random default
 ```
-
----
 
 ## Receiving
 
@@ -111,144 +53,99 @@ fsend ./secret.tar.gz --pass
 fsend <code> [flags]
 ```
 
-By default `fsend` shows the sender's hostname and what they're sending, then
-asks you to confirm. Pass `--yes` to skip the prompt.
-
-### Receiver flags
+By default the receiver sees the sender's hostname and what they're
+sending, then confirms. Pass `--yes` to skip.
 
 | Flag | Purpose |
 |---|---|
-| `--yes` | Auto-accept the incoming transfer. |
-| `--out <dir>` | Receive into this directory (created if missing). Default: current working directory. |
+| `--yes` | Auto-accept. |
+| `--out <dir>` | Receive into this directory (created if missing). Default: cwd. |
 | `--overwrite` | Replace existing files instead of failing with `E013`. |
-| `--pass <password>` | Supply the sender's password non-interactively. See `FSEND_PASS`. |
-
-### Receiver examples
+| `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
 
 ```sh
-# Interactive — prompts before accepting
 fsend abc-defg-jkm
-
-# No prompt, save into ~/Downloads/incoming
 fsend --yes --out ~/Downloads/incoming abc-defg-jkm
-
-# Overwrite anything already there
-fsend --yes --overwrite abc-defg-jkm
-
-# Password-gated transfer, supplied via env var (won't appear in `ps`)
 FSEND_PASS=swordfish fsend --yes abc-defg-jkm
 ```
 
-If you cancel a transfer mid-flight, a `.fsend-partial` sidecar is kept and
-the next run resumes from where it left off. If the sender's file has
-changed since then, fsend discards the stale sidecar automatically and
-asks you to re-run — the next attempt fetches a fresh copy.
-
----
+Cancelled transfers leave a `.fsend-partial` sidecar and resume on the
+next run. If the source has changed since, the sidecar is discarded
+automatically.
 
 ## Choosing a server (`--connect`)
 
-The default pairing server is `fsend.alzina.dev` — best-effort, free, and
-not guaranteed. You can switch at any time:
+The default pairing server is `fsend.alzina.dev` — best-effort, free,
+not guaranteed. Switch any time:
 
 ```sh
-# Switch (persisted to your config — set once per machine)
-fsend --connect fs.example.com:443
-
-# Switch and provide an admin password (for private/protected servers)
-fsend --connect fs.example.com:443 mySecret
-
-# Reset to the public default
-fsend --connect default
-
-# Show what's currently configured
-fsend --connect
+fsend --connect fs.example.com:443           # persisted
+fsend --connect fs.example.com:443 mySecret  # password-gated server
+fsend --connect default                      # back to the public default
+fsend --connect                              # show current
 ```
 
-Config is stored at:
-
-- macOS / Linux: `~/.config/fsend/config.toml`
-- Windows: `%APPDATA%\fsend\config.toml`
-
-See [Self-hosting](README.md#self-hosting) in the README if you want to run
-your own server.
-
----
-
-## Environment variables
-
-All optional — the equivalent flag always wins if both are set.
-
-| Variable | Equivalent flag | Purpose |
-|---|---|---|
-| `FSEND_PASS` | `--pass` | Either side: supply the password out-of-band so it stays out of shell history and `ps` output. |
-
----
+Config is at `~/.config/fsend/config.toml` (macOS/Linux) or
+`%APPDATA%\fsend\config.toml` (Windows). See
+[Self-hosting](README.md#self-hosting) to run your own.
 
 ## Shared flags
 
-These work in both directions:
-
 | Flag | Purpose |
 |---|---|
-| `--quiet` | Suppress non-error output. The transfer still happens; only errors print. |
-| `--debug` | Verbose logging to stderr. Use this when filing an issue. |
-| `--uninstall` | Remove the `fsend` binary and `~/.config/fsend`. Use `--yes` to skip the confirmation prompt. |
+| `--quiet` | Suppress non-error output. |
+| `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
+| `--uninstall` | Remove the binary and `~/.config/fsend`. `--yes` skips confirmation. |
 | `--help` / `-h` | Show inline help. |
-| `--version` / `-v` | Print version and build info. |
+| `--version` / `-v` | Print version. |
 
----
+## Environment variables
 
-## `fsend server` reference
+| Variable | Equivalent flag | Purpose |
+|---|---|---|
+| `FSEND_PASS` | `--pass` | Supply the transfer password out-of-band. |
+| `FSEND_DEBUG` | `--debug` | `1` enables verbose stderr logging. |
 
-The same `fsend` binary runs as the pairing + relay server when invoked
-with the `server` subcommand. It has no positional arguments and only
-one server-specific flag (`--health-check`); everything else is
-configured via environment variables.
+Flags always win when both are set.
+
+## `fsend server`
+
+Same binary, run with the `server` subcommand. Configured entirely via
+environment variables.
 
 ```text
 fsend server                 Run the server
+fsend server --health-check  Probe /v1/health (exit 0 if healthy)
 fsend server --help          Show help
-fsend server --health-check  Probe /v1/health and exit 0 if healthy
-fsend --version              Print version (shared with the CLI)
 ```
 
-### Server environment variables (all optional)
+### Server environment variables
 
 | Variable | Default | Notes |
 |---|---|---|
 | `FSEND_HTTP_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_UDP_ADDR` | `:443` | UDP relay listener. |
-| `FSEND_PUBLIC_ADDR` | = `FSEND_UDP_ADDR` | `host:port` clients should dial for relay. Must be set explicitly when the public address differs from the bind address (NAT, dev box, non-default port). |
+| `FSEND_PUBLIC_ADDR` | = `FSEND_UDP_ADDR` | `host:port` clients dial for relay. Set when public ≠ bind (NAT, dev box). |
+| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret. When set, every endpoint except `/v1/health` requires it. Clients pass it via `fsend --connect <host> <password>`. |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
-| `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions allowed per client IP. |
-| `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | Rate limit on new session creation. |
-| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | Per-session relay cap. Accepts `500m`, `1GiB`, `104857600`, etc. |
-| `FSEND_SESSION_IDLE_TIMEOUT` | `60s` | Go duration: `30s`, `5m`, `1h`. |
-
-### Running the server
+| `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |
+| `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit. |
+| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | Accepts `500m`, `1GiB`, `104857600`. |
+| `FSEND_SESSION_IDLE_TIMEOUT` | `60s` | Go duration. |
 
 ```sh
-# Quick local run (debug logs, non-standard ports — see DEVELOPMENT.md)
-FSEND_HTTP_ADDR=":18080" \
-FSEND_UDP_ADDR=":18443" \
-FSEND_PUBLIC_ADDR="127.0.0.1:18443" \
-FSEND_LOG_LEVEL=debug \
-fsend server
-
-# Docker (zero-config, public ports)
 docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
-
-# Full stack with HTTPS + Let's Encrypt
-# See deploy/compose/docker-compose.yml
 ```
 
----
+Internet-exposed deployments need a TLS-terminating reverse proxy in
+front of `:8080` — file data on UDP/443 is already end-to-end encrypted,
+but the HTTP pairing channel carries share codes and bearer tokens in
+plaintext. See `deploy/compose/docker-compose.yml`.
 
 ## Exit codes
 
-Stable from v0.1.0 onward. `0` means success; non-zero codes map to a
-specific failure.
+Stable from v0.1.0. `0` means success; non-zero codes map to a specific
+failure.
 
 | Code  | When it happens |
 |-------|-----------------|
@@ -258,41 +155,33 @@ specific failure.
 | `3`   | `E003` — code already claimed by another receiver. |
 | `4`   | `E004` — invalid code format. |
 | `6`   | `E006` — receiver declined the transfer. |
-| `7`   | `E007` — session expired on the server before a receiver paired. |
+| `7`   | `E007` — session expired before a receiver paired. |
 | `8`   | `E008` — disk full. |
 | `9`   | `E009` — could not write the target file. |
 | `10`  | `E010` — could not read the source file. |
 | `11`  | `E011` — transfer completed but hash didn't verify. |
-| `12`  | `E012` — path traversal rejected (security check). |
-| `13`  | `E013` — target file exists, use `--overwrite`. |
+| `12`  | `E012` — path traversal rejected. |
+| `13`  | `E013` — target file exists; use `--overwrite`. |
 | `14`  | `E014` — could not connect to peer, even via relay. |
 | `15`  | `E015` — protocol error (incompatible versions). |
 | `17`  | `E017` — rate limited. |
 | `18`  | `E018` — default server retired. |
-| `19`  | `E019` — source file changed; stale partial auto-discarded, re-run to fetch a fresh copy. |
+| `19`  | `E019` — source file changed; stale partial discarded, re-run. |
 | `20`  | `E020` — transient transfer failure (retries exhausted). |
-| `21`  | `E021` — wrong password. |
+| `21`  | `E021` — wrong transfer password. |
 | `22`  | `E022` — peer authentication failed (code mismatch or tampering). |
 | `23`  | `E023` — relay's per-session byte cap reached. |
-| `24`  | `E024` — invalid usage (bad flag, bad arg shape, conflicting modes). |
+| `24`  | `E024` — invalid usage (bad flag, bad arg shape). |
 | `25`  | `E025` — source file or directory not found. |
-| `27`  | `E027` — could not open the local-network listener (port in use, mDNS init failed). |
+| `27`  | `E027` — could not open local-network listener (port in use, mDNS init failed). |
+| `28`  | `E028` — pairing server requires a password (missing or wrong). |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 
----
-
 ## Codes
 
-Codes look like `abc-defg-jkm`: three letter-groups (3-4-3) joined by `-`,
-drawn from the 23-letter alphabet `abcdefghjkmnpqrstuvwxyz`. The
-ambiguous-looking letters (`i`, `l`, `o`) are excluded. They are:
-
-- **One-shot** — once claimed by a receiver, the same code can't be used again.
-- **Short-lived** — codes expire on the server after 60 seconds if unclaimed.
-- **Not the encryption key** — the code authenticates a SPAKE2 handshake;
-  the actual session key is derived from that handshake plus TLS 1.3 channel
-  binding, so the code itself never traverses the wire in the clear.
-- **Always system-generated** — `fsend` picks the code for each transfer.
-  If you need a persistent shared secret across many transfers (e.g. for
-  scripts or kiosks), use `--pass` instead.
+Codes look like `abc-defg-jkm`: three groups (3-4-3) from the alphabet
+`abcdefghjkmnpqrstuvwxyz` (the ambiguous `i`, `l`, `o` are excluded).
+They're one-shot, expire after 60 seconds if unclaimed, and are always
+system-generated. For persistent secrets across many transfers, use
+`--pass` instead.

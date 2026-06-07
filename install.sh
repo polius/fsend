@@ -22,8 +22,8 @@ usage() {
 fsend installer
 
 Usage:
-  curl -fsSL https://fsend.alzina.dev/install.sh | sh
-  curl -fsSL https://fsend.alzina.dev/install.sh | sh -s -- [-p DIR] [-v VERSION]
+  curl -fsSL https://getfsend.alzina.dev | sh
+  curl -fsSL https://getfsend.alzina.dev | sh -s -- [-p DIR] [-v VERSION]
 
 Flags:
   -p DIR        Install location (default: auto-pick a writable dir)

@@ -20,7 +20,7 @@ servers.
 ## Install
 
 ```bash
-curl -fsSL https://fsend.alzina.dev/install.sh | sh
+curl -fsSL https://getfsend.alzina.dev | sh
 ```
 
 Or download a release binary from [the releases page](https://github.com/polius/fsend/releases).
