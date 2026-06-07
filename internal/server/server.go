@@ -34,7 +34,7 @@ type Config struct {
 	// ServerPassword, when non-empty, gates every endpoint except
 	// /v1/health behind a constant-time match on the X-Fsend-Auth
 	// header. Empty leaves the server open (the default for the public
-	// fs.alzina.dev rendezvous and for the canonical Docker stack).
+	// fs.alzina.dev pairing server and for the canonical Docker stack).
 	ServerPassword string
 }
 
@@ -77,7 +77,7 @@ const (
 	maxRequestBodyBytes = 16 * 1024
 
 	// maxCandidatesPerSide bounds how many ICE candidates one peer can
-	// accumulate on the rendezvous before further pushes are rejected.
+	// accumulate on the pairing server before further pushes are rejected.
 	// pion typically gathers fewer than 10 (host + srflx pairs across
 	// interfaces); 64 is generous and still cheap to keep in memory.
 	maxCandidatesPerSide = 64

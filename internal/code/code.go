@@ -5,7 +5,7 @@
 //
 // Entropy: log2(23^10) ≈ 45 bits — comfortably more than enough for a
 // PAKE-protected code, where the only feasible attack is online guessing
-// against a rate-limited rendezvous server.
+// against a rate-limited pairing server.
 package code
 
 import (

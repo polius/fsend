@@ -4,7 +4,7 @@
 # the container's ENTRYPOINT pinned to `fsend server`). Triggered on each
 # v* tag push. The CLI is intended to be installed as a native binary —
 # inside Docker on macOS/Windows the LAN/mDNS path silently degrades to
-# rendezvous-only, so this image is positioned as the server-side
+# pairing-server-only, so this image is positioned as the server-side
 # distribution channel.
 #
 # Triggered on the same v* tag as the binary release pipeline so the

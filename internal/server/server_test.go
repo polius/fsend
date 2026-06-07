@@ -64,7 +64,7 @@ func TestCreateSession_HappyPath(t *testing.T) {
 
 // CreateSession honors the client-suggested code when it's well-formed
 // and not already in use. This is what lets the sender register on the
-// rendezvous server with the same code it has already shown the user
+// pairing server with the same code it has already shown the user
 // from the LAN phase — no code change in the artifact, no E002 race for
 // the receiver.
 func TestCreateSession_AdoptsSuggestedCode(t *testing.T) {
@@ -390,7 +390,7 @@ func TestServerPassword_Gate(t *testing.T) {
 }
 
 // TestServerPassword_OpenByDefault confirms the default config (no
-// password) leaves every endpoint reachable — the public rendezvous
+// password) leaves every endpoint reachable — the public pairing server
 // must not accidentally require auth after this feature lands.
 func TestServerPassword_OpenByDefault(t *testing.T) {
 	srv := newTestServer(t) // no ServerPassword set

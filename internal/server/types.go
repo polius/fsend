@@ -1,4 +1,4 @@
-// Package server implements the rendezvous + relay-allocation HTTP
+// Package server implements the pairing + relay-allocation HTTP
 // signaling endpoints served by `fsend server`. All endpoints are
 // under /v1/...
 package server
@@ -14,7 +14,7 @@ import (
 // Code is optional. When the client supplies one (and it matches the
 // canonical code format and isn't currently in use), the server adopts
 // it instead of generating a fresh one. The client-suggested-code path
-// exists so the sender can register on the rendezvous server with the
+// exists so the sender can register on the pairing server with the
 // same code it already announced on LAN — eliminating the "different
 // code on LAN vs internet" race that otherwise leaves receivers with
 // an E002 from the server. On empty/invalid/taken code, the server

@@ -30,7 +30,7 @@ var (
 	ErrInvalidCodeFormat = errors.New("invalid code format")
 	// E006
 	ErrReceiverDeclined = errors.New("receiver declined")
-	// E007 — the rendezvous server reaped the sender's session before a
+	// E007 — the pairing server reaped the sender's session before a
 	// receiver paired (server-side UnpairedTTL hit). Distinct from E002
 	// "code not found" because the failure is on the sender's side; the
 	// receiver had nothing to look up to begin with.
@@ -86,7 +86,7 @@ var (
 	// failed). Distinct from E014 ("could not reach the other peer")
 	// because the failure is on this side, before any peer is involved.
 	ErrLANListenerFailed = errors.New("local network listener failed")
-	// E028 — the rendezvous server returned 401: it's gated behind a
+	// E028 — the pairing server returned 401: it's gated behind a
 	// shared password and the client either didn't send one or sent the
 	// wrong one.
 	ErrServerAuthRequired = errors.New("server password required")

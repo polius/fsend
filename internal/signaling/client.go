@@ -133,7 +133,7 @@ func (c *Client) AllocateRelay(ctx context.Context, sessionID, roleToken string)
 	return &out, err
 }
 
-// RelayStatus probes the rendezvous server for the current state of a
+// RelayStatus probes the pairing server for the current state of a
 // relay allocation. Used after a relay-path drop to surface the real
 // reason (e.g. cap_hit) instead of looping on retry forever.
 //

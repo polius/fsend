@@ -13,7 +13,7 @@ import (
 // no animation, no cursor manipulation.
 //
 // Use it for waits with no determinate progress: pairing, mDNS lookup,
-// rendezvous-server polling. For known-byte-count progress, use
+// pairing-server polling. For known-byte-count progress, use
 // Progress instead.
 //
 // Typical lifecycle:

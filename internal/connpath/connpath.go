@@ -5,12 +5,12 @@
 // The classification is tri-state:
 //
 //   - Local       — peers are on the same LAN. Either mDNS discovery
-//     short-circuited the rendezvous path entirely, or ICE
+//     short-circuited the pairing-server path entirely, or ICE
 //     selected a host↔host candidate pair (no NAT crossed).
 //   - DirectSTUN  — ICE hole-punched through one or both NATs. At least
 //     one side of the selected pair is a server-reflexive
 //     (srflx) or peer-reflexive (prflx) candidate.
-//   - Relay       — ICE failed; QUIC is tunneled through the rendezvous
+//   - Relay       — ICE failed; QUIC is tunneled through the pairing
 //     server's UDP relay.
 //
 // The classifier does not import pion/ice. Call sites that already hold
@@ -31,7 +31,7 @@ const (
 	KindLocal
 	// KindDirectSTUN — direct P2P, but hole-punched through NAT.
 	KindDirectSTUN
-	// KindRelay — relayed via the rendezvous server's UDP listener.
+	// KindRelay — relayed via the pairing server's UDP listener.
 	KindRelay
 )
 
