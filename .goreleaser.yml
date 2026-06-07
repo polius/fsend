@@ -75,6 +75,8 @@ release:
     name: fsend
   draft: false
   prerelease: auto
+  extra_files:
+    - glob: ./install.sh
 
 changelog:
   use: github
