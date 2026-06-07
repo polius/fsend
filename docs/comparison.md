@@ -54,8 +54,9 @@ UDP multicast and connect directly. No meaningful difference.
 The **single UDP port** is a real-world advantage: one port is much
 easier to get past a corporate firewall than a TCP range, and UDP/443 is
 already allowed almost everywhere because it's the port HTTP/3 uses.
-QUIC makes this possible by multiplexing all the transfer's streams over
-one UDP socket, where TCP would need a separate connection per stream.
+QUIC multiplexes parallel streams over a single UDP socket, so fsend
+stays on one port even at high throughput; croc opens multiple TCP
+connections to parallelize and so reserves a port range.
 
 ## What this means in practice
 
