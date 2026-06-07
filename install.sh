@@ -2,9 +2,9 @@
 # fsend install script
 #
 # Usage:
-#   curl -fsSL https://fs.alzina.dev/install.sh | sh
+#   curl -fsSL https://fsend.alzina.dev/install.sh | sh
 # or:
-#   wget -qO- https://fs.alzina.dev/install.sh | sh
+#   wget -qO- https://fsend.alzina.dev/install.sh | sh
 #
 # Options (flags, or equivalent env vars):
 #   -p DIR  | PREFIX=DIR          Install location. If unset, picked
@@ -18,7 +18,7 @@
 #   -h                            Show help and exit
 #
 # To pass flags through `curl | sh`, use `sh -s --`:
-#   curl -fsSL https://fs.alzina.dev/install.sh | sh -s -- -p /opt/bin
+#   curl -fsSL https://fsend.alzina.dev/install.sh | sh -s -- -p /opt/bin
 #
 # Works on Linux, macOS, FreeBSD, and Windows under Git Bash / MSYS2 / Cygwin.
 # Native Windows users without a POSIX shell should grab the .zip from the
@@ -57,8 +57,8 @@ usage() {
 fsend installer
 
 Usage:
-  curl -fsSL https://fs.alzina.dev/install.sh | sh
-  curl -fsSL https://fs.alzina.dev/install.sh | sh -s -- [-p DIR] [-v VERSION]
+  curl -fsSL https://fsend.alzina.dev/install.sh | sh
+  curl -fsSL https://fsend.alzina.dev/install.sh | sh -s -- [-p DIR] [-v VERSION]
 
 Flags:
   -p DIR        Install location (default: auto-pick a writable dir)

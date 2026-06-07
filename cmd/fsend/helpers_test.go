@@ -31,7 +31,7 @@ func TestIsLocalAddr(t *testing.T) {
 		{"localhost:8080", true},
 		{"127.0.0.1:8080", true},
 		{"[::1]:8080", true},
-		{"fs.alzina.dev:443", false},
+		{"fsend.alzina.dev:443", false},
 		{"10.0.0.1:443", false},
 		{"", true}, // empty host short-circuits to "local"
 	} {
@@ -293,15 +293,37 @@ func TestContainsDirectory(t *testing.T) {
 // connect.go pure helpers
 // ---------------------------------------------------------------------------
 
-func TestValidateHostPort(t *testing.T) {
-	for _, ok := range []string{"fs.example.com:443", "127.0.0.1:8080", "[::1]:443"} {
-		if err := validateHostPort(ok); err != nil {
-			t.Errorf("validateHostPort(%q) unexpected err: %v", ok, err)
+func TestNormalizeServer(t *testing.T) {
+	// Explicit port preserved; bare host gets an implicit port
+	// (443 for DNS names, 80 for IP literals and "localhost").
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"fs.example.com:443", "fs.example.com:443"},
+		{"fs.example.com:8443", "fs.example.com:8443"},
+		{"127.0.0.1:8080", "127.0.0.1:8080"},
+		{"[::1]:443", "[::1]:443"},
+		{"fs.example.com", "fs.example.com:443"},
+		{"relay.example.com", "relay.example.com:443"},
+		{"localhost", "localhost:80"},
+		{"127.0.0.1", "127.0.0.1:80"},
+		{"10.0.0.1", "10.0.0.1:80"},
+		{"::1", "[::1]:80"},
+		{"[::1]", "[::1]:80"},
+		{"  fs.example.com  ", "fs.example.com:443"},
+	} {
+		got, err := normalizeServer(tc.in)
+		if err != nil {
+			t.Errorf("normalizeServer(%q) unexpected err: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("normalizeServer(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	for _, bad := range []string{"", "no-port", ":443", "host:0", "host:99999", "host:abc"} {
-		if err := validateHostPort(bad); err == nil {
-			t.Errorf("validateHostPort(%q) accepted bad input", bad)
+	for _, bad := range []string{"", "   ", ":443", "host:0", "host:99999", "host:abc"} {
+		if _, err := normalizeServer(bad); err == nil {
+			t.Errorf("normalizeServer(%q) accepted bad input", bad)
 		}
 	}
 }
@@ -351,7 +373,9 @@ func TestRunConnect_RejectsBadHostPort(t *testing.T) {
 	config.SetPathForTesting(filepath.Join(tmp, "config.json"))
 	t.Cleanup(func() { config.SetPathForTesting("") })
 
-	f := &flags{connectArgsRaw: []string{"not-a-hostport"}}
+	// Bare hostname is now valid (defaults to :443) — use an input that
+	// stays invalid: empty host with a port.
+	f := &flags{connectArgsRaw: []string{":443"}}
 	err := runConnect(f)
 	if !errors.Is(err, fserrors.ErrUsage) {
 		t.Errorf("bad input: got %v, want ErrUsage", err)

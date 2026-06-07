@@ -223,7 +223,7 @@ var catalog = map[error]Entry{
 	},
 	ErrServerRetired: {
 		Code: "E018", Exit: 18,
-		Message: "The default server (fs.alzina.dev) has been retired.",
+		Message: "The default server (fsend.alzina.dev) has been retired.",
 		Action: "Switch to a different server with:\n" +
 			"    fsend --connect <host:port>\n" +
 			"  Or self-host: https://github.com/polius/fsend#self-hosting",

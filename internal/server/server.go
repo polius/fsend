@@ -34,7 +34,7 @@ type Config struct {
 	// ServerPassword, when non-empty, gates every endpoint except
 	// /v1/health behind a constant-time match on the X-Fsend-Auth
 	// header. Empty leaves the server open (the default for the public
-	// fs.alzina.dev pairing server and for the canonical Docker stack).
+	// fsend.alzina.dev pairing server and for the canonical Docker stack).
 	ServerPassword string
 }
 

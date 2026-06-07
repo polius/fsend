@@ -70,18 +70,18 @@ func TestFromLAN(t *testing.T) {
 }
 
 func TestFromRelay(t *testing.T) {
-	got := FromRelay("fs.alzina.dev:443")
+	got := FromRelay("fsend.alzina.dev:443")
 	if got.Kind != KindRelay {
 		t.Errorf("Kind = %v, want %v", got.Kind, KindRelay)
 	}
-	if got.RelayAddr != "fs.alzina.dev:443" {
-		t.Errorf("RelayAddr = %q, want fs.alzina.dev:443", got.RelayAddr)
+	if got.RelayAddr != "fsend.alzina.dev:443" {
+		t.Errorf("RelayAddr = %q, want fsend.alzina.dev:443", got.RelayAddr)
 	}
 	if got.Short() != "relay (TURN)" {
 		t.Errorf("Short() = %q", got.Short())
 	}
 	// Headline includes the address so operators can see which relay.
-	wantHead := "relay (TURN) via fs.alzina.dev:443 — NAT hole-punch failed"
+	wantHead := "relay (TURN) via fsend.alzina.dev:443 — NAT hole-punch failed"
 	if got.Headline() != wantHead {
 		t.Errorf("Headline() = %q, want %q", got.Headline(), wantHead)
 	}

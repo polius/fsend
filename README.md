@@ -20,7 +20,7 @@ servers.
 ## Install
 
 ```bash
-curl -fsSL https://fs.alzina.dev/install.sh | sh
+curl -fsSL https://fsend.alzina.dev/install.sh | sh
 ```
 
 Or download a release binary from [the releases page](https://github.com/polius/fsend/releases).
@@ -258,7 +258,7 @@ back up.
 
 ## Self-hosting
 
-The default pairing server at `fs.alzina.dev` is best-effort. To run
+The default pairing server at `fsend.alzina.dev` is best-effort. To run
 your own, see [`deploy/compose/`](deploy/compose/).
 
 ```bash

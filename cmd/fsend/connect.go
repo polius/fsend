@@ -14,10 +14,10 @@ import (
 
 // runConnect implements `fsend --connect ...`:
 //
-//	fsend --connect                  → print current config + default
-//	fsend --connect default          → revert to compiled-in default
-//	fsend --connect <host:port>      → set custom server
-//	fsend --connect <host:port> <pw> → set custom server + password
+//	fsend --connect                    → print current config + default
+//	fsend --connect default            → revert to compiled-in default
+//	fsend --connect <host[:port]>      → set custom server (port optional)
+//	fsend --connect <host[:port]> <pw> → set custom server + password
 func runConnect(f *flags) error {
 	cfg, _ := config.Load() // ignore corruption error — we're about to overwrite anyway
 
@@ -52,22 +52,22 @@ func runConnect(f *flags) error {
 		return nil
 	default:
 		if len(args) > 2 {
-			return fmt.Errorf("%w: --connect takes at most: <host:port> [password]", fserrors.ErrUsage)
+			return fmt.Errorf("%w: --connect takes at most: <host[:port]> [password]", fserrors.ErrUsage)
 		}
-		host := args[0]
-		if err := validateHostPort(host); err != nil {
+		server, err := normalizeServer(args[0])
+		if err != nil {
 			return fmt.Errorf("%w: %v", fserrors.ErrUsage, err)
 		}
 		password := ""
 		if len(args) >= 2 {
 			password = args[1]
 		}
-		cfg.Server = host
+		cfg.Server = server
 		cfg.ServerPassword = password
 		if err := config.Save(cfg); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
-		msg := "Server set to " + host
+		msg := "Server set to " + server
 		if password != "" {
 			msg += " (password set)"
 		}
@@ -76,23 +76,48 @@ func runConnect(f *flags) error {
 	}
 }
 
-// validateHostPort enforces "<host>:<port>" with a numeric port in range.
-// Hostnames are not resolved (we don't want a DNS round-trip here);
-// validating the shape catches "fsend --connect foo" before it persists
-// junk into the config and bewilders the next transfer with E001.
-func validateHostPort(s string) error {
+// normalizeServer validates a user-supplied server address and returns
+// the canonical "<host>:<port>" form.
+//
+// Accepted shapes:
+//   - "host:port"  → returned as-is (after port-range check)
+//   - "host"       → port filled in implicitly: 443 for DNS hostnames,
+//     80 for IP literals and "localhost"
+//
+// The default mirrors web convention — domain names ride HTTPS on 443,
+// while bare IPs / loopback ride HTTP on 80 (IPs rarely carry trusted
+// TLS certs). Users on a non-default port still type it explicitly.
+func normalizeServer(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("server address is empty")
+	}
 	host, port, err := net.SplitHostPort(s)
 	if err != nil {
-		return fmt.Errorf("expected <host>:<port>, got %q", s)
+		// No port supplied — treat the whole input as the host.
+		// Strip optional IPv6 brackets so net.JoinHostPort re-adds them.
+		host = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
+		port = defaultPortForHost(host)
+	} else {
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 {
+			return "", fmt.Errorf("port must be 1-65535, got %q", port)
+		}
 	}
 	if strings.TrimSpace(host) == "" {
-		return fmt.Errorf("host part is empty in %q", s)
+		return "", fmt.Errorf("host part is empty in %q", s)
 	}
-	p, err := strconv.Atoi(port)
-	if err != nil || p < 1 || p > 65535 {
-		return fmt.Errorf("port must be 1-65535, got %q", port)
+	return net.JoinHostPort(host, port), nil
+}
+
+// defaultPortForHost returns the implicit port for an address where the
+// user did not supply one. Loopback and IP literals default to HTTP/80;
+// anything else (treated as a DNS name) defaults to HTTPS/443.
+func defaultPortForHost(host string) string {
+	if host == "localhost" || net.ParseIP(host) != nil {
+		return "80"
 	}
-	return nil
+	return "443"
 }
 
 func printCurrentServer(cfg *config.Config) {
@@ -100,7 +125,7 @@ func printCurrentServer(cfg *config.Config) {
 	if cfg.IsDefault() {
 		fmt.Fprintln(os.Stderr, "  Current server:", config.DefaultServer, "(default)")
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "  Set a custom server:  fsend --connect <host:port> [password]")
+		fmt.Fprintln(os.Stderr, "  Set a custom server:  fsend --connect <host[:port]> [password]")
 	} else {
 		tag := "custom"
 		if cfg.ServerPassword != "" {
@@ -110,7 +135,7 @@ func printCurrentServer(cfg *config.Config) {
 		fmt.Fprintln(os.Stderr, "  Default server:", config.DefaultServer)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  Revert to the default:  fsend --connect default")
-		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host:port> [password]")
+		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host[:port]> [password]")
 	}
 	fmt.Fprintln(os.Stderr)
 }

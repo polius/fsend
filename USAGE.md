@@ -148,7 +148,7 @@ asks you to re-run — the next attempt fetches a fresh copy.
 
 ## Choosing a server (`--connect`)
 
-The default pairing server is `fs.alzina.dev` — best-effort, free, and
+The default pairing server is `fsend.alzina.dev` — best-effort, free, and
 not guaranteed. You can switch at any time:
 
 ```sh

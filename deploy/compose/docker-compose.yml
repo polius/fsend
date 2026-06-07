@@ -27,19 +27,10 @@
 
 services:
   fsend:
-    # Pin a major.minor in production so unattended-upgrades don't
-    # surprise you on a breaking release. Bump it manually when you
-    # want a new feature: docker compose pull, then up -d.
     image: poliuscorp/fsend
     container_name: fsend
-    # The image's ENTRYPOINT is just `fsend`; `command` selects the
-    # server subcommand so the same image can be reused as the CLI
-    # elsewhere.
     command: ["server"]
     restart: unless-stopped
-    # The container exposes :8080 (HTTP signaling) to Caddy via the internal
-    # network, and :443/udp directly to the host so peers' UDP datagrams
-    # arrive without proxying.
     ports:
       - "443:443/udp"
     expose:

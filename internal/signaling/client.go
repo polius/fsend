@@ -34,7 +34,7 @@ type Client struct {
 
 // New builds a client for the given http(s) base URL.
 //
-// `https://fs.alzina.dev` and `http://localhost:8080` are both valid. The
+// `https://fsend.alzina.dev` and `http://localhost:8080` are both valid. The
 // scheme is preserved as-is — callers control TLS via the URL.
 func New(baseURL, clientVersion string) *Client {
 	return &Client{

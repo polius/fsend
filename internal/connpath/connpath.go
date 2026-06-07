@@ -120,7 +120,7 @@ func (i Info) Glyph() (utf8, ascii string) {
 //
 //	✓ direct (local) — same LAN, no NAT crossed
 //	✓ direct (STUN) — NAT hole-punched
-//	⚠ relay (TURN) via fs.alzina.dev — NAT hole-punch failed
+//	⚠ relay (TURN) via fsend.alzina.dev — NAT hole-punch failed
 //
 // The trailing clause is informational and can be omitted by callers that
 // want a tighter line (e.g. --quiet does not call this at all).

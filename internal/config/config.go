@@ -42,12 +42,12 @@ type Config struct {
 	ServerPassword string `json:"server_password,omitempty"` // empty = no password
 }
 
-// DefaultServer is the compiled-in default rendezvous server.
+// DefaultServer is the compiled-in default pairing server.
 //
 // This value is only used when Config.Server is empty. Users can change
 // the active server with `fsend --connect <host:port>` (writes Server) or
 // revert with `fsend --connect default` (clears Server).
-const DefaultServer = "fs.alzina.dev:443"
+const DefaultServer = "fsend.alzina.dev:443"
 
 // EffectiveServer returns the server the CLI should actually use.
 // Falls back to DefaultServer when the user has never customized.
