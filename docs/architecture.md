@@ -4,7 +4,7 @@ When you run `fsend file.pdf`, the sender opens **two paths at the same
 time** — a LAN listener (mDNS-announced) and a session on the pairing
 server. Whichever path the receiver reaches first wins; the other is
 cancelled. There is **no timeout** between the two — neither side ever
-waits on a budget.
+waits on a deadline.
 
 ## Same network (sender and receiver on the same Wi-Fi)
 

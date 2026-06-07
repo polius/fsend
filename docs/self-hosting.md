@@ -16,10 +16,13 @@ The fastest production-quality setup uses the bundled compose stack
 API with Caddy and provisions a Let's Encrypt cert automatically:
 
 ```sh
-export FSEND_DOMAIN=fs.example.com
+export FSEND_DOMAIN=fs.example.com    # used by Caddy to request the cert
 docker compose -f deploy/compose/docker-compose.yml up -d
 fsend --connect fs.example.com:443    # on each client
 ```
+
+Point `fs.example.com` at the host's public IP before bringing the stack
+up — Caddy needs the DNS record to complete the ACME HTTP-01 challenge.
 
 For a quick LAN-only test (no TLS), use the image directly:
 
@@ -44,7 +47,7 @@ recommended on the public internet.
 | Port             | Direction | Purpose                                         |
 |------------------|-----------|-------------------------------------------------|
 | `8080/tcp`       | inbound   | Signaling HTTP API (clients POST session/join)  |
-| `443/udp`        | inbound   | ICE STUN-style reflection + relay fallback (opaque QUIC datagrams) |
+| `443/udp`        | inbound   | NAT address discovery + relay fallback (opaque QUIC datagrams) |
 
 Clients connect with `fsend --connect http://host:8080`. If you change
 `FSEND_UDP_ADDR`, also set `FSEND_PUBLIC_ADDR=host:port` to the address
@@ -52,13 +55,17 @@ clients should dial for relay.
 
 ### HTTPS mode
 
-Reverse proxy with your own domain — recommended for any
-public-internet deployment. Matches the `deploy/compose/` stack.
+Reverse proxy with your own domain — required for any public-internet
+deployment. File data on UDP/443 is already end-to-end encrypted, but
+the HTTP pairing channel carries share codes and bearer tokens in
+plaintext, so the signaling port **must** be TLS-terminated.
+
+Matches the `deploy/compose/` stack.
 
 | Port             | Direction | Purpose                                              |
 |------------------|-----------|------------------------------------------------------|
 | `443/tcp`        | inbound   | HTTPS signaling — terminated by Caddy/nginx/Traefik  |
-| `443/udp`        | inbound   | ICE STUN-style reflection + relay fallback — goes **directly** to the fsend container |
+| `443/udp`        | inbound   | NAT address discovery + relay fallback — goes **directly** to the fsend container |
 | `80/tcp`         | inbound   | Let's Encrypt ACME HTTP-01 challenge (cert issue/renew) |
 
 Clients then connect with `fsend --connect fs.example.com:443` (HTTPS
@@ -84,8 +91,3 @@ All optional; defaults shown.
 | `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit. |
 | `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | Accepts `500m`, `1GiB`, `104857600`. |
 | `FSEND_SESSION_IDLE_TIMEOUT` | `60s` | Go duration. |
-
-Internet-exposed deployments need a TLS-terminating reverse proxy in
-front of `:8080` — file data on UDP/443 is already end-to-end
-encrypted, but the HTTP pairing channel carries share codes and bearer
-tokens in plaintext.

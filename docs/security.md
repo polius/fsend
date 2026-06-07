@@ -20,21 +20,9 @@ either.
 
 ## Post-quantum forward secrecy
 
-TLS 1.3's key exchange uses the **X25519 + ML-KEM-768 hybrid** by default
-(Go 1.24+). Ciphertext captured today is not retroactively decryptable by
-a future large-scale quantum computer.
-
-## vs croc
-
-|                                  | fsend                                              | croc                                              |
-|----------------------------------|----------------------------------------------------|---------------------------------------------------|
-| End-to-end encrypted             | ✓                                                  | ✓                                                 |
-| PAKE protocol                    | SPAKE2 (RFC 9382, IETF-standardized)               | `schollz/pake` (non-standardized, Boneh-Shoup textbook construction) |
-| Crypto layers over the wire      | TLS 1.3 over QUIC **plus** SPAKE2, channel-bound via the RFC 5705 exporter | Single AEAD (AES-GCM or XChaCha20-Poly1305) keyed directly from PAKE |
-| Post-quantum forward secrecy     | ✓ (X25519 + ML-KEM-768 hybrid, Go 1.24+ default)   | ✗ (classical ECC only)                            |
-| MITM defense                     | Two layers — TLS catches a network MITM, SPAKE2 binding catches a TLS-handshake MITM | Single layer — PAKE alone                         |
-| Relay does not see the file      | ✓ — relay only forwards opaque UDP datagrams; QUIC/TLS terminate at the peers | ✓ — relay only forwards ciphertext after PAKE     |
-| How often the relay is in path   | Fallback only (used when ICE hole-punching fails)  | Every cross-network transfer                      |
+TLS 1.3's key exchange uses the **X25519 + ML-KEM-768 hybrid** (Go's
+standard since 1.24). Ciphertext captured today is not retroactively
+decryptable by a future large-scale quantum computer.
 
 ## Is the pairing server something to worry about?
 
@@ -77,8 +65,8 @@ carrier moving sealed envelopes. It moves the parcel; it can't open it.
 |---------------------------------------------------|-----------------|
 | File contents                                     | ✗ never         |
 | File names, sizes, hashes                         | ✗ never         |
-| Encrypted ciphertext (on the relay-fallback path) | ✓ as opaque bytes — not decryptable, not even by the server's operator |
-| The 7-character pairing code & your IP            | ✓ briefly, in memory only, for pairing — never written to disk |
+| Ciphertext (on the relay-fallback path)           | ✓ as opaque bytes — not decryptable, not even by the server's operator |
+| The 10-letter pairing code and your IP            | ✓ briefly, in memory only, for pairing — never written to disk |
 
 End-to-end encryption means even the operator of the server can't
 decrypt traffic that goes through it. The encryption keys never leave
@@ -113,3 +101,15 @@ excluded for legibility). Codes are:
 - **System-generated** — fsend picks the code for each transfer. For
   persistent shared secrets across many transfers (scripts, kiosks),
   use `--pass` instead.
+
+## Compared to croc
+
+|                                  | fsend                                              | croc                                              |
+|----------------------------------|----------------------------------------------------|---------------------------------------------------|
+| End-to-end encrypted             | ✓                                                  | ✓                                                 |
+| PAKE protocol                    | SPAKE2 (RFC 9382, IETF-standardized)               | `schollz/pake` (non-standardized, Boneh-Shoup textbook construction) |
+| Crypto layers over the wire      | TLS 1.3 over QUIC **plus** SPAKE2, channel-bound via the RFC 5705 exporter | Single AEAD (AES-GCM or XChaCha20-Poly1305) keyed directly from PAKE |
+| Post-quantum forward secrecy     | ✓ (X25519 + ML-KEM-768 hybrid)                     | ✗ (classical ECC only)                            |
+| MITM defense                     | Two layers — TLS catches a network MITM, SPAKE2 binding catches a TLS-handshake MITM | Single layer — PAKE alone                         |
+| Relay does not see the file      | ✓ — relay only forwards opaque UDP datagrams; QUIC/TLS terminate at the peers | ✓ — relay only forwards ciphertext after PAKE     |
+| How often the relay is in path   | Fallback only (used when ICE hole-punching fails)  | Every cross-network transfer                      |
