@@ -1,29 +1,13 @@
-# Reference docker-compose for self-hosting an fsend pairing + relay server.
+# Self-hosted fsend pairing + relay server.
 #
-# Prerequisites:
-#   1. A box with public IPv4 (ideally IPv6 too)
-#   2. UDP/443 and TCP/443 open inbound
-#   3. A domain pointing at the box (set via FSEND_DOMAIN env var below)
-#   4. Docker + docker-compose v2
+# Open inbound: TCP/80 (ACME), TCP/443 (HTTPS), UDP/443 (relay).
+# Also needs: a domain pointing at the host, and Docker Compose v2.
 #
-# What this stack does:
-#   - The fsend container runs `fsend server` on internal ports
-#     (HTTP signaling :8080, UDP relay :443)
-#   - Caddy terminates HTTPS on TCP/443 with automatic Let's Encrypt certs
-#   - Caddy forwards signaling HTTP requests to the fsend container
-#   - UDP/443 goes directly to the fsend container
-#     (TLS terminates at the peers, not us)
+# Usage:   export FSEND_DOMAIN=<your-domain-or-subdomain>   # e.g. fsend.alzina.dev
+#          docker compose up -d
+# Upgrade: docker compose pull && docker compose up -d
 #
-# Usage:
-#   export FSEND_DOMAIN=fs.example.com
-#   docker compose up -d
-#   docker compose logs -f
-#
-# To upgrade:
-#   docker compose pull
-#   docker compose up -d
-#
-# See https://github.com/polius/fsend for documentation.
+# Docs: https://github.com/polius/fsend
 
 services:
   fsend:
@@ -33,8 +17,6 @@ services:
     restart: unless-stopped
     ports:
       - "443:443/udp"
-    expose:
-      - "8080"
     environment:
       # All env vars are optional; defaults shown.
       FSEND_HTTP_ADDR: ":8080"
@@ -45,8 +27,8 @@ services:
       FSEND_MAX_SESSIONS_PER_IP: "5"
       FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN: "30"
       FSEND_SESSION_IDLE_TIMEOUT: "60s"
-    networks:
-      - fsend-net
+      # Password to restrict server access (empty = open); clients use `fsend --connect <domain> <password>`.
+      FSEND_SERVER_PASSWORD: ""
     healthcheck:
       test: ["CMD", "/fsend", "server", "--health-check"]
       interval: 30s
@@ -64,18 +46,10 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data         # Let's Encrypt certs live here
-      - caddy_config:/config
     environment:
-      FSEND_DOMAIN: "${FSEND_DOMAIN:?Set FSEND_DOMAIN to your public hostname (e.g. fs.example.com)}"
+      FSEND_DOMAIN: "${FSEND_DOMAIN:?required, e.g. fs.example.com}"
     depends_on:
       - fsend
-    networks:
-      - fsend-net
-
-networks:
-  fsend-net:
-    driver: bridge
 
 volumes:
   caddy_data:
-  caddy_config:

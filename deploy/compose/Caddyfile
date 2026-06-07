@@ -1,36 +1,19 @@
-# Caddy config for the reference fsend self-host stack.
-# {$FSEND_DOMAIN} is injected by docker-compose.yml; Caddy auto-provisions
-# a Let's Encrypt cert for it.
+# {$FSEND_DOMAIN} comes from docker-compose.yml; Caddy auto-issues a Let's Encrypt cert.
 
 {$FSEND_DOMAIN} {
     reverse_proxy fsend:8080 {
-        # Forward the real client IP so the server's rate-limiter and
-        # STUN reflection see peers, not Caddy.
+        # X-Real-IP isn't set by Caddy; the server uses it for rate-limiting.
         header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
 
-        # Signaling long-polls (POST /v1/session/{code}/wait) can hold a
-        # connection open up to 25s. Keep the idle window above that so
-        # they don't get cut. Signaling only — file transfer is QUIC over
-        # UDP and doesn't traverse Caddy.
+        # Must exceed the 25s signaling long-poll window.
         transport http {
             read_timeout 30s
             write_timeout 30s
         }
     }
 
-    # WARN-only logs by default. Flip to INFO/DEBUG while debugging.
     log {
         output stdout
-        level WARN
-    }
-
-    # The signaling API serves JSON, never HTML — these browser-targeted
-    # headers are unnecessary but free.
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
+        level WARN  # flip to INFO/DEBUG while debugging
     }
 }
