@@ -33,7 +33,7 @@ a future large-scale quantum computer.
 | Crypto layers over the wire      | TLS 1.3 over QUIC **plus** SPAKE2, channel-bound via the RFC 5705 exporter | Single AEAD (AES-GCM or XChaCha20-Poly1305) keyed directly from PAKE |
 | Post-quantum forward secrecy     | ✓ (X25519 + ML-KEM-768 hybrid, Go 1.24+ default)   | ✗ (classical ECC only)                            |
 | MITM defense                     | Two layers — TLS catches a network MITM, SPAKE2 binding catches a TLS-handshake MITM | Single layer — PAKE alone                         |
-| Relay sees the file              | ✗ — relay only forwards opaque UDP datagrams; QUIC/TLS terminate at the peers | ✗ — relay only forwards ciphertext after PAKE     |
+| Relay does not see the file      | ✓ — relay only forwards opaque UDP datagrams; QUIC/TLS terminate at the peers | ✓ — relay only forwards ciphertext after PAKE     |
 | How often the relay is in path   | Fallback only (used when ICE hole-punching fails)  | Every cross-network transfer                      |
 
 ## Is the pairing server something to worry about?
