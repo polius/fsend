@@ -167,6 +167,63 @@ func TestClient_UnreachableServer_MapsToFserror(t *testing.T) {
 // still surface as ErrServerUnreachable, not bubble up the raw
 // context.DeadlineExceeded (which would render as the generic E099
 // "Unexpected error" through fserrors.Lookup).
+// TestClient_ServerPassword_HappyPath shows that WithPassword sets the
+// X-Fsend-Auth header on every outbound call, and that a matching
+// server password lets Create + Join through normally.
+func TestClient_ServerPassword_HappyPath(t *testing.T) {
+	s := server.New(server.Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          2 * time.Second,
+		LongPollTimeout:      500 * time.Millisecond,
+		MaxSessionsPerIP:     10,
+		MaxNewSessionsPerMin: 100,
+		ServerPassword:       "swordfish",
+	})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	c := New(ts.URL, "test").WithPassword("swordfish")
+	if _, err := c.Create(context.Background(), ""); err != nil {
+		t.Fatalf("Create with correct password: %v", err)
+	}
+}
+
+// TestClient_ServerPassword_MissingOrWrong covers the two failure
+// modes: no password attached, and a wrong password attached. Both
+// must surface as fserrors.ErrServerAuthRequired so the catalog
+// renders E028 instead of an opaque 401.
+func TestClient_ServerPassword_MissingOrWrong(t *testing.T) {
+	s := server.New(server.Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          2 * time.Second,
+		LongPollTimeout:      500 * time.Millisecond,
+		MaxSessionsPerIP:     10,
+		MaxNewSessionsPerMin: 100,
+		ServerPassword:       "swordfish",
+	})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	for _, tc := range []struct {
+		name string
+		pw   string
+	}{
+		{"no password", ""},
+		{"wrong password", "guess"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(ts.URL, "test")
+			if tc.pw != "" {
+				c = c.WithPassword(tc.pw)
+			}
+			_, err := c.Create(context.Background(), "")
+			if !errors.Is(err, fserrors.ErrServerAuthRequired) {
+				t.Errorf("got %v, want ErrServerAuthRequired", err)
+			}
+		})
+	}
+}
+
 func TestClient_TimeoutMapsToServerUnreachable(t *testing.T) {
 	// httptest server that hangs forever — exercises the http.Client
 	// timeout path that fires when packets are dropped on the floor.

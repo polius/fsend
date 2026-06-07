@@ -4,10 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/polius/fsend/internal/fserrors"
 )
 
 func TestBuildArchive_RoundTrip(t *testing.T) {
@@ -43,7 +46,7 @@ func TestBuildArchive_RoundTrip(t *testing.T) {
 		t.Errorf("NumEntries = 0")
 	}
 
-	if err := ExtractArchive(arc.Path, dstDir); err != nil {
+	if err := ExtractArchive(arc.Path, dstDir, false); err != nil {
 		t.Fatalf("ExtractArchive: %v", err)
 	}
 
@@ -177,7 +180,7 @@ func TestExtractArchive_RejectsZipSlip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = ExtractArchive(tarPath, target)
+	err = ExtractArchive(tarPath, target, false)
 	if err == nil {
 		t.Fatalf("expected extraction to fail on path traversal")
 	}
@@ -186,6 +189,71 @@ func TestExtractArchive_RejectsZipSlip(t *testing.T) {
 	parent := filepath.Dir(target)
 	if _, err := os.Stat(filepath.Join(parent, "escape.txt")); err == nil {
 		t.Errorf("traversal artifact landed at %s", filepath.Join(parent, "escape.txt"))
+	}
+}
+
+// TestExtractArchive_ConflictWithoutOverwrite verifies that without
+// overwrite=true, a single conflicting file inside the archive causes the
+// whole extract to refuse — and that nothing landed on disk in the
+// meantime. The companion test confirms overwrite=true clobbers cleanly.
+func TestExtractArchive_ConflictWithoutOverwrite(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Build an archive with two regular files.
+	for rel, content := range map[string][]byte{
+		"proj/keeper.txt": []byte("from archive"),
+		"proj/clash.txt":  []byte("from archive"),
+	} {
+		full := filepath.Join(srcDir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	arc, err := BuildArchive([]string{filepath.Join(srcDir, "proj")}, nil)
+	if err != nil {
+		t.Fatalf("BuildArchive: %v", err)
+	}
+	defer os.Remove(arc.Path)
+
+	// Pre-place the clashing file at the receiver.
+	if err := os.MkdirAll(filepath.Join(dstDir, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clashPath := filepath.Join(dstDir, "proj", "clash.txt")
+	if err := os.WriteFile(clashPath, []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without overwrite, the conflict must surface as ErrTargetExists and
+	// no file from the archive should land.
+	err = ExtractArchive(arc.Path, dstDir, false)
+	if !errors.Is(err, fserrors.ErrTargetExists) {
+		t.Fatalf("got %v, want ErrTargetExists", err)
+	}
+	// The pre-existing file is untouched.
+	got, err := os.ReadFile(clashPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "PREEXISTING" {
+		t.Errorf("clash.txt was modified: got %q", got)
+	}
+	// The non-conflicting entry was NOT pre-extracted (preflight runs first).
+	if _, err := os.Stat(filepath.Join(dstDir, "proj", "keeper.txt")); !os.IsNotExist(err) {
+		t.Errorf("keeper.txt landed despite refused extract")
+	}
+
+	// With overwrite=true the same archive succeeds and clobbers the
+	// conflicting file.
+	if err := ExtractArchive(arc.Path, dstDir, true); err != nil {
+		t.Fatalf("overwrite extract: %v", err)
+	}
+	if got, _ := os.ReadFile(clashPath); string(got) != "from archive" {
+		t.Errorf("overwrite did not replace clash.txt: %q", got)
 	}
 }
 

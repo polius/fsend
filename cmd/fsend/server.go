@@ -21,7 +21,7 @@ import (
 	"github.com/polius/fsend/internal/version"
 )
 
-// serverCmd is the rendezvous + relay-fallback service that fsend
+// serverCmd is the pairing + relay-fallback service that fsend
 // clients use when peers are not on the same LAN. Invoked as
 // `fsend server`.
 //
@@ -68,6 +68,7 @@ func runServer() error {
 		MaxSessionsPerIP:     cfg.maxSessionsPerIP,
 		MaxNewSessionsPerMin: cfg.maxNewSessionsPerMin,
 		Logger:               logger,
+		ServerPassword:       cfg.serverPassword,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -137,6 +138,7 @@ type serverRuntimeConfig struct {
 	maxNewSessionsPerMin int
 	maxBytesPerSession   uint64
 	sessionIdleTimeout   time.Duration
+	serverPassword       string
 }
 
 func loadServerConfig() serverRuntimeConfig {
@@ -147,6 +149,7 @@ func loadServerConfig() serverRuntimeConfig {
 		maxNewSessionsPerMin: envInt("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", 30),
 		maxBytesPerSession:   envBytes("FSEND_MAX_RELAY_BYTES_PER_SESSION", 100*1024*1024),
 		sessionIdleTimeout:   envDuration("FSEND_SESSION_IDLE_TIMEOUT", 60*time.Second),
+		serverPassword:       os.Getenv("FSEND_SERVER_PASSWORD"),
 	}
 	switch strings.ToLower(os.Getenv("FSEND_LOG_LEVEL")) {
 	case "debug":
@@ -281,6 +284,9 @@ CONFIGURATION (environment variables — all optional)
   FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MiB (accepts e.g. "100MiB", "500m", "104857600")
   FSEND_SESSION_IDLE_TIMEOUT            Default 60s (Go duration: 30s, 5m, 1h)
   FSEND_PUBLIC_ADDR                     host:port clients dial for relay; defaults to FSEND_UDP_ADDR
+  FSEND_SERVER_PASSWORD                 Optional shared secret. When set, every endpoint except
+                                        /v1/health requires the X-Fsend-Auth header to match.
+                                        Clients set theirs with: fsend --connect <host:port> <password>.
 
 LEARN MORE
   https://github.com/polius/fsend

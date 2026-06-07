@@ -336,3 +336,67 @@ func TestDeleteSession(t *testing.T) {
 		t.Errorf("expected 404 after delete, got %d", jr.StatusCode)
 	}
 }
+
+// TestServerPassword_Gate verifies that the password-gated handler
+// rejects unauthenticated requests with 401, accepts the configured
+// password, and always leaves /v1/health open so monitoring works
+// without the secret.
+func TestServerPassword_Gate(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		LongPollTimeout:      500 * time.Millisecond,
+		MaxSessionsPerIP:     10,
+		MaxNewSessionsPerMin: 100,
+		ServerPassword:       "swordfish",
+	})
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	post := func(t *testing.T, path string, header string) int {
+		t.Helper()
+		body, _ := json.Marshal(CreateSessionRequest{})
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if header != "" {
+			req.Header.Set(AuthHeader, header)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := post(t, "/v1/session", ""); got != 401 {
+		t.Errorf("missing X-Fsend-Auth: status = %d, want 401", got)
+	}
+	if got := post(t, "/v1/session", "wrong"); got != 401 {
+		t.Errorf("wrong password: status = %d, want 401", got)
+	}
+	if got := post(t, "/v1/session", "swordfish"); got != 200 {
+		t.Errorf("correct password: status = %d, want 200", got)
+	}
+
+	// /v1/health is always open — monitoring must not need the secret.
+	resp, err := http.Get(srv.URL + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("health without auth: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestServerPassword_OpenByDefault confirms the default config (no
+// password) leaves every endpoint reachable — the public rendezvous
+// must not accidentally require auth after this feature lands.
+func TestServerPassword_OpenByDefault(t *testing.T) {
+	srv := newTestServer(t) // no ServerPassword set
+	resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("open server: status = %d, want 200", resp.StatusCode)
+	}
+}

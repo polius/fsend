@@ -424,7 +424,16 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		// the last point at which the transfer can fail visibly; if it
 		// does, we leave the .partial in place so the user (or a
 		// retry) can re-extract without re-downloading.
-		if err := ExtractArchive(partial, opts.TargetDir); err != nil {
+		//
+		// Pass Overwrite through so a directory transfer respects the
+		// same flag as a single-file transfer: without --overwrite, the
+		// pre-scan refuses if any file inside would clobber something
+		// on disk. The partial stays put so the user can re-run with
+		// --overwrite to finish without re-downloading.
+		if err := ExtractArchive(partial, opts.TargetDir, opts.Overwrite); err != nil {
+			if errors.Is(err, fserrors.ErrTargetExists) {
+				return err
+			}
 			return fmt.Errorf("%w: extract archive: %v", fserrors.ErrWriteFailed, err)
 		}
 		_ = os.Remove(partial)

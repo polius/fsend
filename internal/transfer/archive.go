@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/zeebo/blake3"
+
+	"github.com/polius/fsend/internal/fserrors"
 )
 
 // ArchiveName is the wire-level "filename" used for directory archives.
@@ -257,10 +259,21 @@ func addToTar(tw *tar.Writer, abs string, relTop string, st os.FileInfo, m exclu
 // who may be running a modified client). Symlinks are written as-is;
 // the receiver's filesystem rules govern whether they resolve to
 // anything sensible.
-func ExtractArchive(tarPath, targetDir string) error {
+//
+// When overwrite is false, the archive is pre-scanned: if any regular-file
+// entry would replace something already on disk, we return
+// fserrors.ErrTargetExists and write nothing. Doing this in a separate
+// pass keeps a conflict from leaving the target partially extracted.
+func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 	absTarget, err := filepath.Abs(targetDir)
 	if err != nil {
 		return fmt.Errorf("extract: abs targetDir: %w", err)
+	}
+
+	if !overwrite {
+		if err := preflightExtract(tarPath, absTarget); err != nil {
+			return err
+		}
 	}
 
 	f, err := os.Open(tarPath)
@@ -327,6 +340,42 @@ func ExtractArchive(tarPath, targetDir string) error {
 		default:
 			// Skip exotic types (block/char devices, fifos). Not
 			// something fsend cares about transporting.
+		}
+	}
+}
+
+// preflightExtract walks the tar headers without consuming entry data and
+// returns ErrTargetExists on the first regular-file entry whose
+// destination already exists. Symlinks and directories don't trip the
+// check — MkdirAll is idempotent, and clobbering a symlink at extract
+// time is what os.Remove + os.Symlink already does.
+//
+// Running this as a separate pass avoids the half-extracted state that
+// would result from failing mid-write.
+func preflightExtract(tarPath, absTarget string) error {
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return fmt.Errorf("extract: open %s: %w", tarPath, err)
+	}
+	defer func() { _ = f.Close() }()
+	tr := tar.NewReader(f)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("extract: scan header: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		clean, err := safeJoin(absTarget, hdr.Name)
+		if err != nil {
+			return err
+		}
+		if st, err := os.Lstat(clean); err == nil && !st.IsDir() {
+			return fmt.Errorf("%w: %s", fserrors.ErrTargetExists, clean)
 		}
 	}
 }

@@ -1,6 +1,6 @@
 # goreleaser config for fsend.
 #
-# One binary ships from this repo: `fsend`. The CLI and the rendezvous +
+# One binary ships from this repo: `fsend`. The CLI and the pairing +
 # relay server are the same binary; the server is invoked as a
 # subcommand (`fsend server`).
 #

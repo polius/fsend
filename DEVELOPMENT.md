@@ -45,7 +45,7 @@ does not look at `/tmp/`.
 
 ## 2 · Test it works without a server (LAN only)
 
-`fsend` does direct peer-to-peer over the LAN via mDNS — **no rendezvous
+`fsend` does direct peer-to-peer over the LAN via mDNS — **no pairing
 server is needed when both peers are on the same machine or LAN**. This
 is the fastest smoke test of the binary you just built.
 
@@ -69,7 +69,7 @@ config.
 ## 3 · Run the server locally
 
 For internet transfers (one peer behind NAT, etc.) `fsend` needs a
-rendezvous server. To test changes to server code, or to test the full
+pairing server. To test changes to server code, or to test the full
 client↔server↔client path locally, run the same binary with the
 `server` subcommand:
 

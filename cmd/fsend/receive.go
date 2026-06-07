@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -23,7 +22,7 @@ import (
 )
 
 // runReceive executes the receive-side flow: a 300 ms mDNS query for a
-// same-LAN sender, and on miss a fall-through to the rendezvous + relay
+// same-LAN sender, and on miss a fall-through to the pairing + relay
 // path in runReceiveOverInternet.
 func runReceive(f *flags, c string) error {
 	if err := code.Validate(c); err != nil {
@@ -49,14 +48,14 @@ func runReceive(f *flags, c string) error {
 	// LAN discovery first. An animated spinner makes the 300 ms wait feel
 	// alive instead of frozen — and the same spinner can swap message
 	// without dropping a stale "Looking…" line on screen if we fall
-	// through to the rendezvous server.
+	// through to the pairing server.
 	var spin *uxlog.Spinner
 	if !f.quiet {
 		spin = uxlog.StartSpinner("Looking for sender on local network")
 	}
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
-		// LAN miss → try the rendezvous + relay path. Swap the spinner
+		// LAN miss → try the pairing + relay path. Swap the spinner
 		// message without leaving the first line as a static artifact.
 		// runReceiveOverInternet owns the spinner's lifetime from here —
 		// it stops it once Join lands.
@@ -87,69 +86,66 @@ func runReceive(f *flags, c string) error {
 		}
 	}
 
+	// First LAN dial sits outside the retry loop. If it fails before
+	// pairing, mDNS responded (cached, stale, or racing the sender's
+	// de-announce) but the sender's LAN listener is gone — almost
+	// always because the sender's internet path won the pair race or
+	// the LAN listener was never really up. Fall through to the
+	// internet path instead of reporting E003, which used to mislead
+	// users in single-receiver scenarios and produced a flaky
+	// TestReceive_Overwrite under -race.
+	first, err := quicconn.Dial(ctx, addr, c)
+	if err != nil {
+		if !f.quiet {
+			fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server.")
+		}
+		var connSpin *uxlog.Spinner
+		if !f.quiet {
+			connSpin = uxlog.StartSpinner("Connecting via server")
+		}
+		cfg, _ := config.Load()
+		return runReceiveOverInternet(ctx, f, c, cfg, connSpin)
+	}
+
 	closeProg, accept, progressFn, recvBytes := newReceiverProgress(f)
 	defer closeProg()
 
 	start := time.Now()
-	// Same retry shape as the internet receive path: a transient QUIC
-	// or transfer error rebuilds the QUIC connection (Dial opens a
-	// fresh UDP socket on each attempt) and the receiver's partial
-	// file + imohash let the resumed transfer pick up where it left
-	// off.
-	paired := false
+	printPath(f, connpath.FromLAN())
+
+	// LAN succeeded once — keep a normal retry loop around the transfer
+	// itself so a mid-stream drop can re-dial and resume from the
+	// receiver's partial.
+	current := first
 	if err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
 		func(attempt int) error {
-			return runReceiverLANOneAttempt(ctx, addr, c, outDir, hostname, f, accept, progressFn, &paired)
+			if current == nil {
+				res, err := quicconn.Dial(ctx, addr, c)
+				if err != nil {
+					return fmt.Errorf("dialing sender: %w", err)
+				}
+				current = res
+			}
+			res := current
+			current = nil
+			defer res.Close()
+			return transfer.Recv(ctx, &res.Streams, transfer.RecvOptions{
+				Hostname:      hostname,
+				OS:            runtime.GOOS,
+				ClientVersion: version.Version,
+				TargetDir:     outDir,
+				Overwrite:     f.overwrite,
+				Accept:        accept,
+				Password:      f.passArg,
+				PromptPass:    receiverPasswordPrompt(f),
+				ProgressFn:    progressFn,
+			})
 		}); err != nil {
 		return err
 	}
 
 	printRecvSummary(f, recvBytes(), time.Since(start))
 	return nil
-}
-
-// runReceiverLANOneAttempt is one Dial + transfer pass. The `paired`
-// flag suppresses the "✓ direct (local)" line on retries so the user
-// sees it exactly once even when we reconnect mid-session.
-func runReceiverLANOneAttempt(ctx context.Context, addr, code, outDir, hostname string, f *flags, accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), paired *bool) error {
-	res, err := quicconn.Dial(ctx, addr, code)
-	if err != nil {
-		// mDNS told us the sender exists but the dial failed before
-		// we ever paired — overwhelmingly this means the sender
-		// already accepted another receiver and is no longer
-		// Accept()ing on this listener. (The sender de-announces
-		// mDNS at pair-time, but a receiver query can race the
-		// announce going down.) Surface this as the friendly
-		// "code already claimed" error rather than the raw QUIC
-		// timeout, which the catalog catches as a generic E099.
-		//
-		// After pairing, dial failures are real transient issues
-		// (the receiver lost the connection and is reconnecting via
-		// the retry loop) — let those bubble up so retry can handle
-		// them.
-		if !*paired {
-			return fmt.Errorf("%w (lan: %v)", fserrors.ErrCodeAlreadyClaimed, err)
-		}
-		return fmt.Errorf("dialing sender: %w", err)
-	}
-	defer res.Close()
-
-	if !*paired {
-		*paired = true
-		printPath(f, connpath.FromLAN())
-	}
-
-	return transfer.Recv(ctx, &res.Streams, transfer.RecvOptions{
-		Hostname:      hostname,
-		OS:            runtime.GOOS,
-		ClientVersion: version.Version,
-		TargetDir:     outDir,
-		Overwrite:     f.overwrite,
-		Accept:        accept,
-		Password:      f.passArg,
-		PromptPass:    receiverPasswordPrompt(f),
-		ProgressFn:    progressFn,
-	})
 }
 
 // receiverPasswordPrompt returns a callback that reads a password from

@@ -37,7 +37,7 @@ import (
 // The first goroutine to return a pairing wins; pairCtx is cancelled so
 // the loser tears down cleanly. The transfer phase then runs on the
 // winner. There is no LAN-only "budget" — same-LAN receivers always win
-// because the receiver only contacts the rendezvous server after its
+// because the receiver only contacts the pairing server after its
 // 300 ms mDNS query misses (see receive.go). The internet path is
 // always-on so cross-network receivers don't have to wait for any timer.
 
@@ -63,7 +63,7 @@ type internetSenderPairing struct {
 	cleanup      func()
 
 	// sigClient and sessionID let the post-transfer error path probe
-	// the rendezvous server for a relay eviction reason. Without this,
+	// the pairing server for a relay eviction reason. Without this,
 	// a 100 MiB-cap-hit looks identical to a flaky network.
 	sigClient *signaling.Client
 	sessionID string
@@ -117,7 +117,7 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 	}, nil
 }
 
-// pairOverInternet runs the full rendezvous + ICE/relay handshake and
+// pairOverInternet runs the full pairing-server + ICE/relay handshake and
 // returns once the receiver has paired and the QUIC SenderHandshake
 // over the established data path is up.
 //
@@ -505,7 +505,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	return nil
 }
 
-// isServerDown reports whether an error is the "rendezvous server is
+// isServerDown reports whether an error is the "pairing server is
 // unreachable" flavor — used to decide whether to surface the
 // "only same-LAN receivers can connect" warning vs treating it as a
 // transfer-side failure.

@@ -37,7 +37,7 @@ type flags struct {
 	connectArgsRaw []string
 
 	// Debug-only sender path override: "local" | "stun" | "turn".
-	// Forces a specific data path instead of the default LAN+rendezvous
+	// Forces a specific data path instead of the default LAN+pairing-server
 	// race with ICE-then-relay fallback. Hidden from --help, undocumented.
 	mode string
 

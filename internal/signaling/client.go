@@ -26,9 +26,10 @@ const DefaultRequestTimeout = 30 * time.Second
 
 // Client talks to a fsend signaling endpoint.
 type Client struct {
-	baseURL string
-	hc      *http.Client
-	version string
+	baseURL  string
+	hc       *http.Client
+	version  string
+	password string // optional: self-hosted server's shared secret
 }
 
 // New builds a client for the given http(s) base URL.
@@ -41,6 +42,14 @@ func New(baseURL, clientVersion string) *Client {
 		hc:      &http.Client{Timeout: DefaultRequestTimeout},
 		version: clientVersion,
 	}
+}
+
+// WithPassword attaches a shared-secret server password that the client
+// presents in the X-Fsend-Auth header on every request. Empty disables
+// the header. Returns c so the call composes with New.
+func (c *Client) WithPassword(pw string) *Client {
+	c.password = pw
+	return c
 }
 
 // Create requests a new session. The returned response carries the code
@@ -203,6 +212,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *
 	if opt != nil && opt.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+opt.bearerToken)
 	}
+	if c.password != "" {
+		req.Header.Set("X-Fsend-Auth", c.password)
+	}
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -241,6 +253,8 @@ func statusToFsendErr(resp *http.Response) error {
 		return fserrors.ErrServerRetired
 	case http.StatusTooManyRequests:
 		return fserrors.ErrRateLimited
+	case http.StatusUnauthorized:
+		return fserrors.ErrServerAuthRequired
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	return fmt.Errorf("signaling: status %d: %s", resp.StatusCode, bytes.TrimSpace(body))

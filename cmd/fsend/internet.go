@@ -35,7 +35,9 @@ const iceBudget = 15 * time.Second
 // signalingClient builds a client pointed at the configured server.
 //
 // HTTPS is the default for non-local addresses; HTTP for localhost so dev
-// loops work without a cert.
+// loops work without a cert. If the user has configured a per-server
+// password (via `fsend --connect <host:port> <password>`), the client
+// carries it through; the server matches against FSEND_SERVER_PASSWORD.
 func signalingClient(cfg *config.Config) (*signaling.Client, string) {
 	addr := cfg.EffectiveServer()
 	baseURL := addr
@@ -46,7 +48,7 @@ func signalingClient(cfg *config.Config) (*signaling.Client, string) {
 			baseURL = "https://" + addr
 		}
 	}
-	return signaling.New(baseURL, version.Version), addr
+	return signaling.New(baseURL, version.Version).WithPassword(cfg.ServerPassword), addr
 }
 
 func isLocalAddr(addr string) bool {
@@ -72,7 +74,7 @@ func stunHostFromServer(serverAddr string) string {
 }
 
 // joinRetryBudget caps how long the receiver waits for the sender to
-// register the code on the rendezvous server. With the sender's short
+// register the code on the pairing server. With the sender's short
 // LAN-only window (~5s) plus a Create round-trip, the sender should
 // always be registered within a couple of seconds of starting. But the
 // human is in the loop — the receiver may have typed the code while
@@ -87,7 +89,7 @@ var joinRetryBudget = 15 * time.Second
 // Mirror of runSendOverInternet: try ICE direct first (receiver =
 // controlled), fall back to relay on failure.
 //
-// connSpin, when non-nil, is the "connecting to rendezvous server"
+// connSpin, when non-nil, is the "connecting to pairing server"
 // spinner the caller already started. We adopt it (stop it once Join
 // either lands or hands us off to joinWithRetry's own spinner) so the
 // user sees a single continuous animation rather than two static lines.

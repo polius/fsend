@@ -20,7 +20,7 @@ import (
 )
 
 // runSend executes the send-side flow. The LAN listener (mDNS-announced
-// QUIC port derived from the code) and the rendezvous session are
+// QUIC port derived from the code) and the pairing-server session are
 // started in parallel; whichever the receiver reaches first wins. See
 // sendpair.go for the coordinator.
 func runSend(f *flags, paths []string) error {
@@ -33,7 +33,7 @@ func runSend(f *flags, paths []string) error {
 
 	// Bare --pass: suggest a random default the user can accept by
 	// pressing Enter. Done before any network setup so the prompt
-	// can't collide with the rendezvous spinner.
+	// can't collide with the pairing-server spinner.
 	if err := resolvePassword(f, true); err != nil {
 		return err
 	}
@@ -55,7 +55,7 @@ func runSend(f *flags, paths []string) error {
 	// Print the artifact (code + receive command) exactly once, here,
 	// before any path is attempted. Both LAN and internet paths use the
 	// same locally-generated code — LAN announces it via mDNS, and the
-	// rendezvous server adopts it via the suggested-code field on Create.
+	// pairing server adopts it via the suggested-code field on Create.
 	// The returned spinner animates "Waiting for receiver" until the
 	// pair coordinator stops it (on pair success or before printing an
 	// intermediate notice).
@@ -64,7 +64,7 @@ func runSend(f *flags, paths []string) error {
 	// Both paths run in parallel from T+0. Whichever pairs first wins;
 	// the loser is cancelled and torn down. See sendpair.go for the
 	// coordinator and the failure-mode UX. There is no LAN-only "budget"
-	// — the receiver only contacts the rendezvous server after its
+	// — the receiver only contacts the pairing server after its
 	// 300 ms mDNS query misses, so same-LAN receivers always win the
 	// race against the server path, and cross-network receivers don't
 	// wait on any timer.

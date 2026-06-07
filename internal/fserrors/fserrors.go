@@ -86,6 +86,10 @@ var (
 	// failed). Distinct from E014 ("could not reach the other peer")
 	// because the failure is on this side, before any peer is involved.
 	ErrLANListenerFailed = errors.New("local network listener failed")
+	// E028 — the rendezvous server returned 401: it's gated behind a
+	// shared password and the client either didn't send one or sent the
+	// wrong one.
+	ErrServerAuthRequired = errors.New("server password required")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -274,6 +278,13 @@ var catalog = map[error]Entry{
 		Message: "Could not open the local-network listener.",
 		Action: "Another fsend (or another program) may already be using the port.\n" +
 			"  Try again — most codes use a different port.",
+	},
+	ErrServerAuthRequired: {
+		Code: "E028", Exit: 28,
+		Message: "The server requires a password.",
+		Action: "Set it with:\n" +
+			"    fsend --connect <host:port> <password>\n" +
+			"  Ask the server operator for the password if you don't have it.",
 	},
 }
 

@@ -191,7 +191,7 @@ func requireE2E(t *testing.T) {
 // newXDG returns a fresh XDG_CONFIG_HOME pre-seeded with a config that
 // points fsend at our local server. Use this for any fsend invocation
 // so the user's real config is untouched and tests don't reach out to
-// the public rendezvous.
+// the public pairing server.
 func (hh *harness) newXDG(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

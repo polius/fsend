@@ -25,12 +25,31 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
 	"time"
 
 	"github.com/quic-go/quic-go"
 
 	"github.com/polius/fsend/internal/transfer"
 )
+
+// quic-go logs a one-line warning to the default logger every time the
+// PacketConn it gets isn't a *net.UDPConn — which is exactly the case on
+// our internet path, where the conn handed in is either the relay
+// wrapper or an ICE-owning wrapper. The warning is informational (it
+// just means quic-go can't tune SO_RCVBUF/SO_SNDBUF through us), and on
+// the relay path the underlying socket couldn't honor those settings
+// usefully anyway. Silence it with the library's own env-var knob so
+// nothing leaks onto user stderr — most visibly under --quiet, where the
+// e2e suite asserts on an empty stream.
+//
+// We only set the variable when the user hasn't already set it; an
+// explicit deployment override (e.g. "0") wins.
+func init() {
+	if os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING") == "" {
+		_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "1")
+	}
+}
 
 // ALPN is the application-layer protocol name we negotiate over TLS-in-QUIC.
 // Bumping this is a wire-protocol-major event.

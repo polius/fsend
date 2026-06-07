@@ -30,6 +30,12 @@ type Config struct {
 	MaxSessionsPerIP     int           // default 5
 	MaxNewSessionsPerMin int           // default 30
 	Logger               *slog.Logger
+
+	// ServerPassword, when non-empty, gates every endpoint except
+	// /v1/health behind a constant-time match on the X-Fsend-Auth
+	// header. Empty leaves the server open (the default for the public
+	// fs.alzina.dev rendezvous and for the canonical Docker stack).
+	ServerPassword string
 }
 
 // Default fills in zero values with sensible defaults.
@@ -149,8 +155,17 @@ func (b *rateBucket) allow(now time.Time, limit int, window time.Duration) bool 
 	return true
 }
 
-// Handler returns the *http.ServeMux that the server should expose.
-func (s *Server) Handler() *http.ServeMux {
+// AuthHeader is the HTTP header clients use to present a self-hosted
+// server's shared password. Distinct from the Authorization: Bearer
+// scheme, which carries the per-session role token issued by Create /
+// Join — the two auth surfaces are independent.
+const AuthHeader = "X-Fsend-Auth"
+
+// Handler returns the HTTP handler the server should expose. When
+// Config.ServerPassword is set, every endpoint except /v1/health is
+// wrapped in a constant-time password check; /v1/health stays open so
+// Docker HEALTHCHECK and monitoring don't need to share the secret.
+func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("POST /v1/session", s.createSession)
 	m.HandleFunc("POST /v1/session/{code}/join", s.joinSession)
@@ -161,7 +176,30 @@ func (s *Server) Handler() *http.ServeMux {
 	m.HandleFunc("POST /v1/relay/allocate", s.allocateRelay)
 	m.HandleFunc("GET /v1/relay/status", s.relayStatus)
 	m.HandleFunc("GET /v1/health", s.health)
-	return m
+	if s.cfg.ServerPassword == "" {
+		return m
+	}
+	return s.withServerAuth(m)
+}
+
+// withServerAuth wraps inner with a header check that constant-time
+// compares X-Fsend-Auth against the configured password. /v1/health
+// passes through unconditionally.
+func (s *Server) withServerAuth(inner http.Handler) http.Handler {
+	want := []byte(s.cfg.ServerPassword)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		got := r.Header.Get(AuthHeader)
+		if got == "" || subtle.ConstantTimeCompare(want, []byte(got)) != 1 {
+			w.Header().Set("WWW-Authenticate", `X-Fsend-Auth realm="fsend"`)
+			writeJSONError(w, http.StatusUnauthorized, "server password required")
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
 }
 
 // relayStatus reports the eviction reason for a relay allocation,

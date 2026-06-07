@@ -30,7 +30,7 @@ services:
     # Pin a major.minor in production so unattended-upgrades don't
     # surprise you on a breaking release. Bump it manually when you
     # want a new feature: docker compose pull, then up -d.
-    image: poliuscorp/fsend:0.1
+    image: poliuscorp/fsend
     container_name: fsend
     # The image's ENTRYPOINT is just `fsend`; `command` selects the
     # server subcommand so the same image can be reused as the CLI
