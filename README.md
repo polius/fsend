@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/icon.svg" alt="fsend" width="220">
+</p>
+
 # fsend
 
 **Truly peer-to-peer file transfer.** Direct, encrypted, relay only as a fallback.
