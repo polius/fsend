@@ -1,51 +1,16 @@
 #!/usr/bin/env sh
-# fsend install script
-#
-# Usage:
-#   curl -fsSL https://fsend.alzina.dev/install.sh | sh
-# or:
-#   wget -qO- https://fsend.alzina.dev/install.sh | sh
-#
-# Options (flags, or equivalent env vars):
-#   -p DIR  | PREFIX=DIR          Install location. If unset, picked
-#                                 automatically: a user-writable directory is
-#                                 preferred so no sudo is required. On
-#                                 Linux/macOS/*BSD: /usr/local/bin when
-#                                 writable (or running as root), else
-#                                 $HOME/.local/bin. On Windows shells
-#                                 (MSYS/Git Bash): $HOME/bin.
-#   -v VER  | FSEND_VERSION=VER   Version to install (default: latest)
-#   -h                            Show help and exit
-#
-# To pass flags through `curl | sh`, use `sh -s --`:
-#   curl -fsSL https://fsend.alzina.dev/install.sh | sh -s -- -p /opt/bin
-#
-# Works on Linux, macOS, FreeBSD, and Windows under Git Bash / MSYS2 / Cygwin.
-# Native Windows users without a POSIX shell should grab the .zip from the
-# releases page directly.
-#
-# Source: https://github.com/polius/fsend/blob/main/install.sh
-# Audit before piping into your shell. This script does what it says on the tin.
-
 set -eu
-
-# ---------- Configuration ----------
 
 REPO="polius/fsend"
 BINARY="fsend"
 FSEND_VERSION="${FSEND_VERSION:-latest}"
 PREFIX="${PREFIX:-}"
 
-# Track whether the user explicitly chose PREFIX (env var or -p flag). If they
-# did, we respect it and use elevation when needed; if not, we auto-pick a
-# writable dir later via default_prefix(). Flag parsing may flip this to 1.
 if [ -n "$PREFIX" ]; then
     PREFIX_EXPLICIT=1
 else
     PREFIX_EXPLICIT=0
 fi
-
-# ---------- Helpers ----------
 
 err()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m›\033[0m %s\n' "$*" >&2; }
@@ -76,9 +41,6 @@ need() {
     command -v "$1" >/dev/null 2>&1 || err "missing required command: $1"
 }
 
-# Run a command, escalating via sudo or doas if the current user is not root.
-# Returns 127 (command-not-found-style) if elevation is needed but no tool
-# is available, so callers can decide whether to fall back.
 run_elevated() {
     if [ "$(id -u 2>/dev/null || echo 1000)" = "0" ]; then
         "$@"
@@ -94,8 +56,6 @@ run_elevated() {
     fi
     return 127
 }
-
-# ---------- Detect platform ----------
 
 detect_os() {
     os="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -119,18 +79,13 @@ detect_arch() {
     esac
 }
 
-# Pick a sensible default install prefix that the user can write to without
-# elevation. Used only when PREFIX is not set in the environment.
 default_prefix() {
     pf_os="$1"
     case "$pf_os" in
         windows)
-            # Under MSYS/MinGW, $HOME is set and $HOME/bin is the natural place.
             echo "${HOME:-/usr/local}/bin"
             ;;
         *)
-            # Prefer /usr/local/bin if we're root or it's already writable
-            # (e.g. Homebrew on Intel macOS). Otherwise XDG-style user dir.
             if [ "$(id -u 2>/dev/null || echo 1000)" = "0" ] \
                || [ -w "/usr/local/bin" ]; then
                 echo "/usr/local/bin"
@@ -141,9 +96,6 @@ default_prefix() {
     esac
 }
 
-# ---------- Download helpers ----------
-
-# Use curl if present, else wget. Both will fail loudly on HTTP errors.
 download() {
     url="$1"
     out="$2"
@@ -158,7 +110,6 @@ download() {
     fi
 }
 
-# Resolve the latest release tag via the GitHub API (no auth needed for public).
 resolve_latest() {
     api="https://api.github.com/repos/${REPO}/releases/latest"
     if command -v curl >/dev/null 2>&1; then
@@ -171,8 +122,6 @@ resolve_latest() {
             | head -n1
     fi
 }
-
-# ---------- Verify ----------
 
 verify_checksum() {
     archive="$1"
@@ -194,10 +143,6 @@ verify_checksum() {
         || err "checksum mismatch: expected $expected, got $actual"
 }
 
-# ---------- Install ----------
-
-# Ensure $PREFIX exists. Creates it without elevation when possible; only
-# falls back to sudo/doas when the user explicitly chose a privileged path.
 ensure_prefix() {
     [ -d "$PREFIX" ] && return 0
 
@@ -219,16 +164,12 @@ install_binary() {
     src="$1"
     dst="$PREFIX/$(basename "$src")"
 
-    # Fast path: $PREFIX is writable by the current user.
     if [ -w "$PREFIX" ]; then
         mv "$src" "$dst"
         chmod 755 "$dst"
         return 0
     fi
 
-    # Auto-picked prefix shouldn't land here — default_prefix only returns
-    # paths we can write to. If it does, surface the error rather than
-    # silently prompting for a password the user didn't ask for.
     if [ "$PREFIX_EXPLICIT" = "0" ]; then
         err "$PREFIX is not writable (auto-selected). Set PREFIX=... to override."
     fi
@@ -241,9 +182,6 @@ install_binary() {
         || err "could not chmod $dst"
 }
 
-# ---------- PATH guidance ----------
-
-# Print a hint for adding $PREFIX to PATH, tailored to the user's shell.
 print_path_hint() {
     case "${SHELL:-}" in
         */fish)
@@ -253,7 +191,6 @@ print_path_hint() {
             printf '    echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.zshrc\n' "$PREFIX"
             ;;
         */bash)
-            # macOS bash uses ~/.bash_profile for login shells; Linux uses ~/.bashrc.
             if [ "$(uname -s)" = "Darwin" ]; then
                 printf '    echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.bash_profile\n' "$PREFIX"
             else
@@ -265,8 +202,6 @@ print_path_hint() {
             ;;
     esac
 }
-
-# ---------- Main ----------
 
 main() {
     need uname
@@ -283,7 +218,6 @@ main() {
         PREFIX="$(default_prefix "$os")"
     fi
 
-    # Resolve version
     version="$FSEND_VERSION"
     if [ "$version" = "latest" ]; then
         info "looking up latest release..."
@@ -292,8 +226,6 @@ main() {
     fi
     info "installing fsend ${version} for ${os}-${arch} into ${PREFIX}"
 
-    # Asset names: fsend_<version-without-v>_<os>_<arch>.tar.gz on unix,
-    # .zip on windows. (Matches goreleaser default naming.)
     vnum="${version#v}"
     case "$os" in
         windows) ext="zip";    bin_file="${BINARY}.exe" ;;
@@ -303,7 +235,6 @@ main() {
     archive_url="https://github.com/${REPO}/releases/download/${version}/${archive}"
     sums_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
 
-    # Stage in a temp dir; clean up on exit.
     tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend)"
     trap 'rm -rf "$tmp"' EXIT INT TERM HUP
 
@@ -329,7 +260,6 @@ main() {
 
     ok "installed: $PREFIX/$bin_file"
 
-    # Quick sanity check — only if PREFIX is on PATH.
     if command -v "$BINARY" >/dev/null 2>&1 \
        && [ "$(command -v "$BINARY")" = "$PREFIX/$bin_file" ]; then
         installed_version="$("$BINARY" --version 2>/dev/null | head -n1 || echo "?")"
@@ -346,7 +276,6 @@ main() {
     printf '      see all options:  fsend --help\n'
 }
 
-# Parse flags. -p and -v override the matching env vars; -h prints usage.
 while getopts ":p:v:h" opt; do
     case "$opt" in
         p)  PREFIX="$OPTARG"; PREFIX_EXPLICIT=1 ;;

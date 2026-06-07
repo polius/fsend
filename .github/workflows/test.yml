@@ -7,54 +7,34 @@ on:
 
 jobs:
   test:
-    name: ${{ matrix.os }} / Go ${{ matrix.go-version }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go-version: ["1.25"]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.25"
           cache: true
-
-      - name: Build
-        run: go build ./...
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        # NOTE: relay + signaling tests bind to loopback UDP/TCP. Most CI
-        # runners allow this; if a specific runner blocks ephemeral
-        # binding we'll narrow the test set with build tags.
-        run: go test -timeout 120s ./...
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -timeout 120s ./...
 
   lint:
-    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v6
         with:
           version: latest
           args: --timeout=5m
 
-  # Cross-compile sanity: build the fsend binary for every OS/arch combo
-  # the release pipeline and install.sh target. Catches GOOS/GOARCH-specific
-  # breakage (missing build tags, syscall divergence, CGO assumptions) at
-  # PR time rather than at tag time. CGO_ENABLED=0 matches the release
-  # build flags; static binary with no libc dependency.
   cross-compile:
-    name: build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -77,8 +57,7 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
-      - name: Build fsend
-        env:
+      - env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}

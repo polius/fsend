@@ -1,20 +1,3 @@
-# goreleaser config for fsend.
-#
-# One binary ships from this repo: `fsend`. The CLI and the pairing +
-# relay server are the same binary; the server is invoked as a
-# subcommand (`fsend server`).
-#
-# Built for the OS/arch combos that install.sh's detect_os / detect_arch
-# can resolve. Archive naming is locked to the convention install.sh
-# hard-codes:
-#
-#   fsend_<version>_<os>_<arch>.<ext>
-#
-# where <version> has the leading `v` stripped (matching the URL
-# install.sh constructs) and <ext> is .zip on Windows, .tar.gz everywhere
-# else.
-#
-# Verify locally with:  goreleaser release --snapshot --clean
 version: 2
 
 project_name: fsend
@@ -24,11 +7,6 @@ before:
     - go mod tidy
 
 builds:
-  # fsend (single binary — CLI + `server` subcommand). The supported
-  # install.sh targets are the union of the arches detect_arch maps
-  # (amd64, arm64, armv7, 386) and the OSes detect_os maps (linux,
-  # darwin, freebsd, windows). Some pairs don't exist in upstream Go
-  # (e.g. darwin/386) and are pruned via `ignore`.
   - id: fsend
     binary: fsend
     main: ./cmd/fsend
@@ -54,19 +32,13 @@ builds:
     goarm:
       - "7"
     ignore:
-      # Upstream Go has no darwin/386 since 1.15 and no darwin/arm (only arm64).
       - { goos: darwin,  goarch: "386" }
       - { goos: darwin,  goarch: arm }
-      # No freebsd/386 or freebsd/arm in install.sh's targets.
       - { goos: freebsd, goarch: "386" }
       - { goos: freebsd, goarch: arm }
-      # No windows/arm in install.sh (only arm64).
       - { goos: windows, goarch: arm }
 
 archives:
-  # Name templates are locked to what install.sh expects:
-  # <project>_<version>_<os>_<arch>[<armv7>].<ext> — no leading `v` on
-  # the version, .zip for Windows, .tar.gz elsewhere.
   - id: fsend
     ids:
       - fsend
@@ -78,23 +50,10 @@ archives:
       - LICENSE
       - README.md
 
-# Single checksums.txt covering all archives — install.sh fetches this
-# from <repo>/releases/download/<tag>/checksums.txt to verify downloads.
 checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
-# Keyless cosign signatures for every released archive and checksums.txt.
-# The release workflow runs in GitHub Actions with id-token:write, so
-# cosign signs against the GitHub OIDC identity — no long-lived keys.
-# Verify a download with:
-#
-#   cosign verify-blob \
-#     --certificate-identity-regexp='^https://github.com/polius/fsend/' \
-#     --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-#     --signature <file>.sig \
-#     --certificate <file>.pem \
-#     <file>
 signs:
   - cmd: cosign
     signature: "${artifact}.sig"
@@ -107,8 +66,6 @@ signs:
       - "${artifact}"
     artifacts: checksum
 
-# Snapshots (run via `goreleaser release --snapshot`) get a synthetic
-# version suffix so the artifacts never collide with a real release.
 snapshot:
   version_template: '{{ incpatch .Version }}-snapshot'
 
@@ -117,7 +74,6 @@ release:
     owner: polius
     name: fsend
   draft: false
-  # Tags like v1.0.0-rc.1 → prerelease; v1.0.0 → stable release.
   prerelease: auto
 
 changelog:
