@@ -60,7 +60,6 @@ public-internet deployment. Matches the `deploy/compose/` stack.
 | `443/tcp`        | inbound   | HTTPS signaling — terminated by Caddy/nginx/Traefik  |
 | `443/udp`        | inbound   | ICE STUN-style reflection + relay fallback — goes **directly** to the fsend container |
 | `80/tcp`         | inbound   | Let's Encrypt ACME HTTP-01 challenge (cert issue/renew) |
-| `8080/tcp`       | internal  | fsend signaling — only reachable by the proxy |
 
 Clients then connect with `fsend --connect fs.example.com:443` (HTTPS
 is the default scheme for non-local hosts). TCP/443 and UDP/443 share

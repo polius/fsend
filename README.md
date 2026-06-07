@@ -3,8 +3,12 @@
 **Truly peer-to-peer file transfer.** Direct, encrypted, relay only as a fallback.
 
 ```bash
-fsend report.pdf                   # send
-fsend abc-defg-jkm                 # receive
+# Sender — prints a code to share with the receiver
+$ fsend report.pdf
+  Share this code:  abc-defg-jkm
+
+# Receiver — uses that code
+$ fsend abc-defg-jkm
 ```
 
 ## Install
