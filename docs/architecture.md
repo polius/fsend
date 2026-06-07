@@ -6,6 +6,27 @@ server. Whichever path the receiver reaches first wins; the other is
 cancelled. There is **no timeout** between the two — neither side ever
 waits on a deadline.
 
+## Why a server?
+
+Two computers on the same Wi-Fi can find each other with mDNS. Across
+the internet they can't — random machines behind random NATs have no
+way to find each other on their own. That's what the pairing server is
+for: a shared rendezvous keyed by the transfer code.
+
+It plays two roles, and only the first is always needed:
+
+- **Pairing** — both sides post the code; the server tells each one
+  where the other is. The server learns the code (it has to, to match
+  the sides) but nothing about the file.
+- **Relay** *(fallback only)* — when NAT topology blocks a direct
+  connection, the server forwards encrypted UDP between the peers. TLS
+  terminates at the peers, so the server is moving bytes it can't
+  decrypt.
+
+On the same LAN, neither role is needed — mDNS handles the rendezvous
+and the bytes go straight over the LAN. The pairing server can be
+entirely offline and same-LAN transfers still work.
+
 ## Same network (sender and receiver on the same Wi-Fi)
 
 ```
@@ -26,6 +47,11 @@ cross NAT. Works even if the pairing server is offline.
 
 ## Different networks (sender at home, receiver at a café)
 
+When the LAN path finds no peer, both sides join the pairing server.
+What happens next depends on whether the two NATs can be hole-punched.
+
+### Direct transfer (common case)
+
 ```
    Sender                                  Receiver
    fsend report.pdf                        fsend abc-defg-jkm
@@ -33,19 +59,45 @@ cross NAT. Works even if the pairing server is offline.
      ├─ LAN listener (no one comes)          ├─ mDNS query (300 ms, miss)
      │                                       │
      └─ Server register  ──────────► ◄────── └─ Join server
-                                                       │
-                                                       ▼
-                                            ICE hole-punch (common case)
-                                            ─── or, on hard NAT ───
-                                            UDP relay (encrypted, opaque)
-                                            (LAN path cancelled)
+                                  │
+                                  ▼
+                       ICE exchanges candidates
+                       both NATs hole-punched
+                                  │
+                                  ▼
+                       Sender ◄──────► Receiver
+                       direct P2P over internet
+                       (server only signaled)
 ```
 
-When the two NATs can be punched through, bytes flow directly between
-the two peers. When NAT topology makes hole-punching impossible (hard
-symmetric NAT, some locked-down corporate networks), the pairing
-server forwards encrypted UDP datagrams between the peers — it never
-sees plaintext, since TLS terminates at the peers, not at the server.
+The server's only job was to introduce the peers. Once ICE finds a
+usable path, bytes flow directly between the two machines at their own
+bandwidth.
+
+### Relay (fallback)
+
+```
+   Sender                                  Receiver
+   fsend report.pdf                        fsend abc-defg-jkm
+     │                                       │
+     ├─ LAN listener (no one comes)          ├─ mDNS query (300 ms, miss)
+     │                                       │
+     └─ Server register  ──────────► ◄────── └─ Join server
+                                  │
+                                  ▼
+                       ICE candidates exchanged
+                       hole-punch fails (hard NAT)
+                                  │
+                                  ▼
+                   Sender ──► Server ──► Receiver
+                   encrypted UDP forwarded
+                   (server never sees plaintext)
+```
+
+When NAT topology defeats hole-punching (hard symmetric NAT, some
+locked-down corporate networks), the pairing server forwards encrypted
+UDP datagrams between the peers. TLS terminates at the peers, so the
+server is moving bytes it can't decrypt.
 
 ## Why this design
 
