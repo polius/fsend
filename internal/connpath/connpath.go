@@ -105,6 +105,26 @@ func (i Info) Short() string {
 	}
 }
 
+// Tag returns the compact path label used in summary lines and inline
+// chips, e.g. "Direct on LAN", "Direct via STUN", "Relayed via X". This
+// is the short form — Headline() retains the verbose explainer form for
+// situations where the long line is desired.
+func (i Info) Tag() string {
+	switch i.Kind {
+	case KindLocal:
+		return "Direct on LAN"
+	case KindDirectSTUN:
+		return "Direct via STUN"
+	case KindRelay:
+		if i.RelayAddr != "" {
+			return "Relayed via " + i.RelayAddr
+		}
+		return "Relayed"
+	default:
+		return "unknown"
+	}
+}
+
 // Glyph returns the UX glyph for this path: ✓ for direct paths, ⚠ for
 // relay (relay is not a failure, but it is slower and worth flagging).
 // Callers should pair with the ASCII fallback via uxlog.marker.
@@ -118,26 +138,16 @@ func (i Info) Glyph() (utf8, ascii string) {
 // Headline is the single line the CLI prints right after the data path
 // is established, e.g.
 //
-//	✓ direct (local) — same LAN, no NAT crossed
-//	✓ direct (STUN) — NAT hole-punched
-//	⚠ relay (TURN) via fsend.alzina.dev — NAT hole-punch failed
+//	✓ Direct on LAN
+//	✓ Direct via STUN
+//	⚠ Relayed via fsend.alzina.dev
 //
-// The trailing clause is informational and can be omitted by callers that
-// want a tighter line (e.g. --quiet does not call this at all).
+// Identical to Tag() today — the old verbose form ("— same LAN, no NAT
+// crossed") was dropped because it read as jargon. Kept as a separate
+// method so callers that want the headline form survive any future
+// divergence.
 func (i Info) Headline() string {
-	switch i.Kind {
-	case KindLocal:
-		return "direct (local) — same LAN, no NAT crossed"
-	case KindDirectSTUN:
-		return "direct (STUN) — NAT hole-punched"
-	case KindRelay:
-		if i.RelayAddr != "" {
-			return fmt.Sprintf("relay (TURN) via %s — NAT hole-punch failed", i.RelayAddr)
-		}
-		return "relay (TURN) — NAT hole-punch failed"
-	default:
-		return "unknown path"
-	}
+	return i.Tag()
 }
 
 // Detail returns the verbose ICE candidate trace for --debug output, e.g.

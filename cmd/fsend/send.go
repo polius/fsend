@@ -13,6 +13,7 @@ import (
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
+	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
@@ -273,7 +274,8 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 	fmt.Fprintln(os.Stderr)
 	switch kind {
 	case wire.TransferSingleFile:
-		fmt.Fprintf(os.Stderr, "  Sending %s  (%s)\n", items[0].Info.RelativePath, humanBytes(int64(items[0].Info.Size)))
+		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %s\n",
+			items[0].Info.RelativePath, uxlog.HumanBytes(int64(items[0].Info.Size)))
 	case wire.TransferDirectory:
 		// Archive transfers carry one SourceItem (the tar) whose Size is
 		// the on-wire payload; totalFiles is the user-meaningful count
@@ -283,17 +285,24 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 		for _, it := range items {
 			total += it.Info.Size
 		}
-		fmt.Fprintf(os.Stderr, "  Sending %s  (%d files, %s)\n", label, totalFiles, humanBytes(int64(total)))
+		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %d files  ·  %s\n",
+			label, totalFiles, uxlog.HumanBytes(int64(total)))
 	case wire.TransferMultiFile:
-		fmt.Fprintf(os.Stderr, "  Sending %d items  (%s)\n", len(items), humanBytes(totalBytes(items)))
+		fmt.Fprintf(os.Stderr, "  Sending  %d items  ·  %s\n",
+			len(items), uxlog.HumanBytes(totalBytes(items)))
 	case wire.TransferText:
-		fmt.Fprintf(os.Stderr, "  Sending text  (%s)\n", humanBytes(totalBytes(items)))
+		fmt.Fprintf(os.Stderr, "  Sending  text  ·  %s\n",
+			uxlog.HumanBytes(totalBytes(items)))
 	case wire.TransferStdin:
 		// Stdin is streamed: size isn't known until the producer EOFs.
 		// Print a placeholder; the progress bar carries the live byte
 		// count.
-		fmt.Fprintln(os.Stderr, "  Sending from stdin  (streaming)")
+		fmt.Fprintln(os.Stderr, "  Sending  stdin stream  ·  size unknown")
 	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "  Share this code:")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "      %s\n", uxlog.Code(c))
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  On the other machine, run:")
 	fmt.Fprintln(os.Stderr)
@@ -365,19 +374,34 @@ func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), p
 //   - Deferring also means a rejected transfer (Accept false, wrong
 //     password, sender abort before any chunk) leaves no half-rendered
 //     bar on screen — closeFn is a no-op if the bar was never created.
-func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), recvBytes func() int64) {
+func newReceiverProgress(f *flags, outDir string, pathInfo connpath.Info) (
+	closeFn func(),
+	accept func(wire.SenderHello) bool,
+	confirmOverwrite func(relPath string, existing int64, incoming uint64) bool,
+	progressFn func(uint32, uint64),
+	recvBytes func() int64,
+) {
 	prev := make(map[uint32]uint64)
 	var total int64
 	recvBytes = func() int64 { return total }
 
+	// preApproved fires when promptAccept already surfaced a single-file
+	// collision chip and the user said yes — the second "Overwrite? y/N"
+	// question would just be friction. Captured here so both callbacks
+	// share the flag without a parameter on RecvOptions.
+	var preApproved bool
+
 	if f.quiet {
 		closeFn = func() {}
-		accept = func(h wire.SenderHello) bool { return promptAccept(f, h) }
+		accept = func(h wire.SenderHello) bool { return promptAccept(f, h, outDir, pathInfo) }
 		progressFn = func(fi uint32, b uint64) {
 			d := b - prev[fi]
 			prev[fi] = b
 			total += int64(d)
 		}
+		// confirmOverwrite stays nil under --quiet: the engine then
+		// rejects with E013 rather than blocking on a prompt nobody
+		// will see.
 		return
 	}
 
@@ -389,12 +413,22 @@ func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello
 	// count so the trailing " done" suffix prints instead of "aborted".
 	var streamingTotal bool
 	accept = func(h wire.SenderHello) bool {
-		ok := promptAccept(f, h)
-		if ok {
-			totalBytesHint = int64(h.TotalBytes)
-			streamingTotal = h.TotalBytes == 0
+		ok := promptAccept(f, h, outDir, pathInfo)
+		if !ok {
+			return false
 		}
-		return ok
+		totalBytesHint = int64(h.TotalBytes)
+		streamingTotal = h.TotalBytes == 0
+		// Mirror the renderArtifact collision check: if the prompt
+		// already disclosed an overwrite, treat the user's yes as
+		// consent for the per-file confirm too.
+		if h.TransferKind == wire.TransferSingleFile && !f.overwrite {
+			target := filepath.Join(outDir, h.DisplayName)
+			if st, err := os.Stat(target); err == nil && !st.IsDir() {
+				preApproved = true
+			}
+		}
+		return true
 	}
 	progressFn = func(fileIndex uint32, bytesWritten uint64) {
 		if bar == nil {
@@ -414,93 +448,102 @@ func newReceiverProgress(f *flags) (closeFn func(), accept func(wire.SenderHello
 		}
 		bar.Done()
 	}
+	if !f.yes {
+		confirmOverwrite = func(relPath string, existing int64, incoming uint64) bool {
+			if preApproved {
+				return true
+			}
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintf(os.Stderr, "  %s already exists  ·  local %s  ·  incoming %s\n",
+				relPath, uxlog.HumanBytes(existing), uxlog.HumanBytes(int64(incoming)))
+			fmt.Fprint(os.Stderr, "  Overwrite? [y/N] ")
+			switch readLine(os.Stdin) {
+			case "y", "yes":
+				return true
+			default:
+				return false
+			}
+		}
+	}
 	return
 }
 
-// humanRate renders a bytes-per-second figure in compact form.
-// Returns "" when the figure would be meaningless (zero bytes, or an
-// elapsed window too small to measure) so callers can omit the
-// trailing "(<rate>)" clause cleanly instead of printing a placeholder.
-func humanRate(bytes int64, elapsed time.Duration) string {
-	// Below ~100 ms the rate is dominated by handshake noise and reads
-	// as nonsense ("4.2 GB/s for a 12 KB transfer"). Hide it.
-	if elapsed < 100*time.Millisecond || bytes <= 0 {
-		return ""
-	}
-	rate := float64(bytes) / elapsed.Seconds()
-	return humanBytes(int64(rate)) + "/s"
-}
-
-// humanDuration renders elapsed in compact form. Sub-second durations
-// show with milliseconds; longer durations switch to seconds with one
-// decimal, then minutes-and-seconds, then hours-minutes-seconds.
-func humanDuration(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	}
-	if d < 10*time.Second {
-		return fmt.Sprintf("%.1fs", d.Seconds())
-	}
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		m := int(d / time.Minute)
-		s := int((d % time.Minute) / time.Second)
-		return fmt.Sprintf("%dm%02ds", m, s)
-	}
-	h := int(d / time.Hour)
-	m := int((d % time.Hour) / time.Minute)
-	s := int((d % time.Minute) / time.Second)
-	return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
-}
+// humanBytes is a thin re-export of uxlog.HumanBytes. Kept as a local
+// name because every cmd/fsend artifact line uses it inline — wrapping
+// every fmt.Fprintf in a fully-qualified package call adds noise.
+func humanBytes(n int64) string { return uxlog.HumanBytes(n) }
 
 // printSendSummary renders the post-transfer success line on the sender.
+// The artifact name is already shown in printSendArtifact at session
+// start, so the summary deliberately omits it — repeating reads as
+// padding. Path tag goes last so the line scans size → time → route.
+//
 // Suppressed under --quiet (the bare code on stdout is the contract;
 // nothing on stderr).
-func printSendSummary(f *flags, bytes int64, elapsed time.Duration) {
+func printSendSummary(f *flags, bytes int64, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s Sent %s in %s%s\n",
-		uxlog.Check(), humanBytes(bytes), humanDuration(elapsed), rateSuffix(bytes, elapsed))
+	parts := summaryParts(bytes, elapsed, path)
+	fmt.Fprintf(os.Stderr, "%s Sent  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
 }
 
 // printRecvSummary is the receive-side counterpart. The bytes figure is
 // the actual received payload, captured by the progress callback so the
 // number reflects what's on disk (post-resume, this can be less than the
 // sender's TotalBytes if a prefix was already present).
-func printRecvSummary(f *flags, bytes int64, elapsed time.Duration) {
+//
+// destLabel is the human-readable save location ("~/Downloads" or an
+// absolute path). When empty (text/stdin sinks, --quiet) the line
+// collapses to "Received".
+func printRecvSummary(f *flags, destLabel string, bytes int64, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s Received %s in %s%s\n",
-		uxlog.Check(), humanBytes(bytes), humanDuration(elapsed), rateSuffix(bytes, elapsed))
+	parts := summaryParts(bytes, elapsed, path)
+	if destLabel != "" {
+		fmt.Fprintf(os.Stderr, "%s Saved to %s  ·  %s\n",
+			uxlog.Check(), destLabel, strings.Join(parts, "  ·  "))
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s Received  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
 }
 
-// rateSuffix returns "  (<rate>)" when humanRate has a meaningful value,
-// otherwise "". Lets the summary line read as e.g. "Sent 4.2 MB in 8.1s"
-// without a placeholder dash when the transfer was too quick to time.
-func rateSuffix(bytes int64, elapsed time.Duration) string {
-	r := humanRate(bytes, elapsed)
-	if r == "" {
-		return ""
+// summaryParts builds the bytes/duration/path/rate sequence that both
+// send and recv summaries share. Rate is appended only when humanRate
+// has a meaningful answer (above the noise floor) so tiny transfers
+// don't print a misleading "13 B/s" figure.
+func summaryParts(bytes int64, elapsed time.Duration, path connpath.Info) []string {
+	parts := []string{
+		uxlog.HumanBytes(bytes),
+		uxlog.HumanDuration(elapsed),
+		path.Tag(),
 	}
-	return "  (" + r + ")"
+	if r := uxlog.HumanRate(bytes, elapsed); r != "" {
+		parts = append(parts, r)
+	}
+	return parts
 }
 
-// humanBytes renders a byte count in compact form.
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
+// displayPath renders an absolute filesystem path for display: a
+// $HOME prefix collapses to "~". Used in the accept prompt and the
+// receive summary so users see "~/test" instead of the full
+// "/Users/<name>/test".
+//
+// Falls back to the original path on any error or when no home prefix
+// applies.
+func displayPath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
 	}
-	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
-		div *= unit
-		exp++
+	if p == home {
+		return "~"
 	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+	if strings.HasPrefix(p, home+string(filepath.Separator)) {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 // signalContext wires Ctrl-C / SIGTERM to ctx cancellation so transfers

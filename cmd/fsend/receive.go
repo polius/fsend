@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 	"unicode"
 
@@ -102,11 +105,11 @@ func runReceive(f *flags, c string) error {
 		return runReceiveOverInternet(ctx, f, c, cfg, connSpin)
 	}
 
-	closeProg, accept, progressFn, recvBytes := newReceiverProgress(f)
+	pathInfo := connpath.FromLAN()
+	closeProg, accept, confirmOverwrite, progressFn, recvBytes := newReceiverProgress(f, outDir, pathInfo)
 	defer closeProg()
 
 	start := time.Now()
-	printPath(f, connpath.FromLAN())
 
 	// LAN succeeded once — keep a normal retry loop around the transfer
 	// itself so a mid-stream drop can re-dial and resume from the
@@ -133,36 +136,15 @@ func runReceive(f *flags, c string) error {
 				Accept:           accept,
 				Password:         f.passArg,
 				PromptPass:       receiverPasswordPrompt(f),
-				ConfirmOverwrite: confirmOverwritePrompt(f),
+				ConfirmOverwrite: confirmOverwrite,
 				ProgressFn:       progressFn,
 			})
 		}); err != nil {
 		return err
 	}
 
-	printRecvSummary(f, recvBytes(), time.Since(start))
+	printRecvSummary(f, displayPath(outDir), recvBytes(), time.Since(start), pathInfo)
 	return nil
-}
-
-// confirmOverwritePrompt returns the per-file overwrite prompt callback,
-// or nil under --quiet / --yes. EOF stdin reads as "" → the safe N
-// default, so scripts still get E013 unless they explicitly pipe "y".
-func confirmOverwritePrompt(f *flags) func(string, int64, uint64) bool {
-	if f.quiet || f.yes {
-		return nil
-	}
-	return func(relPath string, existing int64, incoming uint64) bool {
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "  %s already exists (local: %s, incoming: %s).\n",
-			relPath, humanBytes(existing), humanBytes(int64(incoming)))
-		fmt.Fprint(os.Stderr, "  Overwrite? [y/N]: ")
-		switch readLine(os.Stdin) {
-		case "y", "yes":
-			return true
-		default:
-			return false
-		}
-	}
 }
 
 // receiverPasswordPrompt returns a callback that reads a password from
@@ -188,53 +170,40 @@ func receiverPasswordPrompt(f *flags) func() (string, error) {
 	}
 }
 
-func promptAccept(f *flags, h wire.SenderHello) bool {
-	// --quiet: no prompt block at all. --yes is required (we don't
-	// interactively prompt without UX).
+// promptAccept renders the incoming-transfer block on stderr and asks
+// whether to receive. The block layout is the same regardless of kind:
+//
+//	Incoming from <peer>  [· via relay]
+//
+//	    <artifact>  ·  <size>  [🔒 password]
+//	    [⚠ already in <dir> · will overwrite if you accept]
+//
+//	Save to <path>/? [Y/n]
+//
+// pathInfo only affects the chip on the peer line (LAN/STUN are quiet,
+// relay gets called out — it's the one users should be aware of). outDir
+// is needed to (a) render the save target and (b) detect a single-file
+// collision so we can surface it inline instead of asking a second
+// question after the user has already said yes.
+func promptAccept(f *flags, h wire.SenderHello, outDir string, pathInfo connpath.Info) bool {
 	if f.quiet {
 		return f.yes
 	}
-	pwChip := ""
-	if h.HasPassword {
-		pwChip = "  🔒 password required"
+	peer := sanitizeRemote(h.Hostname)
+	pathChip := ""
+	if pathInfo.Kind == connpath.KindRelay {
+		pathChip = uxlog.Dim("  ·  via relay")
 	}
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  Incoming from %s:\n", sanitizeRemote(h.Hostname))
+	fmt.Fprintf(os.Stderr, "  Incoming from %s%s\n", peer, pathChip)
 	fmt.Fprintln(os.Stderr)
-	switch h.TransferKind {
-	case wire.TransferSingleFile:
-		name := h.DisplayName
-		if name == "" {
-			name = "file"
-		}
-		fmt.Fprintf(os.Stderr, "      %s  (%s)%s\n", name, humanBytes(int64(h.TotalBytes)), pwChip)
-	case wire.TransferDirectory:
-		name := h.DisplayName
-		if name == "" {
-			name = "directory"
-		}
-		fmt.Fprintf(os.Stderr, "      %s  (%d files, %s)%s\n", name, h.TotalFiles, humanBytes(int64(h.TotalBytes)), pwChip)
-	case wire.TransferMultiFile:
-		fmt.Fprintf(os.Stderr, "      %d items  (%s)%s\n", h.TotalFiles, humanBytes(int64(h.TotalBytes)), pwChip)
-	case wire.TransferText:
-		fmt.Fprintf(os.Stderr, "      a piece of text  (%s)%s\n", humanBytes(int64(h.TotalBytes)), pwChip)
-	case wire.TransferStdin:
-		// Streamed stdin: sender's HELLO has TotalBytes=0 because the
-		// size is only known at EOF on the producer side. Show "size
-		// unknown" instead of "(0 B)".
-		size := humanBytes(int64(h.TotalBytes))
-		if h.TotalBytes == 0 {
-			size = "size unknown"
-		}
-		fmt.Fprintf(os.Stderr, "      stream from stdin  (%s)%s\n", size, pwChip)
-	}
+	renderArtifact(os.Stderr, h, outDir, f.overwrite)
 	fmt.Fprintln(os.Stderr)
-
 	if f.yes {
 		fmt.Fprintln(os.Stderr, uxlog.Check(), "Accepting (--yes)")
 		return true
 	}
-	fmt.Fprintf(os.Stderr, "  Save to %s? [Y/n]: ", saveTargetLabel(f))
+	fmt.Fprintf(os.Stderr, "  Save to %s? [Y/n] ", saveTargetLabel(outDir))
 	switch readLine(os.Stdin) {
 	case "n", "no":
 		return false
@@ -243,23 +212,68 @@ func promptAccept(f *flags, h wire.SenderHello) bool {
 	}
 }
 
-// saveTargetLabel renders the receive destination for the accept prompt.
-// We don't expand "." to the absolute cwd here: most users live in their
-// shell with relative paths, and an unexpanded "./report.pdf" reads as
-// less surprising than "/Users/.../report.pdf". For an explicit --out we
-// echo the user's path verbatim — same justification.
-func saveTargetLabel(f *flags) string {
-	if f.outDir == "" {
-		return "current directory"
+// renderArtifact prints the indented artifact line and (for a single
+// file that would collide) the warning chip that pre-discloses the
+// overwrite. The chip means the user only ever sees one question per
+// transfer instead of an accept-then-overwrite double prompt.
+func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverwriting bool) {
+	pwChip := ""
+	if h.HasPassword {
+		pwChip = "  🔒 password required"
 	}
-	return f.outDir + "/"
+	switch h.TransferKind {
+	case wire.TransferSingleFile:
+		name := h.DisplayName
+		if name == "" {
+			name = "file"
+		}
+		fmt.Fprintf(w, "      %s  ·  %s%s\n", name, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
+		if !alreadyOverwriting {
+			target := filepath.Join(outDir, name)
+			if st, err := os.Stat(target); err == nil && !st.IsDir() {
+				chip := fmt.Sprintf("⚠ already in %s (%s) — will be overwritten if you accept",
+					displayPath(outDir), uxlog.HumanBytes(st.Size()))
+				fmt.Fprintln(w, "      "+uxlog.Dim(chip))
+			}
+		}
+	case wire.TransferDirectory:
+		name := h.DisplayName
+		if name == "" {
+			name = "directory"
+		}
+		fmt.Fprintf(w, "      %s  ·  %d files  ·  %s%s\n",
+			name, h.TotalFiles, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
+	case wire.TransferMultiFile:
+		fmt.Fprintf(w, "      %d items  ·  %s%s\n",
+			h.TotalFiles, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
+	case wire.TransferText:
+		fmt.Fprintf(w, "      text  ·  %s%s\n",
+			uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
+	case wire.TransferStdin:
+		// Streamed stdin: sender's HELLO has TotalBytes=0 because the
+		// size is only known at EOF on the producer side. Show "size
+		// unknown" instead of "(0 B)".
+		size := uxlog.HumanBytes(int64(h.TotalBytes))
+		if h.TotalBytes == 0 {
+			size = "size unknown"
+		}
+		fmt.Fprintf(w, "      stdin stream  ·  %s%s\n", size, pwChip)
+	}
+}
+
+// saveTargetLabel renders the receive destination for the accept prompt.
+// Resolves the absolute path through displayPath so $HOME collapses to
+// "~"; the trailing slash signals "this is a directory, not a file."
+func saveTargetLabel(outDir string) string {
+	return displayPath(outDir) + "/"
 }
 
 // sanitizeRemote removes control characters, ANSI sequences, and Unicode
 // format / bidirectional-override characters from peer-supplied strings
-// before display. Without the bidi filter, a peer can render a misleading
-// hostname using U+202E "RIGHT-TO-LEFT OVERRIDE" and friends, which is
-// the textbook display-spoofing trick.
+// before display, then strips the mDNS ".local" suffix that macOS / many
+// Linuxes tack onto Bonjour hostnames. Without the bidi filter, a peer
+// can render a misleading hostname using U+202E "RIGHT-TO-LEFT OVERRIDE"
+// and friends, which is the textbook display-spoofing trick.
 func sanitizeRemote(s string) string {
 	const maxLen = 64
 	out := make([]rune, 0, len(s))
@@ -277,13 +291,14 @@ func sanitizeRemote(s string) string {
 			break
 		}
 	}
-	if len(out) == 0 {
+	clean := strings.TrimSuffix(string(out), ".local")
+	if clean == "" {
 		// "peer" reads as a neutral placeholder instead of "(unknown)",
 		// which can scan as "fsend failed to detect something". The
 		// transfer is fine; we just don't have a hostname to display.
 		return "peer"
 	}
-	return string(out)
+	return clean
 }
 
 // isBidi reports whether r is one of the bidirectional formatting

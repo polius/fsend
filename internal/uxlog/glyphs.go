@@ -93,12 +93,13 @@ func glyphForKind(k glyphKind) (utf8, ascii, color string) {
 // ---------------------------------------------------------------------
 
 const (
-	colorReset  = "\x1b[0m"
-	colorRed    = "\x1b[31m"
-	colorGreen  = "\x1b[32m"
-	colorYellow = "\x1b[33m"
-	colorCyan   = "\x1b[36m"
-	colorDim    = "\x1b[2m"
+	colorReset    = "\x1b[0m"
+	colorRed      = "\x1b[31m"
+	colorGreen    = "\x1b[32m"
+	colorYellow   = "\x1b[33m"
+	colorCyan     = "\x1b[36m"
+	colorBoldCyan = "\x1b[1;36m"
+	colorDim      = "\x1b[2m"
 )
 
 var (

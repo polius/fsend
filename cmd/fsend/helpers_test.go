@@ -133,75 +133,8 @@ func TestIsBidi(t *testing.T) {
 }
 
 func TestSaveTargetLabel(t *testing.T) {
-	if got := saveTargetLabel(&flags{}); got != "current directory" {
-		t.Errorf("default label = %q", got)
-	}
-	if got := saveTargetLabel(&flags{outDir: "/tmp/dst"}); got != "/tmp/dst/" {
+	if got := saveTargetLabel("/tmp/dst"); got != "/tmp/dst/" {
 		t.Errorf("explicit out = %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// send.go pure helpers
-// ---------------------------------------------------------------------------
-
-func TestHumanBytes(t *testing.T) {
-	for _, tc := range []struct {
-		in   int64
-		want string
-	}{
-		{0, "0 B"},
-		{512, "512 B"},
-		{1024, "1.0 KB"},
-		{1536, "1.5 KB"},
-		{1024 * 1024, "1.0 MB"},
-		{int64(2.5 * 1024 * 1024), "2.5 MB"},
-	} {
-		if got := humanBytes(tc.in); got != tc.want {
-			t.Errorf("humanBytes(%d) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestHumanDuration(t *testing.T) {
-	for _, tc := range []struct {
-		in   time.Duration
-		want string
-	}{
-		{500 * time.Millisecond, "500ms"},
-		{1500 * time.Millisecond, "1.5s"},
-		{30 * time.Second, "30s"},
-		{90 * time.Second, "1m30s"},
-		{3 * time.Hour, "3h00m00s"},
-	} {
-		if got := humanDuration(tc.in); got != tc.want {
-			t.Errorf("humanDuration(%s) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestHumanRate(t *testing.T) {
-	// Below 100ms is too noisy → empty.
-	if got := humanRate(1024, 50*time.Millisecond); got != "" {
-		t.Errorf("sub-100ms should yield empty, got %q", got)
-	}
-	// Zero bytes → empty.
-	if got := humanRate(0, time.Second); got != "" {
-		t.Errorf("zero bytes should yield empty, got %q", got)
-	}
-	// 1 MiB / 1s ≈ 1.0 MB/s.
-	if got := humanRate(1024*1024, time.Second); !strings.HasSuffix(got, "/s") {
-		t.Errorf("got %q, want trailing /s", got)
-	}
-}
-
-func TestRateSuffix(t *testing.T) {
-	if got := rateSuffix(0, time.Second); got != "" {
-		t.Errorf("zero bytes: rateSuffix = %q, want \"\"", got)
-	}
-	got := rateSuffix(1024*1024, time.Second)
-	if !strings.HasPrefix(got, "  (") || !strings.HasSuffix(got, ")") {
-		t.Errorf("rateSuffix non-empty must be \"  (<rate>)\", got %q", got)
 	}
 }
 
@@ -709,10 +642,10 @@ func TestReadLine_BasicCases(t *testing.T) {
 
 func TestPromptAccept_QuietRequiresYes(t *testing.T) {
 	h := wire.SenderHello{TransferKind: wire.TransferSingleFile, DisplayName: "x", TotalBytes: 1}
-	if promptAccept(&flags{quiet: true}, h) {
+	if promptAccept(&flags{quiet: true}, h, "/tmp", mustLANInfo()) {
 		t.Error("quiet without --yes must decline")
 	}
-	if !promptAccept(&flags{quiet: true, yes: true}, h) {
+	if !promptAccept(&flags{quiet: true, yes: true}, h, "/tmp", mustLANInfo()) {
 		t.Error("quiet + --yes must accept")
 	}
 }
@@ -727,7 +660,7 @@ func TestPromptAccept_YesAcceptsAcrossKinds(t *testing.T) {
 	} {
 		got := captureStderr(t, func() {
 			h := wire.SenderHello{TransferKind: k, DisplayName: "x", TotalBytes: 1, TotalFiles: 1}
-			if !promptAccept(&flags{yes: true}, h) {
+			if !promptAccept(&flags{yes: true}, h, "/tmp", mustLANInfo()) {
 				t.Errorf("--yes must accept kind %v", k)
 			}
 		})
@@ -745,7 +678,7 @@ func TestPromptAccept_PasswordChipRendered(t *testing.T) {
 			TotalBytes:   1,
 			HasPassword:  true,
 		}
-		_ = promptAccept(&flags{yes: true}, h)
+		_ = promptAccept(&flags{yes: true}, h, "/tmp", mustLANInfo())
 	})
 	if !strings.Contains(got, "password required") {
 		t.Errorf("expected password chip, got:\n%s", got)

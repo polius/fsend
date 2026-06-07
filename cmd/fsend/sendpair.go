@@ -425,7 +425,7 @@ func startWaitSpinner(f *flags, msg string) *uxlog.Spinner {
 // on the same listener (the receiver's own retry loop re-Dials).
 func runSenderTransferOverLAN(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, pair *lanSenderPairing) error {
 	defer pair.cleanup()
-	return runSenderTransferLoop(ctx, f, items, kind, totalFiles, displayName, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
+	return runSenderTransferLoop(ctx, f, items, kind, totalFiles, displayName, connpath.FromLAN(), pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		acceptCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		res, err := pair.listener.Accept(acceptCtx)
@@ -442,7 +442,7 @@ func runSenderTransferOverLAN(ctx context.Context, f *flags, items []transfer.So
 // underlying PacketConn is preserved across attempts).
 func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, pair *internetSenderPairing) error {
 	defer pair.cleanup()
-	err := runSenderTransferLoop(ctx, f, items, kind, totalFiles, displayName, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
+	err := runSenderTransferLoop(ctx, f, items, kind, totalFiles, displayName, pair.pathInfo, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		qc, err := pair.quicListener.Accept(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
@@ -460,7 +460,7 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transf
 // attempts call reaccept to get a fresh paired connection. Wrapping
 // both paths in this helper keeps the two transfer entry points purely
 // declarative.
-func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
+func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, pathInfo connpath.Info, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
 	closeProg, progressFn, sentBytes, onStreamingEOF := newSenderProgress(f, items)
 	defer closeProg()
 
@@ -501,7 +501,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	if bytes == 0 {
 		bytes = totalBytes(items)
 	}
-	printSendSummary(f, bytes, time.Since(start))
+	printSendSummary(f, bytes, time.Since(start), pathInfo)
 	return nil
 }
 

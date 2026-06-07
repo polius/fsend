@@ -115,9 +115,11 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}, false /* controlled */)
 	if iceErr == nil {
 		defer func() { _ = iceConn.Close() }()
+		// Stop the spinner; the receive UX is owned by runReceiverQUICOver
+		// from here (no standalone path line — the prompt block carries
+		// path info as a chip and the summary names it again).
 		connSpin.Stop()
-		printPath(f, icePath)
-		return runReceiverQUICOver(ctx, f, iceConn, c)
+		return runReceiverQUICOver(ctx, f, iceConn, c, icePath)
 	}
 	if f.debug {
 		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
@@ -134,9 +136,8 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}
 	defer func() { _ = relayConn.Close() }()
 	connSpin.Stop()
-	printPath(f, connpath.FromRelay(alloc.RelayAddr))
 	return classifyRelayDrop(ctx, client, joined.SessionID,
-		runReceiverQUICOver(ctx, f, relayConn, c))
+		runReceiverQUICOver(ctx, f, relayConn, c, connpath.FromRelay(alloc.RelayAddr)))
 }
 
 // classifyRelayDrop probes the relay-status endpoint when a relay-path
@@ -355,7 +356,7 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 // .fsend-partial sidecar plus its imohash fingerprint let the next
 // attempt resume mid-file — the sender verifies the prefix, seeks past
 // it, and streams the remainder.
-func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string) error {
+func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string, pathInfo connpath.Info) error {
 	tr := &quic.Transport{Conn: pc}
 	defer func() { _ = tr.Close() }()
 
@@ -368,24 +369,24 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		}
 	}
 
-	closeProg, accept, progressFn, recvBytes := newReceiverProgress(f)
+	closeProg, accept, confirmOverwrite, progressFn, recvBytes := newReceiverProgress(f, outDir, pathInfo)
 	defer closeProg()
 
 	start := time.Now()
 	if err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
 		func(attempt int) error {
-			return runReceiverOneAttempt(ctx, tr, outDir, f, accept, progressFn, code)
+			return runReceiverOneAttempt(ctx, tr, outDir, f, accept, confirmOverwrite, progressFn, code)
 		}); err != nil {
 		return err
 	}
-	printRecvSummary(f, recvBytes(), time.Since(start))
+	printRecvSummary(f, displayPath(outDir), recvBytes(), time.Since(start), pathInfo)
 	return nil
 }
 
 // runReceiverOneAttempt is one Dial → handshake → transfer iteration.
 // Mirror of runSenderOneAttempt; returns nil on success or an error for
 // the retry layer to classify.
-func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir string, f *flags, accept func(wire.SenderHello) bool, progressFn func(uint32, uint64), code string) error {
+func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir string, f *flags, accept func(wire.SenderHello) bool, confirmOverwrite func(string, int64, uint64) bool, progressFn func(uint32, uint64), code string) error {
 	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer dialCancel()
 	// The PacketConn ignores the dial address (both relay.Conn and our
@@ -412,7 +413,7 @@ func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir strin
 		Accept:           accept,
 		Password:         f.passArg,
 		PromptPass:       receiverPasswordPrompt(f),
-		ConfirmOverwrite: confirmOverwritePrompt(f),
+		ConfirmOverwrite: confirmOverwrite,
 		ProgressFn:       progressFn,
 	})
 }

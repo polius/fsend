@@ -14,6 +14,7 @@
 package uxlog
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -32,18 +33,29 @@ type Progress struct {
 	w   io.Writer
 }
 
+// barWidth caps the progress bar at a fixed column count. 40 leaves room
+// for a leading percentage block, a generous "1.5 GB / 2.3 GB" counter,
+// and the rate/ETA chips without bumping past 100 columns even on narrow
+// terminals. Full-width bars look "loud" — see CLI UX review notes.
+const barWidth = 40
+
+// rateThreshold is the transfer size below which rate + ETA are
+// suppressed. Small transfers (sub-MiB) finish in less time than the
+// PAKE handshake takes; reporting "13 B/s" for a 169 B file is just
+// noise. Above 1 MiB the steady-state throughput dominates and the
+// figure becomes meaningful.
+const rateThreshold = 1 << 20
+
 // New constructs a Progress that writes to stderr (the only sink the spec
 // allows for visual output).
 //
 // totalBytes is the entire transfer's byte count. It must be known up
 // front; for stdin/text transfers we pass 0 and the bar renders without
-// a percentage.
+// a percentage, ETA, or rate chip.
 func New(totalBytes int64) *Progress {
 	tty := IsTTY(os.Stderr)
 	p := &Progress{tty: tty, w: os.Stderr}
 
-	// mpb's default output is stderr; we still set it explicitly for
-	// clarity.
 	opts := []mpb.ContainerOption{
 		mpb.WithOutput(os.Stderr),
 		mpb.WithRefreshRate(100 * time.Millisecond), // spec: ≥10 Hz
@@ -57,32 +69,100 @@ func New(totalBytes int64) *Progress {
 	}
 	p.mp = mpb.New(opts...)
 
-	decorators := []decor.Decorator{
-		decor.Name("  "),
-		decor.CountersKibiByte("% .2f / % .2f"),
-		decor.Name("   "),
-		decor.AverageSpeed(decor.SizeB1024(0), "% .2f"),
-	}
-	if totalBytes > 0 {
-		// Known size → append ETA + percentage.
-		decorators = append(decorators,
-			decor.Name("   ETA "),
-			decor.AverageETA(decor.ET_STYLE_GO),
-		)
+	// Unicode bar on TTYs; ASCII fallback on pipes so log files stay
+	// readable. The ━/╸/─ trio gives a calm, modern look without the
+	// "=====>" telegraph aesthetic the default style carries.
+	var style mpb.BarStyleComposer
+	if tty {
+		style = mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	} else {
+		style = mpb.BarStyle().Lbound("[").Rbound("]").Filler("#").Tip(">").Padding(" ")
 	}
 
-	style := mpb.BarStyle()
-	if !tty {
-		// ASCII-only style for pipes / non-TTYs.
-		style = style.Lbound("[").Rbound("]").Filler("#").Tip("#").Padding(" ")
+	// Track elapsed locally — decor.Statistics doesn't carry it, and we
+	// want the rate decor to use the same "since New()" baseline the
+	// summary line will use for "(<rate>)".
+	start := time.Now()
+	hasTotal := totalBytes > 0
+	showRate := totalBytes >= rateThreshold
+
+	// Percentage on the left. OnComplete swaps it for "done" so the bar
+	// reads as terminal once the transfer is finished — no stale ETA
+	// chip lingering at 0s.
+	prependDecs := []decor.Decorator{
+		decor.Name("  "),
+		decor.OnComplete(decor.Percentage(decor.WC{W: 4}), "done"),
+		decor.Name("  "),
+	}
+	if !hasTotal {
+		// Streaming transfers (stdin) — no meaningful percentage.
+		// Replace with a static dots glyph that doesn't shift width
+		// when the transfer finishes (closeFn latches the total then).
+		prependDecs = []decor.Decorator{
+			decor.Name("  "),
+			decor.OnComplete(decor.Name("... "), "done"),
+			decor.Name("  "),
+		}
+	}
+
+	// Counters: always render via HumanBytes so units stay uppercase
+	// and small whole-byte values don't gain a "%.2f" tail.
+	counters := decor.Any(func(s decor.Statistics) string {
+		if s.Total <= 0 {
+			return HumanBytes(s.Current)
+		}
+		return fmt.Sprintf("%s / %s", HumanBytes(s.Current), HumanBytes(s.Total))
+	})
+
+	appendDecs := []decor.Decorator{
+		decor.Name("  "),
+		counters,
+	}
+	if showRate {
+		appendDecs = append(appendDecs,
+			// Rate: hidden when the figure would be misleading (start
+			// of transfer, zero elapsed, or on completion — the
+			// summary line carries the final figure).
+			decor.Any(func(s decor.Statistics) string {
+				if s.Completed || s.Aborted || s.Current == 0 {
+					return ""
+				}
+				elapsed := time.Since(start)
+				r := HumanRate(s.Current, elapsed)
+				if r == "" {
+					return ""
+				}
+				return "  ·  " + r
+			}),
+			// ETA: needs a known total, non-zero progress, and at least
+			// 1 s elapsed so the projection isn't dominated by handshake
+			// time. Hidden on completion.
+			decor.Any(func(s decor.Statistics) string {
+				if s.Completed || s.Aborted || s.Total <= 0 || s.Current == 0 {
+					return ""
+				}
+				elapsed := time.Since(start)
+				if elapsed < time.Second {
+					return ""
+				}
+				rate := float64(s.Current) / elapsed.Seconds()
+				if rate <= 0 {
+					return ""
+				}
+				remainingSecs := float64(s.Total-s.Current) / rate
+				if remainingSecs <= 0 {
+					return ""
+				}
+				return "  ·  ETA " + HumanDuration(time.Duration(remainingSecs * float64(time.Second)))
+			}),
+		)
 	}
 
 	p.bar = p.mp.New(totalBytes,
 		style,
-		mpb.PrependDecorators(
-			decor.OnComplete(decor.Percentage(decor.WC{W: 5}), " done"),
-		),
-		mpb.AppendDecorators(decorators...),
+		mpb.BarWidth(barWidth),
+		mpb.PrependDecorators(prependDecs...),
+		mpb.AppendDecorators(appendDecs...),
 	)
 	return p
 }
@@ -111,7 +191,7 @@ func (p *Progress) SetTotal(total int64, complete bool) {
 // this before the caller exits.
 //
 // Two paths so the success case still renders the OnComplete suffix
-// (" done") instead of being silently aborted:
+// ("done") instead of being silently aborted:
 //
 //   - Bar already at 100% (Completed reports true): the final Add()
 //     already triggered OnComplete; just Wait for mpb to flush.

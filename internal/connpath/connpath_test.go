@@ -80,10 +80,26 @@ func TestFromRelay(t *testing.T) {
 	if got.Short() != "relay (TURN)" {
 		t.Errorf("Short() = %q", got.Short())
 	}
-	// Headline includes the address so operators can see which relay.
-	wantHead := "relay (TURN) via fsend.alzina.dev:443 — NAT hole-punch failed"
+	// Headline collapses to the compact Tag() form; the address still
+	// appears so operators can see which relay.
+	wantHead := "Relayed via fsend.alzina.dev:443"
 	if got.Headline() != wantHead {
 		t.Errorf("Headline() = %q, want %q", got.Headline(), wantHead)
+	}
+	if got.Tag() != wantHead {
+		t.Errorf("Tag() = %q, want %q", got.Tag(), wantHead)
+	}
+}
+
+func TestTag_CompactForms(t *testing.T) {
+	if got := (Info{Kind: KindLocal}).Tag(); got != "Direct on LAN" {
+		t.Errorf("Local Tag() = %q, want %q", got, "Direct on LAN")
+	}
+	if got := (Info{Kind: KindDirectSTUN}).Tag(); got != "Direct via STUN" {
+		t.Errorf("DirectSTUN Tag() = %q, want %q", got, "Direct via STUN")
+	}
+	if got := (Info{Kind: KindRelay}).Tag(); got != "Relayed" {
+		t.Errorf("Relay (no addr) Tag() = %q, want %q", got, "Relayed")
 	}
 }
 

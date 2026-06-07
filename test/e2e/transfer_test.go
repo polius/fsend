@@ -265,8 +265,11 @@ func TestReceive_Overwrite(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
-// Interactive: receiver answers "y" to the accept prompt and "y" again
-// to the overwrite confirmation. File is clobbered, both sides exit 0.
+// Interactive: receiver answers "y" to the accept prompt for a
+// single-file collision. The accept-time chip already disclosed that
+// "yes" would overwrite, so a single "y" is enough — the engine sees
+// the consent flag set inside the Accept callback and treats the
+// pre-existing target as confirmed. File is clobbered, both sides exit 0.
 func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
@@ -275,15 +278,18 @@ func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Two y's: one for accept, one for overwrite.
-	r := h.runPair(t, []string{srcFile}, dst, nil, "y\ny\n")
+	// One y: accept + implicit consent to overwrite (chip warned).
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\n")
 	r.requireSuccess(t)
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
-// Interactive: receiver accepts the transfer but declines the overwrite.
-// Existing file is preserved; receiver sees E013, sender sees E013.
-func TestReceive_OverwriteDeclinedInteractively(t *testing.T) {
+// Interactive: receiver declines the transfer at the accept prompt. With
+// the single-prompt flow, a single-file collision is disclosed inline as
+// a chip on the artifact line — so "accept the transfer but decline the
+// overwrite" is no longer two separate choices: declining the accept
+// itself is the way to preserve the existing file. Both sides exit E013.
+func TestReceive_DeclineWithCollision_PreservesExisting(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
 	srcFile := filepath.Join(src, "p.bin")
@@ -291,9 +297,14 @@ func TestReceive_OverwriteDeclinedInteractively(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nn\n")
-	if r.receiverExitCode != 13 || r.senderExitCode != 13 {
-		t.Errorf("exits: sender=%d receiver=%d, want 13/13\nsender stderr:\n%s\nreceiver stderr:\n%s",
+	// Receiver answers "n" to the accept prompt. The collision chip has
+	// already warned that "yes" would overwrite, so "no" is the
+	// "don't clobber" path — and the exit code becomes E006
+	// (UserCancelled) rather than the old E013 (TargetExists), because
+	// nothing reached the per-file overwrite stage.
+	r := h.runPair(t, []string{srcFile}, dst, nil, "n\n")
+	if r.receiverExitCode != 6 || r.senderExitCode != 6 {
+		t.Errorf("exits: sender=%d receiver=%d, want 6/6\nsender stderr:\n%s\nreceiver stderr:\n%s",
 			r.senderExitCode, r.receiverExitCode, r.senderErr, r.receiverErr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
