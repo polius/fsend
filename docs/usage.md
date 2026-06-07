@@ -87,7 +87,7 @@ fsend --connect                              # show current
 
 Config is at `~/.config/fsend/config.toml` (macOS/Linux) or
 `%APPDATA%\fsend\config.toml` (Windows). See
-[Self-hosting](README.md#self-hosting) to run your own.
+[Self-hosting](self-hosting.md) to run your own.
 
 ## Shared flags
 
