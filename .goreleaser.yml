@@ -76,7 +76,7 @@ release:
   draft: false
   prerelease: auto
   extra_files:
-    - glob: ./install.sh
+    - glob: ./scripts/install.sh
 
 changelog:
   use: github

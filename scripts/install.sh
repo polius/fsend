@@ -33,7 +33,7 @@ Flags:
 Environment variables (overridden by the matching flag):
   PREFIX, FSEND_VERSION
 
-Source: https://github.com/polius/fsend/blob/main/install.sh
+Source: https://github.com/polius/fsend/blob/main/scripts/install.sh
 EOF
 }
 
