@@ -227,13 +227,13 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 		if name == "" {
 			name = "file"
 		}
-		fmt.Fprintf(w, "      %s  ·  %s%s\n", name, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
+		_, _ = fmt.Fprintf(w, "      %s  ·  %s%s\n", name, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 		if !alreadyOverwriting {
 			target := filepath.Join(outDir, name)
 			if st, err := os.Stat(target); err == nil && !st.IsDir() {
 				chip := fmt.Sprintf("⚠ already in %s (%s) — will be overwritten if you accept",
 					displayPath(outDir), uxlog.HumanBytes(st.Size()))
-				fmt.Fprintln(w, "      "+uxlog.Dim(chip))
+				_, _ = fmt.Fprintln(w, "      "+uxlog.Dim(chip))
 			}
 		}
 	case wire.TransferDirectory:
@@ -241,13 +241,13 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 		if name == "" {
 			name = "directory"
 		}
-		fmt.Fprintf(w, "      %s  ·  %d files  ·  %s%s\n",
+		_, _ = fmt.Fprintf(w, "      %s  ·  %d files  ·  %s%s\n",
 			name, h.TotalFiles, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferMultiFile:
-		fmt.Fprintf(w, "      %d items  ·  %s%s\n",
+		_, _ = fmt.Fprintf(w, "      %d items  ·  %s%s\n",
 			h.TotalFiles, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferText:
-		fmt.Fprintf(w, "      text  ·  %s%s\n",
+		_, _ = fmt.Fprintf(w, "      text  ·  %s%s\n",
 			uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferStdin:
 		// Streamed stdin: sender's HELLO has TotalBytes=0 because the
@@ -257,7 +257,7 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 		if h.TotalBytes == 0 {
 			size = "size unknown"
 		}
-		fmt.Fprintf(w, "      stdin stream  ·  %s%s\n", size, pwChip)
+		_, _ = fmt.Fprintf(w, "      stdin stream  ·  %s%s\n", size, pwChip)
 	}
 }
 

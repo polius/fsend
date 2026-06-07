@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/polius/fsend/internal/fserrors"
@@ -54,10 +55,12 @@ func TestSaveLoad_Roundtrip(t *testing.T) {
 		t.Fatalf("Stat: %v", err)
 	}
 	// On Windows the mode bits won't be exactly 0600; only check on Unix.
-	if mode := info.Mode().Perm(); mode != 0o600 && os.Getenv("CI_OS") != "windows" {
-		// Soft check: at least, no world-read access.
-		if mode&0o007 != 0 {
-			t.Errorf("config file mode %o should not be world-readable", mode)
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			// Soft check: at least, no world-read access.
+			if mode&0o007 != 0 {
+				t.Errorf("config file mode %o should not be world-readable", mode)
+			}
 		}
 	}
 

@@ -305,4 +305,3 @@ func srvWaitForPort(t *testing.T, addr string, within time.Duration) {
 	}
 	t.Fatalf("port %s did not accept connections within %v", addr, within)
 }
-

@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,9 +74,13 @@ func startHarness() (*harness, error) {
 		return nil, err
 	}
 
+	binName := "fsend"
+	if runtime.GOOS == "windows" {
+		binName = "fsend.exe"
+	}
 	hh := &harness{
 		repoDir:  repoDir,
-		fsendBin: filepath.Join(binDir, "fsend"),
+		fsendBin: filepath.Join(binDir, binName),
 	}
 
 	if err := goBuild(repoDir, hh.fsendBin, "./cmd/fsend"); err != nil {

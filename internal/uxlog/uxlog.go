@@ -153,7 +153,7 @@ func New(totalBytes int64) *Progress {
 				if remainingSecs <= 0 {
 					return ""
 				}
-				return "  ·  ETA " + HumanDuration(time.Duration(remainingSecs * float64(time.Second)))
+				return "  ·  ETA " + HumanDuration(time.Duration(remainingSecs*float64(time.Second)))
 			}),
 		)
 	}

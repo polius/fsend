@@ -468,11 +468,6 @@ func newReceiverProgress(f *flags, outDir string, pathInfo connpath.Info) (
 	return
 }
 
-// humanBytes is a thin re-export of uxlog.HumanBytes. Kept as a local
-// name because every cmd/fsend artifact line uses it inline — wrapping
-// every fmt.Fprintf in a fully-qualified package call adds noise.
-func humanBytes(n int64) string { return uxlog.HumanBytes(n) }
-
 // printSendSummary renders the post-transfer success line on the sender.
 // The artifact name is already shown in printSendArtifact at session
 // start, so the summary deliberately omits it — repeating reads as
