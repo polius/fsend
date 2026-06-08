@@ -1,10 +1,10 @@
 # How it works
 
 When you run `fsend file.pdf`, the sender opens **two paths at the same
-time** — a LAN listener (mDNS-announced) and a session on the pairing
-server. Whichever path the receiver reaches first wins; the other is
-cancelled. There is **no timeout** between the two — neither side ever
-waits on a deadline.
+time**: a local-network listener (announced via mDNS) and a session on
+the pairing server. The receiver tries the LAN path first with a 300 ms
+mDNS query; if there's no answer, it joins the server. Whichever path
+completes the pairing wins, the other is torn down.
 
 ## Why a server?
 
@@ -30,20 +30,26 @@ entirely offline and same-LAN transfers still work.
 ## Same network (sender and receiver on the same Wi-Fi)
 
 ```
-   Sender                                  Receiver
-   fsend report.pdf                        fsend abc-defg-jkm
-     │                                       │
-     ├─ LAN listener  ──────────────►  ◄──── mDNS query (300 ms)
-     │                                       │
-     └─ Server register (standby)            └─ HIT → dial LAN port
-                                                       │
-                                                       ▼
-                                          direct P2P over LAN
-                                          (server path cancelled)
+   ┌──────────────┐                                        ┌──────────────┐
+   │    Sender    │                                        │   Receiver   │
+   └──────┬───────┘                                        └──────┬───────┘
+          │                                                       │
+          │  opens LAN listener (mDNS-announced)                  │
+          │  + registers with pairing server                      │
+          │                                                       │  queries mDNS
+          │                                                       │  (300 ms)
+          │                                                       │
+          │ ◄────────── matched via mDNS multicast ──────────────►│
+          │                                                       │
+          │ ═══════════ direct LAN transfer ═════════════════════►│
+          │                                                       │
+          ▼                                                       ▼
 ```
 
 Pairs in well under a second. Bytes never touch the pairing server or
-cross NAT. Works even if the pairing server is offline.
+cross NAT. The server session is cancelled the moment the LAN path
+wins — it never sees the file. Works even if the pairing server is
+offline.
 
 ## Different networks (sender at home, receiver at a café)
 
@@ -53,45 +59,45 @@ What happens next depends on whether the two NATs can be hole-punched.
 ### Direct transfer (common case)
 
 ```
-   Sender                                  Receiver
-   fsend report.pdf                        fsend abc-defg-jkm
-     │                                       │
-     ├─ LAN listener (no one comes)          ├─ mDNS query (300 ms, miss)
-     │                                       │
-     └─ Server register  ──────────► ◄────── └─ Join server
-                                  │
-                                  ▼
-                       ICE exchanges candidates
-                       both NATs hole-punched
-                                  │
-                                  ▼
-                       Sender ◄──────► Receiver
-                       direct P2P over internet
-                       (server only signaled)
+   ┌──────────────┐         ┌────────────────┐         ┌──────────────┐
+   │    Sender    │         │ Pairing server │         │   Receiver   │
+   └──────┬───────┘         └────────┬───────┘         └──────┬───────┘
+          │                          │                        │
+          │  ──── register ────────► │                        │
+          │                          │ ◄──────── join ─────── │
+          │                          │                        │
+          │ ──── ICE candidates ───► │ ◄── ICE candidates ─── │
+          │ ◄─── peer addresses ──── │ ──── peer addresses ─► │
+          │                          │                        │
+          │       both NATs hole-punched via ICE + STUN       │
+          │                          │                        │
+          │ ═══════════ direct P2P over the internet ════════►│
+          │                          │                        │
+          ▼                          ▼                        ▼
 ```
 
-The server's only job was to introduce the peers. Once ICE finds a
-usable path, bytes flow directly between the two machines at their own
-bandwidth.
+The server's only job was to introduce the peers and broker the ICE
+exchange. Once a hole-punched path works, bytes flow directly between
+the two machines at their own bandwidth — the server never sees a byte.
 
 ### Relay (fallback)
 
 ```
-   Sender                                  Receiver
-   fsend report.pdf                        fsend abc-defg-jkm
-     │                                       │
-     ├─ LAN listener (no one comes)          ├─ mDNS query (300 ms, miss)
-     │                                       │
-     └─ Server register  ──────────► ◄────── └─ Join server
-                                  │
-                                  ▼
-                       ICE candidates exchanged
-                       hole-punch fails (hard NAT)
-                                  │
-                                  ▼
-                   Sender ──► Server ──► Receiver
-                   encrypted UDP forwarded
-                   (server never sees plaintext)
+   ┌──────────────┐         ┌────────────────┐         ┌──────────────┐
+   │    Sender    │         │ Pairing server │         │   Receiver   │
+   └──────┬───────┘         └────────┬───────┘         └──────┬───────┘
+          │                          │                        │
+          │  ──── register ────────► │                        │
+          │                          │ ◄──────── join ─────── │
+          │                          │                        │
+          │ ──── ICE candidates ───► │ ◄── ICE candidates ─── │
+          │                          │                        │
+          │     hole-punch fails (hard symmetric NAT)         │
+          │                          │                        │
+          │ ═══════════════════════► │ ═════════════════════► │
+          │       opaque UDP         │       opaque UDP       │
+          │                          │                        │
+          ▼                          ▼                        ▼
 ```
 
 When NAT topology defeats hole-punching (hard symmetric NAT, some

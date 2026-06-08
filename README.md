@@ -11,13 +11,11 @@
 </p>
 
 ```bash
-# Sender
-$ fsend report.pdf
+$ fsend report.pdf                 # home Wi-Fi
 Share this code:  abc-defg-jkm
 
-# Receiver — same command, code instead of file
-$ fsend abc-defg-jkm
-✓ Saved to ~/Downloads  ·  2.4 MB
+$ fsend abc-defg-jkm               # café Wi-Fi, two continents away
+✓ Saved to ~/Downloads  ·  2.4 MB  ·  1.3s  ·  Direct via STUN
 ```
 
 ## About
@@ -70,21 +68,25 @@ fsend report.pdf --pass            # password-gated
 Receive:
 
 ```bash
-fsend abc-defg-jkm                 # confirm before saving
-fsend --yes abc-defg-jkm           # skip the confirmation
-fsend --out ~/Downloads abc-defg-jkm
+fsend abc-defg-jkm                    # confirm before saving
+fsend --yes abc-defg-jkm              # skip the confirmation
+fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
 ```
 
 ## Documentation
 
 | | |
 |---|---|
-| [Usage](docs/usage.md) | Every flag, env var, and exit code |
-| [How it works](docs/architecture.md) | The dual-path design and fallback relay |
-| [Comparison](docs/comparison.md) | How fsend differs from croc |
+| [How it works](docs/architecture.md) | Three transfer modes, raced concurrently — and why |
+| [Comparison](docs/comparison.md) | fsend vs croc — same surface, fundamentally different architecture |
 | [Security](docs/security.md) | Threat model — what the server can and cannot see |
-| [Self-hosting](docs/self-hosting.md) | Run your own pairing + relay server |
+| [Usage](docs/usage.md) | Every flag, env var, and exit code |
+| [Self-hosting](docs/self-hosting.md) | Run your own pairing server in four steps |
 | [Development](docs/development.md) | Build and test from source |
+
+## Contributing
+
+Bug reports and pull requests welcome — see [Development](docs/development.md) to build from source, or open an [issue](https://github.com/polius/fsend/issues).
 
 ## License
 

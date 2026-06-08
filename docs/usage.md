@@ -140,7 +140,8 @@ docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
 Internet-exposed deployments need a TLS-terminating reverse proxy in
 front of `:8080` — file data on UDP/443 is already end-to-end encrypted,
 but the HTTP pairing channel carries share codes and bearer tokens in
-plaintext. See `deploy/compose/docker-compose.yml`.
+plaintext. See [`deploy/compose/`](../deploy/compose/) for a ready-made
+Caddy + Docker stack.
 
 ## Exit codes
 
@@ -178,10 +179,11 @@ failure.
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 
-## Codes
+## Share codes
 
 Codes look like `abc-defg-jkm`: three groups (3-4-3) from the alphabet
 `abcdefghjkmnpqrstuvwxyz` (the ambiguous `i`, `l`, `o` are excluded).
-They're one-shot, expire after 60 seconds if unclaimed, and are always
-system-generated. For persistent secrets across many transfers, use
-`--pass` instead.
+They're one-shot, expire on the server after one hour if unclaimed (and
+ten minutes after a receiver pairs), and are always system-generated.
+For persistent secrets across many transfers, use `--pass` instead.
+For the security model, see [Security](security.md).

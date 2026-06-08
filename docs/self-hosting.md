@@ -1,84 +1,139 @@
 # Self-hosting
 
 The default pairing server at `fsend.alzina.dev` is best-effort. To run
-your own, the same `fsend` binary doubles as the server:
+your own, the same `fsend` binary doubles as the server — fronted by
+Caddy for automatic TLS, deployed via Docker compose.
+
+## Before you start
+
+You need:
+
+- A VM with a public IP
+- A domain (or subdomain) you control, e.g. `fs.example.com`
+- An `A` record pointing that domain at the VM's public IP
+- **Docker** and **Docker compose v2** on the VM
+- These inbound ports open on the VM:
+  - `80/tcp` — Let's Encrypt cert issuance
+  - `443/tcp` — HTTPS signaling
+  - `443/udp` — UDP relay (file data)
+
+## Deploy
+
+### 1. Point your domain at the VM
+
+Create an `A` record from `fs.example.com` → your VM's public IP, and
+wait for it to propagate (usually under a minute). Caddy needs this to
+complete the Let's Encrypt HTTP-01 challenge in step 3.
+
+Verify before going further:
 
 ```sh
-fsend server                 # config via env vars (FSEND_*)
-fsend server --health-check  # probe /v1/health (exit 0 if healthy)
-fsend server --help          # show all options
+dig +short fs.example.com    # should print the VM's public IP
 ```
 
-## Docker compose
-
-The fastest production-quality setup uses the bundled compose stack
-([`deploy/compose/`](../deploy/compose/)), which fronts the signaling
-API with Caddy and provisions a Let's Encrypt cert automatically:
+### 2. Download the compose stack
 
 ```sh
-export FSEND_DOMAIN=fs.example.com    # used by Caddy to request the cert
-docker compose -f deploy/compose/docker-compose.yml up -d
-fsend --connect fs.example.com:443    # on each client
+mkdir fsend-server && cd fsend-server
+curl -fsSL https://raw.githubusercontent.com/polius/fsend/main/deploy/compose/docker-compose.yml -O
+curl -fsSL https://raw.githubusercontent.com/polius/fsend/main/deploy/compose/Caddyfile -O
 ```
 
-Point `fs.example.com` at the host's public IP before bringing the stack
-up — Caddy needs the DNS record to complete the ACME HTTP-01 challenge.
+### 3. Start the stack
 
-For a quick LAN-only test (no TLS), use the image directly:
+```sh
+export FSEND_DOMAIN=fs.example.com
+docker compose up -d
+```
+
+Caddy requests a Let's Encrypt cert on first start and renews it
+indefinitely thereafter — there is no manual cert handling at any point.
+
+### 4. Verify
+
+```sh
+curl https://fs.example.com/v1/health
+# {"status":"ok",…}
+```
+
+If you don't get an OK response, see [Troubleshooting](#troubleshooting).
+
+## Use your server from clients
+
+On every client that should use your server instead of the default:
+
+```sh
+fsend --connect fs.example.com:443
+```
+
+Persists to `~/.config/fsend/config.toml`. Revert to the public default
+with `fsend --connect default`.
+
+## Operations
+
+- **Logs.** `docker compose logs -f fsend` for the server,
+  `docker compose logs -f caddy` for TLS and the reverse proxy. Default
+  log level is `info` — lifecycle events only. No per-transfer lines,
+  no IPs, no share codes.
+- **Update.** `docker compose pull && docker compose up -d`. The image
+  is pinned to `poliuscorp/fsend:latest`; switch to a specific tag if
+  you want immutable upgrades.
+- **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
+  within an hour. Cert state lives in the `caddy_data` Docker volume —
+  Caddy reissues automatically if you lose it.
+- **Tuning.** Every knob is an environment variable — see
+  [Configuration](#configuration).
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `docker compose up` errors out asking for `FSEND_DOMAIN` | You forgot `export FSEND_DOMAIN=…`. Set it and rerun. |
+| Caddy logs show "obtain certificate failed" (ACME error) | DNS A-record not yet pointing at this VM, or `80/tcp` blocked at the firewall. |
+| `curl` to `/v1/health` works but clients hit `E001` on cross-network transfers | `443/udp` blocked at the firewall — many setups open TCP only and forget UDP. |
+| Pairing starts but the transfer hangs or drops | A reverse proxy in front of fsend (not the bundled Caddy) is buffering long-poll signaling. Caddy is configured for 30s read/write; nginx/Traefik need the same. |
+| Clients hit `E028` ("pairing server requires a password") | You set `FSEND_SERVER_PASSWORD` on the server. Clients must connect with `fsend --connect host:443 <password>`. |
+
+## LAN-only / dev mode
+
+To skip TLS entirely for local testing on a trusted network:
 
 ```sh
 docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
 ```
 
-## Ports
+Clients connect with `fsend --connect http://host:8080`. **Do not**
+expose this to the public internet — signaling carries share codes and
+bearer tokens in cleartext.
 
-`fsend server` has two listeners: a **TCP HTTP signaling API**
-(`FSEND_HTTP_ADDR`, default `:8080`) and a **UDP relay**
-(`FSEND_UDP_ADDR`, default `:443`). The UDP relay only carries opaque
-QUIC ciphertext between peers — TLS terminates at the peers, not at the
-server — so it is the same listener whether or not you put HTTPS in
-front of signaling.
+## How it fits together
 
-### HTTP-only mode
+The stack has two listeners. Caddy terminates TLS on TCP/443 and proxies
+HTTP signaling to fsend's `:8080`. UDP/443 flows directly to the fsend
+container — Caddy isn't in the data path.
 
-No reverse proxy — fine for LAN, dev, or trusted networks. **Not**
-recommended on the public internet.
+```
+                ┌───────────────── Your VM ──────────────────┐
+                │                                            │
+  tcp/443  ────►│  ┌─────────┐                ┌───────────┐  │
+  HTTPS sig.    │  │  Caddy  │ ──http:8080──► │  fsend    │  │
+                │  │ (TLS)   │                │  server   │  │
+  tcp/80   ────►│  │ + ACME  │                │           │  │
+  cert renewal  │  └─────────┘                │           │  │
+                │                             │ :443 udp  │  │
+  udp/443  ─────────────── direct ───────────►│  (relay)  │  │
+  QUIC data     │                             └───────────┘  │
+                │                                            │
+                └────────────────────────────────────────────┘
+```
 
-| Port             | Direction | Purpose                                         |
-|------------------|-----------|-------------------------------------------------|
-| `8080/tcp`       | inbound   | Signaling HTTP API (clients POST session/join)  |
-| `443/udp`        | inbound   | NAT address discovery + relay fallback (opaque QUIC datagrams) |
-
-Clients connect with `fsend --connect http://host:8080`. If you change
-`FSEND_UDP_ADDR`, also set `FSEND_PUBLIC_ADDR=host:port` to the address
-clients should dial for relay.
-
-### HTTPS mode
-
-Reverse proxy with your own domain — required for any public-internet
-deployment. File data on UDP/443 is already end-to-end encrypted, but
-the HTTP pairing channel carries share codes and bearer tokens in
-plaintext, so the signaling port **must** be TLS-terminated.
-
-Matches the `deploy/compose/` stack.
-
-| Port             | Direction | Purpose                                              |
-|------------------|-----------|------------------------------------------------------|
-| `443/tcp`        | inbound   | HTTPS signaling — terminated by Caddy/nginx/Traefik  |
-| `443/udp`        | inbound   | NAT address discovery + relay fallback — goes **directly** to the fsend container |
-| `80/tcp`         | inbound   | Let's Encrypt ACME HTTP-01 challenge (cert issue/renew) |
-
-Clients then connect with `fsend --connect fs.example.com:443` (HTTPS
-is the default scheme for non-local hosts). TCP/443 and UDP/443 share
-the same port number but are different protocols, so both can bind
-simultaneously.
-
-No outbound ports beyond what your OS / Docker needs. The server makes
-no outbound connections to clients.
+TCP/443 and UDP/443 share the port number but are different protocols,
+so both can bind simultaneously.
 
 ## Configuration
 
-All optional; defaults shown.
+All optional; defaults shown. Set under the `environment:` block in
+`docker-compose.yml`.
 
 | Variable | Default | Notes |
 |---|---|---|

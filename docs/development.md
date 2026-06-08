@@ -7,7 +7,7 @@ is the `fsend server` subcommand) from source.
 
 - **Go ≥ 1.25.11** (matches `go.mod`).
 - Optional: **Docker** + **docker compose v2**, only for the reverse-proxy
-  stack in `deploy/compose/`.
+  stack in [`deploy/compose/`](../deploy/compose/).
 
 ## Build
 

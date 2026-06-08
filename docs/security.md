@@ -94,7 +94,12 @@ Codes look like `abc-defg-jkm` — three letter-groups (3-4-3) from the
 excluded for legibility). Codes are:
 
 - **One-shot** — once claimed by a receiver, the same code can't be reused.
-- **Short-lived** — codes expire on the server after 60 seconds if unclaimed.
+- **Server-side TTL** — codes expire on the server after one hour if no
+  receiver pairs, or after ten minutes once a receiver has paired. Ctrl-C
+  on the sender invalidates the code immediately.
+- **Rate-limited** — the public pairing server caps new sessions at 30
+  per minute per source IP, making online brute-force against the
+  ~45-bit code space infeasible.
 - **Not the encryption key** — the code authenticates the SPAKE2 handshake;
   the actual session key is derived from that handshake plus the TLS 1.3
   channel binding, so the code itself never traverses the wire in the clear.
@@ -108,7 +113,7 @@ excluded for legibility). Codes are:
 |----------------------------------|----------------------------------------------------|---------------------------------------------------|
 | End-to-end encrypted             | ✓                                                  | ✓                                                 |
 | PAKE protocol                    | SPAKE2 (RFC 9382, IETF-standardized)               | `schollz/pake` (non-standardized, Boneh-Shoup textbook construction) |
-| Crypto layers over the wire      | TLS 1.3 over QUIC **plus** SPAKE2, channel-bound via the RFC 5705 exporter | Single AEAD (AES-GCM or XChaCha20-Poly1305) keyed directly from PAKE |
+| Defense-in-depth layers          | **Two** independent — TLS 1.3 (QUIC) **+** SPAKE2 channel-bound to the TLS handshake (RFC 5705) | **One** — AEAD keyed directly from PAKE |
 | Post-quantum forward secrecy     | ✓ (X25519 + ML-KEM-768 hybrid)                     | ✗ (classical ECC only)                            |
 | MITM defense                     | Two layers — TLS catches a network MITM, SPAKE2 binding catches a TLS-handshake MITM | Single layer — PAKE alone                         |
 | Relay does not see the file      | ✓ — relay only forwards opaque UDP datagrams; QUIC/TLS terminate at the peers | ✓ — relay only forwards ciphertext after PAKE     |
