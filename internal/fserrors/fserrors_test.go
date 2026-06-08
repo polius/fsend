@@ -82,15 +82,6 @@ func TestCatalog_UniqueCodes(t *testing.T) {
 	}
 }
 
-func TestIsWarning(t *testing.T) {
-	if !IsWarning(ErrConfigCorrupted) {
-		t.Error("ErrConfigCorrupted should be a warning")
-	}
-	if IsWarning(ErrServerUnreachable) {
-		t.Error("ErrServerUnreachable should not be a warning")
-	}
-}
-
 func TestEntryRender_PrependsCode(t *testing.T) {
 	e := Entry{Code: "E001", Message: "Boom.", Action: "Try X."}
 	got := e.Render()

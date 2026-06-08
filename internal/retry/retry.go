@@ -149,9 +149,23 @@ func IsTransient(err error) bool {
 	// match by error-string fallback. This is brittle but the
 	// alternative — importing quic-go just for one type — pulls the
 	// retry package into the transport's dependency graph.
+	//
+	// "Application error 0x..." is the shape quic-go renders when either
+	// side closes the connection with CloseWithError. In fsend this fires
+	// when a peer is killed mid-transfer (Ctrl-C, OOM, network drop) and
+	// the surviving side's next read/write surfaces the abrupt close. The
+	// peer can come back on a retry and resume from its .fsend-partial,
+	// so this is the canonical transient case — without this match it
+	// surfaced as E099 "please file an issue".
+	//
+	// Terminal disagreements (wrong password, hash mismatch, peer
+	// declined, ...) are surfaced via wire-level ErrorFrames BEFORE the
+	// QUIC stream tears down, so they're already caught by the terminal
+	// sentinel check above and never reach this fallback.
 	if s := err.Error(); strings.Contains(s, "idle timeout") ||
 		strings.Contains(s, "connection reset by peer") ||
-		strings.Contains(s, "use of closed network connection") {
+		strings.Contains(s, "use of closed network connection") ||
+		strings.Contains(s, "Application error 0x") {
 		return true
 	}
 

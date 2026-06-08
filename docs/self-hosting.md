@@ -66,7 +66,9 @@ On every client that should use your server instead of the default:
 fsend --connect fs.example.com:443
 ```
 
-Persists to `~/.config/fsend/config.toml`. Revert to the public default
+Persists to `~/.config/fsend/config.json` (Linux),
+`~/Library/Application Support/fsend/config.json` (macOS), or
+`%APPDATA%\fsend\config.json` (Windows). Revert to the public default
 with `fsend --connect default`.
 
 ## Operations

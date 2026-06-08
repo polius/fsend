@@ -80,7 +80,7 @@ of `:443` (would need root) and the common port collision on `:8080`.
 `FSEND_PUBLIC_ADDR` is what the server advertises to clients for relay —
 must be dialable from the client side.
 
-Point a client at it (persists to `~/.config/fsend/config.toml`):
+Point a client at it (persists to the config file — see "Isolated config" below for the path):
 
 ```sh
 /tmp/fsend --connect http://127.0.0.1:18080
@@ -114,13 +114,13 @@ tunables, see [Self-hosting](self-hosting.md).
 
 ## Isolated config
 
-To experiment with `--connect` without overwriting your real
-`~/.config/fsend/config.toml`, point the client at a throwaway config
-root:
+To experiment with `--connect` without overwriting your real config,
+point the client at a throwaway config root:
 
 ```sh
 XDG_CONFIG_HOME=/tmp/fsend-dev /tmp/fsend --connect http://127.0.0.1:18080
 ```
 
-Config lives at `~/.config/fsend/config.toml` (macOS/Linux) or
-`%APPDATA%\fsend\config.toml` (Windows).
+Config lives at `~/.config/fsend/config.json` (Linux),
+`~/Library/Application Support/fsend/config.json` (macOS), or
+`%APPDATA%\fsend\config.json` (Windows).

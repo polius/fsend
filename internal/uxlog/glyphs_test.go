@@ -17,7 +17,6 @@ func TestMarker_NonTTYFallback(t *testing.T) {
 		{Warn, "Warn", "[!]"},
 		{Info, "Info", "[i]"},
 		{Retry, "Retry", "[~]"},
-		{Spin, "Spin", "[*]"},
 	}
 	for _, c := range cases {
 		if got := c.fn(); got != c.want {

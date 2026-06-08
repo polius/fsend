@@ -257,8 +257,11 @@ func TestExtractArchive_ConflictWithoutOverwrite(t *testing.T) {
 	}
 }
 
-func TestImohash_PrefixMatchesFull(t *testing.T) {
-	// Sanity: for two identical files of the same size, imohash matches.
+func TestPrefixImohash_StableForIdenticalContent(t *testing.T) {
+	// Sanity: identical content of the same length must produce identical
+	// PrefixImohash digests. This is the property the resume path relies
+	// on — sender and receiver fingerprint the same prefix bytes and the
+	// digests have to match.
 	dir := t.TempDir()
 	content := make([]byte, 4*1024*1024)
 	if _, err := rand.Read(content); err != nil {
@@ -272,25 +275,16 @@ func TestImohash_PrefixMatchesFull(t *testing.T) {
 	if err := os.WriteFile(p2, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h1, err := FileImohash(p1)
+	h1, err := PrefixImohash(p1, int64(len(content)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := FileImohash(p2)
+	h2, err := PrefixImohash(p2, int64(len(content)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if h1 != h2 {
-		t.Errorf("expected identical files to share imohash")
-	}
-
-	// PrefixImohash on the full file matches FileImohash.
-	hp, err := PrefixImohash(p1, int64(len(content)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hp != h1 {
-		t.Errorf("PrefixImohash(full) != FileImohash")
+		t.Errorf("expected identical files to share PrefixImohash digest")
 	}
 }
 

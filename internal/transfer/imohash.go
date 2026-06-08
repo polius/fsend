@@ -25,20 +25,6 @@ const ImohashSize = imohash.Size
 // worry about for non-adversarial resumes).
 var imohashHasher = imohash.New()
 
-// FileImohash returns the imohash digest of a file on disk.
-//
-// Cost is constant for files above SampleThreshold (~128 KiB): three
-// 16 KiB samples + the file size. Use this on the receiver to fingerprint
-// a partial file before sending the resume offer.
-func FileImohash(path string) ([ImohashSize]byte, error) {
-	var zero [ImohashSize]byte
-	h, err := imohashHasher.SumFile(path)
-	if err != nil {
-		return zero, fmt.Errorf("imohash %s: %w", path, err)
-	}
-	return h, nil
-}
-
 // PrefixImohash returns the imohash digest of the first prefixLen bytes
 // of a file, computed as if those bytes were the whole file. Used on the
 // sender to validate the receiver's claim that "I have a partial that
