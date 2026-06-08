@@ -157,8 +157,14 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID 
 	}
 	switch status.Reason {
 	case relay.ReasonCapHit:
+		if status.LimitBytes > 0 {
+			return fmt.Errorf("%w: Server limit: %s", fserrors.ErrRelayCapHit, uxlog.HumanBytes(int64(status.LimitBytes)))
+		}
 		return fserrors.ErrRelayCapHit
 	case relay.ReasonIdle:
+		if status.IdleSeconds > 0 {
+			return fmt.Errorf("%w: Server idle window: %s", fserrors.ErrRelayIdleTimeout, uxlog.HumanDuration(time.Duration(status.IdleSeconds)*time.Second))
+		}
 		return fserrors.ErrRelayIdleTimeout
 	}
 	return runErr

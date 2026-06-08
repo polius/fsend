@@ -139,11 +139,15 @@ func renderError(err error, debug bool) int {
 	}
 	entry, known := fserrors.Lookup(err)
 
-	// For usage / source-not-found errors the wrap context is the
-	// useful part ("invalid --mode \"foo\"", "/path/to/missing.txt").
-	// Surface it so users see WHY without having to enable --debug.
+	// Surface wrap context as a second line so users see WHY without
+	// having to enable --debug. Used for:
+	//   - usage / source-not-found: the missing path or bad flag.
+	//   - relay-limit hits: the server's configured limit ("100 MiB").
 	detail := ""
-	if known && (errors.Is(err, fserrors.ErrUsage) || errors.Is(err, fserrors.ErrSourceNotFound)) {
+	if known && (errors.Is(err, fserrors.ErrUsage) ||
+		errors.Is(err, fserrors.ErrSourceNotFound) ||
+		errors.Is(err, fserrors.ErrRelayCapHit) ||
+		errors.Is(err, fserrors.ErrRelayIdleTimeout)) {
 		if extra := extractDetail(err.Error()); extra != "" {
 			detail = extra
 		}

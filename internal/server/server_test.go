@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/polius/fsend/internal/relay"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {
@@ -399,4 +401,107 @@ func TestServerPassword_OpenByDefault(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("open server: status = %d, want 200", resp.StatusCode)
 	}
+}
+
+// fakeRelay implements RelayAllocator with fixed responses, so the
+// relay-status handler can be exercised without standing up a UDP relay.
+type fakeRelay struct {
+	tok      relay.Token
+	reason   string
+	maxBytes uint64
+	idle     time.Duration
+}
+
+func (f *fakeRelay) Allocate() (relay.Token, error)              { return f.tok, nil }
+func (f *fakeRelay) Status(t relay.Token) string                 { return f.reason }
+func (f *fakeRelay) Limits() (uint64, time.Duration)             { return f.maxBytes, f.idle }
+
+// /v1/relay/status must echo back the operator-set ceiling so the CLI
+// can render a concrete error ("server limit 100 MiB") instead of a
+// generic "limit reached." Cap-hit and idle each carry their own field;
+// the other stays zero (omitempty drops it from the JSON entirely).
+func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
+	cases := []struct {
+		name        string
+		reason      string
+		wantBytes   uint64
+		wantSeconds int
+	}{
+		{name: "cap_hit", reason: relay.ReasonCapHit, wantBytes: 100 * 1024 * 1024},
+		{name: "idle", reason: relay.ReasonIdle, wantSeconds: 60},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			s := New(Config{
+				ServerVersion:        "0.0.0-test",
+				UnpairedTTL:          2 * time.Second,
+				PairedTTL:            5 * time.Second,
+				LongPollTimeout:      500 * time.Millisecond,
+				MaxSessionsPerIP:     10,
+				MaxNewSessionsPerMin: 100,
+			})
+			alloc := &fakeRelay{
+				tok:      relay.Token{1, 2, 3, 4},
+				reason:   c.reason,
+				maxBytes: 100 * 1024 * 1024,
+				idle:     60 * time.Second,
+			}
+			s.WithRelay(alloc, "127.0.0.1:9999")
+			ts := httptest.NewServer(s.Handler())
+			defer ts.Close()
+
+			// Pair: create a session and allocate the relay token so
+			// /relay/status has a token to look up.
+			created := postJSON(t, ts.URL+"/v1/session", CreateSessionRequest{})
+			defer created.Body.Close()
+			var cr CreateSessionResponse
+			if err := json.NewDecoder(created.Body).Decode(&cr); err != nil {
+				t.Fatal(err)
+			}
+			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/relay/allocate",
+				bytes.NewReader(mustJSON(t, RelayAllocateRequest{SessionID: cr.SessionID})))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+cr.RoleToken)
+			alloced, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			alloced.Body.Close()
+			if alloced.StatusCode != 200 {
+				t.Fatalf("allocate: status = %d", alloced.StatusCode)
+			}
+
+			resp, err := http.Get(ts.URL + "/v1/relay/status?session_id=" + cr.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			var body RelayStatusResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.State != "evicted" {
+				t.Fatalf("state = %q, want evicted", body.State)
+			}
+			if body.Reason != c.reason {
+				t.Errorf("reason = %q, want %q", body.Reason, c.reason)
+			}
+			if body.LimitBytes != c.wantBytes {
+				t.Errorf("limit_bytes = %d, want %d", body.LimitBytes, c.wantBytes)
+			}
+			if body.IdleSeconds != c.wantSeconds {
+				t.Errorf("idle_seconds = %d, want %d", body.IdleSeconds, c.wantSeconds)
+			}
+		})
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
