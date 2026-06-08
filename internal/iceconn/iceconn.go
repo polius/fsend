@@ -32,7 +32,6 @@ import (
 	"time"
 
 	"github.com/pion/ice/v4"
-	"github.com/pion/stun/v3"
 )
 
 // Options bundle the inputs callers must supply.
@@ -42,22 +41,17 @@ import (
 // likewise come from the peer's signaling response. Both pairs are short
 // random strings; see internal/server.newIceCreds.
 //
-// STUNHost is the pairing server's host (no port — Port is hard-coded
-// to 443 to match the server's UDP listener). Empty disables STUN-based
-// server-reflexive gathering, which limits us to host candidates only —
-// useful in tests, not in production.
+// There is no STUN-server URL here on purpose: the fsend pairing server
+// does not run a STUN reflector (the UDP port carries the custom relay
+// protocol), so configuring one would produce zero server-reflexive
+// candidates while delaying gather-completion by pion's STUN timeout.
+// NAT hole-punching relies on host + peer-reflexive candidates; if
+// those don't connect, the sender falls back to the relay.
 type Options struct {
 	LocalUfrag  string
 	LocalPwd    string
 	RemoteUfrag string
 	RemotePwd   string
-
-	// STUNHost is the pairing server's hostname. Used for STUN-style
-	// reflection (server-reflexive candidates). Empty disables srflx
-	// gathering.
-	STUNHost string
-	// STUNPort is the pairing server's UDP port. Defaults to 443.
-	STUNPort int
 }
 
 // Agent is fsend's ICE coordinator.
@@ -98,12 +92,13 @@ func New(opts Options) (*Agent, error) {
 	if opts.LocalUfrag == "" || opts.LocalPwd == "" {
 		return nil, fmt.Errorf("iceconn: LocalUfrag and LocalPwd are required")
 	}
-	if opts.STUNPort == 0 {
-		opts.STUNPort = 443
-	}
 
 	disc, fail, ka := defaultTimeouts()
 
+	// CandidateTypeServerReflexive stays in the filter so that if a peer
+	// happens to send us an srflx candidate (e.g. they ran a build with a
+	// real STUN server wired in) pion accepts it. We just don't gather
+	// srflx ourselves — no STUN URL is configured.
 	agentOpts := []ice.AgentOption{
 		ice.WithNetworkTypes([]ice.NetworkType{
 			ice.NetworkTypeUDP4,
@@ -117,16 +112,6 @@ func New(opts Options) (*Agent, error) {
 		ice.WithDisconnectedTimeout(disc),
 		ice.WithFailedTimeout(fail),
 		ice.WithKeepaliveInterval(ka),
-	}
-	if opts.STUNHost != "" {
-		agentOpts = append(agentOpts, ice.WithUrls([]*stun.URI{
-			{
-				Scheme: stun.SchemeTypeSTUN,
-				Host:   opts.STUNHost,
-				Port:   opts.STUNPort,
-				Proto:  stun.ProtoTypeUDP,
-			},
-		}))
 	}
 
 	inner, err := ice.NewAgentWithOptions(agentOpts...)

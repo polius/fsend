@@ -180,8 +180,9 @@ func receiverPasswordPrompt(f *flags) func() (string, error) {
 //
 //	Save to <path>/? [Y/n]
 //
-// pathInfo only affects the chip on the peer line (LAN/STUN are quiet,
-// relay gets called out — it's the one users should be aware of). outDir
+// pathInfo only affects the chip on the peer line (direct paths are
+// quiet, relay gets called out — it's the one users should be aware of).
+// outDir
 // is needed to (a) render the save target and (b) detect a single-file
 // collision so we can surface it inline instead of asking a second
 // question after the user has already said yes.

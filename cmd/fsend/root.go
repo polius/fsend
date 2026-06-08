@@ -36,7 +36,7 @@ type flags struct {
 	// back; "no flag" vs "empty flag" is distinguished via Flags().Changed.
 	connectArgsRaw []string
 
-	// Debug-only sender path override: "local" | "stun" | "turn".
+	// Debug-only sender path override: "local" | "direct" | "relay".
 	// Forces a specific data path instead of the default LAN+pairing-server
 	// race with ICE-then-relay fallback. Hidden from --help, undocumented.
 	mode string
@@ -142,16 +142,22 @@ Examples:
 // "" means "no override" (default auto-selection).
 func validMode(s string) bool {
 	switch s {
-	case "", modeLocal, modeSTUN, modeTURN:
+	case "", modeLocal, modeDirect, modeRelay:
 		return true
 	}
 	return false
 }
 
+// --mode values name the *path* the sender is forced down, not any
+// underlying network protocol. The historical names "stun" and "turn"
+// were colloquial labels for "ICE direct" and "relay" respectively;
+// since the server no longer plays the role of a STUN reflector or a
+// TURN-spec relay (it runs a custom token-keyed UDP forwarder), the
+// flag values now describe what they actually do.
 const (
-	modeLocal = "local"
-	modeSTUN  = "stun"
-	modeTURN  = "turn"
+	modeLocal  = "local"
+	modeDirect = "direct"
+	modeRelay  = "relay"
 )
 
 // helpTemplate is the single help/usage view. cobra invokes it for both
@@ -254,7 +260,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	}
 
 	if !validMode(f.mode) {
-		return fmt.Errorf("%w: invalid --mode %q (expected: local, stun, or turn)", fserrors.ErrUsage, f.mode)
+		return fmt.Errorf("%w: invalid --mode %q (expected: local, direct, or relay)", fserrors.ErrUsage, f.mode)
 	}
 	if f.forceSend && f.forceReceive {
 		return fmt.Errorf("%w: --send and --receive are mutually exclusive", fserrors.ErrUsage)

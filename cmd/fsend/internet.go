@@ -59,20 +59,6 @@ func isLocalAddr(addr string) bool {
 	return h == "" || h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
-// stunHostFromServer extracts the bare host from an effective-server
-// string for use as the STUN server's hostname in ICE. Returns "" on
-// loopback addresses (we don't want to STUN to localhost in tests).
-func stunHostFromServer(serverAddr string) string {
-	h, _, err := net.SplitHostPort(serverAddr)
-	if err != nil {
-		h = serverAddr
-	}
-	if h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "" {
-		return ""
-	}
-	return h
-}
-
 // joinRetryBudget caps how long the receiver waits for the sender to
 // register the code on the pairing server. With the sender's short
 // LAN-only window (~5s) plus a Create round-trip, the sender should
@@ -96,7 +82,7 @@ var joinRetryBudget = 15 * time.Second
 // as glitchy. The deferred Stop covers error returns; Stop is idempotent
 // (sync.Once), so explicit stops before printPath don't double-close.
 func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config, connSpin *uxlog.Spinner) error {
-	client, serverAddr := signalingClient(cfg)
+	client, _ := signalingClient(cfg)
 	defer connSpin.Stop()
 
 	joined, err := joinWithRetry(ctx, client, c, f, connSpin)
@@ -105,13 +91,11 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}
 
 	// --- Try ICE direct path ---
-	stunHost := stunHostFromServer(serverAddr)
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, joined.SessionID, joined.RoleToken, iceconn.Options{
 		LocalUfrag:  joined.YourIceCredentials.Ufrag,
 		LocalPwd:    joined.YourIceCredentials.Pwd,
 		RemoteUfrag: joined.PeerIceCredentials.Ufrag,
 		RemotePwd:   joined.PeerIceCredentials.Pwd,
-		STUNHost:    stunHost,
 	}, false /* controlled */)
 	if iceErr == nil {
 		defer func() { _ = iceConn.Close() }()
@@ -481,9 +465,9 @@ func hostnameOrDefault(s string) string {
 
 // printPath renders the connection-path status line. Tri-state:
 //
-//	✓ direct (local) — same LAN, no NAT crossed
-//	✓ direct (STUN) — NAT hole-punched
-//	⚠ relay (TURN) via <relay-host> — NAT hole-punch failed
+//	✓ Direct on local network   — same network, no NAT crossed
+//	✓ Direct over the internet  — direct peer-to-peer; NAT hole-punched
+//	⚠ Relayed via <relay-host>  — direct failed, bytes flow through the relay
 //
 // In --debug mode, a second line shows the selected ICE candidate types
 // ("host → srflx" etc.) — useful for diagnosing why a peer ended up on a

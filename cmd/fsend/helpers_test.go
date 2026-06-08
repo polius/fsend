@@ -41,26 +41,6 @@ func TestIsLocalAddr(t *testing.T) {
 	}
 }
 
-func TestStunHostFromServer(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		want string
-	}{
-		{"fs.example.com:443", "fs.example.com"},
-		{"127.0.0.1:8080", ""},
-		{"localhost:8080", ""},
-		{"[::1]:443", ""},
-		// No port → SplitHostPort errors and the whole string is taken as host.
-		// We still reject loopback even in that shape.
-		{"localhost", ""},
-		{"fs.example.com", "fs.example.com"},
-	} {
-		if got := stunHostFromServer(tc.in); got != tc.want {
-			t.Errorf("stunHostFromServer(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 func TestShortErr_TruncatesAndStripsNewlines(t *testing.T) {
 	// shortErr caps to 60 runes (59 + "…"), so the byte length grows by
 	// the UTF-8 width of the ellipsis. Assert in runes, which is what the
@@ -320,12 +300,16 @@ func TestRunConnect_RejectsBadHostPort(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidMode(t *testing.T) {
-	for _, ok := range []string{"", "local", "stun", "turn"} {
+	for _, ok := range []string{"", "local", "direct", "relay"} {
 		if !validMode(ok) {
 			t.Errorf("validMode(%q) = false, want true", ok)
 		}
 	}
-	for _, bad := range []string{"udp", "lan", "internet", "anything"} {
+	// The old colloquial names "stun"/"turn" must NOT be accepted now —
+	// they were path-selection labels masquerading as protocol names and
+	// were renamed for clarity. Catching them here keeps anyone who
+	// re-adds them in the future from doing so silently.
+	for _, bad := range []string{"udp", "lan", "internet", "anything", "stun", "turn"} {
 		if validMode(bad) {
 			t.Errorf("validMode(%q) = true, want false", bad)
 		}

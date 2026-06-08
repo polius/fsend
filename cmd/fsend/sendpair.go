@@ -128,7 +128,7 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 // guarantees the server session is Deleted and resources released on
 // any teardown path.
 func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Config) (*internetSenderPairing, error) {
-	client, serverAddr := signalingClient(cfg)
+	client, _ := signalingClient(cfg)
 	created, err := client.Create(ctx, code)
 	if err != nil {
 		return nil, err
@@ -163,7 +163,7 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 	}
 
 	// Establish the underlying data path: ICE-direct first, relay fallback.
-	pc, pathInfo, err := establishInternetDataPath(ctx, f, client, created, waitResp, serverAddr)
+	pc, pathInfo, err := establishInternetDataPath(ctx, f, client, created, waitResp)
 	if err != nil {
 		deleteSession()
 		return nil, err
@@ -197,19 +197,17 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 // reflects the choice for UX rendering.
 //
 // The debug --mode flag short-circuits the ladder:
-//   - modeSTUN: only ICE; surface the ICE error if it fails (no relay fallback).
-//   - modeTURN: skip ICE entirely; allocate the relay immediately.
-func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *server.CreateSessionResponse, waitResp *server.WaitResponse, serverAddr string) (net.PacketConn, connpath.Info, error) {
-	if f != nil && f.mode == modeTURN {
+//   - modeDirect: only ICE; surface the ICE error if it fails (no relay fallback).
+//   - modeRelay:  skip ICE entirely; allocate the relay immediately.
+func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *server.CreateSessionResponse, waitResp *server.WaitResponse) (net.PacketConn, connpath.Info, error) {
+	if f != nil && f.mode == modeRelay {
 		return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 	}
-	stunHost := stunHostFromServer(serverAddr)
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, created.RoleToken, iceconn.Options{
 		LocalUfrag:  created.IceCredentials.Ufrag,
 		LocalPwd:    created.IceCredentials.Pwd,
 		RemoteUfrag: waitResp.PeerIceCredentials.Ufrag,
 		RemotePwd:   waitResp.PeerIceCredentials.Pwd,
-		STUNHost:    stunHost,
 	}, true /* controlling */)
 	if iceErr == nil {
 		return iceConn, icePath, nil
@@ -217,14 +215,14 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if f != nil && f.debug {
 		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
 	}
-	if f != nil && f.mode == modeSTUN {
-		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=stun: %v", fserrors.ErrConnectFailed, iceErr)
+	if f != nil && f.mode == modeDirect {
+		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=direct: %v", fserrors.ErrConnectFailed, iceErr)
 	}
 	return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 }
 
 // allocAndDialRelay performs the relay allocation + dial steps. Shared
-// between the default ICE-failure fallback and the debug --mode=turn
+// between the default ICE-failure fallback and the debug --mode=relay
 // short-circuit so both produce identical errors and pathInfo.
 func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID, roleToken string) (net.PacketConn, connpath.Info, error) {
 	alloc, err := client.AllocateRelay(ctx, sessionID, roleToken)
@@ -305,7 +303,7 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 	// --mode collapses the LAN+internet race to a single path. The
 	// disabled side is marked done upfront and its goroutine never starts,
 	// so the coordinator only ever picks a winner from the enabled side.
-	lanDisabled := f.mode == modeSTUN || f.mode == modeTURN
+	lanDisabled := f.mode == modeDirect || f.mode == modeRelay
 	serverDisabled := f.mode == modeLocal
 
 	if !lanDisabled {
@@ -379,12 +377,12 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			}
 			// Don't print the "only same-LAN receivers can connect" notice
 			// when the user explicitly forced the internet path with
-			// --mode=stun/turn: LAN is disabled, so the notice would
+			// --mode=direct/relay: LAN is disabled, so the notice would
 			// be misleading.
 			if !serverDownNoticed && !f.quiet && !lanDisabled && isServerDown(serverErr) {
 				serverDownNoticed = true
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unreachable — only same-LAN receivers can connect.")
+				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unreachable — only receivers on your local network can connect.")
 				waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 			}
 		}

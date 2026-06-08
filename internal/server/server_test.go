@@ -505,3 +505,117 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+// TestRateLimitKey nails down the abuse-prevention contract: every IP
+// inside one v6 /64 must map to the same key, every v4 host gets its
+// own. We deliberately do NOT depend on whether the input was
+// shortest-form or canonical (CIDR comparisons should be transparent to
+// that). Garbage in (non-IP strings) is preserved verbatim so callers
+// that pass arbitrary tokens stay coherent.
+func TestRateLimitKey(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// v4: full /32 preserved.
+		{"1.2.3.4", "1.2.3.4"},
+		{"127.0.0.1", "127.0.0.1"},
+
+		// v6: collapse to /64 (low 64 bits zeroed).
+		{"2001:db8:abcd:1234::1", "2001:db8:abcd:1234::/64"},
+		{"2001:db8:abcd:1234::dead:beef", "2001:db8:abcd:1234::/64"},
+		{"2001:db8:abcd:1234:5678:9abc:def0:1234", "2001:db8:abcd:1234::/64"},
+
+		// v6 loopback: a /128 in ::/0, masked /64 is still ::/0 → "::".
+		{"::1", "::/64"},
+
+		// Garbage passes through.
+		{"not-an-ip", "not-an-ip"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := rateLimitKey(c.in); got != c.want {
+			t.Errorf("rateLimitKey(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestRateLimitKey_V6CollapsesDistinct128s is the empirical contract: two
+// different /128s in the same /64 must hit the same rate-limit identity.
+// If this regresses, the abuse scenario where one peer rotates its /128
+// to bypass MaxNewSessionsPerMin re-opens silently.
+func TestRateLimitKey_V6CollapsesDistinct128s(t *testing.T) {
+	a := rateLimitKey("2001:db8:abcd:1234::1")
+	b := rateLimitKey("2001:db8:abcd:1234:ffff:ffff:ffff:fffe")
+	if a != b {
+		t.Fatalf("two /128s in the same /64 produced different keys: %q vs %q", a, b)
+	}
+	// Different /64s must NOT collide.
+	c := rateLimitKey("2001:db8:abcd:5678::1")
+	if a == c {
+		t.Fatalf("different /64s produced the same key: %q", a)
+	}
+}
+
+// TestRateLimit_V6BypassClosed exercises the end-to-end abuse path: the
+// pre-fix server treats every /128 as a fresh identity, so 35 sessions
+// from different /128 inside one /64 sailed through. After the fix the
+// per-/64 cap (MaxSessionsPerIP) bites at request N+1.
+func TestRateLimit_V6BypassClosed(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          2 * time.Second,
+		PairedTTL:            5 * time.Second,
+		LongPollTimeout:      500 * time.Millisecond,
+		MaxSessionsPerIP:     5,
+		MaxNewSessionsPerMin: 1000, // we want concurrent-sessions cap to bite, not rate
+	})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	ok, throttled := 0, 0
+	for i := 0; i < 20; i++ {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/session",
+			bytes.NewReader([]byte(`{}`)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Rotate /128 inside the same /64 — the exact pattern that
+		// bypassed the cap before the rateLimitKey fix.
+		req.Header.Set("X-Real-IP", "2001:db8:abcd:1234::"+itoaHex(i+1))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		switch resp.StatusCode {
+		case 200:
+			ok++
+		case 429:
+			throttled++
+		default:
+			t.Fatalf("unexpected status %d at i=%d", resp.StatusCode, i)
+		}
+	}
+	if ok != 5 {
+		t.Errorf("ok = %d, want 5 (MaxSessionsPerIP must clamp the /64)", ok)
+	}
+	if throttled != 15 {
+		t.Errorf("throttled = %d, want 15", throttled)
+	}
+}
+
+func itoaHex(n int) string {
+	const hex = "0123456789abcdef"
+	if n == 0 {
+		return "0"
+	}
+	var buf [16]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = hex[n&0xF]
+		n >>= 4
+	}
+	return string(buf[i:])
+}

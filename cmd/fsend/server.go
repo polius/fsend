@@ -272,7 +272,7 @@ USAGE
   fsend server --help          Show this help
 
 EXAMPLE
-  Local / LAN test (no TLS — do not expose to the internet):
+  Local-network test (no TLS — do not expose to the internet):
     docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
 
   Internet-exposed: put a TLS-terminating reverse proxy in front of :8080.

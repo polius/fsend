@@ -12,29 +12,30 @@ func TestFromICE_Classification(t *testing.T) {
 	}{
 		// Spec rule: host ↔ host means peers reached each other on
 		// interface addresses, so we claim Local.
-		{"host_host_is_local", "host", "host", KindLocal, "direct (local)"},
+		{"host_host_is_local", "host", "host", KindLocal, "direct (local network)"},
 
-		// Anything involving srflx / prflx means a NAT was crossed.
-		{"srflx_srflx_is_stun", "srflx", "srflx", KindDirectSTUN, "direct (STUN)"},
-		{"srflx_host_is_stun", "srflx", "host", KindDirectSTUN, "direct (STUN)"},
-		{"host_srflx_is_stun", "host", "srflx", KindDirectSTUN, "direct (STUN)"},
-		{"prflx_host_is_stun", "prflx", "host", KindDirectSTUN, "direct (STUN)"},
-		{"host_prflx_is_stun", "host", "prflx", KindDirectSTUN, "direct (STUN)"},
-		{"prflx_prflx_is_stun", "prflx", "prflx", KindDirectSTUN, "direct (STUN)"},
-		{"srflx_prflx_is_stun", "srflx", "prflx", KindDirectSTUN, "direct (STUN)"},
+		// Anything involving srflx / prflx means a NAT was crossed —
+		// classified as DirectNAT (direct peer-to-peer over the internet).
+		{"srflx_srflx_is_direct_nat", "srflx", "srflx", KindDirectNAT, "direct (internet)"},
+		{"srflx_host_is_direct_nat", "srflx", "host", KindDirectNAT, "direct (internet)"},
+		{"host_srflx_is_direct_nat", "host", "srflx", KindDirectNAT, "direct (internet)"},
+		{"prflx_host_is_direct_nat", "prflx", "host", KindDirectNAT, "direct (internet)"},
+		{"host_prflx_is_direct_nat", "host", "prflx", KindDirectNAT, "direct (internet)"},
+		{"prflx_prflx_is_direct_nat", "prflx", "prflx", KindDirectNAT, "direct (internet)"},
+		{"srflx_prflx_is_direct_nat", "srflx", "prflx", KindDirectNAT, "direct (internet)"},
 
 		// Relay anywhere means a relay candidate was selected — surface
 		// it distinctly even though the controlling side may have a
 		// direct candidate.
-		{"relay_host_is_relay", "relay", "host", KindRelay, "relay (TURN)"},
-		{"host_relay_is_relay", "host", "relay", KindRelay, "relay (TURN)"},
-		{"relay_relay_is_relay", "relay", "relay", KindRelay, "relay (TURN)"},
-		{"relay_srflx_is_relay", "relay", "srflx", KindRelay, "relay (TURN)"},
+		{"relay_host_is_relay", "relay", "host", KindRelay, "relayed"},
+		{"host_relay_is_relay", "host", "relay", KindRelay, "relayed"},
+		{"relay_relay_is_relay", "relay", "relay", KindRelay, "relayed"},
+		{"relay_srflx_is_relay", "relay", "srflx", KindRelay, "relayed"},
 
-		// Unknown / empty inputs fall through to DirectSTUN as the
+		// Unknown / empty inputs fall through to DirectNAT as the
 		// conservative choice (don't overclaim "local").
-		{"empty_pair_is_stun", "", "", KindDirectSTUN, "direct (STUN)"},
-		{"unknown_value_is_stun", "wat", "host", KindDirectSTUN, "direct (STUN)"},
+		{"empty_pair_is_direct_nat", "", "", KindDirectNAT, "direct (internet)"},
+		{"unknown_value_is_direct_nat", "wat", "host", KindDirectNAT, "direct (internet)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -61,8 +62,8 @@ func TestFromLAN(t *testing.T) {
 	if got.LocalCand != "" || got.RemoteCand != "" {
 		t.Errorf("LAN path should not carry candidate types: got (%q,%q)", got.LocalCand, got.RemoteCand)
 	}
-	if got.Short() != "direct (local)" {
-		t.Errorf("Short() = %q, want %q", got.Short(), "direct (local)")
+	if got.Short() != "direct (local network)" {
+		t.Errorf("Short() = %q, want %q", got.Short(), "direct (local network)")
 	}
 	if got.Detail() != "" {
 		t.Errorf("Detail() = %q, want empty for LAN path", got.Detail())
@@ -77,7 +78,7 @@ func TestFromRelay(t *testing.T) {
 	if got.RelayAddr != "fsend.alzina.dev:443" {
 		t.Errorf("RelayAddr = %q, want fsend.alzina.dev:443", got.RelayAddr)
 	}
-	if got.Short() != "relay (TURN)" {
+	if got.Short() != "relayed" {
 		t.Errorf("Short() = %q", got.Short())
 	}
 	// Headline collapses to the compact Tag() form; the address still
@@ -92,11 +93,11 @@ func TestFromRelay(t *testing.T) {
 }
 
 func TestTag_CompactForms(t *testing.T) {
-	if got := (Info{Kind: KindLocal}).Tag(); got != "Direct on LAN" {
-		t.Errorf("Local Tag() = %q, want %q", got, "Direct on LAN")
+	if got := (Info{Kind: KindLocal}).Tag(); got != "Direct on local network" {
+		t.Errorf("Local Tag() = %q, want %q", got, "Direct on local network")
 	}
-	if got := (Info{Kind: KindDirectSTUN}).Tag(); got != "Direct via STUN" {
-		t.Errorf("DirectSTUN Tag() = %q, want %q", got, "Direct via STUN")
+	if got := (Info{Kind: KindDirectNAT}).Tag(); got != "Direct over the internet" {
+		t.Errorf("DirectNAT Tag() = %q, want %q", got, "Direct over the internet")
 	}
 	if got := (Info{Kind: KindRelay}).Tag(); got != "Relayed" {
 		t.Errorf("Relay (no addr) Tag() = %q, want %q", got, "Relayed")
@@ -109,8 +110,8 @@ func TestGlyph(t *testing.T) {
 	if utf8, _ := (Info{Kind: KindLocal}).Glyph(); utf8 != "✓" {
 		t.Errorf("Local glyph = %q, want ✓", utf8)
 	}
-	if utf8, _ := (Info{Kind: KindDirectSTUN}).Glyph(); utf8 != "✓" {
-		t.Errorf("DirectSTUN glyph = %q, want ✓", utf8)
+	if utf8, _ := (Info{Kind: KindDirectNAT}).Glyph(); utf8 != "✓" {
+		t.Errorf("DirectNAT glyph = %q, want ✓", utf8)
 	}
 	if utf8, ascii := (Info{Kind: KindRelay}).Glyph(); utf8 != "⚠" || ascii != "[!]" {
 		t.Errorf("Relay glyph = (%q,%q), want (⚠, [!])", utf8, ascii)

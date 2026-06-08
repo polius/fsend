@@ -132,13 +132,23 @@ type IceCreds struct {
 }
 
 // internal: a session lives in the server's in-memory table.
+//
+// SenderAddr / ReceiverAddr are the raw observed IPs returned to the
+// peer in JoinSessionResponse.PeerObservedAddr — kept precise for the
+// human-facing "Peer at <addr>" line. SenderRateKey / ReceiverRateKey
+// are the rate-limit identities (raw v4, /64 for v6) — they're what
+// indexes ipCounts and ipBucket, and they're stored separately so the
+// decrement on session teardown lands on the same map key the
+// increment used.
 type session struct {
 	ID                 string
 	Code               string
 	SenderAddr         string
+	SenderRateKey      string
 	SenderICE          IceCreds
 	SenderToken        string
 	ReceiverAddr       string
+	ReceiverRateKey    string
 	ReceiverICE        IceCreds
 	ReceiverToken      string
 	State              string // "waiting" | "paired" | "complete"
