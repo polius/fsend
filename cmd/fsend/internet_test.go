@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -92,23 +93,41 @@ func TestJoinWithRetry_NonRetriableErrorPropagatesImmediately(t *testing.T) {
 }
 
 // Each eviction reason the relay reports must map to its sentinel; any
-// other state must leave runErr untouched.
+// other state must leave runErr untouched. When the server includes a
+// limit value, it must surface as a wrap detail so the renderer can
+// print it on its own line; without a value, the bare sentinel must
+// pass through cleanly so old servers don't break the user message.
 func TestClassifyRelayDrop_MapsReasons(t *testing.T) {
 	cases := []struct {
-		name      string
-		body      string
-		runErr    error
-		wantErr   error
-		wantSame  bool // when true, expect runErr to be returned unchanged
+		name       string
+		body       string
+		runErr     error
+		wantErr    error
+		wantDetail string // substring expected in err.Error() (skipped when empty)
+		wantSame   bool   // when true, expect runErr to be returned unchanged
 	}{
 		{
-			name:    "cap_hit_promotes_to_sentinel",
+			name:       "cap_hit_with_limit_includes_value",
+			body:       `{"state":"evicted","reason":"cap_hit","limit_bytes":104857600}`,
+			runErr:     errors.New("idle timeout"),
+			wantErr:    fserrors.ErrRelayCapHit,
+			wantDetail: "Server limit: 100.0 MB",
+		},
+		{
+			name:    "cap_hit_without_limit_is_bare_sentinel",
 			body:    `{"state":"evicted","reason":"cap_hit"}`,
 			runErr:  errors.New("idle timeout"),
 			wantErr: fserrors.ErrRelayCapHit,
 		},
 		{
-			name:    "idle_promotes_to_sentinel",
+			name:       "idle_with_seconds_includes_value",
+			body:       `{"state":"evicted","reason":"idle","idle_seconds":60}`,
+			runErr:     errors.New("idle timeout"),
+			wantErr:    fserrors.ErrRelayIdleTimeout,
+			wantDetail: "Server idle window: 1m00s",
+		},
+		{
+			name:    "idle_without_seconds_is_bare_sentinel",
 			body:    `{"state":"evicted","reason":"idle"}`,
 			runErr:  errors.New("idle timeout"),
 			wantErr: fserrors.ErrRelayIdleTimeout,
@@ -154,6 +173,9 @@ func TestClassifyRelayDrop_MapsReasons(t *testing.T) {
 			}
 			if !errors.Is(got, c.wantErr) {
 				t.Errorf("got %v, want %v", got, c.wantErr)
+			}
+			if c.wantDetail != "" && !strings.Contains(got.Error(), c.wantDetail) {
+				t.Errorf("got %q, want detail containing %q", got.Error(), c.wantDetail)
 			}
 		})
 	}

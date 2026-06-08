@@ -93,6 +93,12 @@ func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 	}
 }
 
+// Limits exposes the configured per-session ceilings so the signaling
+// layer can include them in the relay-status response.
+func (s *Server) Limits() (maxBytes uint64, idleTimeout time.Duration) {
+	return s.cfg.MaxBytesPerSession, s.cfg.SessionIdleTimeout
+}
+
 // Status returns the eviction reason for a token, or "" if the
 // allocation is still live or unknown. Used by the signaling layer's
 // /v1/relay/status endpoint so the CLI can surface the real reason a

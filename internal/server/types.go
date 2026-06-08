@@ -108,9 +108,16 @@ type HealthResponse struct {
 //
 // Reason is set only when State == "evicted"; valid values are
 // relay.ReasonCapHit and relay.ReasonIdle.
+//
+// LimitBytes is populated when Reason == ReasonCapHit; IdleSeconds when
+// Reason == ReasonIdle. Both are omitempty so older servers that don't
+// set them round-trip as zero and the CLI falls back to the generic
+// message instead of saying "0 MiB" / "0s".
 type RelayStatusResponse struct {
-	State  string `json:"state"`
-	Reason string `json:"reason,omitempty"`
+	State       string `json:"state"`
+	Reason      string `json:"reason,omitempty"`
+	LimitBytes  uint64 `json:"limit_bytes,omitempty"`
+	IdleSeconds int    `json:"idle_seconds,omitempty"`
 }
 
 // ErrorResponse is the body of any 4xx/5xx response.
