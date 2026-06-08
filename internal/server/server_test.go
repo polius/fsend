@@ -412,9 +412,9 @@ type fakeRelay struct {
 	idle     time.Duration
 }
 
-func (f *fakeRelay) Allocate() (relay.Token, error)              { return f.tok, nil }
-func (f *fakeRelay) Status(t relay.Token) string                 { return f.reason }
-func (f *fakeRelay) Limits() (uint64, time.Duration)             { return f.maxBytes, f.idle }
+func (f *fakeRelay) Allocate() (relay.Token, error)  { return f.tok, nil }
+func (f *fakeRelay) Status(t relay.Token) string     { return f.reason }
+func (f *fakeRelay) Limits() (uint64, time.Duration) { return f.maxBytes, f.idle }
 
 // /v1/relay/status must echo back the operator-set ceiling so the CLI
 // can render a concrete error ("server limit 100 MiB") instead of a
