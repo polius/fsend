@@ -165,8 +165,8 @@ var catalog = map[error]Entry{
 	},
 	ErrSessionExpired: {
 		Code: "E007", Exit: 7,
-		Message: "The session expired on the server before a receiver paired.",
-		Action:  "Re-run your command to publish a fresh code.",
+		Message: "Your code timed out before anyone received it.",
+		Action:  "Run the command again to get a fresh code.",
 	},
 	ErrDiskFull: {
 		Code: "E008", Exit: 8,
@@ -185,9 +185,9 @@ var catalog = map[error]Entry{
 	},
 	ErrHashMismatch: {
 		Code: "E011", Exit: 11,
-		Message: "Transfer completed but the file did not verify correctly.",
-		Action: "This usually means the sender's file changed mid-transfer, or there\n" +
-			"  was data corruption. The partial file has been deleted.\n" +
+		Message: "The file arrived corrupted — it doesn't match the sender's original.",
+		Action: "Usually this means the source changed during the transfer, or data\n" +
+			"  was damaged in transit. The partial file has been deleted.\n" +
 			"  Ask the sender to try again.",
 	},
 	ErrPathTraversal: {
@@ -203,17 +203,19 @@ var catalog = map[error]Entry{
 	},
 	ErrConnectFailed: {
 		Code: "E014", Exit: 14,
-		Message: "Could not connect to the other peer, even via the relay.",
-		Action: "This usually means one of:\n" +
-			"    - The relay server is unreachable from your network\n" +
-			"    - The other peer's connection dropped\n" +
-			"    - Your firewall blocks UDP traffic\n" +
-			"  Try: fsend --connect <different-server> or run with --debug for details.",
+		Message: "Could not reach the other side.",
+		Action: "fsend tried a direct connection and the server-relayed fallback;\n" +
+			"  neither worked. Common causes:\n" +
+			"    - The other side's fsend stopped or lost network.\n" +
+			"    - A firewall on either end blocks outbound traffic.\n" +
+			"    - The server is unreachable from your network.\n" +
+			"  Try a different server (`fsend --connect <host:port>`)\n" +
+			"  or re-run with --debug for details.",
 	},
 	ErrProtocolError: {
 		Code: "E015", Exit: 15,
-		Message: "Protocol error talking to the other peer.",
-		Action:  "Both sides must run a compatible fsend version.",
+		Message: "The two sides could not agree on how to transfer.",
+		Action:  "Make sure sender and receiver are on compatible fsend versions.",
 	},
 	ErrConfigCorrupted: {
 		Code: "E016", Exit: 0, // warning, not fatal
@@ -237,8 +239,8 @@ var catalog = map[error]Entry{
 	},
 	ErrPartialMismatch: {
 		Code: "E019", Exit: 19,
-		Message: "The source file changed since the last attempt — stale partial discarded.",
-		Action:  "Run the same command again to fetch a fresh copy from scratch.",
+		Message: "The source file changed since the last attempt — the incomplete download was discarded.",
+		Action:  "Run the same command again to start fresh.",
 	},
 	ErrTransientFailure: {
 		Code: "E020", Exit: 20,
@@ -254,16 +256,18 @@ var catalog = map[error]Entry{
 	},
 	ErrPeerAuthFailed: {
 		Code: "E022", Exit: 22,
-		Message: "Could not authenticate the other peer.",
-		Action: "Either the codes don't match or something in the network path\n" +
-			"  tampered with the connection. Re-share the code and try again.",
+		Message: "Could not verify the other side.",
+		Action: "Either the code you used doesn't match the one the sender shared,\n" +
+			"  or someone on the network tried to interfere. Re-share the code\n" +
+			"  and try again.",
 	},
 	ErrRelayCapHit: {
 		Code: "E023", Exit: 23,
-		Message: "The relay server's per-session byte cap was reached. Transfer aborted.",
-		Action: "Same-LAN and NAT-hole-punched transfers are uncapped; only the relay\n" +
-			"  fallback is metered. Workarounds:\n" +
-			"    - Send from a different network so the peers can hole-punch directly.\n" +
+		Message: "The server's transfer-size limit was reached. Transfer aborted.",
+		Action: "Only fallback transfers routed through the server count against this\n" +
+			"  limit; same-network and direct internet transfers are uncapped.\n" +
+			"  Workarounds:\n" +
+			"    - Run again from a different network so fsend can connect you directly.\n" +
 			"    - Self-host your own server (`fsend server`) and raise FSEND_MAX_RELAY_BYTES_PER_SESSION.",
 	},
 	ErrUsage: {
@@ -281,9 +285,9 @@ var catalog = map[error]Entry{
 	},
 	ErrLANListenerFailed: {
 		Code: "E027", Exit: 27,
-		Message: "Could not open the local-network listener.",
-		Action: "Another fsend (or another program) may already be using the port.\n" +
-			"  Try again — most codes use a different port.",
+		Message: "Could not open the port fsend uses to find the other side on your local network.",
+		Action: "Another fsend (or another program) may already be using that port.\n" +
+			"  Try again — most codes pick a different port.",
 	},
 	ErrServerAuthRequired: {
 		Code: "E028", Exit: 28,
@@ -294,10 +298,10 @@ var catalog = map[error]Entry{
 	},
 	ErrRelayIdleTimeout: {
 		Code: "E029", Exit: 29,
-		Message: "The relay session was reclaimed for inactivity. Transfer aborted.",
-		Action: "The server tore down the relay allocation because no traffic\n" +
-			"  flowed within its idle window. Try again, or self-host\n" +
-			"  (`fsend server`) and raise FSEND_SESSION_IDLE_TIMEOUT.",
+		Message: "The server closed the connection because no data was flowing. Transfer aborted.",
+		Action: "The fallback relay drops sessions that go idle for too long.\n" +
+			"  Try again, or self-host (`fsend server`) and raise\n" +
+			"  FSEND_SESSION_IDLE_TIMEOUT.",
 	},
 }
 
