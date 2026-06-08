@@ -8,7 +8,7 @@
 <p align="center"><strong>Direct, end-to-end encrypted file transfer.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/polius/fsend/actions/workflows/test.yml"><img src="https://github.com/polius/fsend/actions/workflows/test.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/polius/fsend/actions/workflows/checks.yml"><img src="https://github.com/polius/fsend/actions/workflows/checks.yml/badge.svg" alt="checks"></a>
   <a href="https://github.com/polius/fsend/releases"><img src="https://img.shields.io/github/v/release/polius/fsend" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
