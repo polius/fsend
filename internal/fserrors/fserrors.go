@@ -90,6 +90,10 @@ var (
 	// shared password and the client either didn't send one or sent the
 	// wrong one.
 	ErrServerAuthRequired = errors.New("server password required")
+	// E029 — relay reaped the allocation for inactivity
+	// (FSEND_SESSION_IDLE_TIMEOUT). Distinct from E020 so the user
+	// knows it's a server-set ceiling, not their network.
+	ErrRelayIdleTimeout = errors.New("relay session idle-timed out")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -219,7 +223,10 @@ var catalog = map[error]Entry{
 	ErrRateLimited: {
 		Code: "E017", Exit: 17,
 		Message: "Too many attempts from your network — rate limit hit on the server.",
-		Action:  "Wait a minute and try again, or use --connect to use a different server.",
+		Action: "Wait a minute and try again, or switch servers:\n" +
+			"    fsend --connect <host:port>\n" +
+			"  Or self-host your own server (`fsend server`) and raise\n" +
+			"  FSEND_MAX_SESSIONS_PER_IP / FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN.",
 	},
 	ErrServerRetired: {
 		Code: "E018", Exit: 18,
@@ -284,6 +291,13 @@ var catalog = map[error]Entry{
 		Action: "Set it with:\n" +
 			"    fsend --connect <host:port> <password>\n" +
 			"  Ask the server operator for the password if you don't have it.",
+	},
+	ErrRelayIdleTimeout: {
+		Code: "E029", Exit: 29,
+		Message: "The relay session was reclaimed for inactivity. Transfer aborted.",
+		Action: "The server tore down the relay allocation because no traffic\n" +
+			"  flowed within its idle window. Try again, or self-host\n" +
+			"  (`fsend server`) and raise FSEND_SESSION_IDLE_TIMEOUT.",
 	},
 }
 

@@ -125,6 +125,7 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 		{ErrUsage, "E024", 24},
 		{ErrSourceNotFound, "E025", 25},
 		{ErrUserCancelled, "E026", 130},
+		{ErrRelayIdleTimeout, "E029", 29},
 	}
 	for _, c := range cases {
 		entry, ok := Lookup(c.err)

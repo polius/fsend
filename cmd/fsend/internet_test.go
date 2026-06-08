@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -87,6 +88,92 @@ func TestJoinWithRetry_NonRetriableErrorPropagatesImmediately(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("retried a non-retriable error: %v elapsed", elapsed)
+	}
+}
+
+// Each eviction reason the relay reports must map to its sentinel; any
+// other state must leave runErr untouched.
+func TestClassifyRelayDrop_MapsReasons(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		runErr    error
+		wantErr   error
+		wantSame  bool // when true, expect runErr to be returned unchanged
+	}{
+		{
+			name:    "cap_hit_promotes_to_sentinel",
+			body:    `{"state":"evicted","reason":"cap_hit"}`,
+			runErr:  errors.New("idle timeout"),
+			wantErr: fserrors.ErrRelayCapHit,
+		},
+		{
+			name:    "idle_promotes_to_sentinel",
+			body:    `{"state":"evicted","reason":"idle"}`,
+			runErr:  errors.New("idle timeout"),
+			wantErr: fserrors.ErrRelayIdleTimeout,
+		},
+		{
+			name:     "active_keeps_run_err",
+			body:     `{"state":"active"}`,
+			runErr:   errors.New("idle timeout"),
+			wantSame: true,
+		},
+		{
+			name:     "unknown_keeps_run_err",
+			body:     `{"state":"unknown"}`,
+			runErr:   errors.New("idle timeout"),
+			wantSame: true,
+		},
+		{
+			name:     "unmapped_reason_keeps_run_err",
+			body:     `{"state":"evicted","reason":"future_reason"}`,
+			runErr:   errors.New("idle timeout"),
+			wantSame: true,
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/relay/status" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer ts.Close()
+			client := signaling.New(ts.URL, "test")
+			got := classifyRelayDrop(context.Background(), client, "sess-1", c.runErr)
+			if c.wantSame {
+				if got != c.runErr {
+					t.Errorf("expected runErr unchanged, got %v", got)
+				}
+				return
+			}
+			if !errors.Is(got, c.wantErr) {
+				t.Errorf("got %v, want %v", got, c.wantErr)
+			}
+		})
+	}
+}
+
+// A successful transfer (nil runErr) must not get a sentinel pinned on it.
+func TestClassifyRelayDrop_NilStaysNil(t *testing.T) {
+	client := signaling.New("http://127.0.0.1:1", "test") // unreachable; not called
+	if err := classifyRelayDrop(context.Background(), client, "sess-1", nil); err != nil {
+		t.Errorf("nil runErr should pass through, got %v", err)
+	}
+}
+
+// A failing status probe must not mask the underlying runErr.
+func TestClassifyRelayDrop_ProbeFailureFallsBackToRunErr(t *testing.T) {
+	client := signaling.New("http://127.0.0.1:1", "test")
+	runErr := errors.New("idle timeout")
+	got := classifyRelayDrop(context.Background(), client, "sess-1", runErr)
+	if got != runErr {
+		t.Errorf("expected runErr to survive a probe failure, got %v", got)
 	}
 }
 
