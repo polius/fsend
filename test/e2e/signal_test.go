@@ -37,7 +37,18 @@ func TestSignal_SenderSIGINTMidTransfer(t *testing.T) {
 	rDone := make(chan error, 1)
 	go func() { rDone <- rCmd.Wait() }()
 
-	time.Sleep(400 * time.Millisecond)
+	// Poll for the sidecar instead of a fixed sleep — a 400 ms wait was
+	// below CI's noise floor on fast Ubuntu runners, where the 64 MiB
+	// loopback transfer could finish before SIGINT landed and the
+	// receiver would legitimately exit 0. Sidecar presence proves the
+	// receiver is actively writing chunks, so SIGINT is guaranteed to
+	// interrupt an in-flight transfer.
+	if !waitForSidecar(dst, 5*time.Second) {
+		_ = s.cmd.Process.Kill()
+		_ = rCmd.Process.Kill()
+		<-rDone
+		t.Fatal("no .fsend-partial sidecar appeared within 5s — receiver never started writing")
+	}
 	s.signal(t, syscall.SIGINT)
 	s.wait(t, 5*time.Second)
 
