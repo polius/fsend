@@ -96,22 +96,6 @@ func FromICE(localType, remoteType string) Info {
 	return info
 }
 
-// Short returns the compact lowercase form, e.g. "direct (local network)".
-// Currently unused by production code; retained for parity with Tag()
-// in case a caller wants the inline-noun form.
-func (i Info) Short() string {
-	switch i.Kind {
-	case KindLocal:
-		return "direct (local network)"
-	case KindDirectNAT:
-		return "direct (internet)"
-	case KindRelay:
-		return "relayed"
-	default:
-		return "unknown"
-	}
-}
-
 // Tag returns the compact path label used in summary lines and inline
 // chips, e.g. "Direct on local network", "Direct over the internet",
 // "Relayed via <host>".

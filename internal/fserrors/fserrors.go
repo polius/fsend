@@ -327,12 +327,6 @@ func Lookup(err error) (Entry, bool) {
 	}, false
 }
 
-// IsWarning reports whether the error is a non-fatal warning (Exit==0).
-func IsWarning(err error) bool {
-	entry, ok := Lookup(err)
-	return ok && entry.Exit == 0
-}
-
 // Chain returns the full wrap chain of err as a slice of error strings,
 // outermost first. Used by --debug rendering to expose the underlying
 // technical details after the friendly catalog message.

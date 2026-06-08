@@ -53,9 +53,6 @@ func Info() string { return Marker(gInfo) }
 // Retry returns the retry glyph (↻ or [RETRY]).
 func Retry() string { return Marker(gRetry) }
 
-// Spin returns the inert spinner glyph used on non-TTYs.
-func Spin() string { return Marker(gSpin) }
-
 func glyphForKind(k glyphKind) (utf8, ascii, color string) {
 	switch k {
 	case gCheck:

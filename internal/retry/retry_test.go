@@ -69,8 +69,11 @@ func TestWithBackoff_ExhaustsBudget(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error after exhaustion")
 	}
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("expected wrapped io.EOF, got %v", err)
+	// Exhausted-transient must wrap ErrTransientFailure so the catalog
+	// maps it to E020. Without this wrap, the raw underlying error (often
+	// not in the catalog) falls through to E099.
+	if !errors.Is(err, fserrors.ErrTransientFailure) {
+		t.Fatalf("expected ErrTransientFailure wrap, got %v", err)
 	}
 	if calls != 2 {
 		t.Fatalf("want 2 calls, got %d", calls)
@@ -140,6 +143,18 @@ func TestIsTransient_Classification(t *testing.T) {
 			fmt.Errorf("recv: stream closed: %w", fserrors.ErrConnectFailed), true},
 		{"deadline_exceeded_transient", context.DeadlineExceeded, true},
 		{"idle_timeout_string_transient", errors.New("Application error 0x0: idle timeout"), true},
+
+		// Peer-abort: receiver Ctrl-C'd mid-transfer and the sender's
+		// next chunk write surfaces "Application error 0x0 (remote)".
+		// Must retry — the peer can come back and resume from its
+		// .fsend-partial. Without this, E099 lies about a routine
+		// interruption.
+		{"quic_application_error_remote_transient",
+			errors.New("wire: writing chunk payload: Application error 0x0 (remote)"), true},
+		{"quic_application_error_local_transient",
+			errors.New("Application error 0x0 (local)"), true},
+		{"quic_application_error_with_message_transient",
+			errors.New("Application error 0x100 (remote): peer left"), true},
 
 		// Terminal cases — explicitly tested because a wrapping mistake
 		// here would silently turn user errors into 3-retry hangs.

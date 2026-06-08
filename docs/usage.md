@@ -85,8 +85,9 @@ fsend --connect default                      # back to the public default
 fsend --connect                              # show current
 ```
 
-Config is at `~/.config/fsend/config.toml` (macOS/Linux) or
-`%APPDATA%\fsend\config.toml` (Windows). See
+Config is at `~/.config/fsend/config.json` (Linux),
+`~/Library/Application Support/fsend/config.json` (macOS), or
+`%APPDATA%\fsend\config.json` (Windows). See
 [Self-hosting](self-hosting.md) to run your own.
 
 ## Shared flags

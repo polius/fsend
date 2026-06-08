@@ -4,47 +4,43 @@ import "testing"
 
 func TestFromICE_Classification(t *testing.T) {
 	cases := []struct {
-		name      string
-		local     string
-		remote    string
-		want      Kind
-		wantShort string
+		name   string
+		local  string
+		remote string
+		want   Kind
 	}{
 		// Spec rule: host ↔ host means peers reached each other on
 		// interface addresses, so we claim Local.
-		{"host_host_is_local", "host", "host", KindLocal, "direct (local network)"},
+		{"host_host_is_local", "host", "host", KindLocal},
 
 		// Anything involving srflx / prflx means a NAT was crossed —
 		// classified as DirectNAT (direct peer-to-peer over the internet).
-		{"srflx_srflx_is_direct_nat", "srflx", "srflx", KindDirectNAT, "direct (internet)"},
-		{"srflx_host_is_direct_nat", "srflx", "host", KindDirectNAT, "direct (internet)"},
-		{"host_srflx_is_direct_nat", "host", "srflx", KindDirectNAT, "direct (internet)"},
-		{"prflx_host_is_direct_nat", "prflx", "host", KindDirectNAT, "direct (internet)"},
-		{"host_prflx_is_direct_nat", "host", "prflx", KindDirectNAT, "direct (internet)"},
-		{"prflx_prflx_is_direct_nat", "prflx", "prflx", KindDirectNAT, "direct (internet)"},
-		{"srflx_prflx_is_direct_nat", "srflx", "prflx", KindDirectNAT, "direct (internet)"},
+		{"srflx_srflx_is_direct_nat", "srflx", "srflx", KindDirectNAT},
+		{"srflx_host_is_direct_nat", "srflx", "host", KindDirectNAT},
+		{"host_srflx_is_direct_nat", "host", "srflx", KindDirectNAT},
+		{"prflx_host_is_direct_nat", "prflx", "host", KindDirectNAT},
+		{"host_prflx_is_direct_nat", "host", "prflx", KindDirectNAT},
+		{"prflx_prflx_is_direct_nat", "prflx", "prflx", KindDirectNAT},
+		{"srflx_prflx_is_direct_nat", "srflx", "prflx", KindDirectNAT},
 
 		// Relay anywhere means a relay candidate was selected — surface
 		// it distinctly even though the controlling side may have a
 		// direct candidate.
-		{"relay_host_is_relay", "relay", "host", KindRelay, "relayed"},
-		{"host_relay_is_relay", "host", "relay", KindRelay, "relayed"},
-		{"relay_relay_is_relay", "relay", "relay", KindRelay, "relayed"},
-		{"relay_srflx_is_relay", "relay", "srflx", KindRelay, "relayed"},
+		{"relay_host_is_relay", "relay", "host", KindRelay},
+		{"host_relay_is_relay", "host", "relay", KindRelay},
+		{"relay_relay_is_relay", "relay", "relay", KindRelay},
+		{"relay_srflx_is_relay", "relay", "srflx", KindRelay},
 
 		// Unknown / empty inputs fall through to DirectNAT as the
 		// conservative choice (don't overclaim "local").
-		{"empty_pair_is_direct_nat", "", "", KindDirectNAT, "direct (internet)"},
-		{"unknown_value_is_direct_nat", "wat", "host", KindDirectNAT, "direct (internet)"},
+		{"empty_pair_is_direct_nat", "", "", KindDirectNAT},
+		{"unknown_value_is_direct_nat", "wat", "host", KindDirectNAT},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := FromICE(c.local, c.remote)
 			if got.Kind != c.want {
 				t.Errorf("Kind = %v, want %v", got.Kind, c.want)
-			}
-			if got.Short() != c.wantShort {
-				t.Errorf("Short() = %q, want %q", got.Short(), c.wantShort)
 			}
 			if got.LocalCand != c.local || got.RemoteCand != c.remote {
 				t.Errorf("candidate types not preserved: got (%q,%q), want (%q,%q)",
@@ -62,9 +58,6 @@ func TestFromLAN(t *testing.T) {
 	if got.LocalCand != "" || got.RemoteCand != "" {
 		t.Errorf("LAN path should not carry candidate types: got (%q,%q)", got.LocalCand, got.RemoteCand)
 	}
-	if got.Short() != "direct (local network)" {
-		t.Errorf("Short() = %q, want %q", got.Short(), "direct (local network)")
-	}
 	if got.Detail() != "" {
 		t.Errorf("Detail() = %q, want empty for LAN path", got.Detail())
 	}
@@ -77,9 +70,6 @@ func TestFromRelay(t *testing.T) {
 	}
 	if got.RelayAddr != "fsend.alzina.dev:443" {
 		t.Errorf("RelayAddr = %q, want fsend.alzina.dev:443", got.RelayAddr)
-	}
-	if got.Short() != "relayed" {
-		t.Errorf("Short() = %q", got.Short())
 	}
 	// Headline collapses to the compact Tag() form; the address still
 	// appears so operators can see which relay.
