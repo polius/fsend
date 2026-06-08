@@ -69,7 +69,6 @@ func WithBackoff(ctx context.Context, opts Options, isTransient func(error) bool
 	}
 
 	wait := opts.Base
-	var lastErr error
 	for attempt := 1; attempt <= opts.Attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -78,9 +77,18 @@ func WithBackoff(ctx context.Context, opts Options, isTransient func(error) bool
 		if err == nil {
 			return nil
 		}
-		lastErr = err
-		if !isTransient(err) || attempt == opts.Attempts {
+		// Non-transient: caller is the right place to handle (e.g. wrong
+		// password, hash mismatch). Bubble out unchanged.
+		if !isTransient(err) {
 			return err
+		}
+		// Transient but no budget left: wrap in ErrTransientFailure so the
+		// catalog maps it to E020 ("Transfer was interrupted and retries
+		// did not recover") instead of falling through to E099. The raw
+		// underlying error (e.g. "QUIC accept: ...context deadline
+		// exceeded") rarely matches any user-facing sentinel on its own.
+		if attempt == opts.Attempts {
+			return fmt.Errorf("%w: %v", fserrors.ErrTransientFailure, err)
 		}
 		if opts.OnRetry != nil {
 			opts.OnRetry(attempt+1, wait, err)
@@ -98,8 +106,8 @@ func WithBackoff(ctx context.Context, opts Options, isTransient func(error) bool
 			wait = opts.Max
 		}
 	}
-	// Unreachable; loop always returns.
-	return fmt.Errorf("%w: %v", fserrors.ErrTransientFailure, lastErr)
+	// Unreachable: the loop always returns inside the body.
+	return nil
 }
 
 // IsTransient is the default classifier. An error is transient when

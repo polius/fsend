@@ -69,8 +69,11 @@ func TestWithBackoff_ExhaustsBudget(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error after exhaustion")
 	}
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("expected wrapped io.EOF, got %v", err)
+	// Exhausted-transient must wrap ErrTransientFailure so the catalog
+	// maps it to E020. Without this wrap, the raw underlying error (often
+	// not in the catalog) falls through to E099.
+	if !errors.Is(err, fserrors.ErrTransientFailure) {
+		t.Fatalf("expected ErrTransientFailure wrap, got %v", err)
 	}
 	if calls != 2 {
 		t.Fatalf("want 2 calls, got %d", calls)
