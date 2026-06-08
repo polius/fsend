@@ -42,6 +42,13 @@ type harness struct {
 	httpPort int
 	udpPort  int
 
+	// withCover is true when the suite ran under `go test -cover`. In
+	// that mode the binary is built with -cover -coverpkg=./... and the
+	// harness converts the covdata go test writes to GOCOVERDIR into a
+	// textual profile on shutdown. Subprocesses inherit GOCOVERDIR
+	// automatically via os.Environ().
+	withCover bool
+
 	serverCmd    *exec.Cmd
 	serverOutput bytes.Buffer
 }
@@ -83,7 +90,8 @@ func startHarness() (*harness, error) {
 		fsendBin: filepath.Join(binDir, binName),
 	}
 
-	if err := goBuild(repoDir, hh.fsendBin, "./cmd/fsend"); err != nil {
+	hh.withCover = testing.CoverMode() != ""
+	if err := goBuild(repoDir, hh.fsendBin, "./cmd/fsend", hh.withCover); err != nil {
 		return nil, fmt.Errorf("build fsend: %w", err)
 	}
 
@@ -131,7 +139,31 @@ func (hh *harness) shutdown() {
 	}
 	_ = hh.serverCmd.Process.Kill()
 	_, _ = hh.serverCmd.Process.Wait()
+	hh.emitCoverageProfile()
 	_ = os.RemoveAll(filepath.Dir(hh.fsendBin))
+}
+
+// emitCoverageProfile converts the covdata go test wrote to its
+// GOCOVERDIR into a textual profile at <repoDir>/e2e_coverage.out.
+// No-op when the harness ran without -cover.
+func (hh *harness) emitCoverageProfile() {
+	if !hh.withCover {
+		return
+	}
+	covdir := os.Getenv("GOCOVERDIR")
+	if covdir == "" {
+		fmt.Fprintln(os.Stderr, "e2e: -cover is on but GOCOVERDIR is unset; no profile to emit")
+		return
+	}
+	out := filepath.Join(hh.repoDir, "e2e_coverage.out")
+	cmd := exec.Command("go", "tool", "covdata", "textfmt", "-i="+covdir, "-o="+out)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: covdata textfmt failed: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "e2e: coverage profile written to %s\n", out)
 }
 
 // repoRoot returns the directory containing go.mod for the current module.
@@ -147,8 +179,13 @@ func repoRoot() (string, error) {
 	return filepath.Dir(gomod), nil
 }
 
-func goBuild(repoDir, outPath, pkg string) error {
-	cmd := exec.Command("go", "build", "-o", outPath, pkg)
+func goBuild(repoDir, outPath, pkg string, withCover bool) error {
+	args := []string{"build"}
+	if withCover {
+		args = append(args, "-cover", "-coverpkg=./...")
+	}
+	args = append(args, "-o", outPath, pkg)
+	cmd := exec.Command("go", args...)
 	cmd.Dir = repoDir
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr

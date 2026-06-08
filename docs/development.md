@@ -32,6 +32,19 @@ go test -v ./test/e2e/
 The E2E suite builds its own binary in a temp dir and runs an isolated
 server on loopback — no shell wrapper needed.
 
+## Coverage
+
+```sh
+scripts/coverage.sh
+```
+
+Runs unit and E2E tests with coverage and prints the merged total. The
+E2E suite builds `fsend` with `-cover -coverpkg=./...` when `go test`
+is invoked with `-cover`, so orchestration code exercised by the E2E
+harness (sender/receiver pairing, ICE, relay) shows up in the number
+instead of reading as 0% the way per-package profiling does. Current
+total hovers around 77%.
+
 ## LAN smoke test (no server needed)
 
 `fsend` uses mDNS for direct peer-to-peer on the same LAN.
