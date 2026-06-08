@@ -23,7 +23,10 @@ go test -coverpkg="$unit_pkgs" -coverprofile=unit_coverage.out \
     $(go list ./... | grep -v '/test/e2e$') >/dev/null
 
 echo "==> e2e tests"
-go test -cover -coverpkg=./... ./test/e2e/ >/dev/null
+# -count=1 disables the test cache. Cached test results skip TestMain,
+# which is where the harness converts covdata to e2e_coverage.out — so
+# without this, a second invocation produces no e2e profile.
+go test -count=1 -cover -coverpkg=./... ./test/e2e/ >/dev/null
 
 echo "==> merge"
 {

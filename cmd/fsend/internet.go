@@ -243,18 +243,26 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Push each gathered local candidate one-shot. We use the parent
-		// ctx for the HTTP call so it can outlive pumpCtx briefly when
-		// pumpCtx is cancelled mid-push (we still want the candidate to
-		// land if possible).
-		for cstr := range agent.LocalCandidates() {
-			if pumpCtx.Err() != nil {
+		// Push each gathered local candidate one-shot. The select on
+		// pumpCtx is load-bearing: if ICE times out before pion finishes
+		// gathering (no STUN host on loopback, no candidates beyond the
+		// initial host set), agent.LocalCandidates never closes — a bare
+		// `for range` would block here, wg.Wait() would hang waiting for
+		// it, and the deferred agent.Close() (which closes the channel)
+		// would never run. Closing the loop on pumpCtx breaks that cycle.
+		for {
+			select {
+			case <-pumpCtx.Done():
 				return
-			}
-			if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, []string{cstr}); err != nil {
-				// Best-effort: pion's ICE will keep going with whatever
-				// candidates have already crossed; surface in --debug only.
-				_ = err
+			case cstr, ok := <-agent.LocalCandidates():
+				if !ok {
+					return
+				}
+				if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, []string{cstr}); err != nil {
+					// Best-effort: pion's ICE will keep going with whatever
+					// candidates have already crossed; surface in --debug only.
+					_ = err
+				}
 			}
 		}
 	}()
