@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 53.5 445 98" fill="none" role="img" aria-label="&gt;_ fsend">
+  <defs>
+    <style>
+      .prompt {
+        stroke: #E89478;
+        stroke-width: 18;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+      }
+      .cursor { fill: #E89478; }
+      .word {
+        font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", "Menlo", "Consolas", monospace;
+        font-size: 92px;
+        font-weight: 500;
+        fill: #FAF7F5;
+        letter-spacing: -0.02em;
+      }
+    </style>
+  </defs>
+
+  <!-- > chevron, sized to cap-height of wordmark -->
+  <path class="prompt" d="M 30 70 L 62 101 L 30 132"/>
+
+  <!-- _ underscore / cursor -->
+  <rect class="cursor" x="78" y="134" width="40" height="10" rx="3"/>
+
+  <!-- fsend wordmark -->
+  <text class="word" x="138" y="132" text-anchor="start">fsend</text>
+</svg>

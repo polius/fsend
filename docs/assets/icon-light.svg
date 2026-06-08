@@ -1,26 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 58 560 98" fill="none" role="img" aria-label="&gt;_ fsend">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 53.5 445 98" fill="none" role="img" aria-label="&gt;_ fsend">
   <defs>
     <style>
       .prompt {
-        stroke: #C25B43;
+        stroke: #E89478;
         stroke-width: 18;
         stroke-linecap: round;
         stroke-linejoin: round;
         fill: none;
       }
-      .cursor { fill: #C25B43; }
+      .cursor { fill: #E89478; }
       .word {
         font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", "Menlo", "Consolas", monospace;
         font-size: 92px;
         font-weight: 500;
         fill: #1A1410;
         letter-spacing: -0.02em;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        .prompt { stroke: #E89478; }
-        .cursor { fill: #E89478; }
-        .word   { fill: #FAF7F5; }
       }
     </style>
   </defs>

@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/assets/icon.svg" alt="fsend" width="250">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/icon-dark.svg">
+    <img src="docs/assets/icon-light.svg" alt="fsend" width="250">
+  </picture>
 </p>
 
 <p align="center"><strong>Direct, end-to-end encrypted file transfer.</strong></p>
