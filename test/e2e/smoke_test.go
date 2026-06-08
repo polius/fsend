@@ -157,7 +157,7 @@ func TestServer_PasswordGate(t *testing.T) {
 		t.Fatalf("--connect with pw exit %d", code)
 	}
 
-	s := h.startSender(t, xdg, "--mode", "stun", filepath.Join(src, "x"))
+	s := h.startSender(t, xdg, "--mode", "direct", filepath.Join(src, "x"))
 	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
 	codeStr := s.waitForCode(t, 5*time.Second)
 

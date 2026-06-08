@@ -61,7 +61,8 @@ func TestICE_LoopbackThenQUIC(t *testing.T) {
 		receiverPwd   = "rpppppppppppppppppppppppp"
 	)
 
-	// STUNHost empty → host candidates only (loopback test, no real STUN).
+	// No STUN URL is wired in — gathering yields host candidates only,
+	// which is what's needed to pair two loopback agents anyway.
 	senderAgent, err := iceconn.New(iceconn.Options{
 		LocalUfrag:  senderUfrag,
 		LocalPwd:    senderPwd,

@@ -69,7 +69,8 @@ What happens next depends on whether the two NATs can be hole-punched.
           │ ──── ICE candidates ───► │ ◄── ICE candidates ─── │
           │ ◄─── peer addresses ──── │ ──── peer addresses ─► │
           │                          │                        │
-          │       both NATs hole-punched via ICE + STUN       │
+          │     both NATs hole-punched via ICE connectivity   │
+          │     checks (STUN-protocol messages between peers) │
           │                          │                        │
           │ ═══════════ direct P2P over the internet ════════►│
           │                          │                        │

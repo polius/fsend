@@ -51,7 +51,9 @@ fundamentally different paths.
        │                     └─────────────────┘                     │
        │                                                             │
        └═══════════════════ direct P2P ══════════════════════════════┘
-                     (NAT hole-punched via ICE + STUN)
+              (NAT hole-punched via ICE peer-to-peer
+              connectivity checks; STUN-protocol messages
+              between the two clients, not against a server)
 ```
 
 The pairing server's only job is to introduce the two peers. They swap
