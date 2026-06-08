@@ -319,15 +319,15 @@ func (s *Server) evict(now time.Time) {
 			if now.Sub(sess.CreatedAt) > s.cfg.UnpairedTTL {
 				delete(s.byID, id)
 				delete(s.byCode, sess.Code)
-				s.releaseIP(sess.SenderAddr)
+				s.releaseIP(sess.SenderRateKey)
 				close(sess.waiters)
 			}
 		case "paired":
 			if now.Sub(sess.PairedAt) > s.cfg.PairedTTL {
 				delete(s.byID, id)
 				delete(s.byCode, sess.Code)
-				s.releaseIP(sess.SenderAddr)
-				s.releaseIP(sess.ReceiverAddr)
+				s.releaseIP(sess.SenderRateKey)
+				s.releaseIP(sess.ReceiverRateKey)
 			}
 		}
 	}
@@ -343,6 +343,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	clientIP := clientIP(r)
+	rateKey := rateLimitKey(clientIP)
 
 	// Parse body up-front so we can honor a client-suggested code. An
 	// empty/missing body is fine — old clients don't send one and we
@@ -353,12 +354,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	if !s.allowNewSession(clientIP, time.Now()) {
+	if !s.allowNewSession(rateKey, time.Now()) {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
 		return
 	}
-	if s.ipCounts[clientIP] >= s.cfg.MaxSessionsPerIP {
+	if s.ipCounts[rateKey] >= s.cfg.MaxSessionsPerIP {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusTooManyRequests, "too many concurrent sessions for this IP")
 		return
@@ -390,18 +391,19 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	sid := ulid.Make().String()
 	senderTok := newRoleToken()
 	sess := &session{
-		ID:          sid,
-		Code:        c,
-		SenderAddr:  clientIP,
-		SenderICE:   newIceCreds(),
-		SenderToken: senderTok,
-		State:       "waiting",
-		CreatedAt:   time.Now(),
-		waiters:     make(chan struct{}),
+		ID:            sid,
+		Code:          c,
+		SenderAddr:    clientIP,
+		SenderRateKey: rateKey,
+		SenderICE:     newIceCreds(),
+		SenderToken:   senderTok,
+		State:         "waiting",
+		CreatedAt:     time.Now(),
+		waiters:       make(chan struct{}),
 	}
 	s.byCode[c] = sess
 	s.byID[sid] = sess
-	s.ipCounts[clientIP]++
+	s.ipCounts[rateKey]++
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, CreateSessionResponse{
@@ -418,13 +420,14 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	c := strings.ToLower(r.PathValue("code"))
 	clientIP := clientIP(r)
+	rateKey := rateLimitKey(clientIP)
 
 	s.mu.Lock()
 	// Rate-limit symmetrically with createSession: a join is the same
 	// shape of new-session activity from the server's perspective, and
 	// without this an attacker could probe the code space (or churn
 	// joins against a known code) at line rate.
-	if !s.allowNewSession(clientIP, time.Now()) {
+	if !s.allowNewSession(rateKey, time.Now()) {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
 		return
@@ -440,17 +443,18 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "session already paired")
 		return
 	}
-	if s.ipCounts[clientIP] >= s.cfg.MaxSessionsPerIP {
+	if s.ipCounts[rateKey] >= s.cfg.MaxSessionsPerIP {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusTooManyRequests, "too many concurrent sessions for this IP")
 		return
 	}
 	sess.ReceiverAddr = clientIP
+	sess.ReceiverRateKey = rateKey
 	sess.ReceiverICE = newIceCreds()
 	sess.ReceiverToken = newRoleToken()
 	sess.State = "paired"
 	sess.PairedAt = time.Now()
-	s.ipCounts[clientIP]++
+	s.ipCounts[rateKey]++
 	close(sess.waiters)
 	resp := JoinSessionResponse{
 		SessionID:          sess.ID,
@@ -605,29 +609,32 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(s.byID, id)
 	delete(s.byCode, sess.Code)
-	s.releaseIP(sess.SenderAddr)
-	s.releaseIP(sess.ReceiverAddr)
+	s.releaseIP(sess.SenderRateKey)
+	s.releaseIP(sess.ReceiverRateKey)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// allowNewSession must be called with s.mu held.
-func (s *Server) allowNewSession(ip string, now time.Time) bool {
-	b := s.ipBucket[ip]
+// allowNewSession must be called with s.mu held. key is the
+// rateLimitKey-collapsed identity (raw v4, /64 for v6).
+func (s *Server) allowNewSession(key string, now time.Time) bool {
+	b := s.ipBucket[key]
 	if b == nil {
 		b = &rateBucket{}
-		s.ipBucket[ip] = b
+		s.ipBucket[key] = b
 	}
 	return b.allow(now, s.cfg.MaxNewSessionsPerMin, time.Minute)
 }
 
-// releaseIP must be called with s.mu held.
-func (s *Server) releaseIP(ip string) {
-	if ip == "" {
+// releaseIP must be called with s.mu held. key is the
+// rateLimitKey-collapsed identity used to increment ipCounts at create
+// or join — passing anything else would leak slots.
+func (s *Server) releaseIP(key string) {
+	if key == "" {
 		return
 	}
-	s.ipCounts[ip]--
-	if s.ipCounts[ip] <= 0 {
-		delete(s.ipCounts, ip)
+	s.ipCounts[key]--
+	if s.ipCounts[key] <= 0 {
+		delete(s.ipCounts, key)
 	}
 }
 
@@ -721,6 +728,31 @@ func clientIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// rateLimitKey collapses a client IP into the unit we want to throttle.
+// IPv4 → the full /32. IPv6 → the /64 prefix.
+//
+// Why /64 for v6: every end host gets at least a /64 from its ISP (RFC
+// 6177) and can rotate /128 addresses inside that prefix freely. Keying
+// on the raw /128 lets a single hostile peer mint sessions without
+// bound, while penalising no one legitimate; keying on the /64 matches
+// the smallest prefix a normal network ever assigns to one customer.
+//
+// On unparseable input we return the original string — that keeps the
+// existing behaviour for tests that pass arbitrary tokens as the "IP",
+// and means a malformed X-Real-IP is still rate-limited (just on whatever
+// raw bytes the peer sent).
+func rateLimitKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ip
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return v4.String()
+	}
+	mask := net.CIDRMask(64, 128)
+	return parsed.Mask(mask).String() + "/64"
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
