@@ -176,6 +176,7 @@ failure.
 | `25`  | `E025` — source file or directory not found. |
 | `27`  | `E027` — could not open local-network listener (port in use, mDNS init failed). |
 | `28`  | `E028` — pairing server requires a password (missing or wrong). |
+| `29`  | `E029` — relay session idle-timed out; allocation reclaimed by the server. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 

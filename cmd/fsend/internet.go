@@ -158,6 +158,8 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID 
 	switch status.Reason {
 	case relay.ReasonCapHit:
 		return fserrors.ErrRelayCapHit
+	case relay.ReasonIdle:
+		return fserrors.ErrRelayIdleTimeout
 	}
 	return runErr
 }
