@@ -465,9 +465,9 @@ func hostnameOrDefault(s string) string {
 
 // printPath renders the connection-path status line. Tri-state:
 //
-//	✓ direct (local) — same LAN, no NAT crossed
-//	✓ direct (STUN) — NAT hole-punched
-//	⚠ relay (TURN) via <relay-host> — NAT hole-punch failed
+//	✓ Direct on local network   — same network, no NAT crossed
+//	✓ Direct over the internet  — direct peer-to-peer; NAT hole-punched
+//	⚠ Relayed via <relay-host>  — direct failed, bytes flow through the relay
 //
 // In --debug mode, a second line shows the selected ICE candidate types
 // ("host → srflx" etc.) — useful for diagnosing why a peer ended up on a

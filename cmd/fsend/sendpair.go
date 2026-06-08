@@ -382,7 +382,7 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			if !serverDownNoticed && !f.quiet && !lanDisabled && isServerDown(serverErr) {
 				serverDownNoticed = true
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unreachable — only same-LAN receivers can connect.")
+				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unreachable — only receivers on your local network can connect.")
 				waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 			}
 		}

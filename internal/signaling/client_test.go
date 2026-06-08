@@ -61,10 +61,10 @@ func TestClient_JoinNonexistent_MapsToFserror(t *testing.T) {
 }
 
 // TestClient_DoubleJoin_MapsToCodeAlreadyClaimed exercises the same code
-// path that gates both the STUN-direct and TURN-relay receive flows: a
-// second receiver hitting Join after the session is already paired must
-// surface fserrors.ErrCodeAlreadyClaimed (catalog E003), not a raw HTTP
-// 409. Without this, the receiver would land on the E099 catchall.
+// path that gates both the direct and relay receive flows: a second
+// receiver hitting Join after the session is already paired must surface
+// fserrors.ErrCodeAlreadyClaimed (catalog E003), not a raw HTTP 409.
+// Without this, the receiver would land on the E099 catchall.
 func TestClient_DoubleJoin_MapsToCodeAlreadyClaimed(t *testing.T) {
 	url, _ := setupServer(t)
 	sender := New(url, "test")
