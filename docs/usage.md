@@ -156,27 +156,27 @@ failure.
 | `3`   | `E003` — code already claimed by another receiver. |
 | `4`   | `E004` — invalid code format. |
 | `6`   | `E006` — receiver declined the transfer. |
-| `7`   | `E007` — session expired before a receiver paired. |
+| `7`   | `E007` — code timed out before anyone received. |
 | `8`   | `E008` — disk full. |
 | `9`   | `E009` — could not write the target file. |
 | `10`  | `E010` — could not read the source file. |
-| `11`  | `E011` — transfer completed but hash didn't verify. |
+| `11`  | `E011` — file arrived corrupted; hash didn't match. |
 | `12`  | `E012` — path traversal rejected. |
 | `13`  | `E013` — target file exists; use `--overwrite`. |
-| `14`  | `E014` — could not connect to peer, even via relay. |
-| `15`  | `E015` — protocol error (incompatible versions). |
+| `14`  | `E014` — could not reach the other side, even via the fallback relay. |
+| `15`  | `E015` — sender and receiver are on incompatible fsend versions. |
 | `17`  | `E017` — rate limited. |
 | `18`  | `E018` — default server retired. |
-| `19`  | `E019` — source file changed; stale partial discarded, re-run. |
+| `19`  | `E019` — source file changed; incomplete download discarded, re-run. |
 | `20`  | `E020` — transient transfer failure (retries exhausted). |
 | `21`  | `E021` — wrong transfer password. |
-| `22`  | `E022` — peer authentication failed (code mismatch or tampering). |
-| `23`  | `E023` — relay's per-session byte cap reached. |
+| `22`  | `E022` — could not verify the other side (code mismatch or tampering). |
+| `23`  | `E023` — server-set transfer-size limit reached. |
 | `24`  | `E024` — invalid usage (bad flag, bad arg shape). |
 | `25`  | `E025` — source file or directory not found. |
-| `27`  | `E027` — could not open local-network listener (port in use, mDNS init failed). |
+| `27`  | `E027` — could not open the local-network port (port in use, mDNS init failed). |
 | `28`  | `E028` — pairing server requires a password (missing or wrong). |
-| `29`  | `E029` — relay session idle-timed out; allocation reclaimed by the server. |
+| `29`  | `E029` — server closed the connection because no data was flowing. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 
