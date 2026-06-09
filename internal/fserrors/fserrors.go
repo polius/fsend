@@ -94,6 +94,11 @@ var (
 	// for ~60s. Distinct from E020 so the user knows the server tore
 	// the slot down (peer went away), not their own network.
 	ErrRelayIdleTimeout = errors.New("relay session idle-timed out")
+	// E030 — `fsend server` failed to start: a listener couldn't bind
+	// (port already in use, or :443 without privileges) or the env-var
+	// config was invalid. An operator error, not an fsend bug, so it does
+	// not route through the E099 "file an issue" catchall.
+	ErrServerStartup = errors.New("server failed to start")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -133,7 +138,7 @@ func (e Entry) Render() string {
 // Exit codes are kept in lockstep with the Exxx number (E001 → exit 1,
 // E024 → exit 24, etc.) so scripts can match on either. The only
 // exceptions are E016 (a non-fatal warning, exit 0) and E026 (Ctrl-C,
-// exit 130 by shell convention). Codes are stable from v1.0 onward.
+// exit 130 by shell convention). Codes are stable from v0.1.0 onward.
 //
 // Placeholders like {addr}, {code}, {path} are filled in by the caller via
 // fmt.Sprintf when known; we use plain text so unknown contexts still render.
@@ -235,7 +240,7 @@ var catalog = map[error]Entry{
 		Message: "The default server (fsend.alzina.dev) has been retired.",
 		Action: "Switch to a different server with:\n" +
 			"    fsend --connect <host:port>\n" +
-			"  Or self-host: https://github.com/polius/fsend#self-hosting",
+			"  Or self-host: https://github.com/polius/fsend/blob/main/docs/self-hosting.md",
 	},
 	ErrPartialMismatch: {
 		Code: "E019", Exit: 19,
@@ -300,6 +305,12 @@ var catalog = map[error]Entry{
 		Code: "E029", Exit: 29,
 		Message: "The server closed the connection because no data was flowing. Transfer aborted.",
 		Action:  "The other side likely went away. Try again.",
+	},
+	ErrServerStartup: {
+		Code: "E030", Exit: 30,
+		Message: "The server could not start.",
+		Action: "Check that the ports are free and you have permission to bind them\n" +
+			"  (FSEND_HTTP_ADDR, FSEND_UDP_ADDR). Binding :443 may need elevated privileges.",
 	},
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -14,7 +15,8 @@ import (
 	"github.com/polius/fsend/internal/fserrors"
 )
 
-// stdinIsTTY is a seam so tests can simulate piped stdin without faking fds.
+// stdinIsTTY reports whether stdin is an interactive terminal. A var (not
+// a plain call) so it can be swapped out in tests without faking fds.
 var stdinIsTTY = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
 // readPasswordHidden prompts on stderr and reads a single line from the
@@ -45,6 +47,37 @@ func readPasswordHidden(prompt string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%w: password cannot be empty", fserrors.ErrUsage)
+}
+
+// readPasswordHiddenCtx is readPasswordHidden that also aborts on ctx
+// cancellation (Ctrl-C at the prompt), returning context.Canceled. The
+// abandoned ReadPassword goroutine cannot run its own deferred terminal
+// restore, so we capture the terminal state up front and restore it here.
+func readPasswordHiddenCtx(ctx context.Context, prompt string) (string, error) {
+	fd := int(os.Stdin.Fd())
+	var oldState *term.State
+	if term.IsTerminal(fd) {
+		oldState, _ = term.GetState(fd)
+	}
+	type result struct {
+		pw  string
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		pw, err := readPasswordHidden(prompt)
+		ch <- result{pw, err}
+	}()
+	select {
+	case <-ctx.Done():
+		if oldState != nil {
+			_ = term.Restore(fd, oldState)
+			fmt.Fprintln(os.Stderr)
+		}
+		return "", context.Canceled
+	case r := <-ch:
+		return r.pw, r.err
+	}
 }
 
 // resolvePassword expands the bare --pass sentinel into a concrete

@@ -137,7 +137,7 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 	// From here on we own a server-side session and must Delete it on
 	// every error path. We use a fresh ctx for Delete because the parent
 	// ctx may already be cancelled (e.g., the LAN path won the race).
-	deleteSession := func() { _ = client.Delete(context.Background(), created.SessionID) }
+	deleteSession := func() { _ = client.Delete(context.Background(), created.SessionID, created.RoleToken) }
 
 	// Long-poll indefinitely until the receiver pairs, the user
 	// cancels, or the server reaps the session. The server's per-call

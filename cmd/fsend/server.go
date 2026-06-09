@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/version"
@@ -32,9 +33,16 @@ func serverCmd() *cobra.Command {
 	var healthCheckFlag bool
 
 	c := &cobra.Command{
-		Use:           "server",
-		Short:         "Run the fsend pairing + relay server",
-		Args:          cobra.NoArgs,
+		Use:   "server",
+		Short: "Run the fsend pairing + relay server",
+		// Map a stray positional to E024 rather than cobra's default error,
+		// which would fall through to the E099 "file an issue" catchall.
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("%w: server takes no positional arguments (got %q)", fserrors.ErrUsage, args[0])
+			}
+			return nil
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -77,7 +85,7 @@ func runServer() error {
 
 	udpListener, err := net.ListenPacket("udp", cfg.udpAddr)
 	if err != nil {
-		return fmt.Errorf("relay UDP listen on %s: %w", cfg.udpAddr, err)
+		return fmt.Errorf("%w: relay UDP listen on %s: %v", fserrors.ErrServerStartup, cfg.udpAddr, err)
 	}
 	defer func() { _ = udpListener.Close() }()
 	relaySrv := relay.NewServer(udpListener, relay.ServerConfig{
@@ -86,7 +94,7 @@ func runServer() error {
 	})
 	udpPort, err := udpPortFromAddr(cfg.udpAddr)
 	if err != nil {
-		return fmt.Errorf("FSEND_UDP_ADDR %q: %w", cfg.udpAddr, err)
+		return fmt.Errorf("%w: FSEND_UDP_ADDR %q: %v", fserrors.ErrServerStartup, cfg.udpAddr, err)
 	}
 	s.WithRelay(relaySrv, udpPort)
 	relayCtx, relayCancel := context.WithCancel(ctx)
@@ -124,7 +132,7 @@ func runServer() error {
 		logger.Info("shutdown requested")
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("http server: %w", err)
+			return fmt.Errorf("%w: http listen on %s: %v", fserrors.ErrServerStartup, cfg.httpAddr, err)
 		}
 	}
 
@@ -281,7 +289,7 @@ USAGE
 
 EXAMPLE
   Local-network test (no TLS — do not expose to the internet):
-    docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
+    docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
 
   Internet-exposed: put a TLS-terminating reverse proxy in front of :8080.
   File data over UDP/443 is already end-to-end encrypted, but the HTTP
@@ -298,7 +306,7 @@ CONFIGURATION (environment variables — all optional)
   FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MiB (accepts e.g. "100MiB", "500m", "104857600")
   FSEND_SERVER_PASSWORD                 Optional shared secret. When set, every endpoint except
                                         /v1/health requires the X-Fsend-Auth header to match.
-                                        Clients set theirs with: fsend --connect <host:port> <password>.
+                                        Clients set theirs with: fsend --connect <host:port>,<password>.
 
 LEARN MORE
   https://github.com/polius/fsend

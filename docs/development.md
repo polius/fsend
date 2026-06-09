@@ -118,4 +118,4 @@ XDG_CONFIG_HOME=/tmp/fsend-dev /tmp/fsend --connect http://127.0.0.1:18080
 
 Config lives at `~/.config/fsend/config.json` (Linux),
 `~/Library/Application Support/fsend/config.json` (macOS), or
-`%APPDATA%\fsend\config.json` (Windows).
+`%LOCALAPPDATA%\fsend\config.json` (Windows).

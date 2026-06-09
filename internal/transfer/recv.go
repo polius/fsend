@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -16,6 +17,18 @@ import (
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
 )
+
+// classifyWriteErr maps a filesystem write failure to the right catalog
+// error: a full disk gets E008 (ErrDiskFull) with its "free up space"
+// hint, everything else falls back to E009 (ErrWriteFailed). op names the
+// operation for the debug detail line.
+func classifyWriteErr(op string, err error) error {
+	base := fserrors.ErrWriteFailed
+	if errors.Is(err, syscall.ENOSPC) {
+		base = fserrors.ErrDiskFull
+	}
+	return fmt.Errorf("%w: %s: %v", base, op, err)
+}
 
 // RecvOptions configures one receive invocation.
 type RecvOptions struct {
@@ -416,7 +429,7 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 
 		if len(plain) > 0 {
 			if _, err := f.Write(plain); err != nil {
-				return fmt.Errorf("%w: write: %v", fserrors.ErrWriteFailed, err)
+				return classifyWriteErr("write", err)
 			}
 			// blake3.Hasher.Write never returns an error — it just
 			// appends bytes to an internal buffer. The errcheck nag is

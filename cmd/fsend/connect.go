@@ -12,6 +12,34 @@ import (
 	"github.com/polius/fsend/internal/uxlog"
 )
 
+// warnIfConfigCorrupted prints the E016 warning to stderr when
+// config.Load reported a corrupt file. config.Load still returns a usable
+// zero-value Config in that case, so the caller proceeds on defaults —
+// this just makes the silent fallback visible. No-op when quiet or when
+// err is nil/not a corruption error.
+func warnIfConfigCorrupted(err error, quiet bool) {
+	if err == nil || quiet {
+		return
+	}
+	entry, ok := fserrors.Lookup(err)
+	if !ok {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s [%s] %s\n", uxlog.Warn(), entry.Code, entry.Message)
+	if entry.Action != "" {
+		fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
+	}
+}
+
+// loadConfig loads the persisted config, surfacing the E016 corruption
+// warning (unless quiet). Used by the send/receive flows, which need the
+// configured server but should not fail just because the file is invalid.
+func loadConfig(quiet bool) *config.Config {
+	cfg, err := config.Load()
+	warnIfConfigCorrupted(err, quiet)
+	return cfg
+}
+
 // runConnect implements `fsend --connect ...`:
 //
 //	fsend --connect                       → print current config + default
@@ -19,7 +47,10 @@ import (
 //	fsend --connect <host[:port]>         → set custom server (port optional)
 //	fsend --connect <host[:port]>,<pw>    → set custom server + password
 func runConnect(f *flags) error {
-	cfg, _ := config.Load() // ignore corruption error — we're about to overwrite anyway
+	// A set/revert overwrites the file, so corruption there is moot. But
+	// the show path (no args) must warn — otherwise a corrupt config that
+	// silently reverts to the default reads as "you're on the default".
+	cfg, loadErr := config.Load()
 
 	// Strip the bare-flag sentinel cobra synthesised when the user
 	// typed `fsend --connect` with no value. After filtering, an empty
@@ -33,6 +64,7 @@ func runConnect(f *flags) error {
 	}
 
 	if len(args) == 0 {
+		warnIfConfigCorrupted(loadErr, false)
 		printCurrentServer(cfg)
 		return nil
 	}

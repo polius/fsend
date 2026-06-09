@@ -299,6 +299,11 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		return runSend(f, f.posArgs)
 	}
 	if f.forceReceive {
+		// --text is a send-side flag; combined with --receive it would
+		// otherwise be silently ignored. Reject rather than drop it.
+		if cmd.Flags().Changed("text") {
+			return fmt.Errorf("%w: --text cannot be combined with --receive", fserrors.ErrUsage)
+		}
 		if len(f.posArgs) != 1 {
 			return fmt.Errorf("%w: --receive requires exactly one positional argument (the code)", fserrors.ErrUsage)
 		}

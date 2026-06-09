@@ -9,6 +9,7 @@ import (
 
 	"github.com/zeebo/blake3"
 
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -61,6 +62,11 @@ func Walk(paths []string) ([]SourceItem, error) {
 			})
 		case info.IsDir():
 			return nil, fmt.Errorf("walk: %s is a directory — directories must be sent through BuildArchive", raw)
+		case !info.Mode().IsRegular():
+			// Named pipes, devices, and sockets have no finite content to
+			// hash or stream — reading one blocks forever. Reject up front
+			// with a usage error instead of hanging silently on the hash.
+			return nil, fmt.Errorf("%w: %s is not a regular file (named pipes, devices, and sockets can't be sent)", fserrors.ErrUsage, raw)
 		default:
 			hash, err := blake3FileHash(abs)
 			if err != nil {

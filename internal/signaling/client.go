@@ -118,9 +118,12 @@ func (c *Client) PullCandidates(ctx context.Context, sessionID, roleToken string
 	return &out, nil
 }
 
-// Delete cleans up a session after a successful handshake.
-func (c *Client) Delete(ctx context.Context, sessionID string) error {
-	return c.do(ctx, http.MethodDelete, "/v1/session/"+sessionID, nil, nil, nil)
+// Delete cleans up a session after a successful handshake. roleToken
+// authenticates the caller as a party to the session — the server gates
+// the delete on it so a third party who learns a session ID can't tear
+// down someone else's session.
+func (c *Client) Delete(ctx context.Context, sessionID, roleToken string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/session/"+sessionID, nil, nil, withAuth(roleToken))
 }
 
 // AllocateRelay asks the server for a relay token for this session.

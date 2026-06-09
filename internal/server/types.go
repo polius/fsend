@@ -56,10 +56,10 @@ type JoinSessionResponse struct {
 	RoleToken          string   `json:"role_token"`
 }
 
-// WaitRequest is the body of POST /v1/session/<code>/wait.
-type WaitRequest struct {
-	Since string `json:"since,omitempty"` // optional resume marker
-}
+// WaitRequest is the body of POST /v1/session/<code>/wait. It carries no
+// fields today — the code in the path is the only input — but is kept as
+// a named type so the wire shape has somewhere to grow.
+type WaitRequest struct{}
 
 // WaitResponse is the body the sender sees once a receiver pairs.
 type WaitResponse struct {
@@ -76,7 +76,6 @@ type CandidatesPushRequest struct {
 type CandidatesPullResponse struct {
 	Candidates []string `json:"candidates"`
 	NextSince  int      `json:"next_since"`
-	Ended      bool     `json:"ended"`
 }
 
 // RelayAllocateRequest is the body of POST /v1/relay/allocate.

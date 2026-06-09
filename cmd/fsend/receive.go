@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"unicode"
 
 	"github.com/polius/fsend/internal/code"
-	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/landisc"
@@ -58,11 +58,11 @@ func runReceive(f *flags, c string) error {
 		// from here through Join + ICE/relay setup, replacing what used
 		// to be a sequence of brief flashes. runReceiveOverInternet
 		// owns its lifetime and stops it just before printPath.
+		cfg := loadConfig(f.quiet)
 		var spin *uxlog.Spinner
 		if !f.quiet {
 			spin = uxlog.StartSpinner("Connecting")
 		}
-		cfg, _ := config.Load()
 		return runReceiveOverInternet(ctx, f, c, cfg, spin)
 	}
 
@@ -97,16 +97,16 @@ func runReceive(f *flags, c string) error {
 		if !f.quiet {
 			fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server.")
 		}
+		cfg := loadConfig(f.quiet)
 		var connSpin *uxlog.Spinner
 		if !f.quiet {
 			connSpin = uxlog.StartSpinner("Connecting")
 		}
-		cfg, _ := config.Load()
 		return runReceiveOverInternet(ctx, f, c, cfg, connSpin)
 	}
 
 	pathInfo := connpath.FromLAN()
-	closeProg, accept, confirmOverwrite, progressFn, recvBytes := newReceiverProgress(f, outDir, pathInfo)
+	closeProg, accept, confirmOverwrite, progressFn, recvBytes := newReceiverProgress(ctx, f, outDir, pathInfo)
 	defer closeProg()
 
 	start := time.Now()
@@ -135,11 +135,17 @@ func runReceive(f *flags, c string) error {
 				Overwrite:        f.overwrite,
 				Accept:           accept,
 				Password:         f.passArg,
-				PromptPass:       receiverPasswordPrompt(f),
+				PromptPass:       receiverPasswordPrompt(ctx, f),
 				ConfirmOverwrite: confirmOverwrite,
 				ProgressFn:       progressFn,
 			})
 		}); err != nil {
+		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a
+		// decline/target-exists error from the engine; report it as a
+		// cancellation (E026) rather than that incidental error.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return err
 	}
 
@@ -164,13 +170,13 @@ func runReceive(f *flags, c string) error {
 // Timing: the progress bar is constructed lazily on first byte (see
 // newReceiverProgress), so this prompt fires before any bar exists —
 // no risk of mpb rendering on top of the password input line.
-func receiverPasswordPrompt(f *flags) func() (string, error) {
+func receiverPasswordPrompt(ctx context.Context, f *flags) func() (string, error) {
 	if f.quiet {
 		return nil
 	}
 	return func() (string, error) {
 		fmt.Fprintln(os.Stderr)
-		return readPasswordHidden("  Password required by sender: ")
+		return readPasswordHiddenCtx(ctx, "  Password required by sender: ")
 	}
 }
 
@@ -190,7 +196,7 @@ func receiverPasswordPrompt(f *flags) func() (string, error) {
 // is needed to (a) render the save target and (b) detect a single-file
 // collision so we can surface it inline instead of asking a second
 // question after the user has already said yes.
-func promptAccept(f *flags, h wire.SenderHello, outDir string, pathInfo connpath.Info) bool {
+func promptAccept(ctx context.Context, f *flags, h wire.SenderHello, outDir string, pathInfo connpath.Info) bool {
 	if f.quiet {
 		return f.yes
 	}
@@ -209,7 +215,12 @@ func promptAccept(f *flags, h wire.SenderHello, outDir string, pathInfo connpath
 		return true
 	}
 	fmt.Fprintf(os.Stderr, "  Save to %s? [Y/n] ", saveTargetLabel(outDir))
-	switch readLine(os.Stdin) {
+	// Decline on Ctrl-C; the caller maps a cancelled ctx to E026.
+	line, ok := readLineCtx(ctx)
+	if !ok {
+		return false
+	}
+	switch line {
 	case "n", "no":
 		return false
 	default:
@@ -228,7 +239,9 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 	}
 	switch h.TransferKind {
 	case wire.TransferSingleFile:
-		name := h.DisplayName
+		// DisplayName is peer-supplied; sanitize it like the hostname so a
+		// crafted filename can't inject ANSI/bidi into the accept prompt.
+		name := sanitizeForDisplay(h.DisplayName, 128)
 		if name == "" {
 			name = "file"
 		}
@@ -242,7 +255,7 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 			}
 		}
 	case wire.TransferDirectory:
-		name := h.DisplayName
+		name := sanitizeForDisplay(h.DisplayName, 128)
 		if name == "" {
 			name = "directory"
 		}
@@ -273,14 +286,12 @@ func saveTargetLabel(outDir string) string {
 	return displayPath(outDir) + "/"
 }
 
-// sanitizeRemote removes control characters, ANSI sequences, and Unicode
-// format / bidirectional-override characters from peer-supplied strings
-// before display, then strips the mDNS ".local" suffix that macOS / many
-// Linuxes tack onto Bonjour hostnames. Without the bidi filter, a peer
-// can render a misleading hostname using U+202E "RIGHT-TO-LEFT OVERRIDE"
-// and friends, which is the textbook display-spoofing trick.
-func sanitizeRemote(s string) string {
-	const maxLen = 64
+// sanitizeForDisplay strips control characters, Unicode format and
+// bidirectional-override characters from peer-supplied text and caps it at
+// maxLen runes. Shared guard for any untrusted string we print: without
+// the bidi filter a peer can spoof display order with U+202E "RIGHT-TO-
+// LEFT OVERRIDE" and friends — the textbook display-spoofing trick.
+func sanitizeForDisplay(s string, maxLen int) string {
 	out := make([]rune, 0, len(s))
 	for _, r := range s {
 		switch {
@@ -296,7 +307,14 @@ func sanitizeRemote(s string) string {
 			break
 		}
 	}
-	clean := strings.TrimSuffix(string(out), ".local")
+	return string(out)
+}
+
+// sanitizeRemote sanitizes a peer-supplied hostname for display, then
+// strips the mDNS ".local" suffix that macOS / many Linuxes tack onto
+// Bonjour hostnames, falling back to a neutral placeholder when empty.
+func sanitizeRemote(s string) string {
+	clean := strings.TrimSuffix(sanitizeForDisplay(s, 64), ".local")
 	if clean == "" {
 		// "peer" reads as a neutral placeholder instead of "(unknown)",
 		// which can scan as "fsend failed to detect something". The

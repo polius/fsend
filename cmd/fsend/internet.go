@@ -36,7 +36,7 @@ const iceBudget = 15 * time.Second
 //
 // HTTPS is the default for non-local addresses; HTTP for localhost so dev
 // loops work without a cert. If the user has configured a per-server
-// password (via `fsend --connect <host:port> <password>`), the client
+// password (via `fsend --connect <host:port>,<password>`), the client
 // carries it through; the server matches against FSEND_SERVER_PASSWORD.
 func signalingClient(cfg *config.Config) (*signaling.Client, string) {
 	addr := cfg.EffectiveServer()
@@ -366,7 +366,7 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		}
 	}
 
-	closeProg, accept, confirmOverwrite, progressFn, recvBytes := newReceiverProgress(f, outDir, pathInfo)
+	closeProg, accept, confirmOverwrite, progressFn, recvBytes := newReceiverProgress(ctx, f, outDir, pathInfo)
 	defer closeProg()
 
 	start := time.Now()
@@ -374,6 +374,11 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		func(attempt int) error {
 			return runReceiverOneAttempt(ctx, tr, outDir, f, accept, confirmOverwrite, progressFn, code)
 		}); err != nil {
+		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a
+		// decline/target-exists error; report it as a cancellation (E026).
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return err
 	}
 	// Flush bar before summary; see receive.go for the streaming-stdin reason.
@@ -411,7 +416,7 @@ func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir strin
 		Overwrite:        f.overwrite,
 		Accept:           accept,
 		Password:         f.passArg,
-		PromptPass:       receiverPasswordPrompt(f),
+		PromptPass:       receiverPasswordPrompt(ctx, f),
 		ConfirmOverwrite: confirmOverwrite,
 		ProgressFn:       progressFn,
 	})

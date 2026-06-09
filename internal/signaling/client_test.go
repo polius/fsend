@@ -142,8 +142,21 @@ func TestClient_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	created, _ := c.Create(ctx, "")
-	if err := c.Delete(ctx, created.SessionID); err != nil {
+	if err := c.Delete(ctx, created.SessionID, created.RoleToken); err != nil {
 		t.Errorf("Delete: %v", err)
+	}
+}
+
+// Delete without the session's role token must be rejected, so a third
+// party who learns a session ID can't tear down someone else's session.
+func TestClient_Delete_RejectsWrongToken(t *testing.T) {
+	url, _ := setupServer(t)
+	c := New(url, "test")
+	ctx := context.Background()
+
+	created, _ := c.Create(ctx, "")
+	if err := c.Delete(ctx, created.SessionID, "not-the-token"); err == nil {
+		t.Error("Delete with a bogus role token should fail")
 	}
 }
 

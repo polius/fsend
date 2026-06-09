@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -634,10 +635,10 @@ func TestReadLine_BasicCases(t *testing.T) {
 
 func TestPromptAccept_QuietRequiresYes(t *testing.T) {
 	h := wire.SenderHello{TransferKind: wire.TransferSingleFile, DisplayName: "x", TotalBytes: 1}
-	if promptAccept(&flags{quiet: true}, h, "/tmp", mustLANInfo()) {
+	if promptAccept(context.Background(), &flags{quiet: true}, h, "/tmp", mustLANInfo()) {
 		t.Error("quiet without --yes must decline")
 	}
-	if !promptAccept(&flags{quiet: true, yes: true}, h, "/tmp", mustLANInfo()) {
+	if !promptAccept(context.Background(), &flags{quiet: true, yes: true}, h, "/tmp", mustLANInfo()) {
 		t.Error("quiet + --yes must accept")
 	}
 }
@@ -652,7 +653,7 @@ func TestPromptAccept_YesAcceptsAcrossKinds(t *testing.T) {
 	} {
 		got := captureStderr(t, func() {
 			h := wire.SenderHello{TransferKind: k, DisplayName: "x", TotalBytes: 1, TotalFiles: 1}
-			if !promptAccept(&flags{yes: true}, h, "/tmp", mustLANInfo()) {
+			if !promptAccept(context.Background(), &flags{yes: true}, h, "/tmp", mustLANInfo()) {
 				t.Errorf("--yes must accept kind %v", k)
 			}
 		})
@@ -670,7 +671,7 @@ func TestPromptAccept_PasswordChipRendered(t *testing.T) {
 			TotalBytes:   1,
 			HasPassword:  true,
 		}
-		_ = promptAccept(&flags{yes: true}, h, "/tmp", mustLANInfo())
+		_ = promptAccept(context.Background(), &flags{yes: true}, h, "/tmp", mustLANInfo())
 	})
 	if !strings.Contains(got, "password required") {
 		t.Errorf("expected password chip, got:\n%s", got)

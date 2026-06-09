@@ -92,7 +92,7 @@ fsend --connect fs.example.com:443
 
 Persists to `~/.config/fsend/config.json` (Linux),
 `~/Library/Application Support/fsend/config.json` (macOS), or
-`%APPDATA%\fsend\config.json` (Windows). Revert to the public default
+`%LOCALAPPDATA%\fsend\config.json` (Windows). Revert to the public default
 with `fsend --connect default`.
 
 ## Operations
@@ -128,10 +128,12 @@ To skip TLS entirely for local testing on a trusted network:
 docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
 ```
 
-Clients connect with `fsend --connect host:8080` — the client picks
-HTTP automatically for IPs and `localhost`, HTTPS otherwise. **Do not**
-expose this to the public internet — signaling carries share codes and
-bearer tokens in cleartext.
+The client only speaks plain HTTP to loopback (`localhost`, `127.0.0.1`,
+`::1`); every other host is assumed to be HTTPS. So a no-TLS server is
+reachable from the same machine with `fsend --connect 127.0.0.1:8080`,
+but clients on other hosts need TLS in front of it (see above). **Do
+not** expose a no-TLS server to the public internet — signaling carries
+share codes and bearer tokens in cleartext.
 
 ## Configuration
 

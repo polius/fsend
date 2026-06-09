@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/polius/fsend/internal/code"
-	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
@@ -70,7 +69,7 @@ func runSend(f *flags, paths []string) error {
 	// 300 ms mDNS query misses, so same-LAN receivers always win the
 	// race against the server path, and cross-network receivers don't
 	// wait on any timer.
-	cfg, _ := config.Load()
+	cfg := loadConfig(f.quiet)
 	return runSendParallel(ctx, f, items, kind, totalFiles, label, c, cfg, waitSpin)
 }
 
@@ -154,7 +153,10 @@ func containsDirectory(paths []string) (bool, error) {
 			if os.IsNotExist(err) {
 				return false, fmt.Errorf("%w: %s", fserrors.ErrSourceNotFound, p)
 			}
-			return false, err
+			// EACCES, ELOOP, ENOTDIR, … on an existing path: a routine local
+			// problem (usually permissions), not an internal bug. Map to
+			// E010 instead of letting it fall through to the E099 catchall.
+			return false, fmt.Errorf("%w: %s: %v", fserrors.ErrReadFailed, p, err)
 		}
 		if st.IsDir() {
 			return true, nil
@@ -375,7 +377,7 @@ func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), p
 //   - Deferring also means a rejected transfer (Accept false, wrong
 //     password, sender abort before any chunk) leaves no half-rendered
 //     bar on screen — closeFn is a no-op if the bar was never created.
-func newReceiverProgress(f *flags, outDir string, pathInfo connpath.Info) (
+func newReceiverProgress(ctx context.Context, f *flags, outDir string, pathInfo connpath.Info) (
 	closeFn func(),
 	accept func(wire.SenderHello) bool,
 	confirmOverwrite func(relPath string, existing int64, incoming uint64) bool,
@@ -394,7 +396,7 @@ func newReceiverProgress(f *flags, outDir string, pathInfo connpath.Info) (
 
 	if f.quiet {
 		closeFn = func() {}
-		accept = func(h wire.SenderHello) bool { return promptAccept(f, h, outDir, pathInfo) }
+		accept = func(h wire.SenderHello) bool { return promptAccept(ctx, f, h, outDir, pathInfo) }
 		progressFn = func(fi uint32, b uint64) {
 			d := b - prev[fi]
 			prev[fi] = b
@@ -414,7 +416,7 @@ func newReceiverProgress(f *flags, outDir string, pathInfo connpath.Info) (
 	// count so the trailing " done" suffix prints instead of "aborted".
 	var streamingTotal bool
 	accept = func(h wire.SenderHello) bool {
-		ok := promptAccept(f, h, outDir, pathInfo)
+		ok := promptAccept(ctx, f, h, outDir, pathInfo)
 		if !ok {
 			return false
 		}
@@ -465,7 +467,12 @@ func newReceiverProgress(f *flags, outDir string, pathInfo connpath.Info) (
 			fmt.Fprintf(os.Stderr, "  %s already exists  ·  local %s  ·  incoming %s\n",
 				relPath, uxlog.HumanBytes(existing), uxlog.HumanBytes(int64(incoming)))
 			fmt.Fprint(os.Stderr, "  Overwrite? [y/N] ")
-			switch readLine(os.Stdin) {
+			// Decline on Ctrl-C; the caller maps a cancelled ctx to E026.
+			line, ok := readLineCtx(ctx)
+			if !ok {
+				return false
+			}
+			switch line {
 			case "y", "yes":
 				return true
 			default:
@@ -550,7 +557,9 @@ func displayPath(p string) string {
 }
 
 // signalContext wires Ctrl-C / SIGTERM to ctx cancellation so transfers
-// can be cleanly aborted.
+// can be cleanly aborted. After the first signal it stops intercepting,
+// so a second Ctrl-C reverts to the default disposition and terminates
+// the process outright — a safety valve if graceful teardown ever hangs.
 func signalContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan os.Signal, 1)
@@ -558,6 +567,7 @@ func signalContext() (context.Context, context.CancelFunc) {
 	go func() {
 		<-ch
 		cancel()
+		signal.Stop(ch)
 	}()
 	return ctx, cancel
 }

@@ -321,7 +321,19 @@ func TestDeleteSession(t *testing.T) {
 	var c CreateSessionResponse
 	_ = json.NewDecoder(create.Body).Decode(&c)
 
+	// Delete without the role token must be rejected.
+	noTok, _ := http.NewRequest(http.MethodDelete, srv.URL+"/v1/session/"+c.SessionID, nil)
+	noTokResp, err := http.DefaultClient.Do(noTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noTokResp.Body.Close()
+	if noTokResp.StatusCode != 401 {
+		t.Errorf("delete without token: status = %d, want 401", noTokResp.StatusCode)
+	}
+
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/v1/session/"+c.SessionID, nil)
+	req.Header.Set("Authorization", "Bearer "+c.RoleToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

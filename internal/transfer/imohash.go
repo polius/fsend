@@ -14,21 +14,19 @@ import (
 // just to size a struct field. Must match imohash.Size.
 const ImohashSize = imohash.Size
 
-// imohashHasher is a single shared hasher with the library's default
-// parameters (16 KiB samples, 128 KiB threshold). Below the threshold a
-// file is hashed in full; above it, only the head, middle, and tail are
-// sampled. This is what gives the ~constant-time behavior on huge files.
-//
-// The default is appropriate for fsend's resume use case: collisions on
-// small files cost a re-transfer of a small file (cheap); on large files
-// the chance of an accidental collision is ~2^-64 (low enough not to
-// worry about for non-adversarial resumes).
-var imohashHasher = imohash.New()
-
 // PrefixImohash returns the imohash digest of the first prefixLen bytes
 // of a file, computed as if those bytes were the whole file. Used on the
 // sender to validate the receiver's claim that "I have a partial that
 // starts at byte 0 and ends at prefixLen."
+//
+// A fresh imohash.Imohash is used per call rather than a shared instance:
+// its SumSectionReader mutates an internal murmur3 state, so a shared
+// value would race if PrefixImohash were ever called concurrently. The
+// constructor is cheap. The library defaults (16 KiB samples, 128 KiB
+// threshold) suit the resume use case — below the threshold a file is
+// hashed in full; above it only head/middle/tail are sampled, which gives
+// the ~constant-time behavior on huge files. An accidental collision on a
+// large file is ~2^-64, low enough for non-adversarial resumes.
 //
 // We avoid copying the prefix into memory by handing imohash an
 // io.SectionReader over the open file.
@@ -40,7 +38,8 @@ func PrefixImohash(path string, prefixLen int64) ([ImohashSize]byte, error) {
 	}
 	defer func() { _ = f.Close() }()
 	sr := io.NewSectionReader(f, 0, prefixLen)
-	h, err := imohashHasher.SumSectionReader(sr)
+	hasher := imohash.New()
+	h, err := hasher.SumSectionReader(sr)
 	if err != nil {
 		return zero, fmt.Errorf("imohash prefix %s: %w", path, err)
 	}

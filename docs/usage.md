@@ -18,7 +18,7 @@ help, run `fsend --help` or `fsend server --help`.
 | Reset to default server | `fsend --connect default` |
 | Show current server | `fsend --connect` |
 
-`fsend` picks send or receive automatically — a `abc-defg-jkm` shape
+`fsend` picks send or receive automatically — an `abc-defg-jkm` shape
 means receive, anything else means send. If an arg is both a valid code
 and a real path, you'll be asked. Use `--send` / `--receive` to commit
 up front in scripts.
@@ -87,13 +87,14 @@ fsend --connect                              # show current
 
 Config is at `~/.config/fsend/config.json` (Linux),
 `~/Library/Application Support/fsend/config.json` (macOS), or
-`%APPDATA%\fsend\config.json` (Windows). See
+`%LOCALAPPDATA%\fsend\config.json` (Windows). See
 [Self-hosting](self-hosting.md) to run your own.
 
 ## Shared flags
 
 | Flag | Purpose |
 |---|---|
+| `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
 | `--quiet` | Suppress non-error output. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--uninstall` | Remove the binary and the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |
@@ -171,8 +172,12 @@ failure.
 | `27`  | `E027` — could not open the local-network port (port in use, mDNS init failed). |
 | `28`  | `E028` — pairing server requires a password (missing or wrong). |
 | `29`  | `E029` — server closed the connection because no data was flowing. |
+| `30`  | `E030` — `fsend server` could not start (port in use or no permission to bind). |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
+
+`5` and `16` are intentionally absent: `E005` is unused, and `E016`
+(corrupt config) is a non-fatal warning that exits `0`.
 
 ## Share codes
 
