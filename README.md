@@ -32,7 +32,7 @@ fsend lets any two computers transfer files **directly** to each other — no ac
 - **Resumable** — connection drops? Rerun the same code and fsend picks up where it stopped
 - **Password-protected** — gate any transfer with `--pass`; receiver supplies it to unlock
 - **Post-quantum** — X25519 + ML-KEM-768 (NIST); future quantum computers can't decrypt today's transfer
-- **Self-hostable** — same ~20 MB binary, no database
+- **Self-hostable** — very lightweight and simple to deploy
 - **Runs anywhere** — single static binary on Linux, macOS, FreeBSD, Windows; x86 and ARM
 
 ## Install

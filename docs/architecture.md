@@ -6,22 +6,25 @@ the pairing server. The receiver tries the LAN path first with a 300 ms
 mDNS query; if there's no answer, it joins the server. Whichever path
 completes the pairing wins, the other is torn down.
 
+The default pairing server is `fsend.alzina.dev` — best-effort, free,
+operated by the maintainer. Override with `fsend --connect host:port`,
+or [run your own](self-hosting.md).
+
 ## Why a server?
 
 Two computers on the same Wi-Fi can find each other with mDNS. Across
 the internet they can't — random machines behind random NATs have no
 way to find each other on their own. That's what the pairing server is
-for: a shared rendezvous keyed by the transfer code.
+for: a shared rendezvous keyed by the share code.
 
 It plays two roles, and only the first is always needed:
 
 - **Pairing** — both sides post the code; the server tells each one
-  where the other is. The server learns the code (it has to, to match
-  the sides) but nothing about the file.
+  where the other is. It learns the code (it has to, to match the
+  sides) but nothing about the file.
 - **Relay** *(fallback only)* — when NAT topology blocks a direct
-  connection, the server forwards encrypted UDP between the peers. TLS
-  terminates at the peers, so the server is moving bytes it can't
-  decrypt.
+  connection, the server forwards encrypted UDP between the peers.
+  Details below.
 
 On the same LAN, neither role is needed — mDNS handles the rendezvous
 and the bytes go straight over the LAN. The pairing server can be
@@ -53,8 +56,9 @@ offline.
 
 ## Different networks (sender at home, receiver at a café)
 
-When the LAN path finds no peer, both sides join the pairing server.
-What happens next depends on whether the two NATs can be hole-punched.
+When the receiver's mDNS query finds no peer, it joins the pairing
+server — where the sender is already waiting. What happens next depends
+on whether the two NATs can be hole-punched.
 
 ### Direct transfer (common case)
 
@@ -106,15 +110,6 @@ locked-down corporate networks), the pairing server forwards encrypted
 UDP datagrams between the peers. TLS terminates at the peers, so the
 server is moving bytes it can't decrypt.
 
-## Why this design
-
-The two paths run concurrently rather than sequentially because waiting
-is always wrong for one of the two cases: same-network users would
-needlessly wait before the cross-network path even starts, and
-cross-network users would be blocked behind a same-network attempt that
-will never succeed. Running both at once gives you the fastest answer
-either way.
-
 ## When the pairing server is unreachable
 
 Same-LAN transfers continue working — the LAN path doesn't depend on the
@@ -122,7 +117,7 @@ server. The sender surfaces a one-line warning so you know cross-network
 receivers can't connect right now:
 
 ```
-⚠ Server unreachable — only same-LAN receivers can connect.
+⚠ Server unreachable — only receivers on your local network can connect.
 ```
 
 You can keep transferring on the local network or use `fsend --connect

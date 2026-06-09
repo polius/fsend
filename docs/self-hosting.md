@@ -1,8 +1,8 @@
 # Self-hosting
 
-The default pairing server at `fsend.alzina.dev` is best-effort. To run
-your own, the same `fsend` binary doubles as the server — fronted by
-Caddy for automatic TLS, deployed via Docker compose.
+The same `fsend` binary doubles as the pairing server. This guide deploys
+it via Docker compose, behind Caddy for automatic TLS — an alternative to
+the default `fsend.alzina.dev`, which is best-effort and not guaranteed.
 
 ## Before you start
 
@@ -16,6 +16,30 @@ You need:
   - `80/tcp` — Let's Encrypt cert issuance
   - `443/tcp` — HTTPS signaling
   - `443/udp` — UDP relay (file data)
+
+## What you're deploying
+
+Two containers on one VM. Caddy terminates TLS on TCP/443 and proxies
+HTTP signaling to fsend's `:8080`. UDP/443 flows directly to the fsend
+container — Caddy isn't in the data path.
+
+```
+                ┌───────────────── Your VM ──────────────────┐
+                │                                            │
+  tcp/443  ────►│  ┌─────────┐                ┌───────────┐  │
+  HTTPS sig.    │  │  Caddy  │ ──http:8080──► │  fsend    │  │
+                │  │ (TLS)   │                │  server   │  │
+  tcp/80   ────►│  │ + ACME  │                │           │  │
+  cert renewal  │  └─────────┘                │           │  │
+                │                             │ :443 udp  │  │
+  udp/443  ─────────────── direct ───────────►│  (relay)  │  │
+  QUIC data     │                             └───────────┘  │
+                │                                            │
+                └────────────────────────────────────────────┘
+```
+
+TCP/443 and UDP/443 share the port number but are different protocols,
+so both can bind simultaneously.
 
 ## Deploy
 
@@ -101,36 +125,12 @@ with `fsend --connect default`.
 To skip TLS entirely for local testing on a trusted network:
 
 ```sh
-docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
+docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
 ```
 
 Clients connect with `fsend --connect http://host:8080`. **Do not**
 expose this to the public internet — signaling carries share codes and
 bearer tokens in cleartext.
-
-## How it fits together
-
-The stack has two listeners. Caddy terminates TLS on TCP/443 and proxies
-HTTP signaling to fsend's `:8080`. UDP/443 flows directly to the fsend
-container — Caddy isn't in the data path.
-
-```
-                ┌───────────────── Your VM ──────────────────┐
-                │                                            │
-  tcp/443  ────►│  ┌─────────┐                ┌───────────┐  │
-  HTTPS sig.    │  │  Caddy  │ ──http:8080──► │  fsend    │  │
-                │  │ (TLS)   │                │  server   │  │
-  tcp/80   ────►│  │ + ACME  │                │           │  │
-  cert renewal  │  └─────────┘                │           │  │
-                │                             │ :443 udp  │  │
-  udp/443  ─────────────── direct ───────────►│  (relay)  │  │
-  QUIC data     │                             └───────────┘  │
-                │                                            │
-                └────────────────────────────────────────────┘
-```
-
-TCP/443 and UDP/443 share the port number but are different protocols,
-so both can bind simultaneously.
 
 ## Configuration
 

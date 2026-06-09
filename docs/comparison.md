@@ -225,10 +225,8 @@ Day-to-day, the surface is very similar:
 | **Defense-in-depth layers**          | Two (TLS 1.3 + SPAKE2, channel-bound)              | One (AEAD)                                        |
 | **Post-quantum forward secrecy**     | ✓ X25519 + ML-KEM-768                              | ✗                                                 |
 | **Code format**                      | `abc-defg-jkm`                                     | `1234-word-word-word`                             |
-| **Code is one-shot**                 | ✓ (server-enforced)                                | Not specified                                     |
-| **Code expiry**                      | 1 h unclaimed / 10 min after pairing               | Not specified                                     |
 | **Resume after interruption**        | ✓                                                  | ✓                                                 |
-| **Self-hostable**                    | ✓ (single binary, no database)                     | ✓                                                 |
+| **Self-hostable**                    | ✓                                                  | ✓                                                 |
 
 For the architectural deep dive, see [How it works](architecture.md).
 For the cryptographic deep dive, see [Security](security.md).

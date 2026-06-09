@@ -24,10 +24,20 @@ TLS 1.3's key exchange uses the **X25519 + ML-KEM-768 hybrid** (Go's
 standard since 1.24). Ciphertext captured today is not retroactively
 decryptable by a future large-scale quantum computer.
 
-## Is the pairing server something to worry about?
+## Per-session keys and integrity
 
-No. It's a matchmaker, not a middleman — and even when it has to step in
-as a fallback, it can't read your files.
+- **Fresh TLS identity per transfer.** Each session generates a new
+  Ed25519 keypair and a self-signed certificate valid for one hour.
+  There's no cert to manage, rotate, or revoke — keys die with the
+  process.
+- **End-to-end integrity.** Every chunk carries a BLAKE3 hash; file
+  transfers also verify a BLAKE3 root over the full file before
+  completing. Corruption is detected by the receiver, not the relay.
+
+## What the pairing server can see
+
+It's a matchmaker, not a middleman — and even when it has to step in as
+a fallback, it can't read your files.
 
 ### Why the server has to exist
 
@@ -59,14 +69,14 @@ locked-down corporate firewalls), the server falls back to forwarding
 **already-encrypted** UDP datagrams between the peers — think of a mail
 carrier moving sealed envelopes. It moves the parcel; it can't open it.
 
-### What the server can and cannot see
+### Visibility
 
 |                                                   | Server sees     |
 |---------------------------------------------------|-----------------|
 | File contents                                     | ✗ never         |
 | File names, sizes, hashes                         | ✗ never         |
 | Ciphertext (on the relay-fallback path)           | ✓ as opaque bytes — not decryptable, not even by the server's operator |
-| The 10-letter pairing code and your IP            | ✓ briefly, in memory only, for pairing — never written to disk |
+| The 10-letter share code and your IP              | ✓ briefly, in memory only, for pairing — never written to disk |
 
 End-to-end encryption means even the operator of the server can't
 decrypt traffic that goes through it. The encryption keys never leave
@@ -78,10 +88,10 @@ Effectively nothing:
 
 - **No access log. No per-transfer log line.** The default log level
   only emits lifecycle events — startup, shutdown, and errors.
-- **No IP addresses or pairing codes in logs**, at any level.
-- **No database, no persistence layer.** Pairing state lives in RAM,
-  evicts within an hour at most (ten minutes once a transfer has
-  paired), and is gone forever on restart.
+- **No IP addresses or share codes in logs**, at any level.
+- **No database, no persistence layer.** Pairing state never touches
+  disk — it lives in RAM, evicts within an hour at most (ten minutes
+  once a transfer has paired), and is gone forever on restart.
 
 If you'd still rather not trust our public server,
 [self-host one](self-hosting.md) — it's a single binary with nothing to
@@ -103,18 +113,7 @@ excluded for legibility). Codes are:
 - **Not the encryption key** — the code authenticates the SPAKE2 handshake;
   the actual session key is derived from that handshake plus the TLS 1.3
   channel binding, so the code itself never traverses the wire in the clear.
-- **System-generated** — fsend picks the code for each transfer. For
-  persistent shared secrets across many transfers (scripts, kiosks),
-  use `--pass` instead.
+- **System-generated** — fsend picks the code for each transfer; it's
+  not user-selectable. To require a password on top of the code, add
+  `--pass` when sending.
 
-## Compared to croc
-
-|                                  | fsend                                              | croc                                              |
-|----------------------------------|----------------------------------------------------|---------------------------------------------------|
-| End-to-end encrypted             | ✓                                                  | ✓                                                 |
-| PAKE protocol                    | SPAKE2 (RFC 9382, IETF-standardized)               | `schollz/pake` (non-standardized, Boneh-Shoup textbook construction) |
-| Defense-in-depth layers          | **Two** independent — TLS 1.3 (QUIC) **+** SPAKE2 channel-bound to the TLS handshake (RFC 5705) | **One** — AEAD keyed directly from PAKE |
-| Post-quantum forward secrecy     | ✓ (X25519 + ML-KEM-768 hybrid)                     | ✗ (classical ECC only)                            |
-| MITM defense                     | Two layers — TLS catches a network MITM, SPAKE2 binding catches a TLS-handshake MITM | Single layer — PAKE alone                         |
-| Relay does not see the file      | ✓ — relay only forwards opaque UDP datagrams; QUIC/TLS terminate at the peers | ✓ — relay only forwards ciphertext after PAKE     |
-| How often the relay is in path   | Fallback only (used when ICE hole-punching fails)  | Every cross-network transfer                      |
