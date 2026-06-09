@@ -90,9 +90,9 @@ var (
 	// shared password and the client either didn't send one or sent the
 	// wrong one.
 	ErrServerAuthRequired = errors.New("server password required")
-	// E029 — relay reaped the allocation for inactivity
-	// (FSEND_SESSION_IDLE_TIMEOUT). Distinct from E020 so the user
-	// knows it's a server-set ceiling, not their network.
+	// E029 — relay reaped the allocation because no datagrams flowed
+	// for ~60s. Distinct from E020 so the user knows the server tore
+	// the slot down (peer went away), not their own network.
 	ErrRelayIdleTimeout = errors.New("relay session idle-timed out")
 )
 
@@ -299,9 +299,7 @@ var catalog = map[error]Entry{
 	ErrRelayIdleTimeout: {
 		Code: "E029", Exit: 29,
 		Message: "The server closed the connection because no data was flowing. Transfer aborted.",
-		Action: "The fallback relay drops sessions that go idle for too long.\n" +
-			"  Try again, or self-host (`fsend server`) and raise\n" +
-			"  FSEND_SESSION_IDLE_TIMEOUT.",
+		Action:  "The other side likely went away. Try again.",
 	},
 }
 

@@ -146,9 +146,6 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID 
 		}
 		return fserrors.ErrRelayCapHit
 	case relay.ReasonIdle:
-		if status.IdleSeconds > 0 {
-			return fmt.Errorf("%w: Server idle window: %s", fserrors.ErrRelayIdleTimeout, uxlog.HumanDuration(time.Duration(status.IdleSeconds)*time.Second))
-		}
 		return fserrors.ErrRelayIdleTimeout
 	}
 	return runErr

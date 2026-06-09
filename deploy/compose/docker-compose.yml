@@ -26,7 +26,6 @@ services:
       FSEND_MAX_RELAY_BYTES_PER_SESSION: "100MiB"
       FSEND_MAX_SESSIONS_PER_IP: "5"
       FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN: "30"
-      FSEND_SESSION_IDLE_TIMEOUT: "60s"
       # Password to restrict server access (empty = open); clients use `fsend --connect <domain> <password>`.
       FSEND_SERVER_PASSWORD: ""
     healthcheck:

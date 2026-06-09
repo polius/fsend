@@ -63,7 +63,6 @@ func TestRelay_EndToEnd(t *testing.T) {
 
 	srv := NewServer(serverConn, ServerConfig{
 		MaxBytesPerSession: 10 * 1024 * 1024,
-		SessionIdleTimeout: 5 * time.Second,
 	})
 	tok, err := srv.Allocate()
 	if err != nil {

@@ -120,14 +120,7 @@ func TestClassifyRelayDrop_MapsReasons(t *testing.T) {
 			wantErr: fserrors.ErrRelayCapHit,
 		},
 		{
-			name:       "idle_with_seconds_includes_value",
-			body:       `{"state":"evicted","reason":"idle","idle_seconds":60}`,
-			runErr:     errors.New("idle timeout"),
-			wantErr:    fserrors.ErrRelayIdleTimeout,
-			wantDetail: "Server idle window: 1m00s",
-		},
-		{
-			name:    "idle_without_seconds_is_bare_sentinel",
+			name:    "idle_is_bare_sentinel",
 			body:    `{"state":"evicted","reason":"idle"}`,
 			runErr:  errors.New("idle timeout"),
 			wantErr: fserrors.ErrRelayIdleTimeout,

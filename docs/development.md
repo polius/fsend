@@ -107,7 +107,6 @@ FSEND_HTTP_ADDR=":18080" /tmp/fsend server --health-check
 | `FSEND_PUBLIC_ADDR` | = `FSEND_UDP_ADDR` | What clients see |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | |
-| `FSEND_SESSION_IDLE_TIMEOUT` | `60s` | |
 
 Full list: `/tmp/fsend server --help`. For deployment, ports, and all
 tunables, see [Self-hosting](self-hosting.md).

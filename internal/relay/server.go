@@ -47,7 +47,6 @@ const TombstoneTTL = 5 * time.Minute
 // ServerConfig holds the per-session tuning.
 type ServerConfig struct {
 	MaxBytesPerSession uint64
-	SessionIdleTimeout time.Duration
 	Logger             *slog.Logger
 }
 
@@ -55,13 +54,16 @@ type ServerConfig struct {
 // allocations. Not exposed in ServerConfig because no caller sets it.
 const janitorInterval = 30 * time.Second
 
+// sessionIdleTimeout is the per-allocation silence ceiling before the
+// janitor evicts. QUIC's own MaxIdleTimeout (30s) fires first in any
+// healthy transfer, so this is a backstop for cleanup, not a knob —
+// raising or lowering it doesn't affect well-behaved sessions.
+const sessionIdleTimeout = 60 * time.Second
+
 // Default fills in zero values.
 func (c *ServerConfig) Default() {
 	if c.MaxBytesPerSession == 0 {
 		c.MaxBytesPerSession = 100 * 1024 * 1024 // 100 MiB
-	}
-	if c.SessionIdleTimeout == 0 {
-		c.SessionIdleTimeout = 60 * time.Second
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -93,10 +95,10 @@ func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 	}
 }
 
-// Limits exposes the configured per-session ceilings so the signaling
-// layer can include them in the relay-status response.
-func (s *Server) Limits() (maxBytes uint64, idleTimeout time.Duration) {
-	return s.cfg.MaxBytesPerSession, s.cfg.SessionIdleTimeout
+// MaxBytesPerSession exposes the configured byte ceiling so the
+// signaling layer can include it in the relay-status response.
+func (s *Server) MaxBytesPerSession() uint64 {
+	return s.cfg.MaxBytesPerSession
 }
 
 // Status returns the eviction reason for a token, or "" if the
@@ -246,7 +248,7 @@ func (s *Server) janitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			cutoff := now.Add(-s.cfg.SessionIdleTimeout).UnixNano()
+			cutoff := now.Add(-sessionIdleTimeout).UnixNano()
 			nowNanos := now.UnixNano()
 			s.mu.Lock()
 			for tok, a := range s.allocs {
