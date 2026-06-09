@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"net"
 	"os"
 	"time"
 
@@ -55,6 +54,14 @@ func init() {
 // Bumping this is a wire-protocol-major event.
 const ALPN = "fsend/1"
 
+// pqCurvePreferences pins the key-exchange groups so the post-quantum
+// X25519MLKEM768 hybrid is always preferred — set explicitly (not via
+// Go's default) so a toolchain default change or GODEBUG=tlsmlkem=0 can't
+// silently downgrade us; TestNegotiatesPostQuantum guards the wire result.
+// Plain X25519 stays as a classically-secure fallback for peers without
+// ML-KEM support.
+var pqCurvePreferences = []tls.CurveID{tls.X25519MLKEM768, tls.X25519}
+
 // HandshakeTimeout caps the time we'll spend on the TLS+QUIC handshake.
 const HandshakeTimeout = 10 * time.Second
 
@@ -84,10 +91,11 @@ func SenderTLSConfig() (*tls.Config, error) {
 		return nil, err
 	}
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{ALPN},
-		MinVersion:   tls.VersionTLS13,
-		ClientAuth:   tls.NoClientCert,
+		Certificates:     []tls.Certificate{cert},
+		NextProtos:       []string{ALPN},
+		MinVersion:       tls.VersionTLS13,
+		CurvePreferences: pqCurvePreferences,
+		ClientAuth:       tls.NoClientCert,
 	}, nil
 }
 
@@ -104,6 +112,7 @@ func ReceiverTLSConfig() *tls.Config {
 		InsecureSkipVerify: true,
 		NextProtos:         []string{ALPN},
 		MinVersion:         tls.VersionTLS13,
+		CurvePreferences:   pqCurvePreferences,
 	}
 }
 
@@ -127,9 +136,6 @@ type Listener struct {
 	ln   *quic.Listener
 	code string
 }
-
-// LocalAddr returns the UDP address the listener is bound to.
-func (l *Listener) LocalAddr() net.Addr { return l.ln.Addr() }
 
 // Close stops listening.
 func (l *Listener) Close() error { return l.ln.Close() }

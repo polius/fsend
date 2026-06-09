@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,6 +14,55 @@ import (
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/wire"
 )
+
+// TestNegotiatesPostQuantum locks in the headline property: two fsend
+// peers must land on the X25519MLKEM768 hybrid, not plain X25519. Asserts
+// the wire result so a silent downgrade fails CI.
+func TestNegotiatesPostQuantum(t *testing.T) {
+	ln, err := ListenAddr("127.0.0.1:0", "abc-defg-jkm")
+	if err != nil {
+		t.Fatalf("ListenAddr: %v", err)
+	}
+	defer ln.Close()
+
+	type acceptResult struct {
+		res *AcceptResult
+		err error
+	}
+	// Keep both ends alive until both curves are read — closing the
+	// sender as soon as it captures the curve would race the receiver's
+	// data-stream prime read.
+	acceptCh := make(chan acceptResult, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		res, err := ln.Accept(ctx)
+		acceptCh <- acceptResult{res, err}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dialRes, err := Dial(ctx, ln.ln.Addr().String(), "abc-defg-jkm")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer dialRes.Close()
+
+	acc := <-acceptCh
+	if acc.err != nil {
+		t.Fatalf("Accept: %v", acc.err)
+	}
+	defer acc.res.Close()
+
+	for _, got := range []tls.CurveID{
+		acc.res.Conn.ConnectionState().TLS.CurveID,
+		dialRes.Conn.ConnectionState().TLS.CurveID,
+	} {
+		if got != tls.X25519MLKEM768 {
+			t.Errorf("negotiated curve = %v, want X25519MLKEM768 (post-quantum downgrade!)", got)
+		}
+	}
+}
 
 // TestQUIC_LoopbackTransfer is the load-bearing integration test for the
 // transport: send a 4 MB random file from one in-process goroutine to
@@ -39,7 +89,7 @@ func TestQUIC_LoopbackTransfer(t *testing.T) {
 		t.Fatalf("ListenAddr: %v", err)
 	}
 	defer ln.Close()
-	listenAddr := ln.LocalAddr().String()
+	listenAddr := ln.ln.Addr().String()
 
 	items, err := transfer.Walk([]string{srcPath})
 	if err != nil {

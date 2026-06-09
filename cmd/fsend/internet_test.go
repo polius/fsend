@@ -157,7 +157,7 @@ func TestClassifyRelayDrop_MapsReasons(t *testing.T) {
 			}))
 			defer ts.Close()
 			client := signaling.New(ts.URL, "test")
-			got := classifyRelayDrop(context.Background(), client, "sess-1", c.runErr)
+			got := classifyRelayDrop(context.Background(), client, "sess-1", "tok-1", c.runErr)
 			if c.wantSame {
 				if got != c.runErr {
 					t.Errorf("expected runErr unchanged, got %v", got)
@@ -177,7 +177,7 @@ func TestClassifyRelayDrop_MapsReasons(t *testing.T) {
 // A successful transfer (nil runErr) must not get a sentinel pinned on it.
 func TestClassifyRelayDrop_NilStaysNil(t *testing.T) {
 	client := signaling.New("http://127.0.0.1:1", "test") // unreachable; not called
-	if err := classifyRelayDrop(context.Background(), client, "sess-1", nil); err != nil {
+	if err := classifyRelayDrop(context.Background(), client, "sess-1", "tok-1", nil); err != nil {
 		t.Errorf("nil runErr should pass through, got %v", err)
 	}
 }
@@ -186,7 +186,7 @@ func TestClassifyRelayDrop_NilStaysNil(t *testing.T) {
 func TestClassifyRelayDrop_ProbeFailureFallsBackToRunErr(t *testing.T) {
 	client := signaling.New("http://127.0.0.1:1", "test")
 	runErr := errors.New("idle timeout")
-	got := classifyRelayDrop(context.Background(), client, "sess-1", runErr)
+	got := classifyRelayDrop(context.Background(), client, "sess-1", "tok-1", runErr)
 	if got != runErr {
 		t.Errorf("expected runErr to survive a probe failure, got %v", got)
 	}

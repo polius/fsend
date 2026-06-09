@@ -247,7 +247,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "pass", "yes", "out", "overwrite", "name", "uninstall"} {
+		for _, conflict := range []string{"send", "receive", "text", "pass", "yes", "out", "overwrite", "name", "exclude", "mode", "uninstall"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}

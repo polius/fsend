@@ -48,7 +48,7 @@ func TestHandshake_WrongCodeRejected(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		time.Sleep(50 * time.Millisecond)
-		_, recvErr = Dial(ctx, ln.LocalAddr().String(), "xyz-pqrs-tuv")
+		_, recvErr = Dial(ctx, ln.ln.Addr().String(), "xyz-pqrs-tuv")
 	}()
 
 	wg.Wait()

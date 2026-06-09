@@ -136,18 +136,10 @@ func TestClient_WaitTimesOut(t *testing.T) {
 	}
 }
 
-func TestClient_HealthAndDelete(t *testing.T) {
+func TestClient_Delete(t *testing.T) {
 	url, _ := setupServer(t)
 	c := New(url, "test")
 	ctx := context.Background()
-
-	h, err := c.Health(ctx)
-	if err != nil {
-		t.Fatalf("Health: %v", err)
-	}
-	if h.Status != "ok" {
-		t.Errorf("health status = %q", h.Status)
-	}
 
 	created, _ := c.Create(ctx, "")
 	if err := c.Delete(ctx, created.SessionID); err != nil {
@@ -157,7 +149,7 @@ func TestClient_HealthAndDelete(t *testing.T) {
 
 func TestClient_UnreachableServer_MapsToFserror(t *testing.T) {
 	c := New("http://127.0.0.1:1", "test") // intentionally bogus port
-	_, err := c.Health(context.Background())
+	_, err := c.RelayStatus(context.Background(), "sess", "")
 	if !errors.Is(err, fserrors.ErrServerUnreachable) {
 		t.Errorf("expected ErrServerUnreachable, got %v", err)
 	}
@@ -236,7 +228,7 @@ func TestClient_TimeoutMapsToServerUnreachable(t *testing.T) {
 	// Shrink the timeout so the test runs fast.
 	c.hc.Timeout = 50 * time.Millisecond
 
-	_, err := c.Health(context.Background())
+	_, err := c.RelayStatus(context.Background(), "sess", "")
 	if !errors.Is(err, fserrors.ErrServerUnreachable) {
 		t.Errorf("expected ErrServerUnreachable, got %v", err)
 	}
@@ -244,7 +236,7 @@ func TestClient_TimeoutMapsToServerUnreachable(t *testing.T) {
 	// CLI can tell "I aborted" apart from "server didn't respond".
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = c.Health(ctx)
+	_, err = c.RelayStatus(ctx, "sess", "")
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled ctx should yield context.Canceled, got %v", err)
 	}

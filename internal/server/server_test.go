@@ -469,7 +469,10 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 				t.Fatalf("allocate: status = %d", alloced.StatusCode)
 			}
 
-			resp, err := http.Get(ts.URL + "/v1/relay/status?session_id=" + cr.SessionID)
+			statusReq, _ := http.NewRequest(http.MethodGet,
+				ts.URL+"/v1/relay/status?session_id="+cr.SessionID, nil)
+			statusReq.Header.Set("Authorization", "Bearer "+cr.RoleToken)
+			resp, err := http.DefaultClient.Do(statusReq)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -488,6 +491,52 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 				t.Errorf("limit_bytes = %d, want %d", body.LimitBytes, c.wantBytes)
 			}
 		})
+	}
+}
+
+// TestRelayStatus_RequiresRoleToken confirms a caller who knows only the
+// session_id (no role token) can't probe relay state: the handler returns
+// "unknown", indistinguishable from a nonexistent session.
+func TestRelayStatus_RequiresRoleToken(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          2 * time.Second,
+		PairedTTL:            5 * time.Second,
+		LongPollTimeout:      500 * time.Millisecond,
+		MaxSessionsPerIP:     10,
+		MaxNewSessionsPerMin: 100,
+	})
+	s.WithRelay(&fakeRelay{tok: relay.Token{1, 2, 3, 4}, reason: relay.ReasonCapHit, maxBytes: 1}, 9999)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	created := postJSON(t, ts.URL+"/v1/session", CreateSessionRequest{})
+	defer created.Body.Close()
+	var cr CreateSessionResponse
+	if err := json.NewDecoder(created.Body).Decode(&cr); err != nil {
+		t.Fatal(err)
+	}
+	allocReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/relay/allocate",
+		bytes.NewReader(mustJSON(t, RelayAllocateRequest{SessionID: cr.SessionID})))
+	allocReq.Header.Set("Authorization", "Bearer "+cr.RoleToken)
+	alloced, err := http.DefaultClient.Do(allocReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alloced.Body.Close()
+
+	// No Authorization header → must not reveal the evicted state.
+	resp, err := http.Get(ts.URL + "/v1/relay/status?session_id=" + cr.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body RelayStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.State != "unknown" {
+		t.Errorf("unauthorized status probe = %q, want unknown", body.State)
 	}
 }
 

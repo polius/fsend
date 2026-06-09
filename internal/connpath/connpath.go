@@ -123,16 +123,6 @@ func (i Info) Tag() string {
 	}
 }
 
-// Glyph returns the UX glyph for this path: ✓ for direct paths, ⚠ for
-// relay (relay is not a failure, but it is slower and worth flagging).
-// Callers should pair with the ASCII fallback via uxlog.marker.
-func (i Info) Glyph() (utf8, ascii string) {
-	if i.Kind == KindRelay {
-		return "⚠", "[!]"
-	}
-	return "✓", "[OK]"
-}
-
 // Headline is the single line the CLI prints right after the data path
 // is established, e.g.
 //

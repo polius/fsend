@@ -62,11 +62,12 @@ type internetSenderPairing struct {
 	pathInfo     connpath.Info
 	cleanup      func()
 
-	// sigClient and sessionID let the post-transfer error path probe
-	// the pairing server for a relay eviction reason. Without this,
-	// a 100 MiB-cap-hit looks identical to a flaky network.
+	// sigClient, sessionID, and roleToken let the post-transfer error
+	// path probe the pairing server for a relay eviction reason. Without
+	// this, a 100 MiB-cap-hit looks identical to a flaky network.
 	sigClient *signaling.Client
 	sessionID string
+	roleToken string
 }
 
 // sendPairOutcome is what a pair goroutine reports back.
@@ -184,6 +185,7 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 		pathInfo:     pathInfo,
 		sigClient:    client,
 		sessionID:    created.SessionID,
+		roleToken:    created.RoleToken,
 		cleanup: func() {
 			teardown()
 			deleteSession()
@@ -448,7 +450,7 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transf
 		return quicconn.SenderHandshake(ctx, qc, pair.code)
 	})
 	if pair.pathInfo.Kind == connpath.KindRelay {
-		return classifyRelayDrop(ctx, pair.sigClient, pair.sessionID, err)
+		return classifyRelayDrop(ctx, pair.sigClient, pair.sessionID, pair.roleToken, err)
 	}
 	return err
 }
