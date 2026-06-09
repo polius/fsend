@@ -635,11 +635,19 @@ func (s *Server) pullCandidates(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	tok := bearerToken(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.byID[id]
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	// Gate on the role token like every other {id} endpoint: a session ID
+	// alone (it travels over the pairing channel) must not let a third
+	// party tear down someone else's session.
+	if _, ok := sess.sideForToken(tok); !ok {
+		writeJSONError(w, http.StatusUnauthorized, "missing or invalid role token")
 		return
 	}
 	delete(s.byID, id)

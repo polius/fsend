@@ -161,9 +161,14 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptRes
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: open control: %w", err)
 	}
-	if err := authenticatePeer(c, ctrl, code); err != nil {
+	// Bound the handshake reads so a peer that connects and then stalls
+	// can't pin this side until the 30s QUIC idle timeout. Cleared on
+	// success so the transfer's own control reads are not capped.
+	_ = ctrl.SetReadDeadline(time.Now().Add(HandshakeTimeout))
+	if err := authenticatePeer(c, ctrl, code, roleSender); err != nil {
 		return nil, err
 	}
+	_ = ctrl.SetReadDeadline(time.Time{})
 	data, err := c.OpenUniStreamSync(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: open data: %w", err)
@@ -216,9 +221,12 @@ func ReceiverHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptR
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: accept control: %w", err)
 	}
-	if err := authenticatePeer(c, ctrl, code); err != nil {
+	// Bound the handshake reads (see SenderHandshake); cleared on success.
+	_ = ctrl.SetReadDeadline(time.Now().Add(HandshakeTimeout))
+	if err := authenticatePeer(c, ctrl, code, roleReceiver); err != nil {
 		return nil, err
 	}
+	_ = ctrl.SetReadDeadline(time.Time{})
 	data, err := c.AcceptUniStream(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: accept data: %w", err)

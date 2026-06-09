@@ -56,6 +56,13 @@ func normalizePassArgs(args []string) []string {
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		// Everything after the `--` end-of-flags marker is a positional,
+		// even if it spells a flag — copy the rest verbatim so a file
+		// literally named "--pass" survives `fsend -- --pass file`.
+		if a == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
 		if a != "--pass" {
 			out = append(out, a)
 			continue
@@ -94,6 +101,10 @@ func normalizeConnectArgs(args []string) []string {
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
 		if a != "--connect" {
 			out = append(out, a)
 			continue
@@ -136,7 +147,8 @@ func renderError(err error, debug bool) int {
 	if known && (errors.Is(err, fserrors.ErrUsage) ||
 		errors.Is(err, fserrors.ErrSourceNotFound) ||
 		errors.Is(err, fserrors.ErrRelayCapHit) ||
-		errors.Is(err, fserrors.ErrRelayIdleTimeout)) {
+		errors.Is(err, fserrors.ErrRelayIdleTimeout) ||
+		errors.Is(err, fserrors.ErrServerStartup)) {
 		if extra := extractDetail(err.Error()); extra != "" {
 			detail = extra
 		}

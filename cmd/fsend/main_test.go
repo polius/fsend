@@ -41,6 +41,11 @@ func TestNormalizePassArgs(t *testing.T) {
 			in:   []string{"fsend", "report.pdf"},
 			want: []string{"fsend", "report.pdf"},
 		},
+		{
+			name: "stops at -- so a file named --pass survives",
+			in:   []string{"fsend", "--send", "--", "--pass", "a.txt"},
+			want: []string{"fsend", "--send", "--", "--pass", "a.txt"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -74,6 +79,8 @@ func TestNormalizeConnectArgs(t *testing.T) {
 		{[]string{"fsend", "--connect=host:443"}, []string{"fsend", "--connect=host:443"}},
 		// Unrelated flags pass through.
 		{[]string{"fsend", "report.pdf"}, []string{"fsend", "report.pdf"}},
+		// Stops at -- so a file named --connect survives as a positional.
+		{[]string{"fsend", "--", "--connect", "f"}, []string{"fsend", "--", "--connect", "f"}},
 	}
 	for _, c := range cases {
 		got := normalizeConnectArgs(c.in)

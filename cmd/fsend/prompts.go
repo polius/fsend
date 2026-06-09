@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -23,6 +24,21 @@ func readLine(r io.Reader) string {
 	br := bufio.NewReader(r)
 	line, _ := br.ReadString('\n')
 	return strings.ToLower(strings.TrimSpace(line))
+}
+
+// readLineCtx reads one line from os.Stdin but returns ok=false if ctx is
+// cancelled first — e.g. Ctrl-C while the prompt is waiting for input.
+// The blocked read goroutine is abandoned; that is harmless because a
+// cancelled ctx means the process is on its way down.
+func readLineCtx(ctx context.Context) (line string, ok bool) {
+	ch := make(chan string, 1)
+	go func() { ch <- readLine(os.Stdin) }()
+	select {
+	case <-ctx.Done():
+		return "", false
+	case s := <-ch:
+		return s, true
+	}
 }
 
 // stdinReader returns the process-wide bufio.Reader over os.Stdin.

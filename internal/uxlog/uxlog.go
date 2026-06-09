@@ -29,8 +29,6 @@ import (
 type Progress struct {
 	mp  *mpb.Progress
 	bar *mpb.Bar
-	tty bool
-	w   io.Writer
 }
 
 // barWidth caps the progress bar at a fixed column count. 40 leaves room
@@ -54,7 +52,7 @@ const rateThreshold = 1 << 20
 // a percentage, ETA, or rate chip.
 func New(totalBytes int64) *Progress {
 	tty := IsTTY(os.Stderr)
-	p := &Progress{tty: tty, w: os.Stderr}
+	p := &Progress{}
 
 	opts := []mpb.ContainerOption{
 		mpb.WithOutput(os.Stderr),

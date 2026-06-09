@@ -3,7 +3,7 @@
 // Location follows XDG conventions:
 //   - Linux:   $XDG_CONFIG_HOME/fsend/config.json (default ~/.config/fsend/...)
 //   - macOS:   ~/Library/Application Support/fsend/config.json
-//   - Windows: %AppData%\fsend\config.json
+//   - Windows: %LOCALAPPDATA%\fsend\config.json
 //
 // The file is JSON for human-debuggability and is written with mode 0600
 // because it may contain a relay shared password.

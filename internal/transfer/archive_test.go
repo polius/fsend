@@ -244,6 +244,77 @@ func TestExtractArchive_RejectsAbsoluteSymlinkSlip(t *testing.T) {
 	}
 }
 
+// TestExtractArchive_RejectsPreexistingSymlinkOnOverwrite guards the
+// --overwrite path (which skips preflightExtract): a symlink pre-planted
+// in the output dir — by a local process or a stale prior run — must not
+// be followed when a regular-file entry lands on the same name. Both the
+// symlink-at-destination and symlinked-parent shapes are covered.
+func TestExtractArchive_RejectsPreexistingSymlinkOnOverwrite(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		plant   func(target, victim string) // pre-creates the hostile symlink
+		entry   string                      // tar regular-file entry name
+		written func(victim string) string  // path that would be clobbered on a follow
+	}{
+		{
+			name: "symlink at destination",
+			plant: func(target, victim string) {
+				_ = os.Symlink(filepath.Join(victim, "secret"), filepath.Join(target, "clash"))
+			},
+			entry:   "clash",
+			written: func(victim string) string { return filepath.Join(victim, "secret") },
+		},
+		{
+			name:    "symlinked parent dir",
+			plant:   func(target, victim string) { _ = os.Symlink(victim, filepath.Join(target, "sub")) },
+			entry:   "sub/clash",
+			written: func(victim string) string { return filepath.Join(victim, "clash") },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "target")
+			victim := filepath.Join(root, "victim")
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(victim, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.plant(target, victim)
+
+			tarPath := filepath.Join(root, "evil.tar")
+			f, err := os.Create(tarPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tw := tar.NewWriter(f)
+			body := []byte("PWNED")
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeReg, Name: tc.entry, Mode: 0o644, Size: int64(len(body)),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(body); err != nil {
+				t.Fatal(err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			// overwrite=true skips the preflight; the write itself must not
+			// follow the planted link out of target.
+			_ = ExtractArchive(tarPath, target, true)
+			if b, err := os.ReadFile(tc.written(victim)); err == nil && string(b) == "PWNED" {
+				t.Fatalf("wrote through symlink to %s, outside target", tc.written(victim))
+			}
+		})
+	}
+}
+
 // TestExtractArchive_ConflictWithoutOverwrite verifies that without
 // overwrite=true, a single conflicting file inside the archive causes the
 // whole extract to refuse — and that nothing landed on disk in the

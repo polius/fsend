@@ -25,22 +25,48 @@ const (
 	maxPakeMsgLen = 1024
 )
 
+// role identifies which end of the transfer is authenticating. It is
+// folded into the confirmation tag so the two directions carry distinct
+// values — see authenticatePeer.
+type role uint8
+
+const (
+	roleSender role = iota
+	roleReceiver
+)
+
+// Direction labels mixed into the confirmation HMAC. Distinct per
+// direction so a tag one side sends can never be replayed back as the
+// tag the other side expects.
+const (
+	dirSenderToReceiver = "fsend-confirm-sender"
+	dirReceiverToSender = "fsend-confirm-receiver"
+)
+
 // authenticatePeer runs symmetric SPAKE2 over the control stream and
 // verifies that both peers derived the same key AND observed the same
-// TLS session. The latter half — mixing the TLS RFC 5705 exporter into
-// an HMAC tag — is the channel binding that makes a relay/MITM attempt
-// fail: an attacker terminating one TLS session with each side ends up
-// with two different exporters, so the tags can never match.
+// TLS session. It mixes the TLS RFC 5705 exporter into an HMAC tag —
+// the channel binding that defeats a relay/MITM: an attacker terminating
+// one TLS session with each side gets two different exporters, so the
+// tags can never match.
+//
+// The tag is also direction-separated (sender and receiver compute
+// different tags) and bound to the SPAKE2 transcript. Direction
+// separation closes a reflection attack: without it both sides send and
+// accept the same tag, so a peer that never learned the code could read
+// the honest tag off the stream and echo it back to authenticate.
 //
 // Must be called immediately after the QUIC handshake and the control
 // stream are up, before any application data flows. On mismatch (wrong
-// code, MITM, or wire tampering) returns fserrors.ErrPeerAuthFailed.
-func authenticatePeer(conn *quic.Conn, control io.ReadWriter, code string) error {
+// code, MITM, reflection, or wire tampering) returns
+// fserrors.ErrPeerAuthFailed.
+func authenticatePeer(conn *quic.Conn, control io.ReadWriter, code string, r role) error {
 	p := pake.New(code)
 
 	// Both sides write first, then read. QUIC bidi streams are full-duplex,
 	// so this is deadlock-free regardless of which side is "sender".
-	if err := writeFramed(control, p.Start()); err != nil {
+	myMsg := p.Start()
+	if err := writeFramed(control, myMsg); err != nil {
 		return fmt.Errorf("auth: send pake: %w", err)
 	}
 	peerMsg, err := readFramed(control, maxPakeMsgLen)
@@ -57,9 +83,14 @@ func authenticatePeer(conn *quic.Conn, control io.ReadWriter, code string) error
 	if err != nil {
 		return fmt.Errorf("auth: tls exporter: %w", err)
 	}
-	mac := hmac.New(sha256.New, key)
-	mac.Write(exporter)
-	myTag := mac.Sum(nil)
+
+	// Order the transcript by role so both peers hash the same bytes.
+	senderMsg, receiverMsg := myMsg, peerMsg
+	if r == roleReceiver {
+		senderMsg, receiverMsg = peerMsg, myMsg
+	}
+	myTag := confirmTag(key, exporter, r, senderMsg, receiverMsg)
+	wantTag := confirmTag(key, exporter, otherRole(r), senderMsg, receiverMsg)
 
 	if _, err := control.Write(myTag); err != nil {
 		return fmt.Errorf("auth: send tag: %w", err)
@@ -68,10 +99,40 @@ func authenticatePeer(conn *quic.Conn, control io.ReadWriter, code string) error
 	if _, err := io.ReadFull(control, peerTag[:]); err != nil {
 		return fmt.Errorf("auth: recv tag: %w", err)
 	}
-	if subtle.ConstantTimeCompare(myTag, peerTag[:]) != 1 {
+	if subtle.ConstantTimeCompare(wantTag, peerTag[:]) != 1 {
 		return fserrors.ErrPeerAuthFailed
 	}
 	return nil
+}
+
+func otherRole(r role) role {
+	if r == roleSender {
+		return roleReceiver
+	}
+	return roleSender
+}
+
+// confirmTag binds the confirmation HMAC to the derived key, the TLS
+// session (exporter), the direction, and the full SPAKE2 transcript.
+// Messages are length-prefixed so the concatenation is unambiguous.
+func confirmTag(key, exporter []byte, r role, senderMsg, receiverMsg []byte) []byte {
+	dir := dirSenderToReceiver
+	if r == roleReceiver {
+		dir = dirReceiverToSender
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(exporter)
+	mac.Write([]byte(dir))
+	writeLenPrefixed(mac, senderMsg)
+	writeLenPrefixed(mac, receiverMsg)
+	return mac.Sum(nil)
+}
+
+func writeLenPrefixed(w io.Writer, b []byte) {
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], uint32(len(b)))
+	_, _ = w.Write(hdr[:]) // hash.Hash.Write never errors
+	_, _ = w.Write(b)
 }
 
 func writeFramed(w io.Writer, msg []byte) error {

@@ -29,7 +29,7 @@ fsend lets any two computers transfer files **directly** to each other — no ac
 - **End-to-end encrypted** — two independent layers; even the fallback relay never sees the file
 - **No ports to open** — works on any network, no router or firewall setup
 - **Send anything** — files, folders, multiple at once, stdin streams, or literal text
-- **Resumable** — connection drops? Rerun the same code and fsend picks up where it stopped
+- **Resumable** — connection drops? Rerun the same command and fsend picks up where it stopped
 - **Password-protected** — gate any transfer with `--pass`; receiver supplies it to unlock
 - **Post-quantum** — X25519 + ML-KEM-768 (NIST); future quantum computers can't decrypt today's transfer
 - **Self-hostable** — very lightweight and simple to deploy

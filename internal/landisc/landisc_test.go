@@ -32,15 +32,19 @@ func TestPortForCode_InRange(t *testing.T) {
 
 // TestServiceName keeps the announce/query naming aligned. A drift here
 // would silently desync the two peers — they'd both run cleanly and
-// never find each other.
+// never find each other. The code must NOT appear in the name: it is the
+// PAKE secret and the name is multicast across the LAN.
 func TestServiceName(t *testing.T) {
 	const code = "abc-defg-jkm"
 	got := serviceName(code)
 	if !strings.HasSuffix(got, ".local") {
 		t.Errorf("serviceName(%q) = %q; missing .local suffix", code, got)
 	}
-	if !strings.Contains(got, code) {
-		t.Errorf("serviceName(%q) = %q; missing code substring", code, got)
+	if strings.Contains(got, code) {
+		t.Errorf("serviceName(%q) = %q leaks the code in cleartext", code, got)
+	}
+	if got != serviceName(code) {
+		t.Errorf("serviceName(%q) is not deterministic", code)
 	}
 }
 

@@ -12,10 +12,12 @@ networks** — the common case, and where the two designs diverge.
 - **Across the internet, fsend goes directly between the two computers
   when it can; croc always goes through a relay.** This changes
   throughput, network reach, and what a third-party server can observe.
-- **fsend uses QUIC over a single UDP port (UDP/443).** croc uses TCP
-  over a five-port range (9009–9013). One UDP port is easier to get past
-  a corporate firewall, and UDP/443 is allowed almost everywhere because
-  it's the port HTTP/3 uses.
+- **fsend uses QUIC; its server listens on a single UDP port (UDP/443).**
+  Direct transfers use hole-punched ephemeral ports, but the only
+  fixed destination is UDP/443. croc uses TCP over a five-port range
+  (9009–9013). One UDP port is easier to get past a corporate firewall,
+  and UDP/443 is allowed almost everywhere because it's the port HTTP/3
+  uses.
 - **fsend has two independent crypto layers** (TLS 1.3 + SPAKE2) with
   **post-quantum** key exchange. croc has a single AEAD keyed from PAKE.
 
@@ -106,9 +108,9 @@ nothing at all.
 |                       | fsend                                  | croc                                       |
 |-----------------------|----------------------------------------|--------------------------------------------|
 | Transport             | QUIC over UDP                          | TCP                                        |
-| Default port(s)       | UDP/443                                | TCP/9009–9013                              |
+| Default port(s)       | UDP/443 (server); ephemeral for direct | TCP/9009–9013                              |
 | Parallelism           | QUIC streams multiplex over one socket | One TCP connection per relay port          |
-| Firewall footprint    | One UDP port                           | Five TCP ports                             |
+| Firewall footprint    | One server-side UDP port               | Five TCP ports                             |
 | IPv6                  | ✓                                      | ✓ (IPv6-first with IPv4 fallback)          |
 
 Both designs parallelize for throughput, just differently. fsend rides
@@ -221,7 +223,7 @@ Day-to-day, the surface is very similar:
 | **Server sees ciphertext**           | Only on relay fallback                             | Every cross-network transfer                      |
 | **Same-LAN transfer**                | Direct via mDNS                                    | Direct via multicast peer discovery               |
 | **Transport**                        | QUIC over UDP                                      | TCP                                               |
-| **Firewall footprint**               | One UDP port (UDP/443)                             | Five TCP ports (9009–9013)                        |
+| **Firewall footprint**               | One server-side UDP port (UDP/443)                | Five TCP ports (9009–9013)                        |
 | **PAKE**                             | SPAKE2 (RFC 9382)                                  | `schollz/pake`                                    |
 | **Defense-in-depth layers**          | Two (TLS 1.3 + SPAKE2, channel-bound)              | One (AEAD)                                        |
 | **Post-quantum forward secrecy**     | ✓ X25519 + ML-KEM-768                              | ✗                                                 |

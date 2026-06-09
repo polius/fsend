@@ -107,6 +107,14 @@ func BuildArchive(paths []string, excludes []string) (*ArchiveResult, error) {
 		return nil, errors.New("archive: no paths provided")
 	}
 	matcher := newExcludeMatcher(excludes)
+	// Reject malformed globs (e.g. an unclosed "[") up front. match()
+	// discards filepath.Match errors, so a bad pattern would otherwise
+	// silently match nothing and ship the files the user meant to exclude.
+	for _, pat := range matcher.patterns {
+		if _, err := filepath.Match(pat, ""); err != nil {
+			return nil, fmt.Errorf("%w: invalid --exclude pattern %q: %v", fserrors.ErrUsage, pat, err)
+		}
+	}
 
 	tmp, err := os.CreateTemp("", "fsend-archive-*.tar")
 	if err != nil {
@@ -302,9 +310,23 @@ func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 			if err := os.MkdirAll(clean, os.FileMode(hdr.Mode)&os.ModePerm); err != nil {
 				return fmt.Errorf("extract: mkdir %s: %w", clean, err)
 			}
+			if err := assertWithinTarget(clean, absTarget); err != nil {
+				return err
+			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
 				return fmt.Errorf("extract: mkdir parent %s: %w", clean, err)
+			}
+			// Guard the write against a symlinked parent component, or a
+			// symlink planted at the destination, redirecting it outside
+			// the target. --overwrite skips preflightExtract, so without
+			// this an attacker who can write into the output dir could
+			// clobber an arbitrary file via O_CREATE following the link.
+			if err := assertWithinTarget(filepath.Dir(clean), absTarget); err != nil {
+				return err
+			}
+			if err := removePreexistingSymlink(clean); err != nil {
+				return fmt.Errorf("extract: clear %s: %w", clean, err)
 			}
 			out, err := os.OpenFile(clean, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&os.ModePerm)
 			if err != nil {
@@ -312,7 +334,7 @@ func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 			}
 			if _, err := io.Copy(out, tr); err != nil {
 				_ = out.Close()
-				return fmt.Errorf("extract: write %s: %w", clean, err)
+				return classifyWriteErr("extract "+clean, err)
 			}
 			if err := out.Close(); err != nil {
 				return fmt.Errorf("extract: close %s: %w", clean, err)
@@ -418,4 +440,42 @@ func safeJoin(base, rel string) (string, error) {
 		return "", fmt.Errorf("extract: refused to write outside target: %q", rel)
 	}
 	return absJoined, nil
+}
+
+// assertWithinTarget verifies that path, after resolving any symlinks,
+// still lives under target. safeJoin only sanitizes the lexical entry
+// name; this catches a symlinked directory component (planted in the
+// output dir by a local attacker or a stale prior run) that would
+// redirect an otherwise-clean path outside the tree.
+//
+// A path that doesn't resolve (not yet created, unreadable) is treated as
+// in-bounds: there is nothing to follow out. target is resolved too so a
+// symlinked target root (e.g. macOS /tmp -> /private/tmp) doesn't trip it.
+func assertWithinTarget(path, target string) error {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		resolvedTarget = target
+	}
+	if !pathIsUnder(resolved, resolvedTarget) {
+		return fmt.Errorf("%w: %q resolves outside target dir", fserrors.ErrPathTraversal, path)
+	}
+	return nil
+}
+
+// removePreexistingSymlink unlinks a symlink sitting exactly at path, so a
+// following O_CREATE writes a fresh regular file in place instead of
+// following the link. No-op when nothing is there or it is a real file.
+func removePreexistingSymlink(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return os.Remove(path)
+	}
+	return nil
 }

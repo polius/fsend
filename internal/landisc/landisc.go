@@ -1,8 +1,9 @@
 // Package landisc handles same-LAN peer discovery via mDNS.
 //
-// The sender announces a service name derived from the code
-// (`fsend-<code>.local`) and a TXT-like payload of host:port. The receiver
-// queries for the same name and gets back the sender's LAN address.
+// The sender announces a service name derived from a hash of the code
+// (`fsend-<hash>.local`); the receiver queries for the same name and gets
+// back the sender's LAN address. The code is hashed rather than embedded
+// directly so it is not multicast in cleartext to the broadcast domain.
 //
 // This package only does discovery — the actual connection is established
 // via internal/quicconn after we have an address.
@@ -13,6 +14,8 @@ package landisc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"time"
@@ -25,10 +28,13 @@ import (
 // serviceName builds the mDNS name we publish/query for a given code.
 //
 // We use `.local` so the name lives in the .local domain that every mDNS
-// stack on the planet honors. The host part is derived from the code,
-// which is unique per session.
+// stack on the planet honors. The host part is a SHA-256 hash of the
+// code, not the code itself: the name is multicast across the LAN, and
+// the code is the PAKE secret, so it must not travel in cleartext. Both
+// peers hash identically, so announce and query still line up.
 func serviceName(code string) string {
-	return "fsend-" + code + ".local"
+	sum := sha256.Sum256([]byte("fsend-landisc-v1:" + code))
+	return "fsend-" + hex.EncodeToString(sum[:16]) + ".local"
 }
 
 // Announce publishes the given local address under the code-derived service
