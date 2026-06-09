@@ -25,7 +25,7 @@ jobs:
           username: poliuscorp
           password: ${{ secrets.DOCKER_ACCESS_TOKEN }}
       - id: tags
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           tags: |
