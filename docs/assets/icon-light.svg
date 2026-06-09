@@ -1,14 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 53.5 445 98" fill="none" role="img" aria-label="&gt;_ fsend">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 53.5 420 98" fill="none" role="img" aria-label="&gt; fsend_">
   <defs>
     <style>
       .prompt {
-        stroke: #E89478;
+        stroke: #E0805A;
         stroke-width: 18;
         stroke-linecap: round;
         stroke-linejoin: round;
         fill: none;
       }
-      .cursor { fill: #E89478; }
+      .cursor { fill: #E0805A; }
       .word {
         font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", "Menlo", "Consolas", monospace;
         font-size: 92px;
@@ -22,9 +22,9 @@
   <!-- > chevron, sized to cap-height of wordmark -->
   <path class="prompt" d="M 30 70 L 62 101 L 30 132"/>
 
-  <!-- _ underscore / cursor -->
-  <rect class="cursor" x="78" y="134" width="40" height="10" rx="3"/>
-
   <!-- fsend wordmark -->
-  <text class="word" x="138" y="132" text-anchor="start">fsend</text>
+  <text class="word" x="92" y="132" text-anchor="start">fsend</text>
+
+  <!-- _ underscore / cursor, positioned after the wordmark -->
+  <rect class="cursor" x="360" y="134" width="40" height="10" rx="3"/>
 </svg>
