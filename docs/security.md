@@ -108,8 +108,9 @@ excluded for legibility). Codes are:
   receiver pairs, or after ten minutes once a receiver has paired. Ctrl-C
   on the sender invalidates the code immediately.
 - **Rate-limited** — the public pairing server caps new sessions at 30
-  per minute per source IP, making online brute-force against the
-  ~45-bit code space infeasible.
+  per minute per source IP (IPv4 keyed on the full address, IPv6 on the
+  /64 prefix), making online brute-force against the ~45-bit code space
+  infeasible.
 - **Not the encryption key** — the code authenticates the SPAKE2 handshake;
   the actual session key is derived from that handshake plus the TLS 1.3
   channel binding, so the code itself never traverses the wire in the clear.

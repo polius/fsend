@@ -102,8 +102,8 @@ with `fsend --connect default`.
   log level is `info` — lifecycle events only. No per-transfer lines,
   no IPs, no share codes.
 - **Update.** `docker compose pull && docker compose up -d`. The image
-  is pinned to `poliuscorp/fsend:latest`; switch to a specific tag if
-  you want immutable upgrades.
+  defaults to the floating `poliuscorp/fsend:latest` tag; pin a specific
+  version tag if you want immutable, reproducible upgrades.
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
   within an hour. Cert state lives in the `caddy_data` Docker volume —
   Caddy reissues automatically if you lose it.
