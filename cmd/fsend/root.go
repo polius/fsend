@@ -202,8 +202,9 @@ COMMON FLAGS
 
 ADVANCED FLAGS
   --connect              Show current server
-  --connect <host:port> [password]
-                         Set the server (persisted)
+  --connect <host:port>  Set the server (persisted)
+  --connect <host:port>,<password>
+                         Set the server + shared password
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
   --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
@@ -250,6 +251,14 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}
+		}
+		// Positionals after --connect are a usage error — without this,
+		// `fsend --connect host:port file.pdf` would silently fall through
+		// to the send path with --connect already consumed.
+		if len(f.posArgs) > 0 {
+			return fmt.Errorf("%w: --connect cannot be combined with positional arguments (got %q); "+
+				"to set a server password use --connect host:port,password",
+				fserrors.ErrUsage, f.posArgs[0])
 		}
 		return runConnect(f)
 	}
@@ -346,8 +355,15 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 // applyEnvFallbacks fills in flags from environment variables when the
 // user did not pass the corresponding flag. Used for secrets we'd
 // rather not see on argv.
+//
+// Bare --pass (collapsed to passPromptSentinel) counts as "the user said
+// they want a password, but didn't supply one" — so we still consult
+// FSEND_PASS. Doing it the other way around (env wins only when the
+// flag is absent entirely) silently ignored FSEND_PASS for users who
+// typed `--pass` to opt in.
 func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
-	if !cmd.Flags().Changed("pass") {
+	bare := f.passArg == passPromptSentinel
+	if !cmd.Flags().Changed("pass") || bare {
 		if v := os.Getenv("FSEND_PASS"); v != "" {
 			f.passArg = v
 		}

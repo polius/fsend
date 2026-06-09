@@ -14,10 +14,10 @@ import (
 
 // runConnect implements `fsend --connect ...`:
 //
-//	fsend --connect                    → print current config + default
-//	fsend --connect default            → revert to compiled-in default
-//	fsend --connect <host[:port]>      → set custom server (port optional)
-//	fsend --connect <host[:port]> <pw> → set custom server + password
+//	fsend --connect                       → print current config + default
+//	fsend --connect default               → revert to compiled-in default
+//	fsend --connect <host[:port]>         → set custom server (port optional)
+//	fsend --connect <host[:port]>,<pw>    → set custom server + password
 func runConnect(f *flags) error {
 	cfg, _ := config.Load() // ignore corruption error — we're about to overwrite anyway
 
@@ -138,7 +138,7 @@ func printCurrentServer(cfg *config.Config) {
 	if cfg.IsDefault() {
 		fmt.Fprintln(os.Stderr, "  Current server:", config.DefaultServer, "(default)")
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "  Set a custom server:  fsend --connect <host[:port]> [password]")
+		fmt.Fprintln(os.Stderr, "  Set a custom server:  fsend --connect <host[:port]>[,<password>]")
 	} else {
 		tag := "custom"
 		if cfg.ServerPassword != "" {
@@ -148,7 +148,7 @@ func printCurrentServer(cfg *config.Config) {
 		fmt.Fprintln(os.Stderr, "  Default server:", config.DefaultServer)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  Revert to the default:  fsend --connect default")
-		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host[:port]> [password]")
+		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host[:port]>[,<password>]")
 	}
 	fmt.Fprintln(os.Stderr)
 }

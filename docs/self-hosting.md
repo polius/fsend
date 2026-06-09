@@ -118,7 +118,7 @@ with `fsend --connect default`.
 | Caddy logs show "obtain certificate failed" (ACME error) | DNS A-record not yet pointing at this VM, or `80/tcp` blocked at the firewall. |
 | `curl` to `/v1/health` works but clients hit `E001` on cross-network transfers | `443/udp` blocked at the firewall — many setups open TCP only and forget UDP. |
 | Pairing starts but the transfer hangs or drops | A reverse proxy in front of fsend (not the bundled Caddy) is buffering long-poll signaling. Caddy is configured for 30s read/write; nginx/Traefik need the same. |
-| Clients hit `E028` ("pairing server requires a password") | You set `FSEND_SERVER_PASSWORD` on the server. Clients must connect with `fsend --connect host:443 <password>`. |
+| Clients hit `E028` ("pairing server requires a password") | You set `FSEND_SERVER_PASSWORD` on the server. Clients must connect with `fsend --connect host:443,<password>`. |
 
 ## LAN-only / dev mode
 
@@ -142,7 +142,7 @@ All optional; defaults shown. Set under the `environment:` block in
 |---|---|---|
 | `FSEND_HTTP_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_UDP_ADDR` | `:443` | UDP relay listener. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
-| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret. When set, every endpoint except `/v1/health` requires it. Clients pass it via `fsend --connect <host> <password>`. |
+| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret. When set, every endpoint except `/v1/health` requires it. Clients pass it via `fsend --connect <host>,<password>`. |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |
 | `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit. |

@@ -152,7 +152,7 @@ func TestServer_PasswordGate(t *testing.T) {
 
 	// --- Step 2: with the matching password the full pair succeeds ---
 	xdg := h.newXDG(t)
-	if _, _, code := h.runFsend(t, xdg, "--connect", addr, "swordfish"); code != 0 {
+	if _, _, code := h.runFsend(t, xdg, "--connect", addr+",swordfish"); code != 0 {
 		t.Fatalf("--connect with pw exit %d", code)
 	}
 

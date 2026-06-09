@@ -80,7 +80,7 @@ not guaranteed. Switch any time:
 
 ```sh
 fsend --connect fs.example.com:443           # persisted
-fsend --connect fs.example.com:443 mySecret  # password-gated server
+fsend --connect fs.example.com:443,mySecret  # password-gated server
 fsend --connect default                      # back to the public default
 fsend --connect                              # show current
 ```

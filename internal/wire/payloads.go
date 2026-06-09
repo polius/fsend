@@ -17,7 +17,6 @@ type SenderHello struct {
 	TotalFiles      uint32       // 1 for single, N for multi/dir, 0 if unknown
 	TotalBytes      uint64       // sum of file sizes (0 if unknown, e.g. stdin)
 	HasPassword     bool         // true → expect PASSWORD_CHALLENGE after HELLO_ACK
-	CompressionHint uint8        // 0=none, 1=zstd-auto-per-chunk
 
 	// DisplayName is a peer-facing label the receiver renders in its
 	// accept block: the filename for single-file, the folder name for

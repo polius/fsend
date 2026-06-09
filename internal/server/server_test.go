@@ -599,6 +599,46 @@ func TestRateLimit_V6BypassClosed(t *testing.T) {
 	}
 }
 
+// TestEvict_PrunesIPBucket locks in the cleanup contract: rate-limit
+// buckets whose stamps have all aged out must be evicted, so the map
+// doesn't grow unbounded as new IPs touch the server.
+func TestEvict_PrunesIPBucket(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          time.Hour,
+		PairedTTL:            time.Hour,
+		MaxSessionsPerIP:     100,
+		MaxNewSessionsPerMin: 100,
+	})
+	// Seed buckets directly (the public path requires HTTP requests, but
+	// the eviction contract is on the data structure).
+	now := time.Now()
+	s.mu.Lock()
+	s.ipBucket["fresh"] = &rateBucket{stamps: []time.Time{now.Add(-10 * time.Second)}}
+	s.ipBucket["stale"] = &rateBucket{stamps: []time.Time{now.Add(-2 * time.Minute)}}
+	s.ipBucket["mixed"] = &rateBucket{stamps: []time.Time{
+		now.Add(-2 * time.Minute),
+		now.Add(-5 * time.Second),
+	}}
+	s.mu.Unlock()
+
+	s.evict(now)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.ipBucket["fresh"]; !ok {
+		t.Error("fresh bucket should still be present")
+	}
+	if _, ok := s.ipBucket["stale"]; ok {
+		t.Error("stale bucket should have been evicted")
+	}
+	if b, ok := s.ipBucket["mixed"]; !ok {
+		t.Error("mixed bucket should still be present")
+	} else if len(b.stamps) != 1 {
+		t.Errorf("mixed bucket stamps = %d, want 1 (the stale one pruned)", len(b.stamps))
+	}
+}
+
 func itoaHex(n int) string {
 	const hex = "0123456789abcdef"
 	if n == 0 {

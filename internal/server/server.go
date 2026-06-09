@@ -341,6 +341,22 @@ func (s *Server) evict(now time.Time) {
 			}
 		}
 	}
+	// Drop rate-limit buckets whose stamps have all aged out. Without
+	// this, every IP that ever connected lives in ipBucket forever — the
+	// allowNewSession write path only creates entries.
+	cutoff := now.Add(-time.Minute)
+	for key, b := range s.ipBucket {
+		keep := b.stamps[:0]
+		for _, t := range b.stamps {
+			if t.After(cutoff) {
+				keep = append(keep, t)
+			}
+		}
+		b.stamps = keep
+		if len(b.stamps) == 0 {
+			delete(s.ipBucket, key)
+		}
+	}
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

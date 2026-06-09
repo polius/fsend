@@ -53,6 +53,14 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			[]string{"--text="},
 			"--text requires a non-empty string",
 		},
+		{
+			// Regression: previously `fsend --connect host:port file.pdf`
+			// silently glued file.pdf onto --connect and saved it as the
+			// server password.
+			"connect_with_positional",
+			[]string{"--connect=host:443", "file.pdf"},
+			"--connect cannot be combined with positional arguments",
+		},
 	}
 	for _, c := range cases {
 		c := c

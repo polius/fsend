@@ -42,7 +42,6 @@ const (
 	TypeTransferAck       FrameType = 0x08 // receiver → sender
 	TypePasswordVerified  FrameType = 0x09 // sender → receiver (positive ack of password)
 	TypeError             FrameType = 0xFE
-	TypeAbort             FrameType = 0xFF
 )
 
 // Data-stream frame types.
@@ -79,20 +78,15 @@ const (
 // ErrorCode is the catalog of error codes carried in TypeError frames.
 type ErrorCode uint16
 
-// ErrorCode values reported in TypeError frames. ErrCodePartialMismatch
-// and ErrCodeTargetExists are the two codes the receiver acts on by
-// removing or preserving the destination; everything else is informational.
+// ErrorCode values reported in TypeError frames. Only the codes a peer
+// actually emits live here — the receiver's switch in tryReadPeerError
+// is the source of truth for what gets mapped to a user-facing error.
+// Numeric values are kept stable so a peer running an older fsend can
+// still recognise them; new codes get fresh numbers.
 const (
-	ErrCodeUnsupportedVersion ErrorCode = 1
-	ErrCodeWrongPassword      ErrorCode = 2
-	ErrCodeReceiverRejected   ErrorCode = 3
-	ErrCodeDiskFull           ErrorCode = 4
-	ErrCodeWriteFailed        ErrorCode = 5
-	ErrCodeReadFailed         ErrorCode = 6
-	ErrCodeChunkHashMismatch  ErrorCode = 7
-	ErrCodeFileHashMismatch   ErrorCode = 8
-	ErrCodeTimeout            ErrorCode = 9
-	ErrCodeProtocolError      ErrorCode = 10
+	ErrCodeWrongPassword    ErrorCode = 2
+	ErrCodeFileHashMismatch ErrorCode = 8
+	ErrCodeProtocolError    ErrorCode = 10
 	// ErrCodePartialMismatch — receiver offered to resume from a prefix
 	// whose imohash does not match the source's prefix at the same length.
 	// Almost always means the source file changed since the previous
