@@ -409,26 +409,24 @@ type fakeRelay struct {
 	tok      relay.Token
 	reason   string
 	maxBytes uint64
-	idle     time.Duration
 }
 
-func (f *fakeRelay) Allocate() (relay.Token, error)  { return f.tok, nil }
-func (f *fakeRelay) Status(t relay.Token) string     { return f.reason }
-func (f *fakeRelay) Limits() (uint64, time.Duration) { return f.maxBytes, f.idle }
+func (f *fakeRelay) Allocate() (relay.Token, error) { return f.tok, nil }
+func (f *fakeRelay) Status(t relay.Token) string    { return f.reason }
+func (f *fakeRelay) MaxBytesPerSession() uint64     { return f.maxBytes }
 
-// /v1/relay/status must echo back the operator-set ceiling so the CLI
-// can render a concrete error ("server limit 100 MiB") instead of a
-// generic "limit reached." Cap-hit and idle each carry their own field;
-// the other stays zero (omitempty drops it from the JSON entirely).
+// /v1/relay/status must echo back the operator-set byte ceiling so the
+// CLI can render a concrete error ("server limit 100 MiB") instead of a
+// generic "limit reached." Cap-hit carries the limit; idle just carries
+// the reason (the timeout is fixed, no value to surface).
 func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 	cases := []struct {
-		name        string
-		reason      string
-		wantBytes   uint64
-		wantSeconds int
+		name      string
+		reason    string
+		wantBytes uint64
 	}{
 		{name: "cap_hit", reason: relay.ReasonCapHit, wantBytes: 100 * 1024 * 1024},
-		{name: "idle", reason: relay.ReasonIdle, wantSeconds: 60},
+		{name: "idle", reason: relay.ReasonIdle},
 	}
 	for _, c := range cases {
 		c := c
@@ -445,7 +443,6 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 				tok:      relay.Token{1, 2, 3, 4},
 				reason:   c.reason,
 				maxBytes: 100 * 1024 * 1024,
-				idle:     60 * time.Second,
 			}
 			s.WithRelay(alloc, "127.0.0.1:9999")
 			ts := httptest.NewServer(s.Handler())
@@ -489,9 +486,6 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 			}
 			if body.LimitBytes != c.wantBytes {
 				t.Errorf("limit_bytes = %d, want %d", body.LimitBytes, c.wantBytes)
-			}
-			if body.IdleSeconds != c.wantSeconds {
-				t.Errorf("idle_seconds = %d, want %d", body.IdleSeconds, c.wantSeconds)
 			}
 		})
 	}

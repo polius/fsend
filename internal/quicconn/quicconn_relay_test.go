@@ -60,7 +60,6 @@ func TestQUIC_OverRelay(t *testing.T) {
 
 	relaySrv := relay.NewServer(relayConn, relay.ServerConfig{
 		MaxBytesPerSession: 100 * 1024 * 1024,
-		SessionIdleTimeout: 30 * time.Second,
 	})
 	tok, err := relaySrv.Allocate()
 	if err != nil {

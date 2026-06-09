@@ -111,7 +111,7 @@ type Server struct {
 type RelayAllocator interface {
 	Allocate() (relay.Token, error)
 	Status(relay.Token) string
-	Limits() (maxBytes uint64, idleTimeout time.Duration)
+	MaxBytesPerSession() uint64
 }
 
 // WithRelay wires a relay allocator and its public address into the
@@ -231,12 +231,8 @@ func (s *Server) relayStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := RelayStatusResponse{State: "evicted", Reason: reason}
-	maxBytes, idle := s.relayAllocator.Limits()
-	switch reason {
-	case relay.ReasonCapHit:
-		resp.LimitBytes = maxBytes
-	case relay.ReasonIdle:
-		resp.IdleSeconds = int(idle / time.Second)
+	if reason == relay.ReasonCapHit {
+		resp.LimitBytes = s.relayAllocator.MaxBytesPerSession()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

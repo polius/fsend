@@ -72,26 +72,6 @@ func TestServerEnvInt(t *testing.T) {
 	}
 }
 
-func TestServerEnvDuration(t *testing.T) {
-	const k = "FSEND_TEST_ENV_DURATION"
-	os.Unsetenv(k)
-	if got := envDuration(k, 5*time.Second); got != 5*time.Second {
-		t.Errorf("unset: got %v, want 5s", got)
-	}
-	t.Setenv(k, "30s")
-	if got := envDuration(k, 5*time.Second); got != 30*time.Second {
-		t.Errorf("30s: got %v, want 30s", got)
-	}
-	t.Setenv(k, "1h30m")
-	if got := envDuration(k, 5*time.Second); got != 90*time.Minute {
-		t.Errorf("1h30m: got %v, want 90m", got)
-	}
-	t.Setenv(k, "garbage")
-	if got := envDuration(k, 5*time.Second); got != 5*time.Second {
-		t.Errorf("bad: got %v, want 5s", got)
-	}
-}
-
 func TestServerEnvBytes(t *testing.T) {
 	const k = "FSEND_TEST_ENV_BYTES"
 	const def uint64 = 100
@@ -150,7 +130,6 @@ func clearServerEnv(t *testing.T) {
 		"FSEND_MAX_SESSIONS_PER_IP",
 		"FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN",
 		"FSEND_MAX_RELAY_BYTES_PER_SESSION",
-		"FSEND_SESSION_IDLE_TIMEOUT",
 	} {
 		os.Unsetenv(k)
 	}
@@ -174,9 +153,6 @@ func TestServerLoadConfigDefaults(t *testing.T) {
 	if cfg.maxBytesPerSession != 100*srvMiB {
 		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 100*srvMiB)
 	}
-	if cfg.sessionIdleTimeout != 60*time.Second {
-		t.Errorf("sessionIdleTimeout: got %v, want 60s", cfg.sessionIdleTimeout)
-	}
 	if cfg.logLevel != slog.LevelInfo {
 		t.Errorf("logLevel: got %v, want info", cfg.logLevel)
 	}
@@ -189,7 +165,6 @@ func TestServerLoadConfigOverrides(t *testing.T) {
 	t.Setenv("FSEND_MAX_SESSIONS_PER_IP", "12")
 	t.Setenv("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", "120")
 	t.Setenv("FSEND_MAX_RELAY_BYTES_PER_SESSION", "250MiB")
-	t.Setenv("FSEND_SESSION_IDLE_TIMEOUT", "90s")
 	cfg := loadServerConfig()
 	if cfg.httpAddr != ":19999" {
 		t.Errorf("httpAddr: got %q", cfg.httpAddr)
@@ -205,9 +180,6 @@ func TestServerLoadConfigOverrides(t *testing.T) {
 	}
 	if cfg.maxBytesPerSession != 250*srvMiB {
 		t.Errorf("maxBytesPerSession: got %d", cfg.maxBytesPerSession)
-	}
-	if cfg.sessionIdleTimeout != 90*time.Second {
-		t.Errorf("sessionIdleTimeout: got %v", cfg.sessionIdleTimeout)
 	}
 }
 
