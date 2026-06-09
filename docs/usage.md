@@ -122,26 +122,19 @@ fsend server --help          Show help
 
 ### Server environment variables
 
-| Variable | Default | Notes |
-|---|---|---|
-| `FSEND_HTTP_ADDR` | `:8080` | TCP signaling listener. |
-| `FSEND_UDP_ADDR` | `:443` | UDP relay listener. |
-| `FSEND_PUBLIC_ADDR` | = `FSEND_UDP_ADDR` | `host:port` clients dial for relay. Set when public ≠ bind (NAT, dev box). |
-| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret. When set, every endpoint except `/v1/health` requires it. Clients pass it via `fsend --connect <host> <password>`. |
-| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
-| `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |
-| `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit. |
-| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | Accepts `500m`, `1GiB`, `104857600`. |
-| `FSEND_SESSION_IDLE_TIMEOUT` | `60s` | Go duration. |
+Full table with defaults, units, and notes:
+[Self-hosting → Configuration](self-hosting.md#configuration).
+
+Quick LAN-only run (no TLS — local testing only):
 
 ```sh
-docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend
+docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
 ```
 
 Internet-exposed deployments need a TLS-terminating reverse proxy in
 front of `:8080` — file data on UDP/443 is already end-to-end encrypted,
 but the HTTP pairing channel carries share codes and bearer tokens in
-plaintext. See [`deploy/compose/`](../deploy/compose/) for a ready-made
+plaintext. See [Self-hosting](self-hosting.md) for the ready-made
 Caddy + Docker stack.
 
 ## Exit codes
@@ -183,9 +176,10 @@ failure.
 
 ## Share codes
 
-Codes look like `abc-defg-jkm`: three groups (3-4-3) from the alphabet
-`abcdefghjkmnpqrstuvwxyz` (the ambiguous `i`, `l`, `o` are excluded).
-They're one-shot, expire on the server after one hour if unclaimed (and
-ten minutes after a receiver pairs), and are always system-generated.
-For persistent secrets across many transfers, use `--pass` instead.
-For the security model, see [Security](security.md).
+Codes look like `abc-defg-jkm` — three groups (3-4-3) from a 23-letter
+alphabet (`i`, `l`, `o` are excluded for legibility). One-shot,
+system-generated, server-side TTL.
+
+To require a password before the receiver can download, add `--pass`
+when sending. For the full model — entropy, TTL, rate-limiting, channel
+binding — see [Security → Share codes](security.md#share-codes).
