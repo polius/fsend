@@ -293,7 +293,7 @@ var catalog = map[error]Entry{
 		Code: "E028", Exit: 28,
 		Message: "The server requires a password.",
 		Action: "Set it with:\n" +
-			"    fsend --connect <host:port> <password>\n" +
+			"    fsend --connect <host:port>,<password>\n" +
 			"  Ask the server operator for the password if you don't have it.",
 	},
 	ErrRelayIdleTimeout: {

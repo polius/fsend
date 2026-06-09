@@ -63,7 +63,6 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 		TransferKind:    opts.TransferKind,
 		TotalFiles:      totalFiles,
 		HasPassword:     opts.Password != "",
-		CompressionHint: 1,
 		DisplayName:     opts.DisplayName,
 	}
 	for _, it := range opts.Items {

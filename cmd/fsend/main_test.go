@@ -62,8 +62,14 @@ func TestNormalizeConnectArgs(t *testing.T) {
 		{[]string{"fsend", "--connect", "--quiet"}, []string{"fsend", "--connect", "--quiet"}},
 		// One value glued onto the flag.
 		{[]string{"fsend", "--connect", "default"}, []string{"fsend", "--connect=default"}},
-		// host:port + password get comma-joined for StringSliceVar.
-		{[]string{"fsend", "--connect", "host:443", "secret"}, []string{"fsend", "--connect=host:443,secret"}},
+		// Second positional is NOT glued: it stays a positional so the
+		// dispatcher can flag `--connect host:port file.pdf` as a usage
+		// error instead of silently saving "file.pdf" as the password.
+		// For host+password use the explicit comma form below.
+		{[]string{"fsend", "--connect", "host:443", "secret"}, []string{"fsend", "--connect=host:443", "secret"}},
+		{[]string{"fsend", "--connect", "host:443", "/tmp/file.pdf"}, []string{"fsend", "--connect=host:443", "/tmp/file.pdf"}},
+		// Comma form passes through untouched — pflag splits it.
+		{[]string{"fsend", "--connect=host:443,secret"}, []string{"fsend", "--connect=host:443,secret"}},
 		// Existing --connect=value form passes through untouched.
 		{[]string{"fsend", "--connect=host:443"}, []string{"fsend", "--connect=host:443"}},
 		// Unrelated flags pass through.

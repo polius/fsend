@@ -80,46 +80,35 @@ func normalizePassArgs(args []string) []string {
 
 // normalizeConnectArgs rewrites `--connect VALUE` to `--connect=VALUE` so
 // the value rides with the flag instead of falling through as a
-// positional. Subsequent positionals (e.g. an optional password) are
-// concatenated with a comma — StringSliceVar handles that natively.
+// positional. Anything that looks like a flag boundary (next token
+// starts with "-", or there's no next token) is left alone so bare
+// `fsend --connect` keeps triggering the "show current server" path
+// via NoOptDefVal.
 //
-// The transformation is conservative: anything that looks like a flag
-// boundary (next token starts with "-", or there's no next token) is
-// left alone so `fsend --connect` keeps triggering the bare-flag "show
-// current server" path via NoOptDefVal.
+// We deliberately do NOT glue a second positional onto the flag. The
+// previous greedy form silently swallowed a file path as the password
+// (e.g. `fsend --connect host:port file.pdf` saved "file.pdf" as the
+// password). For the host+password form use comma-separated:
+// `--connect host:port,password` (StringSliceVar splits natively).
 func normalizeConnectArgs(args []string) []string {
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		// Already in `--connect=...` form, or any non-target flag.
 		if a != "--connect" {
 			out = append(out, a)
 			continue
 		}
-		// Bare `--connect` at end → keep as-is (show current server).
 		if i+1 >= len(args) {
 			out = append(out, a)
 			continue
 		}
 		next := args[i+1]
-		// Next token is another flag → bare form intended.
 		if len(next) > 0 && next[0] == '-' {
 			out = append(out, a)
 			continue
 		}
-		// Consume the next positional as the value. If a second
-		// positional follows that isn't a flag, glue it on too so
-		// `--connect host:port password` works.
-		joined := next
+		out = append(out, a+"="+next)
 		i++
-		if i+1 < len(args) {
-			peek := args[i+1]
-			if len(peek) > 0 && peek[0] != '-' {
-				joined = joined + "," + peek
-				i++
-			}
-		}
-		out = append(out, a+"="+joined)
 	}
 	return out
 }

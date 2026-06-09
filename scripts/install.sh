@@ -112,12 +112,15 @@ download() {
 
 resolve_latest() {
     api="https://api.github.com/repos/${REPO}/releases/latest"
+    # Same hardened TLS as download(): explicit https+TLS 1.2+ so a
+    # downgrade can't feed us a tampered tag and the rest of the install
+    # follows.
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$api" \
+        curl -fsSL --proto '=https' --tlsv1.2 "$api" \
             | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
             | head -n1
     else
-        wget -qO- "$api" \
+        wget -q --secure-protocol=TLSv1_2 -O- "$api" \
             | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
             | head -n1
     fi

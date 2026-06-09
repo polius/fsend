@@ -123,3 +123,99 @@ func TestRecv_RefusesSymlinkPointingOutsideTargetDir(t *testing.T) {
 	// The receiver should have returned a path-traversal error somewhere.
 	t.Logf("recv returned: %v", recvErr)
 }
+
+// TestRecv_RefusesPreplantedPartialSymlink locks in the Lstat gate on
+// the .fsend-partial sidecar. Without it, a process with write access
+// to TargetDir can plant the sidecar as a symlink and have chunk writes
+// land on the link's target — outside TargetDir, on any file the
+// receiver process can write.
+//
+// Uses a payload larger than the victim so the "stale partial — discard"
+// branch in recv can't mask the bug.
+func TestRecv_RefusesPreplantedPartialSymlink(t *testing.T) {
+	dstDir := t.TempDir()
+	victimDir := t.TempDir()
+	victim := filepath.Join(victimDir, "secret.txt")
+	original := []byte("VICTIM_ORIGINAL_DATA")
+	if err := os.WriteFile(victim, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-plant the sidecar as a symlink to the victim.
+	partial := filepath.Join(dstDir, "payload.bin"+partialSuffix)
+	if err := os.Symlink(victim, partial); err != nil {
+		t.Fatal(err)
+	}
+
+	sender, receiver := pipePair()
+	hello := &wire.SenderHello{
+		ProtocolVersion: wire.ProtocolVersion,
+		TransferKind:    wire.TransferSingleFile,
+		TotalFiles:      1,
+	}
+
+	payload := make([]byte, len(original)+64)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	root := blakeHash32(payload)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var recvErr error
+	go func() {
+		defer wg.Done()
+		recvErr = Recv(context.Background(), &receiver, RecvOptions{
+			TargetDir: dstDir,
+			Accept:    func(_ wire.SenderHello) bool { return true },
+		})
+		_ = receiver.Control.Close()
+		_ = receiver.Data.Close()
+	}()
+
+	go func() {
+		defer wg.Done()
+		defer sender.Control.Close()
+		defer sender.Data.Close()
+		_ = wire.WriteControl(sender.Control, wire.TypeHello, hello)
+		var ack wire.ReceiverHello
+		_, _ = wire.ReadControl(sender.Control, &ack)
+		if !ack.Accepts {
+			return
+		}
+		_ = wire.WriteControl(sender.Control, wire.TypeFileInfo, &wire.FileInfo{
+			Index:        0,
+			RelativePath: "payload.bin",
+			Size:         uint64(len(payload)),
+			Mode:         0o644,
+			Blake3Root:   root,
+			Resumable:    true,
+		})
+		// Drain FILE_ACCEPT or ERROR; verdict is the victim's contents.
+		var d wire.FileAcceptDecision
+		_, _ = wire.ReadControl(sender.Control, &d)
+		_ = wire.WriteChunk(sender.Data, &wire.Chunk{
+			FileIndex:  0,
+			ChunkIndex: 0,
+			Flags:      wire.FlagLastChunk,
+			Blake3Hash: blakeHash32(payload),
+			Payload:    payload,
+		})
+		_ = wire.WriteControl(sender.Control, wire.TypeTransferComplete, nil)
+	}()
+
+	wg.Wait()
+
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("victim disappeared: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("SECURITY: victim file was modified through pre-planted symlink\n  before: %q\n  after:  %q", original, got)
+	}
+	if recvErr == nil {
+		t.Fatalf("expected receiver to surface an error, got nil")
+	}
+	t.Logf("recv returned: %v", recvErr)
+}

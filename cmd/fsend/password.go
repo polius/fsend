@@ -14,6 +14,9 @@ import (
 	"github.com/polius/fsend/internal/fserrors"
 )
 
+// stdinIsTTY is a seam so tests can simulate piped stdin without faking fds.
+var stdinIsTTY = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
 // readPasswordHidden prompts on stderr and reads a single line from the
 // controlling terminal without echo. Falls back to plain stdin when
 // stdin is not a TTY (e.g. inside a pipeline) — callers that need
@@ -58,6 +61,14 @@ func readPasswordHidden(prompt string) (string, error) {
 func resolvePassword(f *flags, sender bool) error {
 	if f.passArg != passPromptSentinel {
 		return nil
+	}
+	// Bare --pass needs a TTY: the sender prompt echoes a suggestion the
+	// user accepts with Enter; the receiver prompt reads no-echo. Either
+	// way, doing it on a piped stdin reads the file's first line as the
+	// password and breaks the transfer. FSEND_PASS is the documented
+	// non-interactive path.
+	if !stdinIsTTY() {
+		return fmt.Errorf("%w: bare --pass needs a terminal; use --pass <value> or FSEND_PASS", fserrors.ErrUsage)
 	}
 	if sender {
 		pw, err := promptPasswordWithSuggestion()

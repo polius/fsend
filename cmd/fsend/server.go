@@ -102,6 +102,12 @@ func runServer() error {
 		Addr:              cfg.httpAddr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		// /wait long-polls hold the connection for up to 25s; IdleTimeout
+		// has to clear that bar comfortably. ReadTimeout is intentionally
+		// not set — it would also cap handler body reads. WriteTimeout
+		// stays zero for the same reason.
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 16 << 10,
 	}
 
 	sigCh := make(chan os.Signal, 1)

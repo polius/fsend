@@ -36,8 +36,13 @@ func runUninstall(f *flags) error {
 	if err != nil {
 		return fmt.Errorf("locating fsend binary: %w", err)
 	}
-	resolved, err := filepath.EvalSymlinks(binPath)
-	if err == nil {
+	// Resolve symlinks so we hit the actual binary, but also remember the
+	// raw path. A `~/.local/bin/fsend → /opt/fsend/fsend` install needs
+	// both removed; without the raw cleanup the on-PATH name survives as
+	// a dangling link.
+	resolved, _ := filepath.EvalSymlinks(binPath)
+	rawPath := binPath
+	if resolved != "" {
 		binPath = resolved
 	}
 
@@ -54,6 +59,14 @@ func runUninstall(f *flags) error {
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "  %s Removed binary: %s\n", uxlog.Check(), binPath)
+
+	// If the on-PATH name was a symlink, drop the dangling link too.
+	if rawPath != binPath {
+		if err := os.Remove(rawPath); err == nil {
+			fmt.Fprintf(os.Stderr, "  %s Removed symlink: %s\n", uxlog.Check(), rawPath)
+		}
+	}
+
 	fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
 	return nil
 }

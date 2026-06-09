@@ -100,9 +100,6 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		if ft == wire.TypeTransferComplete {
 			break
 		}
-		if ft == wire.TypeAbort {
-			return fserrors.ErrConnectFailed
-		}
 		if ft == wire.TypeError {
 			// Re-read with payload — we already consumed the header.
 			// Simplification: treat any TypeError as protocol abort.
@@ -224,6 +221,15 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	// next attempt can resume from, and a successful target file is
 	// always fully verified.
 	partial := target + partialSuffix
+
+	// Lstat the partial before OpenFile so a pre-planted symlink can't
+	// redirect chunk writes outside TargetDir.
+	if st, err := os.Lstat(partial); err == nil && !st.Mode().IsRegular() {
+		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
+			Code: wire.ErrCodeProtocolError, Message: "partial sidecar not a regular file",
+		})
+		return fmt.Errorf("%w: partial %s is not a regular file", fserrors.ErrWriteFailed, partial)
+	}
 
 	// Resume detection: if a partial exists and lines up on a chunk
 	// boundary below the source size, elect ActionResume so the sender
@@ -464,10 +470,10 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		return nil
 	}
 
-	// Promote partial → target. Close first so Windows doesn't refuse
-	// the rename, and remove any existing target so POSIX and Windows
-	// behave identically.
-	_ = os.Remove(target)
+	// Promote partial → target. os.Rename replaces atomically on POSIX
+	// and (since Go 1.5) on Windows too. The previous Remove+Rename pair
+	// left a TOCTOU window where a racing writer could resurrect target
+	// between the two calls and the verified bytes would be lost.
 	if err := os.Rename(partial, target); err != nil {
 		return fmt.Errorf("%w: finalize: %v", fserrors.ErrWriteFailed, err)
 	}
@@ -561,7 +567,7 @@ func tryReadPeerError(r io.Reader) error {
 	switch ef.Code {
 	case wire.ErrCodePartialMismatch:
 		return fserrors.ErrPartialMismatch
-	case wire.ErrCodeFileHashMismatch, wire.ErrCodeChunkHashMismatch:
+	case wire.ErrCodeFileHashMismatch:
 		return fserrors.ErrHashMismatch
 	default:
 		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
