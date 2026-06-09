@@ -224,6 +224,14 @@ func TestNormalizeServer(t *testing.T) {
 		{"::1", "[::1]:80"},
 		{"[::1]", "[::1]:80"},
 		{"  fs.example.com  ", "fs.example.com:443"},
+		// URL form: scheme is stripped so the documented LAN-only
+		// self-hosting form (`fsend --connect http://host:8080`) lands
+		// on a usable host:port instead of `[http://host:8080]:443`.
+		{"http://localhost:8080", "localhost:8080"},
+		{"https://fs.example.com:443", "fs.example.com:443"},
+		{"https://fs.example.com", "fs.example.com:443"},
+		{"http://127.0.0.1:8080", "127.0.0.1:8080"},
+		{"http://localhost:8080/", "localhost:8080"},
 	} {
 		got, err := normalizeServer(tc.in)
 		if err != nil {
@@ -234,7 +242,7 @@ func TestNormalizeServer(t *testing.T) {
 			t.Errorf("normalizeServer(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	for _, bad := range []string{"", "   ", ":443", "host:0", "host:99999", "host:abc"} {
+	for _, bad := range []string{"", "   ", ":443", "host:0", "host:99999", "host:abc", "http://", "https://"} {
 		if _, err := normalizeServer(bad); err == nil {
 			t.Errorf("normalizeServer(%q) accepted bad input", bad)
 		}

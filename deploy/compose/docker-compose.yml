@@ -18,9 +18,13 @@ services:
     ports:
       - "443:443/udp"
     environment:
-      # All env vars are optional; defaults shown.
       FSEND_HTTP_ADDR: ":8080"
       FSEND_UDP_ADDR: ":443"
+      # host:port clients dial for the relay fallback. Bound to the
+      # public DNS name set via FSEND_DOMAIN — required for any
+      # cross-internet deployment, since the default falls back to
+      # FSEND_UDP_ADDR (`:443`) which has no addressable host.
+      FSEND_PUBLIC_ADDR: "${FSEND_DOMAIN:?required, e.g. fs.example.com}:443"
       FSEND_LOG_LEVEL: "info"
       # Abuse limits — tune to your bandwidth budget.
       FSEND_MAX_RELAY_BYTES_PER_SESSION: "100MiB"

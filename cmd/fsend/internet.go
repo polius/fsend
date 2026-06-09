@@ -376,6 +376,8 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		}); err != nil {
 		return err
 	}
+	// Flush bar before summary; see receive.go for the streaming-stdin reason.
+	closeProg()
 	printRecvSummary(f, displayPath(outDir), recvBytes(), time.Since(start), pathInfo)
 	return nil
 }

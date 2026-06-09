@@ -20,9 +20,11 @@ import (
 	"github.com/polius/fsend/internal/server"
 )
 
-// DefaultRequestTimeout caps individual HTTP requests; longer-polling
-// endpoints set their own timeouts via context.
-const DefaultRequestTimeout = 30 * time.Second
+// DefaultRequestTimeout is the http.Client ceiling applied to every
+// request. Must stay comfortably above the server's LongPollTimeout
+// (25s) so /wait long-polls complete via a server-side 204 rather than
+// a client-side transport timeout that wastes the round-trip.
+const DefaultRequestTimeout = 40 * time.Second
 
 // Client talks to a fsend signaling endpoint.
 type Client struct {
