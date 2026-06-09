@@ -133,7 +133,7 @@ guarantee differs in three ways.
 | End-to-end encrypted         | ✓                                                                             | ✓                                                             |
 | PAKE protocol                | SPAKE2 (RFC 9382, IETF-standardized)                                          | `schollz/pake` (Boneh-Shoup textbook construction)            |
 | Defense-in-depth layers      | **Two** independent — TLS 1.3 (QUIC) **+** SPAKE2 channel-bound to the TLS handshake (RFC 5705) | **One** — AEAD keyed directly from PAKE        |
-| AEAD                         | TLS 1.3 ciphers (AES-128-GCM, ChaCha20-Poly1305, AES-256-GCM)                 | AES-256-GCM or XChaCha20-Poly1305 (selectable)                |
+| AEAD                         | TLS 1.3 ciphers (AES-128-GCM, ChaCha20-Poly1305, AES-256-GCM)                 | AES-256-GCM (default; XChaCha20-Poly1305 exists internally)    |
 | Key derivation               | TLS 1.3 KDF + SPAKE2 + RFC 5705 exporter binding                              | PBKDF2-SHA256 (100 iterations) or Argon2id (64 MiB)           |
 | Post-quantum forward secrecy | ✓ X25519 + ML-KEM-768 hybrid (NIST FIPS 203)                                  | ✗ Classical elliptic-curve only                               |
 | MITM defense                 | TLS catches a network MITM; SPAKE2 binding catches a TLS-handshake MITM       | Single layer — PAKE only                                      |
@@ -160,17 +160,18 @@ For the full threat-model discussion, see [Security](security.md).
 | Format           | `abc-defg-jkm` (3-4-3 letters)       | `1234-curious-iron-yellow` (PIN + words)    |
 | Alphabet         | 23 letters (excludes `i`, `l`, `o`)  | digits + mnemonic wordlist                  |
 | Entropy          | ~45 bits (log₂(23¹⁰))                | ~45 bits (10⁴ PIN + 32-bit mnemonic)        |
-| One-shot         | ✓ — same code can't be reused        | Not documented                              |
+| One-shot         | ✓ — same code can't be reused        | ✓ for auto codes; reusable via `--code`     |
 | Server-side TTL  | 1 h unclaimed / 10 min after pairing | None documented                             |
 | Custom secret    | `--pass` for a persistent password   | `--code` for a custom phrase (min 6 chars)  |
 
-The codes carry comparable entropy. The operational difference is
-fsend's documented one-shot semantics and bounded server-side TTL: a
-leaked code is useful for at most one receiver, lives only as long as
+The codes carry comparable entropy. Both tools document one-shot
+auto-generated codes. The operational difference is fsend's bounded
+server-side TTL and the fact that its code is always system-generated:
+a leaked code is useful for at most one receiver, lives only as long as
 the sender keeps the process running, and is hard-capped at one hour by
-the server. croc's README and source do not specify equivalent
-server-side guarantees, and `--code` lets a sender reuse a chosen
-phrase across many invocations.
+the server. croc's README does not specify an equivalent server-side
+TTL, and its `--code` flag lets a sender reuse a chosen phrase across
+many invocations.
 
 ## Feature parity
 

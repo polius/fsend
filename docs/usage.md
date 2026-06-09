@@ -96,7 +96,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 |---|---|
 | `--quiet` | Suppress non-error output. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
-| `--uninstall` | Remove the binary and `~/.config/fsend`. `--yes` skips confirmation. |
+| `--uninstall` | Remove the binary and the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |
 | `--help` / `-h` | Show inline help. |
 | `--version` / `-v` | Print version. |
 
