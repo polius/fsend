@@ -444,7 +444,7 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 				reason:   c.reason,
 				maxBytes: 100 * 1024 * 1024,
 			}
-			s.WithRelay(alloc, "127.0.0.1:9999")
+			s.WithRelay(alloc, 9999)
 			ts := httptest.NewServer(s.Handler())
 			defer ts.Close()
 

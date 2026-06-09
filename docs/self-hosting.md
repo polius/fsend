@@ -128,7 +128,8 @@ To skip TLS entirely for local testing on a trusted network:
 docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
 ```
 
-Clients connect with `fsend --connect http://host:8080`. **Do not**
+Clients connect with `fsend --connect host:8080` — the client picks
+HTTP automatically for IPs and `localhost`, HTTPS otherwise. **Do not**
 expose this to the public internet — signaling carries share codes and
 bearer tokens in cleartext.
 
@@ -140,8 +141,7 @@ All optional; defaults shown. Set under the `environment:` block in
 | Variable | Default | Notes |
 |---|---|---|
 | `FSEND_HTTP_ADDR` | `:8080` | TCP signaling listener. |
-| `FSEND_UDP_ADDR` | `:443` | UDP relay listener. |
-| `FSEND_PUBLIC_ADDR` | = `FSEND_UDP_ADDR` | `host:port` clients dial for relay. Set when public ≠ bind (NAT, dev box). |
+| `FSEND_UDP_ADDR` | `:443` | UDP relay listener. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret. When set, every endpoint except `/v1/health` requires it. Clients pass it via `fsend --connect <host> <password>`. |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |

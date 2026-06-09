@@ -143,6 +143,10 @@ func runReceive(f *flags, c string) error {
 		return err
 	}
 
+	// Flush the bar before the summary so the "Saved to ..." line lands
+	// below the terminal " done" frame on streaming items (stdin), where
+	// SetTotal+Done would otherwise fire later via the deferred call.
+	closeProg()
 	printRecvSummary(f, displayPath(outDir), recvBytes(), time.Since(start), pathInfo)
 	return nil
 }

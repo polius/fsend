@@ -76,7 +76,7 @@ carrier moving sealed envelopes. It moves the parcel; it can't open it.
 | File contents                                     | ✗ never         |
 | File names, sizes, hashes                         | ✗ never         |
 | Ciphertext (on the relay-fallback path)           | ✓ as opaque bytes — not decryptable, not even by the server's operator |
-| The 10-letter share code and your IP              | ✓ briefly, in memory only, for pairing — never written to disk |
+| The share code and your IP                        | ✓ briefly, in memory only, for pairing — never written to disk |
 
 End-to-end encryption means even the operator of the server can't
 decrypt traffic that goes through it. The encryption keys never leave

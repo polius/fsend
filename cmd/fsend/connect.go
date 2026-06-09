@@ -83,12 +83,25 @@ func runConnect(f *flags) error {
 //   - "host:port"  → returned as-is (after port-range check)
 //   - "host"       → port filled in implicitly: 443 for DNS hostnames,
 //     80 for IP literals and "localhost"
+//   - "http(s)://host[:port][/]" → scheme stripped, then treated as above
 //
 // The default mirrors web convention — domain names ride HTTPS on 443,
 // while bare IPs / loopback ride HTTP on 80 (IPs rarely carry trusted
 // TLS certs). Users on a non-default port still type it explicitly.
 func normalizeServer(s string) (string, error) {
 	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("server address is empty")
+	}
+	// Without scheme stripping, `--connect http://host:8080` (the form
+	// the self-hosting LAN-only docs used to show) lands as the corrupt
+	// `[http://host:8080]:443` and breaks every transfer with E001.
+	s = strings.TrimSuffix(s, "/")
+	if rest, ok := strings.CutPrefix(s, "http://"); ok {
+		s = rest
+	} else if rest, ok := strings.CutPrefix(s, "https://"); ok {
+		s = rest
+	}
 	if s == "" {
 		return "", fmt.Errorf("server address is empty")
 	}

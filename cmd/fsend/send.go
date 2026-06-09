@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -439,14 +440,21 @@ func newReceiverProgress(f *flags, outDir string, pathInfo connpath.Info) (
 		bar.Add(int64(d))
 		total += int64(d)
 	}
+	// Idempotent: callers can flush the bar explicitly before printing
+	// the summary, then leave the deferred call as a no-op safety net.
+	// Without that, stdin transfers (streamingTotal=true) print the
+	// summary above the bar's terminal frame.
+	var closeOnce sync.Once
 	closeFn = func() {
-		if bar == nil {
-			return
-		}
-		if streamingTotal && total > 0 {
-			bar.SetTotal(total, true)
-		}
-		bar.Done()
+		closeOnce.Do(func() {
+			if bar == nil {
+				return
+			}
+			if streamingTotal && total > 0 {
+				bar.SetTotal(total, true)
+			}
+			bar.Done()
+		})
 	}
 	if !f.yes {
 		confirmOverwrite = func(relPath string, existing int64, incoming uint64) bool {

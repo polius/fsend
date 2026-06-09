@@ -371,7 +371,13 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		plain := c.Payload
 		if c.Flags&wire.FlagCompressed != 0 {
 			if dec == nil {
-				dec, err = zstd.NewReader(nil)
+				// Cap per-decode memory so an authenticated-but-misbehaving
+				// peer can't RAM-bomb us with a high-ratio chunk. A single
+				// frame can hold at most MaxChunkSize of plaintext (the
+				// sender's invariant); 2× gives headroom for zstd's own
+				// scratch buffers without admitting GB-scale balloons that
+				// the klauspost default (1 GiB) allows.
+				dec, err = zstd.NewReader(nil, zstd.WithDecoderMaxMemory(2*wire.MaxChunkSize))
 				if err != nil {
 					return fmt.Errorf("recv: zstd reader: %w", err)
 				}
@@ -379,6 +385,11 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 			plain, err = dec.DecodeAll(c.Payload, nil)
 			if err != nil {
 				return fmt.Errorf("recv: zstd decode: %w", err)
+			}
+			// Belt-and-braces against a sender that crafts a frame the
+			// decoder accepts but whose plaintext exceeds the wire bound.
+			if len(plain) > wire.MaxChunkSize {
+				return fmt.Errorf("%w: decompressed chunk %d > limit %d", fserrors.ErrProtocolError, len(plain), wire.MaxChunkSize)
 			}
 		}
 
