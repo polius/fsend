@@ -232,7 +232,16 @@ func (s *Server) relayStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	sess, ok := s.byID[id]
+	// Bearer-gate the probe with the session's role token, matching
+	// allocateRelay. A missing session and an unauthorized caller both
+	// return "unknown" so this leaks no existence oracle to a third party
+	// who only sniffed the session_id.
 	if !ok || !sess.relayTokenSet {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusOK, RelayStatusResponse{State: "unknown"})
+		return
+	}
+	if _, authed := sess.sideForToken(bearerToken(r)); !authed {
 		s.mu.Unlock()
 		writeJSON(w, http.StatusOK, RelayStatusResponse{State: "unknown"})
 		return

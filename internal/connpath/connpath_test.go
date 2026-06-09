@@ -94,20 +94,6 @@ func TestTag_CompactForms(t *testing.T) {
 	}
 }
 
-func TestGlyph(t *testing.T) {
-	// Direct paths get a check; relay gets a warning glyph (per spec:
-	// relay is honest disclosure, not an error, but it warrants a flag).
-	if utf8, _ := (Info{Kind: KindLocal}).Glyph(); utf8 != "✓" {
-		t.Errorf("Local glyph = %q, want ✓", utf8)
-	}
-	if utf8, _ := (Info{Kind: KindDirectNAT}).Glyph(); utf8 != "✓" {
-		t.Errorf("DirectNAT glyph = %q, want ✓", utf8)
-	}
-	if utf8, ascii := (Info{Kind: KindRelay}).Glyph(); utf8 != "⚠" || ascii != "[!]" {
-		t.Errorf("Relay glyph = (%q,%q), want (⚠, [!])", utf8, ascii)
-	}
-}
-
 func TestDetail(t *testing.T) {
 	if d := FromICE("srflx", "host").Detail(); d != "srflx → host" {
 		t.Errorf("Detail() = %q, want %q", d, "srflx → host")

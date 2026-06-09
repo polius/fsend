@@ -120,7 +120,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}
 	defer func() { _ = relayConn.Close() }()
 	connSpin.Stop()
-	return classifyRelayDrop(ctx, client, joined.SessionID,
+	return classifyRelayDrop(ctx, client, joined.SessionID, joined.RoleToken,
 		runReceiverQUICOver(ctx, f, relayConn, c, connpath.FromRelay(alloc.RelayAddr)))
 }
 
@@ -129,13 +129,13 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 // the allocation was evicted for a known reason, we promote the error
 // to the corresponding non-transient sentinel so the user sees what
 // actually happened instead of a "retrying…" loop.
-func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID string, runErr error) error {
+func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID, roleToken string, runErr error) error {
 	if runErr == nil {
 		return nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	status, err := client.RelayStatus(probeCtx, sessionID)
+	status, err := client.RelayStatus(probeCtx, sessionID, roleToken)
 	if err != nil || status == nil || status.State != "evicted" {
 		return runErr
 	}

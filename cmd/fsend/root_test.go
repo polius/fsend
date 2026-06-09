@@ -61,6 +61,18 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			[]string{"--connect=host:443", "file.pdf"},
 			"--connect cannot be combined with positional arguments",
 		},
+		{
+			"connect_with_exclude",
+			[]string{"--connect=host:443", "--exclude=*.tmp"},
+			"--connect cannot be combined with --exclude",
+		},
+		{
+			// `--connect default,<pw>` splits to ["default","<pw>"]; the
+			// stray password must error, not be silently dropped.
+			"connect_default_with_password",
+			[]string{"--connect=default,hunter2"},
+			"--connect default takes no password",
+		},
 	}
 	for _, c := range cases {
 		c := c

@@ -406,6 +406,14 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 			return fserrors.ErrHashMismatch
 		}
 
+		// Enforce the declared size: a misbehaving peer that never sets
+		// FlagLastChunk could otherwise stream unbounded chunks to the
+		// partial and exhaust disk (the root-hash check only runs after
+		// the loop). Streaming items carry no size and are exempt.
+		if !info.Streaming && bytesWritten+uint64(len(plain)) > info.Size {
+			return fmt.Errorf("%w: received bytes exceed declared size %d", fserrors.ErrProtocolError, info.Size)
+		}
+
 		if len(plain) > 0 {
 			if _, err := f.Write(plain); err != nil {
 				return fmt.Errorf("%w: write: %v", fserrors.ErrWriteFailed, err)

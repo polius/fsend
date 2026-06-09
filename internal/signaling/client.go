@@ -137,25 +137,19 @@ func (c *Client) AllocateRelay(ctx context.Context, sessionID, roleToken string)
 
 // RelayStatus probes the pairing server for the current state of a
 // relay allocation. Used after a relay-path drop to surface the real
-// reason (e.g. cap_hit) instead of looping on retry forever.
+// reason (e.g. cap_hit) instead of looping on retry forever. roleToken
+// authenticates the caller as a party to the session.
 //
 // Network errors are treated as "unknown" — we don't want a probe
 // failure to mask the underlying transfer failure the caller is
 // already handling.
-func (c *Client) RelayStatus(ctx context.Context, sessionID string) (*server.RelayStatusResponse, error) {
+func (c *Client) RelayStatus(ctx context.Context, sessionID, roleToken string) (*server.RelayStatusResponse, error) {
 	var out server.RelayStatusResponse
 	path := "/v1/relay/status?session_id=" + sessionID
-	if err := c.do(ctx, http.MethodGet, path, nil, &out, nil); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, &out, withAuth(roleToken)); err != nil {
 		return nil, err
 	}
 	return &out, nil
-}
-
-// Health pings /v1/health and returns the parsed response.
-func (c *Client) Health(ctx context.Context) (*server.HealthResponse, error) {
-	var out server.HealthResponse
-	err := c.do(ctx, http.MethodGet, "/v1/health", nil, &out, nil)
-	return &out, err
 }
 
 // errNoContent is the sentinel `do` returns when the server replied 204

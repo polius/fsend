@@ -39,6 +39,12 @@ func runConnect(f *flags) error {
 
 	switch args[0] {
 	case "default":
+		// `default` reverts to the compiled-in server; it takes no
+		// password. Reject a stray second element rather than silently
+		// dropping it (the user would think they set a password).
+		if len(args) > 1 {
+			return fmt.Errorf("%w: --connect default takes no password", fserrors.ErrUsage)
+		}
 		if cfg.IsDefault() {
 			fmt.Fprintln(os.Stderr, uxlog.Info(), "Already on the default server:", config.DefaultServer)
 			return nil
