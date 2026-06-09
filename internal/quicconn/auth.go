@@ -93,6 +93,11 @@ func readFramed(r io.Reader, max int) ([]byte, error) {
 		return nil, err
 	}
 	n := int(binary.BigEndian.Uint16(hdr[:]))
+	if n == 0 {
+		// A crafted peer can send a zero-length frame; the SPAKE2 Finish
+		// indexes msg[0] and would panic. Reject as an auth failure.
+		return nil, fmt.Errorf("auth: empty pake msg")
+	}
 	if n > max {
 		return nil, fmt.Errorf("auth: pake msg too large: %d", n)
 	}

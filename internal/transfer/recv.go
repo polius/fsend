@@ -155,7 +155,9 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 
 	// Handle directory entries: just MkdirAll and ACK.
 	if info.IsDir {
-		if err := os.MkdirAll(target, os.FileMode(info.Mode)); err != nil {
+		// Mask to perm bits: don't honor peer-set setuid/setgid/sticky
+		// (parity with the archive path).
+		if err := os.MkdirAll(target, os.FileMode(info.Mode)&os.ModePerm); err != nil {
 			return fmt.Errorf("%w: mkdir %s: %v", fserrors.ErrWriteFailed, target, err)
 		}
 		decision := wire.FileAcceptDecision{Index: info.Index, Action: wire.ActionAcceptFull}
@@ -296,7 +298,7 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	if action == wire.ActionAcceptFull {
 		flag |= os.O_TRUNC
 	}
-	f, err := os.OpenFile(partial, flag, os.FileMode(info.Mode))
+	f, err := os.OpenFile(partial, flag, os.FileMode(info.Mode)&os.ModePerm)
 	if err != nil {
 		return fmt.Errorf("%w: open partial: %v", fserrors.ErrWriteFailed, err)
 	}

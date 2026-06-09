@@ -324,12 +324,14 @@ func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 			if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
 				return fmt.Errorf("extract: mkdir parent %s: %w", clean, err)
 			}
-			// Reject symlink targets that resolve outside the target
-			// dir. This is over-strict for absolute symlinks the user
-			// might legitimately want, but the safe default for an
-			// archive received from a remote peer.
-			if _, err := safeJoin(absTarget, filepath.Join(filepath.Dir(hdr.Name), hdr.Linkname)); err != nil {
-				return err
+			// Reject symlinks resolving outside target. Use symlinkEscapes
+			// (same as the single-file path): a safeJoin of the joined
+			// linkname would let an absolute target slip through — Join
+			// strips its leading slash, but os.Symlink keeps the absolute
+			// target, so a later entry writes through it (tar-slip).
+			if symlinkEscapes(absTarget, hdr.Name, hdr.Linkname) {
+				return fmt.Errorf("%w: symlink %q -> %q escapes target dir",
+					fserrors.ErrPathTraversal, hdr.Name, hdr.Linkname)
 			}
 			_ = os.Remove(clean) // symlink fails if target exists
 			if err := os.Symlink(hdr.Linkname, clean); err != nil {
