@@ -84,10 +84,11 @@ func runServer() error {
 		MaxBytesPerSession: cfg.maxBytesPerSession,
 		Logger:             logger,
 	})
-	// External address: the operator should set FSEND_PUBLIC_ADDR to the
-	// host:port clients dial. Default to udpAddr (only sensible on dev).
-	publicAddr := envOr("FSEND_PUBLIC_ADDR", cfg.udpAddr)
-	s.WithRelay(relaySrv, publicAddr)
+	udpPort, err := udpPortFromAddr(cfg.udpAddr)
+	if err != nil {
+		return fmt.Errorf("FSEND_UDP_ADDR %q: %w", cfg.udpAddr, err)
+	}
+	s.WithRelay(relaySrv, udpPort)
 	relayCtx, relayCancel := context.WithCancel(ctx)
 	defer relayCancel()
 	go func() {
@@ -95,7 +96,7 @@ func runServer() error {
 			logger.Error("relay loop ended", "err", err)
 		}
 	}()
-	logger.Info("relay UDP listener up", "addr", cfg.udpAddr, "public", publicAddr)
+	logger.Info("relay UDP listener up", "addr", cfg.udpAddr, "udp_port", udpPort)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.httpAddr,
@@ -166,6 +167,21 @@ func envOr(name, def string) string {
 		return v
 	}
 	return def
+}
+
+// udpPortFromAddr extracts the port from a listen-style address like
+// ":443" or "0.0.0.0:18443". The host half is irrelevant — we only
+// care about the port the relay listens on.
+func udpPortFromAddr(addr string) (int, error) {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, err
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p < 1 || p > 65535 {
+		return 0, fmt.Errorf("port out of range")
+	}
+	return p, nil
 }
 
 func envInt(name string, def int) int {
@@ -274,7 +290,6 @@ CONFIGURATION (environment variables — all optional)
   FSEND_MAX_SESSIONS_PER_IP             Default 5
   FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN Default 30
   FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MiB (accepts e.g. "100MiB", "500m", "104857600")
-  FSEND_PUBLIC_ADDR                     host:port clients dial for relay; defaults to FSEND_UDP_ADDR
   FSEND_SERVER_PASSWORD                 Optional shared secret. When set, every endpoint except
                                         /v1/health requires the X-Fsend-Auth header to match.
                                         Clients set theirs with: fsend --connect <host:port> <password>.

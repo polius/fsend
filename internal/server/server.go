@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -99,10 +100,11 @@ type Server struct {
 	ipBucket map[string]*rateBucket // new-session rate limiter per source IP
 
 	// Relay-fallback wiring (optional). When non-nil, the server exposes
-	// POST /v1/relay/allocate and returns RelayPublicAddr as the address
-	// clients should send framed datagrams to.
-	relayAllocator  RelayAllocator
-	relayPublicAddr string
+	// POST /v1/relay/allocate and returns "host(request.Host):relayUDPPort"
+	// — the same hostname the client used to reach signaling, paired with
+	// the configured UDP port. No operator config needed for stock setups.
+	relayAllocator RelayAllocator
+	relayUDPPort   int
 }
 
 // RelayAllocator is the minimal interface internal/relay.Server exposes
@@ -114,12 +116,24 @@ type RelayAllocator interface {
 	MaxBytesPerSession() uint64
 }
 
-// WithRelay wires a relay allocator and its public address into the
-// signaling layer. publicAddr is the host:port string clients dial.
-func (s *Server) WithRelay(allocator RelayAllocator, publicAddr string) *Server {
+// WithRelay wires a relay allocator into the signaling layer.
+// udpPort is the UDP port the relay listens on; the public address
+// advertised to clients is host(request.Host):udpPort.
+func (s *Server) WithRelay(allocator RelayAllocator, udpPort int) *Server {
 	s.relayAllocator = allocator
-	s.relayPublicAddr = publicAddr
+	s.relayUDPPort = udpPort
 	return s
+}
+
+// relayAddrFor builds the host:port to advertise to a client by pairing
+// the request's Host header (what the client used to reach signaling)
+// with the relay's UDP port.
+func (s *Server) relayAddrFor(r *http.Request) string {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return net.JoinHostPort(host, strconv.Itoa(s.relayUDPPort))
 }
 
 // New constructs a Server with defaults filled in.
@@ -285,7 +299,7 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 	relayTok := sess.relayToken
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, RelayAllocateResponse{
-		RelayAddr:    s.relayPublicAddr,
+		RelayAddr:    s.relayAddrFor(r),
 		SessionToken: relayTok.String(),
 		TTLSeconds:   600,
 	})

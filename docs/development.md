@@ -70,20 +70,17 @@ server. To exercise the full client↔server↔client path:
 ```sh
 FSEND_HTTP_ADDR=":18080" \
 FSEND_UDP_ADDR=":18443" \
-FSEND_PUBLIC_ADDR="127.0.0.1:18443" \
 FSEND_LOG_LEVEL=debug \
 /tmp/fsend server
 ```
 
 Ports `18080`/`18443` are chosen to avoid the privileged-port requirement
 of `:443` (would need root) and the common port collision on `:8080`.
-`FSEND_PUBLIC_ADDR` is what the server advertises to clients for relay —
-must be dialable from the client side.
 
 Point a client at it (persists to the config file — see "Isolated config" below for the path):
 
 ```sh
-/tmp/fsend --connect http://127.0.0.1:18080
+/tmp/fsend --connect 127.0.0.1:18080
 ```
 
 Reset to the public default:
@@ -104,7 +101,6 @@ FSEND_HTTP_ADDR=":18080" /tmp/fsend server --health-check
 |---|---|---|
 | `FSEND_HTTP_ADDR` | `:8080` | Signaling listener |
 | `FSEND_UDP_ADDR` | `:443` | Relay listener (UDP) |
-| `FSEND_PUBLIC_ADDR` | = `FSEND_UDP_ADDR` | What clients see |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | |
 

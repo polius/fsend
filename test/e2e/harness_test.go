@@ -108,7 +108,6 @@ func startHarness() (*harness, error) {
 	hh.serverCmd.Env = append(os.Environ(),
 		"FSEND_HTTP_ADDR=:"+strconv.Itoa(hh.httpPort),
 		"FSEND_UDP_ADDR=:"+strconv.Itoa(hh.udpPort),
-		"FSEND_PUBLIC_ADDR=127.0.0.1:"+strconv.Itoa(hh.udpPort),
 		"FSEND_LOG_LEVEL=warn",
 		// Both peers in this harness come from 127.0.0.1, so a single
 		// pair burns two slots against one bucket. The suite runs

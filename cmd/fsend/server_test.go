@@ -125,7 +125,6 @@ func clearServerEnv(t *testing.T) {
 	for _, k := range []string{
 		"FSEND_HTTP_ADDR",
 		"FSEND_UDP_ADDR",
-		"FSEND_PUBLIC_ADDR",
 		"FSEND_LOG_LEVEL",
 		"FSEND_MAX_SESSIONS_PER_IP",
 		"FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN",

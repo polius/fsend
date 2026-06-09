@@ -141,8 +141,7 @@ All optional; defaults shown. Set under the `environment:` block in
 | Variable | Default | Notes |
 |---|---|---|
 | `FSEND_HTTP_ADDR` | `:8080` | TCP signaling listener. |
-| `FSEND_UDP_ADDR` | `:443` | UDP relay listener. |
-| `FSEND_PUBLIC_ADDR` | = `FSEND_UDP_ADDR` | `host:port` clients dial for relay. Set this whenever the public address differs from the bind (the common case: bind is `:443`, public is `your.domain:443`). The default falls back to `FSEND_UDP_ADDR`, which only works on dev boxes. |
+| `FSEND_UDP_ADDR` | `:443` | UDP relay listener. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret. When set, every endpoint except `/v1/health` requires it. Clients pass it via `fsend --connect <host> <password>`. |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |

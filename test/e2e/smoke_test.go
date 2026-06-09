@@ -115,7 +115,6 @@ func TestServer_PasswordGate(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		"FSEND_HTTP_ADDR=:"+strconv.Itoa(httpPort),
 		"FSEND_UDP_ADDR=:"+strconv.Itoa(udpPort),
-		"FSEND_PUBLIC_ADDR=127.0.0.1:"+strconv.Itoa(udpPort),
 		"FSEND_LOG_LEVEL=warn",
 		"FSEND_SERVER_PASSWORD=swordfish",
 		"FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN=10000",
