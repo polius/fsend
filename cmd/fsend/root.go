@@ -312,6 +312,11 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		if f.textArg == "" {
 			return fmt.Errorf("%w: --text requires a non-empty string", fserrors.ErrUsage)
 		}
+		// Don't silently drop files the user also listed; runSend's own
+		// guard never sees them otherwise (we'd pass nil).
+		if len(f.posArgs) > 0 {
+			return fmt.Errorf("%w: --text cannot be combined with file arguments", fserrors.ErrUsage)
+		}
 		return runSend(f, nil)
 	}
 

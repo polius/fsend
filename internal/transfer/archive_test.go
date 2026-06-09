@@ -192,6 +192,58 @@ func TestExtractArchive_RejectsZipSlip(t *testing.T) {
 	}
 }
 
+// TestExtractArchive_RejectsAbsoluteSymlinkSlip guards against tar-slip via
+// an absolute symlink: a symlink entry pointing at an absolute path outside
+// targetDir, followed by a regular-file entry written *through* that symlink.
+// filepath.Join strips the leading slash of an absolute linkname, so a naive
+// under-target check passes while os.Symlink still stores the absolute target;
+// the follow-up write then lands outside targetDir. Extraction must refuse.
+func TestExtractArchive_RejectsAbsoluteSymlinkSlip(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	victim := filepath.Join(root, "victim")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tarPath := filepath.Join(root, "evil.tar")
+	f, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(f)
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink, Name: "abslink", Linkname: victim, Mode: 0o777,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("PWNED")
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg, Name: "abslink/pwned", Mode: 0o644, Size: int64(len(body)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ExtractArchive(tarPath, target, true); err == nil {
+		t.Fatal("expected extraction to refuse the absolute-symlink slip")
+	}
+	if _, err := os.Stat(filepath.Join(victim, "pwned")); err == nil {
+		t.Fatalf("tar-slip: wrote through symlink to %s, outside target", filepath.Join(victim, "pwned"))
+	}
+}
+
 // TestExtractArchive_ConflictWithoutOverwrite verifies that without
 // overwrite=true, a single conflicting file inside the archive causes the
 // whole extract to refuse — and that nothing landed on disk in the

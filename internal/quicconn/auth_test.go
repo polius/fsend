@@ -1,7 +1,9 @@
 package quicconn
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"testing"
@@ -9,6 +11,17 @@ import (
 
 	"github.com/polius/fsend/internal/fserrors"
 )
+
+// A zero-length framed PAKE message must be rejected, not fed into the
+// SPAKE2 Finish (which indexes msg[0] and would panic the process).
+func TestReadFramed_RejectsEmptyFrame(t *testing.T) {
+	var hdr [2]byte
+	binary.BigEndian.PutUint16(hdr[:], 0)
+	_, err := readFramed(bytes.NewReader(hdr[:]), maxPakeMsgLen)
+	if err == nil {
+		t.Fatal("expected error on zero-length frame, got nil")
+	}
+}
 
 // Wrong codes on the two peers must cause SenderHandshake /
 // ReceiverHandshake to fail with ErrPeerAuthFailed, before any
