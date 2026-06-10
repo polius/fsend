@@ -169,8 +169,10 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	// Handle directory entries: just MkdirAll and ACK.
 	if info.IsDir {
 		// Mask to perm bits: don't honor peer-set setuid/setgid/sticky
-		// (parity with the archive path).
-		if err := os.MkdirAll(target, os.FileMode(info.Mode)&os.ModePerm); err != nil {
+		// (parity with the archive path). Owner rwx is forced so a
+		// read-only mode (0555) can't block writing the files inside.
+		if err := os.MkdirAll(target, os.FileMode(info.Mode)&os.ModePerm|0o700); err != nil {
+			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir failed")
 			return fmt.Errorf("%w: mkdir %s: %v", fserrors.ErrWriteFailed, target, err)
 		}
 		decision := wire.FileAcceptDecision{Index: info.Index, Action: wire.ActionAcceptFull}
@@ -194,10 +196,23 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		}
 		// Parent must exist.
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir failed")
 			return fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
 		}
-		// Best-effort: if the platform doesn't support symlinks, log and skip.
-		_ = os.Remove(target) // Symlink fails if target exists
+		// Symlink fails if target exists; removing it needs the same
+		// overwrite consent as a regular file — silently deleting here
+		// previously lost receiver data (and on Windows the replacement
+		// symlink may then fail to be created at all).
+		if st, err := os.Lstat(target); err == nil {
+			confirmed := opts.Overwrite || (opts.ConfirmOverwrite != nil &&
+				opts.ConfirmOverwrite(info.RelativePath, st.Size(), 0))
+			if !confirmed {
+				declineTransfer(s, wire.ErrCodeTargetExists, "target exists")
+				return fserrors.ErrTargetExists
+			}
+			_ = os.Remove(target)
+		}
+		// Best-effort: if the platform doesn't support symlinks, skip.
 		if err := os.Symlink(info.SymlinkTarget, target); err != nil {
 			if runtime.GOOS == "windows" {
 				// Common on Windows non-admin; not fatal.
@@ -217,14 +232,7 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 			confirmed := opts.ConfirmOverwrite != nil &&
 				opts.ConfirmOverwrite(info.RelativePath, st.Size(), info.Size)
 			if !confirmed {
-				_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-					Code: wire.ErrCodeTargetExists, Message: "target exists",
-				})
-				// Symmetric shutdown so the ERROR frame's FIN reaches the
-				// sender before the deferred QUIC close, which would
-				// otherwise surface as E099 "Application error 0x0".
-				_ = s.Control.Close()
-				_, _ = io.Copy(io.Discard, s.Control)
+				declineTransfer(s, wire.ErrCodeTargetExists, "target exists")
 				return fserrors.ErrTargetExists
 			}
 		}
@@ -292,6 +300,7 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 
 	// Parent must exist.
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir failed")
 		return fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
 	}
 
@@ -306,12 +315,25 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	}
 
 	// Open the partial sidecar (not the target). On full re-download we
-	// O_TRUNC; on resume we keep the existing prefix.
+	// O_TRUNC; on resume we keep the existing prefix. The sidecar is
+	// created owner-private — mirroring a read-only source mode (0444)
+	// would make it unreopenable and permanently break resume — and the
+	// sender's mode is applied at finalize.
 	flag := os.O_RDWR | os.O_CREATE
 	if action == wire.ActionAcceptFull {
 		flag |= os.O_TRUNC
 	}
-	f, err := os.OpenFile(partial, flag, os.FileMode(info.Mode)&os.ModePerm)
+	f, err := os.OpenFile(partial, flag, 0o600)
+	if errors.Is(err, os.ErrPermission) {
+		// Pre-existing partial with a read-only mode (written by an older
+		// fsend). Clear it so transfers self-heal instead of failing on
+		// every attempt; a promised resume prefix is gone, so only the
+		// full-download path retries immediately.
+		_ = os.Remove(partial)
+		if action == wire.ActionAcceptFull {
+			f, err = os.OpenFile(partial, flag, 0o600)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("%w: open partial: %v", fserrors.ErrWriteFailed, err)
 	}
@@ -461,9 +483,7 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		_ = os.Remove(partial)
 		// Notify peer so its TRANSFER_ACK read can fail fast instead of
 		// blocking on QUIC idle timeout.
-		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-			Code: wire.ErrCodeFileHashMismatch, Message: "root hash mismatch",
-		})
+		declineTransfer(s, wire.ErrCodeFileHashMismatch, "root hash mismatch")
 		return fserrors.ErrHashMismatch
 	}
 
@@ -485,8 +505,10 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		// --overwrite to finish without re-downloading.
 		if err := ExtractArchive(partial, opts.TargetDir, opts.Overwrite); err != nil {
 			if errors.Is(err, fserrors.ErrTargetExists) {
+				declineTransfer(s, wire.ErrCodeTargetExists, "target exists")
 				return err
 			}
+			declineTransfer(s, wire.ErrCodeWriteFailed, "extract failed")
 			return fmt.Errorf("%w: extract archive: %v", fserrors.ErrWriteFailed, err)
 		}
 		_ = os.Remove(partial)
@@ -500,6 +522,10 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	if err := os.Rename(partial, target); err != nil {
 		return fmt.Errorf("%w: finalize: %v", fserrors.ErrWriteFailed, err)
 	}
+
+	// Apply the sender's mode now that the file is complete (the sidecar
+	// was created owner-private; see the OpenFile above).
+	_ = os.Chmod(target, os.FileMode(info.Mode)&os.ModePerm)
 
 	// Apply modtime.
 	if info.ModTime > 0 {
@@ -568,6 +594,17 @@ func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
 	default:
 		return fmt.Errorf("%w: expected PASSWORD_VERIFIED, got %v", fserrors.ErrProtocolError, ft)
 	}
+}
+
+// declineTransfer posts an ERROR frame and runs the symmetric shutdown:
+// close our write side so the frame's FIN reaches the sender before the
+// deferred QUIC close tears the connection down. Without the shutdown the
+// sender races the connection-close error against the frame and surfaces
+// a confusing "Application error 0x0" — and then retries pointlessly.
+func declineTransfer(s *Streams, code wire.ErrorCode, msg string) {
+	_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{Code: code, Message: msg})
+	_ = s.Control.Close()
+	_, _ = io.Copy(io.Discard, s.Control)
 }
 
 // tryReadPeerError reads at most one frame from the control stream and

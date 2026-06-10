@@ -443,7 +443,12 @@ func runSenderTransferOverLAN(ctx context.Context, f *flags, items []transfer.So
 func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, pair *internetSenderPairing) error {
 	defer pair.cleanup()
 	err := runSenderTransferLoop(ctx, f, items, kind, totalFiles, displayName, pair.pathInfo, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
-		qc, err := pair.quicListener.Accept(ctx)
+		// Bounded like the LAN re-accept: if the receiver exited
+		// terminally, an unbounded Accept would hang "retrying…" until
+		// Ctrl-C instead of exhausting the retry budget.
+		acceptCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		qc, err := pair.quicListener.Accept(acceptCtx)
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
 		}
@@ -466,7 +471,13 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 
 	start := time.Now()
 	current := firstRes
-	err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
+	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	if hasConsumableReader(items) {
+		// A partially-consumed stdin/--text reader would resend from an
+		// arbitrary offset and still pass per-chunk hashes; fail instead.
+		opts.Attempts = 1
+	}
+	err := retry.WithBackoff(ctx, opts, nil,
 		func(attempt int) error {
 			if current == nil {
 				res, err := reaccept(ctx)

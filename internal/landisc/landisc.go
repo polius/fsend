@@ -1,9 +1,13 @@
 // Package landisc handles same-LAN peer discovery via mDNS.
 //
-// The sender announces a service name derived from a hash of the code
+// The sender announces a service name derived from the code
 // (`fsend-<hash>.local`); the receiver queries for the same name and gets
-// back the sender's LAN address. The code is hashed rather than embedded
-// directly so it is not multicast in cleartext to the broadcast domain.
+// back the sender's LAN address. The name is an argon2id stretch of the
+// code, not the code itself: the name is multicast to the whole broadcast
+// domain, the code is the PAKE secret, and the code has only ~45 bits of
+// entropy — a fast hash would let a passive LAN observer recover it by
+// offline brute force. argon2id makes each guess cost ~64 MiB of memory
+// and tens of milliseconds, putting a full sweep out of practical reach.
 //
 // This package only does discovery — the actual connection is established
 // via internal/quicconn after we have an address.
@@ -14,27 +18,49 @@ package landisc
 
 import (
 	"context"
-	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/pion/mdns/v2"
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+)
+
+// derive stretches the code with argon2id and returns 18 key bytes:
+// 16 for the service name, 2 for the port. The salt is a fixed domain
+// label — the peers share no prior state, so a per-session salt is
+// impossible; the memory-hardness is what carries the defense (see the
+// package comment). Memoized because announce/query each need the same
+// key for both the name and the port.
+func derive(code string) []byte {
+	deriveMu.Lock()
+	defer deriveMu.Unlock()
+	if code == derivedCode {
+		return derivedKey
+	}
+	key := argon2.IDKey([]byte(code), []byte("fsend-landisc-v2"), 2, 64*1024, 4, 18)
+	derivedCode, derivedKey = code, key
+	return key
+}
+
+var (
+	deriveMu    sync.Mutex
+	derivedCode string
+	derivedKey  []byte
 )
 
 // serviceName builds the mDNS name we publish/query for a given code.
 //
 // We use `.local` so the name lives in the .local domain that every mDNS
-// stack on the planet honors. The host part is a SHA-256 hash of the
-// code, not the code itself: the name is multicast across the LAN, and
-// the code is the PAKE secret, so it must not travel in cleartext. Both
-// peers hash identically, so announce and query still line up.
+// stack on the planet honors. Both peers derive identically, so announce
+// and query still line up.
 func serviceName(code string) string {
-	sum := sha256.Sum256([]byte("fsend-landisc-v1:" + code))
-	return "fsend-" + hex.EncodeToString(sum[:16]) + ".local"
+	return "fsend-" + hex.EncodeToString(derive(code)[:16]) + ".local"
 }
 
 // Announce publishes the given local address under the code-derived service
@@ -131,11 +157,7 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 // just without the same-LAN shortcut. A proper fix would require mDNS
 // service-browsing, which pion/mdns doesn't expose today.
 func PortForCode(code string) int {
-	var sum uint32
-	for i := 0; i < len(code); i++ {
-		sum = sum*31 + uint32(code[i])
-	}
-	return 50000 + int(sum%1000)
+	return 50000 + int(binary.BigEndian.Uint16(derive(code)[16:18]))%1000
 }
 
 // openMulticast creates the IPv4 and IPv6 multicast packet conns mDNS needs.

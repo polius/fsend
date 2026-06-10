@@ -314,6 +314,18 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 	return uxlog.StartSpinner("Waiting for receiver")
 }
 
+// hasConsumableReader reports whether any item is backed by a one-shot
+// reader (stdin, --text). Such items cannot be replayed: a retry would
+// resend from wherever the reader was left, so retries must be disabled.
+func hasConsumableReader(items []transfer.SourceItem) bool {
+	for _, it := range items {
+		if it.Reader != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // totalBytes sums the payload bytes across items.
 func totalBytes(items []transfer.SourceItem) int64 {
 	var t int64

@@ -34,6 +34,10 @@ func Walk(paths []string) ([]SourceItem, error) {
 	}
 
 	items := make([]SourceItem, 0, len(paths))
+	// Receivers place every item by its base name, so duplicate base names
+	// (compared case-insensitively — the receiver may be on macOS/Windows)
+	// would silently clobber each other. Reject them up front.
+	seen := make(map[string]string, len(paths))
 	for i, raw := range paths {
 		abs, err := filepath.Abs(raw)
 		if err != nil {
@@ -44,10 +48,17 @@ func Walk(paths []string) ([]SourceItem, error) {
 			return nil, fmt.Errorf("walk: %s: %w", raw, err)
 		}
 		base := filepath.Base(abs)
+		if prev, ok := seen[strings.ToLower(base)]; ok {
+			return nil, fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, raw, base)
+		}
+		seen[strings.ToLower(base)] = raw
 
 		switch {
 		case info.Mode()&os.ModeSymlink != 0:
-			target, _ := os.Readlink(abs)
+			target, err := os.Readlink(abs)
+			if err != nil {
+				return nil, fmt.Errorf("walk: %s: %w", raw, err)
+			}
 			items = append(items, SourceItem{
 				Info: wire.FileInfo{
 					Index:         uint32(i),

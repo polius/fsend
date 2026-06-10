@@ -33,12 +33,21 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+      # Mirrors the goreleaser ldflags so the image doesn't report "fsend dev".
+      - id: buildmeta
+        run: |
+          echo "commit=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - id: push
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ steps.tags.outputs.version }}
+            COMMIT=${{ steps.buildmeta.outputs.commit }}
+            DATE=${{ steps.buildmeta.outputs.date }}
           tags: ${{ steps.tags.outputs.tags }}
           labels: ${{ steps.tags.outputs.labels }}
           cache-from: type=gha,scope=${{ env.IMAGE }}

@@ -18,8 +18,9 @@ networks** — the common case, and where the two designs diverge.
   (9009–9013). One UDP port is easier to get past a corporate firewall,
   and UDP/443 is allowed almost everywhere because it's the port HTTP/3
   uses.
-- **fsend has two independent crypto layers** (TLS 1.3 + SPAKE2) with
-  **post-quantum** key exchange. croc has a single AEAD keyed from PAKE.
+- **fsend pairs TLS 1.3 encryption with independent SPAKE2 peer
+  authentication** and **post-quantum** key exchange. croc has a single
+  AEAD keyed from PAKE.
 
 ## Same network: no meaningful difference
 
@@ -210,7 +211,7 @@ Day-to-day, the surface is very similar:
 - You're on a network that blocks the croc port range but allows
   UDP/443.
 - You care about long-term confidentiality (post-quantum forward
-  secrecy) or defense-in-depth (two independent crypto layers).
+  secrecy) or MITM resistance (PAKE-authenticated TLS).
 - You want stronger code-handling guarantees: one-shot by design and a
   bounded server-side TTL (1 hour max unclaimed, 10 min after pairing).
 

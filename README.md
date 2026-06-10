@@ -26,7 +26,7 @@ $ fsend abc-defg-jkm               # café Wi-Fi, two continents away
 fsend lets any two computers transfer files **directly** to each other — no accounts, no cloud, no third party storing the file.
 
 - **Peer-to-peer** — bytes go straight from sender to receiver at your own internet speed (relay only as a fallback)
-- **End-to-end encrypted** — two independent layers; even the fallback relay never sees the file
+- **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the share code (PAKE); even the fallback relay never sees the file
 - **No ports to open** — works on any network, no router or firewall setup
 - **Send anything** — files, folders, multiple at once, stdin streams, or literal text
 - **Resumable** — connection drops? Rerun the same command and fsend picks up where it stopped

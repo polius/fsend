@@ -71,10 +71,14 @@ type Agent struct {
 	opts  Options
 
 	// localCh receives the string-marshalled form of each gathered local
-	// candidate. It closes when gathering completes (pion signals this
-	// by invoking OnCandidate with nil).
-	localCh   chan string
-	closeOnce sync.Once
+	// candidate. It closes when gathering completes (pion signals this by
+	// invoking OnCandidate with nil) or on Close. localMu serializes sends
+	// against close: pion's gathering goroutine can still deliver a
+	// candidate while Close runs, and a send on a closed channel panics
+	// even inside a select-with-default.
+	localMu     sync.Mutex
+	localClosed bool
+	localCh     chan string
 }
 
 // defaultTimeouts returns fsend's pion ICE agent timings. Kept as a
@@ -133,12 +137,7 @@ func New(opts Options) (*Agent, error) {
 			a.closeLocal()
 			return
 		}
-		// Non-blocking send with a generous buffer; if the caller hasn't
-		// drained, we drop rather than stall pion's internal goroutine.
-		select {
-		case a.localCh <- c.Marshal():
-		default:
-		}
+		a.sendLocal(c.Marshal())
 	}); err != nil {
 		_ = inner.Close()
 		return nil, fmt.Errorf("iceconn: register OnCandidate: %w", err)
@@ -226,6 +225,26 @@ func (a *Agent) SelectedPair() (localType, remoteType string, ok bool) {
 	return pair.Local.Type().String(), pair.Remote.Type().String(), true
 }
 
+// sendLocal delivers a candidate without blocking pion's internal
+// goroutine: if the caller hasn't drained the (generously buffered)
+// channel, we drop rather than stall.
+func (a *Agent) sendLocal(candidate string) {
+	a.localMu.Lock()
+	defer a.localMu.Unlock()
+	if a.localClosed {
+		return
+	}
+	select {
+	case a.localCh <- candidate:
+	default:
+	}
+}
+
 func (a *Agent) closeLocal() {
-	a.closeOnce.Do(func() { close(a.localCh) })
+	a.localMu.Lock()
+	defer a.localMu.Unlock()
+	if !a.localClosed {
+		a.localClosed = true
+		close(a.localCh)
+	}
 }

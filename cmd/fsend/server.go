@@ -110,10 +110,14 @@ func runServer() error {
 		Addr:              cfg.httpAddr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
-		// /wait long-polls hold the connection for up to 25s; IdleTimeout
-		// has to clear that bar comfortably. ReadTimeout is intentionally
-		// not set — it would also cap handler body reads. WriteTimeout
-		// stays zero for the same reason.
+		// ReadTimeout also caps handler body reads — wanted: bodies are
+		// ≤16 KiB, and without it a client trickling a declared body one
+		// byte at a time parks a goroutine indefinitely (the rate limiter
+		// only runs after decode). It does not affect response writes, so
+		// /wait long-polls (25s before first byte) are untouched —
+		// WriteTimeout stays zero for them, and IdleTimeout has to clear
+		// the same bar comfortably.
+		ReadTimeout:    15 * time.Second,
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 16 << 10,
 	}

@@ -6,17 +6,19 @@ Files are end-to-end encrypted between sender and receiver. The pairing
 server cannot read filenames, file sizes, hashes, or contents — even
 when it's in the data path as a relay fallback.
 
-The encryption stack uses **two layers** that an attacker has to defeat
-independently:
+The stack pairs an encryption layer with an independent
+peer-authentication layer:
 
-1. **TLS 1.3 over QUIC.** Standard transport security, terminated at the
-   two peers (not at the server).
-2. **SPAKE2 (RFC 9382)** authenticated from the share code, bound to the
-   TLS handshake via the RFC 5705 channel-binding exporter.
+1. **TLS 1.3 over QUIC** carries all file bytes — standard transport
+   security, terminated at the two peers (not at the server).
+2. **SPAKE2 (RFC 9382)**, run from the share code and bound to the TLS
+   handshake via the RFC 5705 channel-binding exporter, proves the
+   other end of that TLS connection is the peer holding the code.
 
-A network MITM is caught by TLS. A TLS-handshake MITM is caught by
-SPAKE2 binding. Compromising a transfer requires breaking **both**, not
-either.
+A network eavesdropper is stopped by TLS. An active MITM that
+terminates TLS itself (including a malicious pairing server or relay)
+ends up with a different channel binding on each side and is caught by
+the SPAKE2 confirmation before any file data flows.
 
 ## Post-quantum forward secrecy
 

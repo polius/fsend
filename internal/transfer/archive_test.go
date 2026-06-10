@@ -436,3 +436,59 @@ func readTarNames(t *testing.T, path string) []string {
 	}
 	return names
 }
+
+// TestExtractArchive_ReadOnlyDirAndOverwrite covers two extraction
+// hazards around restrictive modes: a read-only directory entry must not
+// block writing the files inside it (modes are deferred, children before
+// parents), and re-extracting over an existing read-only file with
+// overwrite consent must replace it instead of failing on O_TRUNC.
+func TestExtractArchive_ReadOnlyDirAndOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	tarPath := filepath.Join(dir, "ro.tar")
+	target := t.TempDir()
+
+	f, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(f)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "ro-dir/", Mode: 0o555, Typeflag: tar.TypeDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("inside read-only dir")
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "ro-dir/file.txt", Mode: 0o444, Size: int64(len(body)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ExtractArchive(tarPath, target, false); err != nil {
+		t.Fatalf("extract into read-only dir: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "ro-dir", "file.txt"))
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("file content after extract: %q, %v", got, err)
+	}
+	if st, err := os.Stat(filepath.Join(target, "ro-dir")); err != nil || st.Mode().Perm() != 0o555 {
+		t.Fatalf("dir mode after extract: %v, %v (want 0555)", st.Mode().Perm(), err)
+	}
+
+	// Re-extract over the now read-only file with overwrite consent.
+	if err := ExtractArchive(tarPath, target, true); err != nil {
+		t.Fatalf("re-extract with overwrite over read-only file: %v", err)
+	}
+
+	// Restore writability so t.TempDir cleanup can remove the tree.
+	_ = os.Chmod(filepath.Join(target, "ro-dir"), 0o755)
+}

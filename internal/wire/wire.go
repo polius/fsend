@@ -95,6 +95,10 @@ const (
 	// ErrCodeTargetExists — receiver refused to clobber an existing file
 	// because the user did not pass --overwrite.
 	ErrCodeTargetExists ErrorCode = 12
+	// ErrCodeWriteFailed — receiver hit a local filesystem error (mkdir,
+	// extract, …). Terminal for the sender: retrying won't fix the
+	// receiver's disk.
+	ErrCodeWriteFailed ErrorCode = 13
 )
 
 // Chunk-frame flag bits.
