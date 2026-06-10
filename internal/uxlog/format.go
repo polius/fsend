@@ -91,3 +91,11 @@ func Dim(s string) string {
 	}
 	return colorDim + s + colorReset
 }
+
+// Bold wraps s in the ANSI bold escape, unconditionally. Unlike Dim and
+// Code it carries no colour gate of its own: it decorates --help, which
+// cobra writes to stdout, so the caller must gate on stdout's state via
+// ColorFor — the stderr-keyed colorEnabled would be the wrong check.
+func Bold(s string) string {
+	return colorBold + s + colorReset
+}

@@ -1,6 +1,7 @@
 package uxlog
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -39,6 +40,26 @@ func TestColorEnabled_ForceColor(t *testing.T) {
 	resetColorForTesting()
 	if !colorEnabled() {
 		t.Error("colorEnabled() = false despite FORCE_COLOR=1")
+	}
+}
+
+func TestColorFor(t *testing.T) {
+	var buf bytes.Buffer
+
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("FORCE_COLOR", "")
+	if ColorFor(&buf) {
+		t.Error("ColorFor(non-TTY) = true with no env override")
+	}
+
+	t.Setenv("FORCE_COLOR", "1")
+	if !ColorFor(&buf) {
+		t.Error("ColorFor(non-TTY) = false despite FORCE_COLOR=1")
+	}
+
+	t.Setenv("NO_COLOR", "1")
+	if ColorFor(&buf) {
+		t.Error("NO_COLOR should win over FORCE_COLOR in ColorFor")
 	}
 }
 

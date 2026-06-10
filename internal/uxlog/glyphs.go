@@ -91,6 +91,7 @@ func glyphForKind(k glyphKind) (utf8, ascii, color string) {
 
 const (
 	colorReset    = "\x1b[0m"
+	colorBold     = "\x1b[1m"
 	colorRed      = "\x1b[31m"
 	colorGreen    = "\x1b[32m"
 	colorYellow   = "\x1b[33m"
@@ -120,19 +121,39 @@ func colorEnabled() bool {
 		return colorAllow
 	}
 	colorChecked = true
-	// NO_COLOR convention (https://no-color.org): the variable is
-	// "honoured" when set to any non-empty value. An empty value
-	// behaves as if unset.
-	if v := os.Getenv("NO_COLOR"); v != "" {
-		colorAllow = false
-		return false
-	}
-	if v := os.Getenv("FORCE_COLOR"); v != "" && v != "0" && v != "false" {
-		colorAllow = true
-		return true
+	if on, ok := colorEnvOverride(); ok {
+		colorAllow = on
+		return colorAllow
 	}
 	colorAllow = IsTTY(os.Stderr)
 	return colorAllow
+}
+
+// colorEnvOverride applies the de-facto standard env conventions.
+// NO_COLOR (https://no-color.org) is "honoured" when set to any
+// non-empty value → forced off; FORCE_COLOR (non-empty, not "0" or
+// "false") → forced on, even on non-TTYs. ok=false means neither var
+// is set — fall back to the target writer's TTY state.
+func colorEnvOverride() (on, ok bool) {
+	if v := os.Getenv("NO_COLOR"); v != "" {
+		return false, true
+	}
+	if v := os.Getenv("FORCE_COLOR"); v != "" && v != "0" && v != "false" {
+		return true, true
+	}
+	return false, false
+}
+
+// ColorFor reports whether ANSI colour should be emitted on w. Same
+// NO_COLOR / FORCE_COLOR rules as colorEnabled, but keyed to w's TTY
+// state instead of stderr's — for the few surfaces that write to
+// stdout (--help) rather than the stderr UX stream. Not cached: callers
+// are one-shot renders, not per-line emitters.
+func ColorFor(w io.Writer) bool {
+	if on, ok := colorEnvOverride(); ok {
+		return on
+	}
+	return IsTTY(w)
 }
 
 // resetColorForTesting is exposed so unit tests can flip env vars

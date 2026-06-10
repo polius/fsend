@@ -79,6 +79,19 @@ detect_arch() {
     esac
 }
 
+# Releases only cover a subset of the os × arch product (see the ignore
+# list in .goreleaser.yml). Catch unbuilt combinations up front so the
+# user sees "no prebuilt binary" instead of a mystifying download 404.
+check_release_target() {
+    case "$1-$2" in
+        linux-amd64|linux-arm64|linux-386|linux-armv7) ;;
+        darwin-amd64|darwin-arm64) ;;
+        windows-amd64|windows-arm64|windows-386) ;;
+        freebsd-amd64|freebsd-arm64) ;;
+        *) err "no prebuilt binary for $1/$2 — build from source: go install github.com/${REPO}/cmd/fsend@latest" ;;
+    esac
+}
+
 default_prefix() {
     pf_os="$1"
     case "$pf_os" in
@@ -118,23 +131,6 @@ download() {
             || err "download failed: $url"
     else
         err "need curl or wget to download fsend"
-    fi
-}
-
-resolve_latest() {
-    api="https://api.github.com/repos/${REPO}/releases/latest"
-    # Same hardened TLS as download(): explicit https+TLS 1.2+ so a
-    # downgrade can't feed us a tampered tag and the rest of the install
-    # follows.
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --proto '=https' --tlsv1.2 "$api" \
-            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
-            | head -n1
-    else
-        # shellcheck disable=SC2046
-        wget -q $(wget_tls_opts) -O- "$api" \
-            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
-            | head -n1
     fi
 }
 
@@ -228,36 +224,43 @@ main() {
 
     os="$(detect_os)"
     arch="$(detect_arch)"
+    check_release_target "$os" "$arch"
 
     if [ "$PREFIX_EXPLICIT" = "0" ]; then
         PREFIX="$(default_prefix "$os")"
     fi
 
+    tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend)"
+    trap 'rm -rf "$tmp"' EXIT INT TERM HUP
+
     version="$FSEND_VERSION"
     if [ "$version" = "latest" ]; then
+        # Resolve "latest" through the plain release-asset redirect, NOT
+        # the GitHub API: unauthenticated API calls are capped at 60/hr
+        # per IP, which fails installs from shared egress IPs (offices,
+        # CI, universities). checksums.txt is needed anyway; the version
+        # is recovered from the archive names inside it, and the tag is
+        # rebuilt as "v<version>" (Go module tags are always v-prefixed).
         info "looking up latest release..."
-        version="$(resolve_latest)"
-        [ -n "$version" ] || err "could not resolve latest version"
+        download "https://github.com/${REPO}/releases/latest/download/checksums.txt" "$tmp/checksums.txt"
+        vnum="$(sed -n 's/.*[[:space:]]fsend_\([^_]*\)_.*/\1/p' "$tmp/checksums.txt" | head -n1)"
+        [ -n "$vnum" ] || err "could not resolve latest version"
+        version="v${vnum}"
+    else
+        vnum="${version#v}"
+        info "downloading checksums"
+        download "https://github.com/${REPO}/releases/download/${version}/checksums.txt" "$tmp/checksums.txt"
     fi
     info "installing fsend ${version} for ${os}-${arch} into ${PREFIX}"
 
-    vnum="${version#v}"
     case "$os" in
         windows) ext="zip";    bin_file="${BINARY}.exe" ;;
         *)       ext="tar.gz"; bin_file="${BINARY}"     ;;
     esac
     archive="fsend_${vnum}_${os}_${arch}.${ext}"
-    archive_url="https://github.com/${REPO}/releases/download/${version}/${archive}"
-    sums_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
-
-    tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend)"
-    trap 'rm -rf "$tmp"' EXIT INT TERM HUP
 
     info "downloading $archive"
-    download "$archive_url" "$tmp/$archive"
-
-    info "downloading checksums"
-    download "$sums_url" "$tmp/checksums.txt"
+    download "https://github.com/${REPO}/releases/download/${version}/${archive}" "$tmp/$archive"
 
     info "verifying checksum"
     verify_checksum "$tmp/$archive" "$tmp/checksums.txt"

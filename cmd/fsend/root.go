@@ -10,6 +10,7 @@ import (
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 )
 
@@ -93,6 +94,7 @@ Examples:
 	// running on every `--help` — saves a round-trip to `--version`
 	// when writing a bug report.
 	ht := strings.Replace(helpTemplate, "fsend —", "fsend "+version.Version+" —", 1)
+	ht = boldHelpHeaders(ht)
 	c.SetHelpTemplate(ht)
 	c.SetUsageTemplate(ht)
 
@@ -224,6 +226,40 @@ LEARN MORE
   Docs    https://github.com/polius/fsend
   Issues  https://github.com/polius/fsend/issues
 `
+
+// boldHelpHeaders wraps the ALL-CAPS section headers (USAGE, EXAMPLES,
+// …) of a help template in ANSI bold so the page scans by section.
+// Gated on stdout — where cobra writes help — so pipes, NO_COLOR, and
+// non-TTY contexts get the template byte-for-byte untouched.
+func boldHelpHeaders(tpl string) string {
+	if !uxlog.ColorFor(os.Stdout) {
+		return tpl
+	}
+	lines := strings.Split(tpl, "\n")
+	for i, line := range lines {
+		if isHelpHeader(line) {
+			lines[i] = uxlog.Bold(line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// isHelpHeader reports whether line is a column-0 ALL-CAPS section
+// header ("COMMON FLAGS", "SELF-HOSTING", …). Body lines are indented,
+// and the version header line starts lowercase, so neither matches.
+func isHelpHeader(line string) bool {
+	if line == "" || (line[0] < 'A' || line[0] > 'Z') {
+		return false
+	}
+	for _, r := range line {
+		switch {
+		case r >= 'A' && r <= 'Z', r == ' ', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // passPromptSentinel is the value cobra hands us when the user passes
 // bare --pass with no argument. The dispatch layer translates this into

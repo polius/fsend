@@ -13,5 +13,8 @@ RUN go build -trimpath -ldflags "-s -w \
     -o /out/fsend ./cmd/fsend
 
 FROM scratch
+# CA bundle so the image also works as a client (sending/receiving needs
+# to verify the HTTPS pairing server) — server mode never dials out.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /out/fsend /fsend
 ENTRYPOINT ["/fsend"]

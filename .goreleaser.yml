@@ -4,7 +4,9 @@ project_name: fsend
 
 before:
   hooks:
-    - go mod tidy
+    # verify, not tidy: tidy can rewrite go.mod/go.sum, and goreleaser
+    # aborts on a dirty git state mid-release.
+    - go mod verify
 
 builds:
   - id: fsend
