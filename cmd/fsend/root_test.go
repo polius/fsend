@@ -94,3 +94,34 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 		})
 	}
 }
+
+func TestBoldHelpHeaders(t *testing.T) {
+	t.Run("colored", func(t *testing.T) {
+		// FORCE_COLOR makes ColorFor true even though test stdout is
+		// not a TTY, so the bolding path is exercised deterministically.
+		t.Setenv("NO_COLOR", "")
+		t.Setenv("FORCE_COLOR", "1")
+		got := boldHelpHeaders(helpTemplate)
+		for _, header := range []string{"USAGE", "EXAMPLES", "COMMON FLAGS",
+			"ADVANCED FLAGS", "ENVIRONMENT", "SELF-HOSTING", "LEARN MORE"} {
+			if !strings.Contains(got, "\x1b[1m"+header+"\x1b[0m") {
+				t.Errorf("header %q not bolded", header)
+			}
+		}
+		// Indented body lines and the lowercase version header line must
+		// pass through untouched.
+		if !strings.Contains(got, "\n  fsend <file|dir>...") {
+			t.Error("indented body line was altered")
+		}
+		if strings.Contains(got, "\x1b[1mfsend —") {
+			t.Error("version header line should not be bolded")
+		}
+	})
+
+	t.Run("no_color_untouched", func(t *testing.T) {
+		t.Setenv("NO_COLOR", "1")
+		if got := boldHelpHeaders(helpTemplate); got != helpTemplate {
+			t.Error("template must be byte-for-byte unchanged when color is off")
+		}
+	})
+}

@@ -370,6 +370,27 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-done
 }
 
+// captureStdout is the stdout twin of captureStderr, for helpers whose
+// output is a query answer (printCurrentServer's data lines).
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	_ = w.Close()
+	os.Stdout = old
+	return <-done
+}
+
 // ---------------------------------------------------------------------------
 // main.go debugRequested
 // ---------------------------------------------------------------------------
@@ -480,18 +501,31 @@ func TestSignalingClient_SchemeSelection(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPrintCurrentServer_DefaultAndCustom(t *testing.T) {
-	got := captureStderr(t, func() {
-		printCurrentServer(&config.Config{})
+	// The query's answer rides stdout (scriptable, `fsend --connect |
+	// grep`); the guidance lines stay on stderr. Lock the split in.
+	var guidance string
+	answer := captureStdout(t, func() {
+		guidance = captureStderr(t, func() {
+			printCurrentServer(&config.Config{})
+		})
 	})
-	if !strings.Contains(got, "default") || !strings.Contains(got, config.DefaultServer) {
-		t.Errorf("default rendering missing markers:\n%s", got)
+	if !strings.Contains(answer, "default") || !strings.Contains(answer, config.DefaultServer) {
+		t.Errorf("default rendering missing markers on stdout:\n%s", answer)
+	}
+	if !strings.Contains(guidance, "Set a custom server") {
+		t.Errorf("guidance missing from stderr:\n%s", guidance)
 	}
 
-	got = captureStderr(t, func() {
-		printCurrentServer(&config.Config{Server: "relay.example.com:443", ServerPassword: "x"})
+	answer = captureStdout(t, func() {
+		guidance = captureStderr(t, func() {
+			printCurrentServer(&config.Config{Server: "relay.example.com:443", ServerPassword: "x"})
+		})
 	})
-	if !strings.Contains(got, "relay.example.com:443") || !strings.Contains(got, "password set") {
-		t.Errorf("custom rendering missing markers:\n%s", got)
+	if !strings.Contains(answer, "relay.example.com:443") || !strings.Contains(answer, "password set") {
+		t.Errorf("custom rendering missing markers on stdout:\n%s", answer)
+	}
+	if !strings.Contains(guidance, "Revert to the default") {
+		t.Errorf("guidance missing from stderr:\n%s", guidance)
 	}
 }
 

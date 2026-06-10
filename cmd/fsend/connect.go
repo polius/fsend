@@ -171,10 +171,14 @@ func defaultPortForHost(host string) string {
 	return "443"
 }
 
+// printCurrentServer answers the `fsend --connect` query. The answer
+// lines go to stdout (the result of a query, greppable — same
+// convention as `git config` / `gh`); the surrounding guidance stays on
+// stderr so `fsend --connect | grep` sees only the data.
 func printCurrentServer(cfg *config.Config) {
 	fmt.Fprintln(os.Stderr)
 	if cfg.IsDefault() {
-		fmt.Fprintln(os.Stderr, "  Current server:", config.DefaultServer, "(default)")
+		fmt.Println("  Current server:", config.DefaultServer, "(default)")
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  Set a custom server:  fsend --connect <host[:port]>[,<password>]")
 	} else {
@@ -182,8 +186,8 @@ func printCurrentServer(cfg *config.Config) {
 		if cfg.ServerPassword != "" {
 			tag = "custom, password set"
 		}
-		fmt.Fprintf(os.Stderr, "  Current server: %s  (%s)\n", cfg.Server, tag)
-		fmt.Fprintln(os.Stderr, "  Default server:", config.DefaultServer)
+		fmt.Printf("  Current server: %s  (%s)\n", cfg.Server, tag)
+		fmt.Println("  Default server:", config.DefaultServer)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  Revert to the default:  fsend --connect default")
 		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host[:port]>[,<password>]")

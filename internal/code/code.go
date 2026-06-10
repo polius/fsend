@@ -70,6 +70,26 @@ func IsCode(s string) bool {
 	return Pattern.MatchString(s)
 }
 
+// looksLikeCodePattern is deliberately looser than Pattern: any-case
+// alphanumeric groups joined by hyphens. Digits are included because the
+// alphabet excludes i/l/o precisely for their 1/1/0 lookalikes — typing
+// the digit is the expected transcription mistake.
+var looksLikeCodePattern = regexp.MustCompile(`^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)+$`)
+
+// LooksLikeCode reports whether s is shaped enough like a code that a
+// mistyped code is the plausible explanation: hyphen-joined groups with
+// roughly the right number of characters, even if the strict Pattern
+// rejects it (wrong group sizes, dropped/extra letter, digit for letter).
+// Used to attach a "was this a receive code?" hint to errors — false
+// positives only cost a harmless extra hint line, so close is good enough.
+func LooksLikeCode(s string) bool {
+	if !looksLikeCodePattern.MatchString(s) {
+		return false
+	}
+	n := len(s) - strings.Count(s, "-")
+	return n >= Length-2 && n <= Length+2
+}
+
 // format takes a 10-byte buffer of code letters and inserts hyphens.
 func format(letters []byte) string {
 	var b strings.Builder

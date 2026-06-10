@@ -102,6 +102,37 @@ func TestIsCode(t *testing.T) {
 	}
 }
 
+func TestLooksLikeCode(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		// Plausible typos of a real code.
+		{"abc-defg-jk", true},   // dropped last letter
+		{"abc-defg-jkmm", true}, // doubled letter
+		{"abcd-efg-jkm", true},  // hyphen in the wrong place
+		{"abcdefg-jkm", true},   // dropped hyphen
+		{"abc-def0-jkm", true},  // digit for letter (0 ↔ o confusion)
+		{"Abc-Defg-Jkm", true},  // chat-app capitalization
+		{"abc-defg-jkm", true},  // exact code shape counts too
+
+		// Things that are clearly not codes.
+		{"report.pdf", false},                  // extension
+		{"my-file", false},                     // too short
+		{"my-favorite-very-long-notes", false}, // too long
+		{"abc defg jkm", false},                // spaces, not hyphens
+		{"abc-defg-", false},                   // trailing hyphen
+		{"-abc-defg", false},                   // leading hyphen
+		{"dir/abc-defg-jkm", false},            // path separator
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := LooksLikeCode(tt.in); got != tt.want {
+			t.Errorf("LooksLikeCode(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestAlphabet_NoConfusables(t *testing.T) {
 	// Defensive: confirms the alphabet constant matches the regex.
 	for _, r := range Alphabet {

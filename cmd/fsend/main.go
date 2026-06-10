@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/uxlog"
 )
@@ -170,6 +171,13 @@ func renderError(err error, debug bool) int {
 		// "[E025] No such file or directory: hola".
 		msg := strings.TrimSuffix(entry.Message, ".")
 		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, msg, detail)
+		// A mistyped receive code falls through dispatch to the send
+		// path and lands here — by far the most common failure when
+		// codes are relayed verbally. Without the hint, the bare "no
+		// such file" sends those users hunting for a file problem.
+		if code.LooksLikeCode(detail) {
+			fmt.Fprintf(os.Stderr, "  If this was a receive code, check it with the sender — codes look like abc-defg-jkm.\n")
+		}
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}

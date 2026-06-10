@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -100,6 +101,15 @@ type QueryResult struct {
 	Port int
 }
 
+// watchdogGrace is how long past the caller's timeout Query waits for
+// pion/mdns before force-closing the sockets and declaring a LAN miss.
+// QueryAddr is supposed to honor its context deadline, but a wedged
+// read/close path inside the library has been observed to block forever
+// while re-multicasting the query every QueryInterval — and that spam
+// in turn wedges the next receiver querying the same name, so one stuck
+// process poisons every later transfer with that code on the LAN.
+const watchdogGrace = 2 * time.Second
+
 // Query searches for a sender announcing the given code, up to timeout.
 //
 // Returns a QueryResult if found; otherwise an error (usually
@@ -109,23 +119,21 @@ type QueryResult struct {
 // pion/mdns's QueryAddr blocks until it gets a response or the context
 // expires, retrying on QueryInterval. Callers pass a short timeout
 // (300 ms is fsend's default) so a LAN miss doesn't block the
-// pairing-server fallback.
+// pairing-server fallback. The library runs on its own goroutine behind
+// a watchdog: if it blows past the deadline (see watchdogGrace), Query
+// closes the multicast sockets out from under it — which both unblocks
+// its read loop and stops the query spam — and reports a miss.
 func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResult, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {
 		return nil, fmt.Errorf("landisc: opening multicast: %w", err)
 	}
-
-	cfg := &mdns.Config{
-		Name:            "fsend-receiver",
-		IncludeLoopback: true,
-		QueryInterval:   100 * time.Millisecond,
+	closeSockets := func() {
+		_ = v4Conn.Close()
+		if v6Conn != nil {
+			_ = v6Conn.Close()
+		}
 	}
-	conn, err := mdns.Server(v4Conn, v6Conn, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("landisc: mdns server: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
 
 	qCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -137,11 +145,48 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 	port := PortForCode(code)
 	name := serviceName(code)
 
-	_, addr, err := conn.QueryAddr(qCtx, name)
-	if err != nil {
-		return nil, fmt.Errorf("landisc: query: %w", err)
+	type outcome struct {
+		addr netip.Addr
+		err  error
 	}
-	return &QueryResult{IP: net.IP(addr.AsSlice()), Port: port}, nil
+	ch := make(chan outcome, 1)
+	go func() {
+		cfg := &mdns.Config{
+			Name:            "fsend-receiver",
+			IncludeLoopback: true,
+			QueryInterval:   100 * time.Millisecond,
+		}
+		conn, err := mdns.Server(v4Conn, v6Conn, cfg)
+		if err != nil {
+			closeSockets()
+			ch <- outcome{err: fmt.Errorf("landisc: mdns server: %w", err)}
+			return
+		}
+		_, addr, err := conn.QueryAddr(qCtx, name)
+		// Deliver the result before Close: a wedged Close leaks this
+		// goroutine until process exit but can no longer hang the caller.
+		ch <- outcome{addr: addr, err: err}
+		_ = conn.Close()
+		closeSockets()
+	}()
+
+	watchdog := time.NewTimer(timeout + watchdogGrace)
+	defer watchdog.Stop()
+	select {
+	case o := <-ch:
+		if o.err != nil {
+			return nil, fmt.Errorf("landisc: query: %w", o.err)
+		}
+		return &QueryResult{IP: net.IP(o.addr.AsSlice()), Port: port}, nil
+	case <-ctx.Done():
+		// Caller is shutting down (e.g. SIGINT). Don't wait out the
+		// watchdog — kill the sockets so the query goroutine unblocks.
+		closeSockets()
+		return nil, fmt.Errorf("landisc: query: %w", ctx.Err())
+	case <-watchdog.C:
+		closeSockets()
+		return nil, fmt.Errorf("landisc: query stuck past its %v deadline (watchdog)", timeout)
+	}
 }
 
 // PortForCode deterministically derives a UDP port from the code so that

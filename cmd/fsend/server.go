@@ -57,8 +57,9 @@ func serverCmd() *cobra.Command {
 	c.Flags().BoolVar(&healthCheckFlag, "health-check", false,
 		"probe /v1/health and exit 0 if healthy (for Docker)")
 
-	c.SetHelpTemplate(serverHelpTemplate)
-	c.SetUsageTemplate(serverHelpTemplate)
+	sht := boldHelpHeaders(serverHelpTemplate)
+	c.SetHelpTemplate(sht)
+	c.SetUsageTemplate(sht)
 
 	return c
 }
