@@ -189,11 +189,14 @@ EXAMPLES
 
 COMMON FLAGS
   --text "<string>"      Send a literal string instead of a file
+                         (the receiver prints it — nothing is saved)
   --pass <password>      Require the receiver to enter a password.
                          Bare --pass prompts interactively — sender side
                          suggests a fresh random default (press Enter to
                          accept). Env: FSEND_PASS.
   --out <dir>            Receive into this directory (default: current)
+  --out -                Receive to stdout (single file, text, or piped
+                         stream — pipe-friendly: fsend <code> --out - | …)
   --yes                  Auto-accept incoming transfers (no prompt)
   --overwrite            Overwrite existing files on receive
   --quiet                Suppress all non-error output
@@ -221,6 +224,10 @@ ENVIRONMENT
 SELF-HOSTING
   fsend server                 Run your own pairing + relay server
                                (env-var config — see "fsend server --help")
+
+SHELL COMPLETIONS
+  fsend completion <shell>     Print a completion script
+                               (bash, zsh, fish, powershell)
 
 LEARN MORE
   Docs    https://github.com/polius/fsend

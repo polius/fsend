@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +24,6 @@ import (
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
-	"github.com/polius/fsend/internal/wire"
 )
 
 // iceBudget caps the total time we'll spend trying to establish a direct
@@ -357,22 +355,23 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 	tr := &quic.Transport{Conn: pc}
 	defer func() { _ = tr.Close() }()
 
-	outDir := f.outDir
-	if outDir == "" {
-		var err error
-		outDir, err = os.Getwd()
-		if err != nil {
-			return err
-		}
+	outDir, sink, err := resolveOutDir(f)
+	if err != nil {
+		return err
 	}
-
-	closeProg, accept, confirmOverwrite, progressFn, recvBytes := newReceiverProgress(ctx, f, outDir, pathInfo)
-	defer closeProg()
+	ui := newReceiverUI(ctx, f, outDir, sink, pathInfo)
+	defer ui.close()
 
 	start := time.Now()
-	if err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
+	// Sink mode gets one attempt: emitted bytes can't be reconciled, so
+	// a retry would duplicate output.
+	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	if sink {
+		opts.Attempts = 1
+	}
+	if err := retry.WithBackoff(ctx, opts, nil,
 		func(attempt int) error {
-			return runReceiverOneAttempt(ctx, tr, outDir, f, accept, confirmOverwrite, progressFn, code)
+			return runReceiverOneAttempt(ctx, tr, f, ui, code)
 		}); err != nil {
 		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a
 		// decline/target-exists error; report it as a cancellation (E026).
@@ -381,16 +380,13 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		}
 		return err
 	}
-	// Flush bar before summary; see receive.go for the streaming-stdin reason.
-	closeProg()
-	printRecvSummary(f, displayPath(outDir), recvBytes(), time.Since(start), pathInfo)
-	return nil
+	return finishReceive(f, ui, time.Since(start))
 }
 
 // runReceiverOneAttempt is one Dial → handshake → transfer iteration.
 // Mirror of runSenderOneAttempt; returns nil on success or an error for
 // the retry layer to classify.
-func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir string, f *flags, accept func(wire.SenderHello) bool, confirmOverwrite func(string, int64, uint64) bool, progressFn func(uint32, uint64), code string) error {
+func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, f *flags, ui *receiverUI, code string) error {
 	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer dialCancel()
 	// The PacketConn ignores the dial address (both relay.Conn and our
@@ -408,18 +404,7 @@ func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, outDir strin
 	}
 	defer res.Close()
 
-	return transfer.Recv(ctx, &res.Streams, transfer.RecvOptions{
-		Hostname:         hostnameOrDefault(f.hostname),
-		OS:               runtime.GOOS,
-		ClientVersion:    version.Version,
-		TargetDir:        outDir,
-		Overwrite:        f.overwrite,
-		Accept:           accept,
-		Password:         f.passArg,
-		PromptPass:       receiverPasswordPrompt(ctx, f),
-		ConfirmOverwrite: confirmOverwrite,
-		ProgressFn:       progressFn,
-	})
+	return transfer.Recv(ctx, &res.Streams, ui.recvOptions(hostnameOrDefault(f.hostname)))
 }
 
 // retryNoticeFor returns an OnRetry callback that prints the standard
@@ -467,26 +452,23 @@ func hostnameOrDefault(s string) string {
 	return h
 }
 
-// printPath renders the connection-path status line. Tri-state:
-//
-//	✓ Direct on local network   — same network, no NAT crossed
-//	✓ Direct over the internet  — direct peer-to-peer; NAT hole-punched
-//	⚠ Relayed via <relay-host>  — direct failed, bytes flow through the relay
-//
-// In --debug mode, a second line shows the selected ICE candidate types
-// ("host → srflx" etc.) — useful for diagnosing why a peer ended up on a
-// particular path. --quiet suppresses both lines.
+// printPath renders the connection-path status line. Only the relay
+// path warrants a standalone headline (⚠ Relayed via <host> — the one
+// route users should know about before bytes flow); direct paths stay
+// silent here because the summary line already carries the path tag,
+// and repeating it read as padding. --debug restores the headline for
+// every path plus the selected ICE candidate types. --quiet suppresses
+// everything.
 func printPath(f *flags, info connpath.Info) {
 	if f.quiet {
 		return
 	}
-	var prefix string
-	if info.Kind == connpath.KindRelay {
-		prefix = uxlog.Warn()
-	} else {
-		prefix = uxlog.Check()
+	switch {
+	case info.Kind == connpath.KindRelay:
+		fmt.Fprintln(os.Stderr, uxlog.Warn(), info.Headline())
+	case f.debug:
+		fmt.Fprintln(os.Stderr, uxlog.Check(), info.Headline())
 	}
-	fmt.Fprintln(os.Stderr, prefix, info.Headline())
 	if f.debug {
 		if d := info.Detail(); d != "" {
 			fmt.Fprintln(os.Stderr, "    ICE candidate pair:", d)

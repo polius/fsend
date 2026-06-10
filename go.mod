@@ -15,6 +15,7 @@ require (
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.55.0
+	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.44.0
 	salsa.debian.org/vasudev/gospake2 v0.0.0-20210510093858-d91629950ad1
 )
@@ -36,6 +37,5 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )

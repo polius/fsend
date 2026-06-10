@@ -212,16 +212,56 @@ func TestSend_TextLiteral(t *testing.T) {
 		dst, []string{"--yes"}, "")
 	r.requireSuccess(t)
 
-	matches, err := filepath.Glob(filepath.Join(dst, "fsend-text-*.txt"))
-	if err != nil || len(matches) == 0 {
-		t.Fatalf("no fsend-text-*.txt file in %s", dst)
+	// Text is a message, not a download: it lands on the receiver's
+	// stdout and leaves no file behind.
+	if !strings.Contains(r.receiverOut, "literal-9876") {
+		t.Fatalf("text payload not on receiver stdout: %q", r.receiverOut)
 	}
-	body, err := os.ReadFile(matches[0])
-	if err != nil {
+	if matches, _ := filepath.Glob(filepath.Join(dst, "fsend-text-*.txt")); len(matches) != 0 {
+		t.Fatalf("text receive must not leave a file, found %v", matches)
+	}
+}
+
+// TestReceive_OutStdout: `--out -` streams the payload to stdout and
+// writes nothing to disk.
+func TestReceive_OutStdout(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	fp := filepath.Join(src, "payload.txt")
+	if err := os.WriteFile(fp, []byte("sink-payload-5432\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "literal-9876") {
-		t.Fatalf("payload mismatch: %q", body)
+
+	r := h.runPair(t, []string{fp}, dst, []string{"--yes", "--out", "-"}, "")
+	r.requireSuccess(t)
+	if r.receiverOut != "sink-payload-5432\n" {
+		t.Fatalf("stdout payload mismatch: %q", r.receiverOut)
+	}
+	if entries, _ := os.ReadDir(dst); len(entries) != 0 {
+		t.Fatalf("--out - must not write files, found %v", entries)
+	}
+}
+
+// TestReceive_OutStdoutRejectsDirectory: a directory transfer can't be
+// streamed to one byte sink — the receiver must fail with a usage error
+// (E024) instead of dumping the internal tar.
+func TestReceive_OutStdoutRejectsDirectory(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	sub := filepath.Join(src, "proj")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := h.runPair(t, []string{sub}, dst, []string{"--yes", "--out", "-"}, "")
+	if r.receiverExitCode != 24 {
+		t.Fatalf("receiver exit = %d, want 24 (usage)\n%s", r.receiverExitCode, r.receiverErr)
+	}
+	if r.receiverOut != "" {
+		t.Fatalf("nothing may reach stdout on rejection, got %q", r.receiverOut)
 	}
 }
 

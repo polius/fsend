@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
@@ -110,7 +112,25 @@ func runConnect(f *flags) error {
 			msg += " (password set)"
 		}
 		fmt.Fprintln(os.Stderr, uxlog.Check(), msg)
+		warnIfUnresolvable(server)
 		return nil
+	}
+}
+
+// warnIfUnresolvable flags a server whose host doesn't resolve — almost
+// always a typo that would otherwise only surface later as E001 on
+// every transfer. The config is saved either way (the user may simply
+// be offline, or the name may exist only on another network).
+func warnIfUnresolvable(server string) {
+	host, _, err := net.SplitHostPort(server)
+	if err != nil || net.ParseIP(host) != nil || host == "localhost" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := net.DefaultResolver.LookupHost(ctx, host); err != nil {
+		fmt.Fprintf(os.Stderr, "%s %q does not resolve from here — saved anyway.\n", uxlog.Warn(), host)
+		fmt.Fprintln(os.Stderr, "  Check the address, or revert with: fsend --connect default")
 	}
 }
 

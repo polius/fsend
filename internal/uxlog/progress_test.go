@@ -1,6 +1,7 @@
 package uxlog
 
 import (
+	"bytes"
 	"os"
 	"testing"
 )
@@ -67,4 +68,58 @@ func TestProgress_NilSafety(t *testing.T) {
 	p.Add(100)
 	p.SetTotal(200, true)
 	p.Done()
+}
+
+// TestProgress_PlainModeNoEscapes guards the non-TTY contract: piped
+// progress output must contain no ANSI escapes (mpb's non-interactive
+// mode emits cursor-up sequences, which is why plain mode bypasses it)
+// and must end with a single "done" line on completion.
+func TestProgress_PlainModeNoEscapes(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = f
+	t.Cleanup(func() { os.Stderr = orig; _ = f.Close() })
+
+	p := New(1000)
+	p.Add(400)
+	p.Add(600)
+	p.Done()
+
+	out, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.ContainsRune(out, 0x1b) {
+		t.Fatalf("plain progress emitted ANSI escapes: %q", out)
+	}
+	if got, want := string(out), "  done  1000 B\n"; got != want {
+		t.Fatalf("final line: got %q, want %q", got, want)
+	}
+}
+
+// TestProgress_PlainModePartialSilent: an aborted plain-mode transfer
+// prints no terminal line — the error that follows is the record.
+func TestProgress_PlainModePartialSilent(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = f
+	t.Cleanup(func() { os.Stderr = orig; _ = f.Close() })
+
+	p := New(1000)
+	p.Add(250)
+	p.Done()
+
+	out, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("partial plain progress should be silent, got %q", out)
+	}
 }

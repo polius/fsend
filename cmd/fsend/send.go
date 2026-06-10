@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -140,7 +139,7 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		// directory-resolved file).
 		return items, wire.TransferSingleFile, 0, filepath.Base(paths[0]), noop, nil
 	}
-	return items, wire.TransferMultiFile, 0, fmt.Sprintf("%d items", len(paths)), noop, nil
+	return items, wire.TransferMultiFile, 0, fmt.Sprintf("%d files", len(paths)), noop, nil
 }
 
 // containsDirectory reports whether any of paths refers to a directory.
@@ -291,7 +290,7 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %d files  ·  %s\n",
 			label, totalFiles, uxlog.HumanBytes(int64(total)))
 	case wire.TransferMultiFile:
-		fmt.Fprintf(os.Stderr, "  Sending  %d items  ·  %s\n",
+		fmt.Fprintf(os.Stderr, "  Sending  %d files  ·  %s\n",
 			len(items), uxlog.HumanBytes(totalBytes(items)))
 	case wire.TransferText:
 		fmt.Fprintf(os.Stderr, "  Sending  text  ·  %s\n",
@@ -376,125 +375,6 @@ func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), p
 		}
 }
 
-// newReceiverProgress is the receive-side counterpart. The bar is
-// materialized lazily on the first ProgressFn call rather than at
-// Accept time. This matters because:
-//
-//   - Between Accept returning true and the first chunk arriving, the
-//     transfer engine runs the password handshake (when the sender used
-//     --pass). The handshake calls PromptPass, which writes a prompt to
-//     stderr and reads a line back. If mpb were already drawing the bar
-//     at Accept time, its 10 Hz repaint goroutine would step on the
-//     password prompt line.
-//   - Deferring also means a rejected transfer (Accept false, wrong
-//     password, sender abort before any chunk) leaves no half-rendered
-//     bar on screen — closeFn is a no-op if the bar was never created.
-func newReceiverProgress(ctx context.Context, f *flags, outDir string, pathInfo connpath.Info) (
-	closeFn func(),
-	accept func(wire.SenderHello) bool,
-	confirmOverwrite func(relPath string, existing int64, incoming uint64) bool,
-	progressFn func(uint32, uint64),
-	recvBytes func() int64,
-) {
-	prev := make(map[uint32]uint64)
-	var total int64
-	recvBytes = func() int64 { return total }
-
-	// preApproved fires when promptAccept already surfaced a single-file
-	// collision chip and the user said yes — the second "Overwrite? y/N"
-	// question would just be friction. Captured here so both callbacks
-	// share the flag without a parameter on RecvOptions.
-	var preApproved bool
-
-	if f.quiet {
-		closeFn = func() {}
-		accept = func(h wire.SenderHello) bool { return promptAccept(ctx, f, h, outDir, pathInfo) }
-		progressFn = func(fi uint32, b uint64) {
-			d := b - prev[fi]
-			prev[fi] = b
-			total += int64(d)
-		}
-		// confirmOverwrite stays nil under --quiet: the engine then
-		// rejects with E013 rather than blocking on a prompt nobody
-		// will see.
-		return
-	}
-
-	var bar *uxlog.Progress
-	var totalBytesHint int64
-	// streamingTotal is true when the sender's HELLO carried TotalBytes=0,
-	// which today only happens for piped stdin. The bar then renders
-	// without ETA/percentage; at close we latch it to the accumulated
-	// count so the trailing " done" suffix prints instead of "aborted".
-	var streamingTotal bool
-	accept = func(h wire.SenderHello) bool {
-		ok := promptAccept(ctx, f, h, outDir, pathInfo)
-		if !ok {
-			return false
-		}
-		totalBytesHint = int64(h.TotalBytes)
-		streamingTotal = h.TotalBytes == 0
-		// Mirror the renderArtifact collision check: if the prompt
-		// already disclosed an overwrite, treat the user's yes as
-		// consent for the per-file confirm too.
-		if h.TransferKind == wire.TransferSingleFile && !f.overwrite {
-			target := filepath.Join(outDir, h.DisplayName)
-			if st, err := os.Stat(target); err == nil && !st.IsDir() {
-				preApproved = true
-			}
-		}
-		return true
-	}
-	progressFn = func(fileIndex uint32, bytesWritten uint64) {
-		if bar == nil {
-			bar = uxlog.New(totalBytesHint)
-		}
-		d := bytesWritten - prev[fileIndex]
-		prev[fileIndex] = bytesWritten
-		bar.Add(int64(d))
-		total += int64(d)
-	}
-	// Idempotent: callers can flush the bar explicitly before printing
-	// the summary, then leave the deferred call as a no-op safety net.
-	// Without that, stdin transfers (streamingTotal=true) print the
-	// summary above the bar's terminal frame.
-	var closeOnce sync.Once
-	closeFn = func() {
-		closeOnce.Do(func() {
-			if bar == nil {
-				return
-			}
-			if streamingTotal && total > 0 {
-				bar.SetTotal(total, true)
-			}
-			bar.Done()
-		})
-	}
-	if !f.yes {
-		confirmOverwrite = func(relPath string, existing int64, incoming uint64) bool {
-			if preApproved {
-				return true
-			}
-			fmt.Fprintln(os.Stderr)
-			fmt.Fprintf(os.Stderr, "  %s already exists  ·  local %s  ·  incoming %s\n",
-				relPath, uxlog.HumanBytes(existing), uxlog.HumanBytes(int64(incoming)))
-			fmt.Fprint(os.Stderr, "  Overwrite? [y/N] ")
-			// Decline on Ctrl-C; the caller maps a cancelled ctx to E026.
-			line, ok := readLineCtx(ctx)
-			if !ok {
-				return false
-			}
-			switch line {
-			case "y", "yes":
-				return true
-			default:
-				return false
-			}
-		}
-	}
-	return
-}
-
 // printSendSummary renders the post-transfer success line on the sender.
 // The artifact name is already shown in printSendArtifact at session
 // start, so the summary deliberately omits it — repeating reads as
@@ -508,29 +388,6 @@ func printSendSummary(f *flags, bytes int64, elapsed time.Duration, path connpat
 	}
 	parts := summaryParts(bytes, elapsed, path)
 	fmt.Fprintf(os.Stderr, "%s Sent  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
-	printUpdateNotice(f)
-}
-
-// printRecvSummary is the receive-side counterpart. The bytes figure is
-// the actual received payload, captured by the progress callback so the
-// number reflects what's on disk (post-resume, this can be less than the
-// sender's TotalBytes if a prefix was already present).
-//
-// destLabel is the human-readable save location ("~/Downloads" or an
-// absolute path). When empty (text/stdin sinks, --quiet) the line
-// collapses to "Received".
-func printRecvSummary(f *flags, destLabel string, bytes int64, elapsed time.Duration, path connpath.Info) {
-	if f.quiet {
-		return
-	}
-	parts := summaryParts(bytes, elapsed, path)
-	if destLabel != "" {
-		fmt.Fprintf(os.Stderr, "%s Saved to %s  ·  %s\n",
-			uxlog.Check(), destLabel, strings.Join(parts, "  ·  "))
-		printUpdateNotice(f)
-		return
-	}
-	fmt.Fprintf(os.Stderr, "%s Received  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
 }
 

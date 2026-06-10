@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/polius/fsend/internal/code"
+	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/uxlog"
 )
@@ -145,6 +146,13 @@ func renderError(err error, debug bool) int {
 	//   - usage / source-not-found: the missing path or bad flag.
 	//   - relay-limit hits: the server's configured limit ("100 MiB").
 	detail := ""
+	// E001 names the server it tried so a stale --connect entry is
+	// self-diagnosing instead of reading as a network outage.
+	if errors.Is(err, fserrors.ErrServerUnreachable) {
+		if cfg, cfgErr := config.Load(); cfgErr == nil {
+			detail = "Server: " + cfg.EffectiveServer()
+		}
+	}
 	if known && (errors.Is(err, fserrors.ErrUsage) ||
 		errors.Is(err, fserrors.ErrSourceNotFound) ||
 		errors.Is(err, fserrors.ErrRelayCapHit) ||

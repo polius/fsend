@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
-	"github.com/polius/fsend/internal/version"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -36,6 +34,10 @@ func runReceive(f *flags, c string) error {
 	// decline. Fail fast with a clear hint instead.
 	if f.quiet && !f.yes {
 		return fmt.Errorf("%w: --quiet on receive requires --yes (no prompt to answer otherwise)", fserrors.ErrUsage)
+	}
+	// Sink mode writes no files, so --overwrite can only be a mistake.
+	if f.outDir == "-" && f.overwrite {
+		return fmt.Errorf("%w: --overwrite has no effect with --out -", fserrors.ErrUsage)
 	}
 
 	// Bare --pass: hidden no-echo prompt. We're not the password's
@@ -71,17 +73,9 @@ func runReceive(f *flags, c string) error {
 		fmt.Fprintln(os.Stderr, "    sender address:", addr)
 	}
 
-	hostname := f.hostname
-	if hostname == "" {
-		hostname, _ = os.Hostname()
-	}
-
-	outDir := f.outDir
-	if outDir == "" {
-		outDir, err = os.Getwd()
-		if err != nil {
-			return err
-		}
+	outDir, sink, err := resolveOutDir(f)
+	if err != nil {
+		return err
 	}
 
 	// First LAN dial sits outside the retry loop. If it fails before
@@ -105,17 +99,21 @@ func runReceive(f *flags, c string) error {
 		return runReceiveOverInternet(ctx, f, c, cfg, connSpin)
 	}
 
-	pathInfo := connpath.FromLAN()
-	closeProg, accept, confirmOverwrite, progressFn, recvBytes := newReceiverProgress(ctx, f, outDir, pathInfo)
-	defer closeProg()
+	ui := newReceiverUI(ctx, f, outDir, sink, connpath.FromLAN())
+	defer ui.close()
 
 	start := time.Now()
 
 	// LAN succeeded once — keep a normal retry loop around the transfer
 	// itself so a mid-stream drop can re-dial and resume from the
-	// receiver's partial.
+	// receiver's partial. Sink mode gets one attempt: emitted bytes
+	// can't be reconciled, so a retry would duplicate output.
+	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	if sink {
+		opts.Attempts = 1
+	}
 	current := first
-	if err := retry.WithBackoff(ctx, retry.Options{OnRetry: retryNoticeFor(f)}, nil,
+	if err := retry.WithBackoff(ctx, opts, nil,
 		func(attempt int) error {
 			if current == nil {
 				res, err := quicconn.Dial(ctx, addr, c)
@@ -127,18 +125,7 @@ func runReceive(f *flags, c string) error {
 			res := current
 			current = nil
 			defer res.Close()
-			return transfer.Recv(ctx, &res.Streams, transfer.RecvOptions{
-				Hostname:         hostname,
-				OS:               runtime.GOOS,
-				ClientVersion:    version.Version,
-				TargetDir:        outDir,
-				Overwrite:        f.overwrite,
-				Accept:           accept,
-				Password:         f.passArg,
-				PromptPass:       receiverPasswordPrompt(ctx, f),
-				ConfirmOverwrite: confirmOverwrite,
-				ProgressFn:       progressFn,
-			})
+			return transfer.Recv(ctx, &res.Streams, ui.recvOptions(hostnameOrDefault(f.hostname)))
 		}); err != nil {
 		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a
 		// decline/target-exists error from the engine; report it as a
@@ -149,12 +136,7 @@ func runReceive(f *flags, c string) error {
 		return err
 	}
 
-	// Flush the bar before the summary so the "Saved to ..." line lands
-	// below the terminal " done" frame on streaming items (stdin), where
-	// SetTotal+Done would otherwise fire later via the deferred call.
-	closeProg()
-	printRecvSummary(f, displayPath(outDir), recvBytes(), time.Since(start), pathInfo)
-	return nil
+	return finishReceive(f, ui, time.Since(start))
 }
 
 // receiverPasswordPrompt returns a callback that reads a password from
@@ -180,54 +162,6 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func() (string, error
 	}
 }
 
-// promptAccept renders the incoming-transfer block on stderr and asks
-// whether to receive. The block layout is the same regardless of kind:
-//
-//	Incoming from <peer>  [· via relay]
-//
-//	    <artifact>  ·  <size>  [🔒 password]
-//	    [⚠ already in <dir> · will overwrite if you accept]
-//
-//	Save to <path>/? [Y/n]
-//
-// pathInfo only affects the chip on the peer line (direct paths are
-// quiet, relay gets called out — it's the one users should be aware of).
-// outDir
-// is needed to (a) render the save target and (b) detect a single-file
-// collision so we can surface it inline instead of asking a second
-// question after the user has already said yes.
-func promptAccept(ctx context.Context, f *flags, h wire.SenderHello, outDir string, pathInfo connpath.Info) bool {
-	if f.quiet {
-		return f.yes
-	}
-	peer := sanitizeRemote(h.Hostname)
-	pathChip := ""
-	if pathInfo.Kind == connpath.KindRelay {
-		pathChip = uxlog.Dim("  ·  via relay")
-	}
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  Incoming from %s%s\n", peer, pathChip)
-	fmt.Fprintln(os.Stderr)
-	renderArtifact(os.Stderr, h, outDir, f.overwrite)
-	fmt.Fprintln(os.Stderr)
-	if f.yes {
-		fmt.Fprintln(os.Stderr, uxlog.Check(), "Accepting (--yes)")
-		return true
-	}
-	fmt.Fprintf(os.Stderr, "  Save to %s? [Y/n] ", saveTargetLabel(outDir))
-	// Decline on Ctrl-C; the caller maps a cancelled ctx to E026.
-	line, ok := readLineCtx(ctx)
-	if !ok {
-		return false
-	}
-	switch line {
-	case "n", "no":
-		return false
-	default:
-		return true
-	}
-}
-
 // renderArtifact prints the indented artifact line and (for a single
 // file that would collide) the warning chip that pre-discloses the
 // overwrite. The chip means the user only ever sees one question per
@@ -246,7 +180,8 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 			name = "file"
 		}
 		_, _ = fmt.Fprintf(w, "      %s  ·  %s%s\n", name, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
-		if !alreadyOverwriting {
+		// outDir is "" in sink mode — nothing on disk to collide with.
+		if !alreadyOverwriting && outDir != "" {
 			target := filepath.Join(outDir, name)
 			if st, err := os.Stat(target); err == nil && !st.IsDir() {
 				chip := fmt.Sprintf("⚠ already in %s (%s) — will be overwritten if you accept",
@@ -262,7 +197,7 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 		_, _ = fmt.Fprintf(w, "      %s  ·  %d files  ·  %s%s\n",
 			name, h.TotalFiles, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferMultiFile:
-		_, _ = fmt.Fprintf(w, "      %d items  ·  %s%s\n",
+		_, _ = fmt.Fprintf(w, "      %d files  ·  %s%s\n",
 			h.TotalFiles, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferText:
 		_, _ = fmt.Fprintf(w, "      text  ·  %s%s\n",
