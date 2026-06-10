@@ -107,8 +107,14 @@ Config is at `~/.config/fsend/config.json` (Linux),
 |---|---|---|
 | `FSEND_PASS` | `--pass` | Supply the transfer password out-of-band. |
 | `FSEND_DEBUG` | `--debug` | `1` enables verbose stderr logging. |
+| `FSEND_NO_UPDATE_CHECK` | — | `1` disables the once-a-day check for a newer release. |
 
 Flags always win when both are set.
+
+After a successful transfer, fsend checks GitHub at most once a day for a
+newer release and, if one exists, prints a one-line upgrade hint. The
+check is skipped when output is piped or `--quiet` is set, and can be
+turned off entirely with `FSEND_NO_UPDATE_CHECK=1`.
 
 ## `fsend server`
 

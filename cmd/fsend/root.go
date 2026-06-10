@@ -213,6 +213,8 @@ ADVANCED FLAGS
 ENVIRONMENT
   FSEND_PASS             Used as --pass when the flag is not given
                          (keeps the password out of argv)
+  FSEND_NO_UPDATE_CHECK  Set to 1 to disable the daily check for a newer
+                         fsend release
 
 SELF-HOSTING
   fsend server                 Run your own pairing + relay server

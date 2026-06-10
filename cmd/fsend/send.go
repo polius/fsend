@@ -508,6 +508,7 @@ func printSendSummary(f *flags, bytes int64, elapsed time.Duration, path connpat
 	}
 	parts := summaryParts(bytes, elapsed, path)
 	fmt.Fprintf(os.Stderr, "%s Sent  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
+	printUpdateNotice(f)
 }
 
 // printRecvSummary is the receive-side counterpart. The bytes figure is
@@ -526,9 +527,11 @@ func printRecvSummary(f *flags, destLabel string, bytes int64, elapsed time.Dura
 	if destLabel != "" {
 		fmt.Fprintf(os.Stderr, "%s Saved to %s  ·  %s\n",
 			uxlog.Check(), destLabel, strings.Join(parts, "  ·  "))
+		printUpdateNotice(f)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s Received  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
+	printUpdateNotice(f)
 }
 
 // summaryParts builds the bytes/duration/path/rate sequence that both

@@ -41,7 +41,9 @@ fsend lets any two computers transfer files **directly** to each other — no ac
 curl -fsSL https://getfsend.alzina.dev | sh
 ```
 
-Works on Linux, macOS, FreeBSD, and Windows — x86 and ARM.
+Works on Linux, macOS, FreeBSD, and Windows — x86 and ARM. On Windows, run
+this in a POSIX shell (MSYS / MinGW / Cygwin / Git Bash); the installed
+`fsend.exe` then runs in any terminal once its directory is on your PATH.
 
 <details>
 <summary>Other install methods</summary>
