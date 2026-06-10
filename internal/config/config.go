@@ -97,6 +97,16 @@ func Path() (string, error) {
 	return p, nil
 }
 
+// Dir returns the directory that holds the config file, used for other
+// small bits of fsend state too (e.g. the update-check cache).
+func Dir() (string, error) {
+	p, err := Path()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(p), nil
+}
+
 // Load reads the config from disk. A missing file returns a zero-value
 // Config and nil — that's the normal first-run state, not an error.
 //
