@@ -107,6 +107,23 @@ type Entry struct {
 	Exit    int    // process exit code
 	Message string // first line, what went wrong in user terms
 	Action  string // second (and subsequent) lines, what to do next
+
+	// Sender-side wording for errors that originate on the receiver and
+	// are mirrored across the wire (wrong password, overwrite refused).
+	// Empty means Message/Action read correctly on both sides.
+	SenderMessage string
+	SenderAction  string
+}
+
+// ForSender returns the entry with sender-side wording swapped in.
+func (e Entry) ForSender() Entry {
+	if e.SenderMessage != "" {
+		e.Message = e.SenderMessage
+	}
+	if e.SenderAction != "" {
+		e.Action = e.SenderAction
+	}
+	return e
 }
 
 // Format renders the entry as a multi-line message ready for stderr.
@@ -180,8 +197,10 @@ var catalog = map[error]Entry{
 	},
 	ErrWriteFailed: {
 		Code: "E009", Exit: 9,
-		Message: "Could not write to the target file.",
-		Action:  "Try --out <dir> to save somewhere writable.",
+		Message:       "Could not write to the target file.",
+		Action:        "Try --out <dir> to save somewhere writable.",
+		SenderMessage: "The receiver could not write the file to disk.",
+		SenderAction:  "They can retry with --out <dir> to save somewhere writable.",
 	},
 	ErrReadFailed: {
 		Code: "E010", Exit: 10,
@@ -203,8 +222,10 @@ var catalog = map[error]Entry{
 	},
 	ErrTargetExists: {
 		Code: "E013", Exit: 13,
-		Message: "Target file exists and --overwrite was not given.",
-		Action:  "Use --overwrite to replace existing files.",
+		Message:       "Target file exists and --overwrite was not given.",
+		Action:        "Use --overwrite to replace existing files.",
+		SenderMessage: "The receiver already has a file with this name.",
+		SenderAction:  "They can rerun with --overwrite to replace it.",
 	},
 	ErrConnectFailed: {
 		Code: "E014", Exit: 14,
@@ -258,6 +279,9 @@ var catalog = map[error]Entry{
 		Message: "Wrong password. Transfer aborted.",
 		Action: "Ask the sender for the correct password and run again. Codes are\n" +
 			"  one-shot — the sender may need to restart to issue a fresh code.",
+		SenderMessage: "The receiver entered the wrong password. Transfer aborted.",
+		SenderAction: "Run fsend again to issue a fresh code, and re-share the\n" +
+			"  password with the receiver.",
 	},
 	ErrPeerAuthFailed: {
 		Code: "E022", Exit: 22,

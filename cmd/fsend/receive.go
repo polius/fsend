@@ -88,7 +88,10 @@ func runReceive(f *flags, c string) error {
 	// TestReceive_Overwrite under -race.
 	first, err := quicconn.Dial(ctx, addr, c)
 	if err != nil {
-		if !f.quiet {
+		// Debug-only: the transfer may still end up "Direct on local
+		// network" via the server-paired race, so surfacing this notice
+		// by default reads as the tool contradicting itself.
+		if f.debug && !f.quiet {
 			fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server.")
 		}
 		cfg := loadConfig(f.quiet)
@@ -166,10 +169,10 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func() (string, error
 // file that would collide) the warning chip that pre-discloses the
 // overwrite. The chip means the user only ever sees one question per
 // transfer instead of an accept-then-overwrite double prompt.
-func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverwriting bool) {
+func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, f *flags) {
 	pwChip := ""
 	if h.HasPassword {
-		pwChip = "  🔒 password required"
+		pwChip = "  " + uxlog.PasswordChip()
 	}
 	switch h.TransferKind {
 	case wire.TransferSingleFile:
@@ -181,12 +184,18 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 		}
 		_, _ = fmt.Fprintf(w, "      %s  ·  %s%s\n", name, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 		// outDir is "" in sink mode — nothing on disk to collide with.
-		if !alreadyOverwriting && outDir != "" {
+		if !f.overwrite && outDir != "" {
 			target := filepath.Join(outDir, name)
 			if st, err := os.Stat(target); err == nil && !st.IsDir() {
-				chip := fmt.Sprintf("⚠ already in %s (%s) — will be overwritten if you accept",
+				// Under --yes there is no accept prompt to consent
+				// through, so the transfer will fail with E013.
+				chip := fmt.Sprintf("already in %s (%s) — will be overwritten if you accept",
 					displayPath(outDir), uxlog.HumanBytes(st.Size()))
-				_, _ = fmt.Fprintln(w, "      "+uxlog.Dim(chip))
+				if f.yes {
+					chip = fmt.Sprintf("already in %s (%s) — rerun with --overwrite to replace",
+						displayPath(outDir), uxlog.HumanBytes(st.Size()))
+				}
+				_, _ = fmt.Fprintln(w, "      "+uxlog.Warn()+" "+uxlog.Dim(chip))
 			}
 		}
 	case wire.TransferDirectory:
@@ -194,11 +203,11 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, alreadyOverw
 		if name == "" {
 			name = "directory"
 		}
-		_, _ = fmt.Fprintf(w, "      %s  ·  %d files  ·  %s%s\n",
-			name, h.TotalFiles, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
+		_, _ = fmt.Fprintf(w, "      %s  ·  %s  ·  %s%s\n",
+			name, uxlog.CountNoun(int(h.TotalFiles), "file"), uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferMultiFile:
-		_, _ = fmt.Fprintf(w, "      %d files  ·  %s%s\n",
-			h.TotalFiles, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
+		_, _ = fmt.Fprintf(w, "      %s  ·  %s%s\n",
+			uxlog.CountNoun(int(h.TotalFiles), "file"), uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
 	case wire.TransferText:
 		_, _ = fmt.Fprintf(w, "      text  ·  %s%s\n",
 			uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)

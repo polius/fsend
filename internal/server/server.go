@@ -26,6 +26,7 @@ import (
 type Config struct {
 	ServerVersion        string
 	UnpairedTTL          time.Duration // default 1h
+	AbandonedTTL         time.Duration // default 5m
 	PairedTTL            time.Duration // default 600s
 	LongPollTimeout      time.Duration // default 25s
 	MaxSessionsPerIP     int           // default 5
@@ -47,6 +48,14 @@ func (c *Config) Default() {
 		// would surface as a confusing "code expired" failure even when
 		// the sender's process is still alive.
 		c.UnpairedTTL = time.Hour
+	}
+	if c.AbandonedTTL == 0 {
+		// Live senders touch their session every /wait long-poll
+		// (≤LongPollTimeout apart). A session not seen for 5 minutes
+		// has a dead client — reclaim it so a crashed or killed fsend
+		// doesn't hold one of the MaxSessionsPerIP slots for the full
+		// UnpairedTTL hour.
+		c.AbandonedTTL = 5 * time.Minute
 	}
 	if c.PairedTTL == 0 {
 		c.PairedTTL = 600 * time.Second
@@ -335,11 +344,18 @@ func (s *Server) evict(now time.Time) {
 	for id, sess := range s.byID {
 		switch sess.State {
 		case "waiting":
-			if now.Sub(sess.CreatedAt) > s.cfg.UnpairedTTL {
+			expired := now.Sub(sess.CreatedAt) > s.cfg.UnpairedTTL
+			abandoned := now.Sub(sess.LastSeen) > s.cfg.AbandonedTTL
+			if expired || abandoned {
 				delete(s.byID, id)
 				delete(s.byCode, sess.Code)
 				s.releaseIP(sess.SenderRateKey)
 				close(sess.waiters)
+				reason := "expired"
+				if abandoned && !expired {
+					reason = "abandoned"
+				}
+				s.cfg.Logger.Debug("session evicted", "code", sess.Code, "reason", reason)
 			}
 		case "paired":
 			if now.Sub(sess.PairedAt) > s.cfg.PairedTTL {
@@ -347,6 +363,7 @@ func (s *Server) evict(now time.Time) {
 				delete(s.byCode, sess.Code)
 				s.releaseIP(sess.SenderRateKey)
 				s.releaseIP(sess.ReceiverRateKey)
+				s.cfg.Logger.Debug("session evicted", "code", sess.Code, "reason", "paired_ttl")
 			}
 		}
 	}
@@ -434,12 +451,14 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		SenderToken:   senderTok,
 		State:         "waiting",
 		CreatedAt:     time.Now(),
+		LastSeen:      time.Now(),
 		waiters:       make(chan struct{}),
 	}
 	s.byCode[c] = sess
 	s.byID[sid] = sess
 	s.ipCounts[rateKey]++
 	s.mu.Unlock()
+	s.cfg.Logger.Debug("session created", "code", c, "ip", clientIP)
 
 	writeJSON(w, http.StatusOK, CreateSessionResponse{
 		SessionID:        sid,
@@ -500,6 +519,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		RoleToken:          sess.ReceiverToken,
 	}
 	s.mu.Unlock()
+	s.cfg.Logger.Debug("session paired", "code", c, "ip", clientIP)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -512,6 +532,8 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "code not found")
 		return
 	}
+	// Each /wait poll doubles as the sender's liveness heartbeat.
+	sess.LastSeen = time.Now()
 	// Snapshot what we need under the lock so concurrent joinSession
 	// writes don't race the reads below.
 	state := sess.State
@@ -654,6 +676,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	delete(s.byCode, sess.Code)
 	s.releaseIP(sess.SenderRateKey)
 	s.releaseIP(sess.ReceiverRateKey)
+	s.cfg.Logger.Debug("session deleted", "code", sess.Code)
 	w.WriteHeader(http.StatusNoContent)
 }
 

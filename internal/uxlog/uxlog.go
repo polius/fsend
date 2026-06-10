@@ -22,6 +22,7 @@ import (
 
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
+	"golang.org/x/term"
 )
 
 // Progress wraps an mpb.Progress + a single bar that tracks total bytes
@@ -82,13 +83,9 @@ func (p *plainProgress) setTotal(total int64, complete bool) {
 func (p *plainProgress) done() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || p.current == 0 {
-		return
-	}
+	// No final "done <size>" line — the summary line that follows
+	// already carries the size.
 	p.closed = true
-	if p.complete || (p.total > 0 && p.current >= p.total) {
-		fmt.Fprintf(p.w, "  done  %s\n", HumanBytes(p.current))
-	}
 }
 
 // barWidth caps the progress bar at a fixed column count. 40 leaves room
@@ -111,9 +108,10 @@ const rateThreshold = 1 << 20
 // front; for stdin/text transfers we pass 0 and the bar renders without
 // a percentage, ETA, or rate chip.
 func New(totalBytes int64) *Progress {
-	if !renderTTY(os.Stderr) {
-		// Pipe/CI mode: line-oriented output only. The throttle starts
-		// now so fast transfers print just the final "done" line.
+	// Plain mode for pipes/CI, and for terminals that report a 0×0
+	// window (some pty wrappers) — mpb discards every row at height 0.
+	width, _, sizeErr := term.GetSize(int(os.Stderr.Fd()))
+	if !renderTTY(os.Stderr) || sizeErr != nil || width <= 0 {
 		return &Progress{plain: &plainProgress{
 			w: os.Stderr, total: totalBytes, lastLine: time.Now(),
 		}}
@@ -141,7 +139,9 @@ func New(totalBytes int64) *Progress {
 	// chip lingering at 0s.
 	prependDecs := []decor.Decorator{
 		decor.Name("  "),
-		decor.OnComplete(decor.Percentage(decor.WC{W: 4}), "done"),
+		// "%d" renders "66%", matching plain mode — the default
+		// "% d" pads a space before the sign ("66 %").
+		decor.OnComplete(decor.NewPercentage("%d", decor.WC{W: 4}), "done"),
 		decor.Name("  "),
 	}
 	if !hasTotal {

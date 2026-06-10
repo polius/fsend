@@ -700,6 +700,50 @@ func TestEvict_PrunesIPBucket(t *testing.T) {
 	}
 }
 
+// TestEvict_AbandonedSession: a waiting session whose sender stopped
+// polling /wait is reclaimed after AbandonedTTL (freeing its per-IP
+// slot) long before UnpairedTTL; a still-polling one survives.
+func TestEvict_AbandonedSession(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          time.Hour,
+		AbandonedTTL:         5 * time.Minute,
+		PairedTTL:            time.Hour,
+		MaxSessionsPerIP:     100,
+		MaxNewSessionsPerMin: 100,
+	})
+	now := time.Now()
+	mk := func(id, code string, lastSeen time.Time) {
+		s.byID[id] = &session{
+			ID: id, Code: code, State: "waiting",
+			SenderRateKey: "1.2.3.4",
+			CreatedAt:     now.Add(-10 * time.Minute),
+			LastSeen:      lastSeen,
+			waiters:       make(chan struct{}),
+		}
+		s.byCode[code] = s.byID[id]
+		s.ipCounts["1.2.3.4"]++
+	}
+	s.mu.Lock()
+	mk("alive", "aaa-aaaa-aaa", now.Add(-30*time.Second))
+	mk("dead", "bbb-bbbb-bbb", now.Add(-6*time.Minute))
+	s.mu.Unlock()
+
+	s.evict(now)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID["alive"]; !ok {
+		t.Error("recently-polled session should survive")
+	}
+	if _, ok := s.byID["dead"]; ok {
+		t.Error("abandoned session should have been reclaimed")
+	}
+	if got := s.ipCounts["1.2.3.4"]; got != 1 {
+		t.Errorf("ipCounts = %d, want 1 (dead session's slot freed)", got)
+	}
+}
+
 func itoaHex(n int) string {
 	const hex = "0123456789abcdef"
 	if n == 0 {

@@ -153,7 +153,7 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello) bool {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "  Incoming from %s%s\n", peer, pathChip)
 	fmt.Fprintln(os.Stderr)
-	renderArtifact(os.Stderr, h, ui.outDir, f.overwrite)
+	renderArtifact(os.Stderr, h, ui.outDir, f)
 	fmt.Fprintln(os.Stderr)
 	if f.yes {
 		fmt.Fprintln(os.Stderr, uxlog.Check(), "Accepting (--yes)")
