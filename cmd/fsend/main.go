@@ -22,6 +22,10 @@ import (
 	"github.com/polius/fsend/internal/uxlog"
 )
 
+// errorRoleSender is set by runSend so renderError can pick sender-side
+// wording for errors mirrored from the receiver (E009, E013, E021).
+var errorRoleSender bool
+
 func main() {
 	// Normalise --connect arguments before cobra parses. We use
 	// NoOptDefVal so bare `fsend --connect` prints the current server,
@@ -140,6 +144,9 @@ func renderError(err error, debug bool) int {
 		err = fserrors.ErrUserCancelled
 	}
 	entry, known := fserrors.Lookup(err)
+	if known && errorRoleSender {
+		entry = entry.ForSender()
+	}
 
 	// Surface wrap context as a second line so users see WHY without
 	// having to enable --debug. Used for:

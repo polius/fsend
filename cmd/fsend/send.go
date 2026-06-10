@@ -24,6 +24,7 @@ import (
 // started in parallel; whichever the receiver reaches first wins. See
 // sendpair.go for the coordinator.
 func runSend(f *flags, paths []string) error {
+	errorRoleSender = true // renderError picks sender-side catalog wording
 	if f.textArg != "" && len(paths) > 0 {
 		return fmt.Errorf("%w: --text cannot be combined with file arguments", fserrors.ErrUsage)
 	}
@@ -124,7 +125,7 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		if len(paths) == 1 {
 			label = filepath.Base(paths[0]) + "/"
 		} else {
-			label = fmt.Sprintf("%d items", len(paths))
+			label = uxlog.CountNoun(len(paths), "item")
 		}
 		return items, wire.TransferDirectory, numFiles, label, cleanup, nil
 	}
@@ -139,7 +140,7 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		// directory-resolved file).
 		return items, wire.TransferSingleFile, 0, filepath.Base(paths[0]), noop, nil
 	}
-	return items, wire.TransferMultiFile, 0, fmt.Sprintf("%d files", len(paths)), noop, nil
+	return items, wire.TransferMultiFile, 0, uxlog.CountNoun(len(paths), "file"), noop, nil
 }
 
 // containsDirectory reports whether any of paths refers to a directory.
@@ -287,11 +288,11 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 		for _, it := range items {
 			total += it.Info.Size
 		}
-		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %d files  ·  %s\n",
-			label, totalFiles, uxlog.HumanBytes(int64(total)))
+		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %s  ·  %s\n",
+			label, uxlog.CountNoun(int(totalFiles), "file"), uxlog.HumanBytes(int64(total)))
 	case wire.TransferMultiFile:
-		fmt.Fprintf(os.Stderr, "  Sending  %d files  ·  %s\n",
-			len(items), uxlog.HumanBytes(totalBytes(items)))
+		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %s\n",
+			uxlog.CountNoun(len(items), "file"), uxlog.HumanBytes(totalBytes(items)))
 	case wire.TransferText:
 		fmt.Fprintf(os.Stderr, "  Sending  text  ·  %s\n",
 			uxlog.HumanBytes(totalBytes(items)))

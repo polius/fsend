@@ -73,6 +73,15 @@ func HumanRate(bytes int64, elapsed time.Duration) string {
 	return HumanBytes(int64(rate)) + "/s"
 }
 
+// CountNoun renders "<n> <noun>" with naive pluralisation ("1 file",
+// "3 files").
+func CountNoun(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 // Code renders a share code in bold + cyan so it stands out as the one
 // thing the user is about to type or dictate. Degrades to plain text
 // when color is disabled or stderr is not a TTY.

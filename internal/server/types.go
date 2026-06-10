@@ -138,19 +138,24 @@ type IceCreds struct {
 // decrement on session teardown lands on the same map key the
 // increment used.
 type session struct {
-	ID                 string
-	Code               string
-	SenderAddr         string
-	SenderRateKey      string
-	SenderICE          IceCreds
-	SenderToken        string
-	ReceiverAddr       string
-	ReceiverRateKey    string
-	ReceiverICE        IceCreds
-	ReceiverToken      string
-	State              string // "waiting" | "paired" | "complete"
-	CreatedAt          time.Time
-	PairedAt           time.Time
+	ID              string
+	Code            string
+	SenderAddr      string
+	SenderRateKey   string
+	SenderICE       IceCreds
+	SenderToken     string
+	ReceiverAddr    string
+	ReceiverRateKey string
+	ReceiverICE     IceCreds
+	ReceiverToken   string
+	State           string // "waiting" | "paired" | "complete"
+	CreatedAt       time.Time
+	PairedAt        time.Time
+	// LastSeen is touched by the sender's /wait long-poll (recurs every
+	// LongPollTimeout while the client is alive). Sessions whose client
+	// stopped polling are reclaimed after AbandonedTTL instead of
+	// holding a per-IP slot for the full UnpairedTTL.
+	LastSeen           time.Time
 	SenderCandidates   []string
 	ReceiverCandidates []string
 	// relayToken is the shared relay session token, allocated lazily on

@@ -73,7 +73,8 @@ func TestProgress_NilSafety(t *testing.T) {
 // TestProgress_PlainModeNoEscapes guards the non-TTY contract: piped
 // progress output must contain no ANSI escapes (mpb's non-interactive
 // mode emits cursor-up sequences, which is why plain mode bypasses it)
-// and must end with a single "done" line on completion.
+// and prints no completion line — the summary that follows carries the
+// final size.
 func TestProgress_PlainModeNoEscapes(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "stderr")
 	if err != nil {
@@ -95,8 +96,8 @@ func TestProgress_PlainModeNoEscapes(t *testing.T) {
 	if bytes.ContainsRune(out, 0x1b) {
 		t.Fatalf("plain progress emitted ANSI escapes: %q", out)
 	}
-	if got, want := string(out), "  done  1000 B\n"; got != want {
-		t.Fatalf("final line: got %q, want %q", got, want)
+	if got := string(out); got != "" {
+		t.Fatalf("completed plain progress should print nothing: got %q", got)
 	}
 }
 
