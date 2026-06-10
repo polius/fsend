@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,11 +33,26 @@ func runSend(f *flags, paths []string) error {
 	if f.textArg == "" && len(paths) == 0 {
 		return fmt.Errorf("%w: nothing to send (provide a file, a directory, or --text)", fserrors.ErrUsage)
 	}
+	// Receive-side flags silently dropped on a send mask swapped-argument
+	// mistakes (`fsend file --out dir`); reject instead.
+	for _, rf := range []struct {
+		name string
+		set  bool
+	}{{"--out", f.outDir != ""}, {"--yes", f.yes}, {"--overwrite", f.overwrite}} {
+		if rf.set {
+			return fmt.Errorf("%w: %s is a receive-side flag and has no effect when sending", fserrors.ErrUsage, rf.name)
+		}
+	}
+
+	// The signal handler must be installed before the --pass prompt so
+	// Ctrl-C there cancels cleanly instead of hitting a blocking read.
+	ctx, cancel := signalContext()
+	defer cancel()
 
 	// Bare --pass: suggest a random default the user can accept by
 	// pressing Enter. Done before any network setup so the prompt
 	// can't collide with the pairing-server spinner.
-	if err := resolvePassword(f, true); err != nil {
+	if err := resolvePassword(ctx, f, true); err != nil {
 		return err
 	}
 
@@ -50,8 +67,9 @@ func runSend(f *flags, paths []string) error {
 		return fmt.Errorf("generating code: %w", err)
 	}
 
-	ctx, cancel := signalContext()
-	defer cancel()
+	// Load config before the artifact block: it can print the E016
+	// corruption warning, which must not land on the spinner's line.
+	cfg := loadConfig(f.quiet)
 
 	// Print the artifact (code + receive command) exactly once, here,
 	// before any path is attempted. Both LAN and internet paths use the
@@ -69,7 +87,6 @@ func runSend(f *flags, paths []string) error {
 	// 300 ms mDNS query misses, so same-LAN receivers always win the
 	// race against the server path, and cross-network receivers don't
 	// wait on any timer.
-	cfg := loadConfig(f.quiet)
 	return runSendParallel(ctx, f, items, kind, totalFiles, label, c, cfg, waitSpin)
 }
 
@@ -117,6 +134,16 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		if err != nil {
 			return nil, 0, 0, "", noop, err
 		}
+		// "0 files" in the artifact line is honest but easy to miss; a
+		// fat-fingered --exclude glob deserves a nudge before the sender
+		// shares a code for an empty archive.
+		if numFiles == 0 && !f.quiet {
+			msg := "The directory is empty — sending an empty archive."
+			if len(f.excludes) > 0 {
+				msg = "Every file matched --exclude — sending an empty archive."
+			}
+			fmt.Fprintln(os.Stderr, uxlog.Warn(), msg)
+		}
 		// Pick a label the user recognises. Single input path → its
 		// basename (the folder they typed). Multiple inputs → "N items"
 		// so the display reflects the user's command, not the
@@ -132,7 +159,7 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 
 	items, err := transfer.Walk(paths)
 	if err != nil {
-		return nil, 0, 0, "", noop, err
+		return nil, 0, 0, "", noop, mapLocalReadErr(err)
 	}
 	if len(paths) == 1 {
 		// Surface the user-typed basename, not the walker's relative
@@ -141,6 +168,16 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		return items, wire.TransferSingleFile, 0, filepath.Base(paths[0]), noop, nil
 	}
 	return items, wire.TransferMultiFile, 0, uxlog.CountNoun(len(paths), "file"), noop, nil
+}
+
+// mapLocalReadErr promotes a permission failure on a local source file
+// to E010 ("check the file permissions"). Without this it falls into the
+// E099 catchall, which tells users to file a bug for their own chmod.
+func mapLocalReadErr(err error) error {
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("%w: %v", fserrors.ErrReadFailed, err)
+	}
+	return err
 }
 
 // containsDirectory reports whether any of paths refers to a directory.
@@ -172,7 +209,7 @@ func containsDirectory(paths []string) (bool, error) {
 func buildArchiveItem(paths []string, excludes []string) ([]transfer.SourceItem, uint32, func(), error) {
 	res, err := transfer.BuildArchive(paths, excludes)
 	if err != nil {
-		return nil, 0, func() {}, err
+		return nil, 0, func() {}, mapLocalReadErr(err)
 	}
 	cleanup := func() { _ = os.Remove(res.Path) }
 

@@ -47,10 +47,9 @@ const spinnerInterval = 100 * time.Millisecond
 // anything else to stderr, otherwise the spinner's redraw will fight the
 // caller's output.
 //
-// A nil-safe no-op spinner is returned when stderr is not a TTY *and* the
-// caller is in quiet mode (we still print a static line when stderr is a
-// pipe but the program isn't quiet — log files should record the wait
-// happened).
+// On non-TTY stderr a single static "[*] msg" line is printed instead —
+// log files should record the wait happened. Quiet mode is the caller's
+// concern (don't start a spinner); the package consults no flags.
 func StartSpinner(msg string) *Spinner {
 	s := &Spinner{
 		msg:  msg,

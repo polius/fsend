@@ -106,7 +106,8 @@ func blake3FileHash(path string) ([32]byte, error) {
 	var zero [32]byte
 	f, err := os.Open(path)
 	if err != nil {
-		return zero, fmt.Errorf("walk: open %s: %w", path, err)
+		// The os error already names the path; don't repeat it.
+		return zero, fmt.Errorf("walk: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	h := blake3.New()

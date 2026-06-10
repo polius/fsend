@@ -13,10 +13,11 @@ func TestHumanBytes(t *testing.T) {
 	}{
 		{0, "0 B"},
 		{512, "512 B"},
-		{1024, "1.0 KB"},
+		{1024, "1 KB"},
 		{1536, "1.5 KB"},
-		{1024 * 1024, "1.0 MB"},
+		{1024 * 1024, "1 MB"},
 		{int64(2.5 * 1024 * 1024), "2.5 MB"},
+		{100 * 1024 * 1024, "100 MB"},
 	} {
 		if got := HumanBytes(tc.in); got != tc.want {
 			t.Errorf("HumanBytes(%d) = %q, want %q", tc.in, got, tc.want)

@@ -92,7 +92,7 @@ func runConnect(f *flags) error {
 		return nil
 	default:
 		if len(args) > 2 {
-			return fmt.Errorf("%w: --connect takes at most: <host[:port]> [password]", fserrors.ErrUsage)
+			return fmt.Errorf("%w: --connect takes at most: <host[:port]>,<password>", fserrors.ErrUsage)
 		}
 		server, err := normalizeServer(args[0])
 		if err != nil {

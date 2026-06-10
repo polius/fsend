@@ -123,7 +123,7 @@ Examples:
 	// Server selection. Bare --connect (no value) means "show current
 	// server" — same NoOptDefVal trick as --pass. The dispatcher
 	// recognises the sentinel and treats it as "no args".
-	c.Flags().StringSliceVar(&f.connectArgsRaw, "connect", nil, "set the server: <host:port> [password] | 'default'")
+	c.Flags().StringSliceVar(&f.connectArgsRaw, "connect", nil, "set the server: <host[:port]>[,<password>] | 'default'")
 	connectFlag := c.Flags().Lookup("connect")
 	connectFlag.NoOptDefVal = connectShowSentinel
 	connectFlag.DefValue = ""
@@ -137,8 +137,61 @@ Examples:
 
 	c.AddCommand(serverCmd())
 
+	// Replace cobra's auto-generated completion command: it inherits the
+	// root help/usage template (so `fsend completion --help` printed the
+	// root page) and exits 0 on a missing or unknown shell — fatal when
+	// the output is eval'd in a dotfile.
+	c.CompletionOptions.DisableDefaultCmd = true
+	c.AddCommand(completionCmd())
+
 	return c
 }
+
+// completionCmd prints a completion script for one of the supported
+// shells, with a usage error (E024, nonzero exit) for anything else.
+func completionCmd() *cobra.Command {
+	const shells = "bash, zsh, fish, powershell"
+	c := &cobra.Command{
+		Use:           "completion <shell>",
+		Short:         "Print a shell completion script",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("%w: completion expects one shell argument (%s)", fserrors.ErrUsage, shells)
+			}
+			root := cmd.Root()
+			switch args[0] {
+			case "bash":
+				return root.GenBashCompletionV2(os.Stdout, true)
+			case "zsh":
+				return root.GenZshCompletion(os.Stdout)
+			case "fish":
+				return root.GenFishCompletion(os.Stdout, true)
+			case "powershell":
+				return root.GenPowerShellCompletionWithDesc(os.Stdout)
+			}
+			return fmt.Errorf("%w: unknown shell %q (expected one of: %s)", fserrors.ErrUsage, args[0], shells)
+		},
+	}
+	ht := boldHelpHeaders(completionHelpTemplate)
+	c.SetHelpTemplate(ht)
+	c.SetUsageTemplate(ht)
+	return c
+}
+
+const completionHelpTemplate = `fsend completion — print a shell completion script
+
+USAGE
+  fsend completion <bash|zsh|fish|powershell>
+
+EXAMPLES
+  zsh:   eval "$(fsend completion zsh)"
+  bash:  eval "$(fsend completion bash)"
+  fish:  fsend completion fish | source
+
+  Add the line to your shell's rc file to load it on every session.
+`
 
 // validMode reports whether s is an accepted --mode value.
 // "" means "no override" (default auto-selection).
@@ -319,6 +372,26 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	}
 	if f.forceSend && f.forceReceive {
 		return fmt.Errorf("%w: --send and --receive are mutually exclusive", fserrors.ErrUsage)
+	}
+	// An empty positional ("" from a botched shell expansion) would fall
+	// through to the send path as a nameless E025.
+	for _, a := range f.posArgs {
+		if a == "" {
+			return fmt.Errorf("%w: empty argument (check your shell quoting)", fserrors.ErrUsage)
+		}
+	}
+
+	// `fsend --pass file.pdf`: the value rides with the flag, so the file
+	// is consumed as the password — and with piped stdin that silently
+	// opens a session sending the wrong content. If the flag's value
+	// names an existing file and nothing is left to send, it was almost
+	// certainly a misplaced path.
+	if cmd.Flags().Changed("pass") && f.passArg != "" && f.passArg != passPromptSentinel &&
+		len(f.posArgs) == 0 && !cmd.Flags().Changed("text") {
+		if st, err := os.Stat(f.passArg); err == nil && !st.IsDir() {
+			return fmt.Errorf("%w: --pass consumed %q as the password; to send that file: fsend %s --pass",
+				fserrors.ErrUsage, f.passArg, f.passArg)
+		}
 	}
 
 	// Env-var fallback for the password (FSEND_PASS). Passing a secret via

@@ -39,16 +39,26 @@ func runReceive(f *flags, c string) error {
 	if f.outDir == "-" && f.overwrite {
 		return fmt.Errorf("%w: --overwrite has no effect with --out -", fserrors.ErrUsage)
 	}
+	// Validate --out before any network work: a missing directory would
+	// otherwise only fail at write time, after the sender's one-shot code
+	// has been consumed.
+	if _, _, err := resolveOutDir(f); err != nil {
+		return err
+	}
+
+	// The signal handler must be installed before any interactive prompt:
+	// resolvePassword reads with echo off, and a default-disposition
+	// SIGINT inside that read would kill the process without restoring
+	// the terminal.
+	ctx, cancel := signalContext()
+	defer cancel()
 
 	// Bare --pass: hidden no-echo prompt. We're not the password's
 	// author — we have to type what the sender configured — so there's
 	// no point offering a random default here.
-	if err := resolvePassword(f, false); err != nil {
+	if err := resolvePassword(ctx, f, false); err != nil {
 		return err
 	}
-
-	ctx, cancel := signalContext()
-	defer cancel()
 
 	// LAN discovery is a 300 ms probe — short enough that showing a
 	// spinner only flashes a line that immediately gets cleared on miss,

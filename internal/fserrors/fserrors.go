@@ -183,7 +183,10 @@ var catalog = map[error]Entry{
 	},
 	ErrReceiverDeclined: {
 		Code: "E006", Exit: 6,
-		Message: "Receiver declined the transfer.",
+		// Receiver-side wording: this is the decliner's own deliberate
+		// choice, so don't narrate it back in the third person.
+		Message:       "Declined.",
+		SenderMessage: "Receiver declined the transfer.",
 	},
 	ErrSessionExpired: {
 		Code: "E007", Exit: 7,
@@ -218,7 +221,7 @@ var catalog = map[error]Entry{
 		Code: "E012", Exit: 12,
 		Message: "Sender tried to write outside the target directory. Transfer rejected.",
 		Action: "This is a security check — please report at:\n" +
-			"    https://github.com/polius/fsend/issues/new?label=security",
+			"    https://github.com/polius/fsend/issues/new?labels=security",
 	},
 	ErrTargetExists: {
 		Code: "E013", Exit: 13,
@@ -258,7 +261,9 @@ var catalog = map[error]Entry{
 	},
 	ErrServerRetired: {
 		Code: "E018", Exit: 18,
-		Message: "The default server (fsend.alzina.dev) has been retired.",
+		// No hardcoded host: any server (including self-hosted ones) can
+		// return 410. renderError appends "Server: <addr>" as the detail.
+		Message: "This server has been retired.",
 		Action: "Switch to a different server with:\n" +
 			"    fsend --connect <host:port>\n" +
 			"  Or self-host: https://github.com/polius/fsend/blob/main/docs/self-hosting.md",
@@ -297,7 +302,8 @@ var catalog = map[error]Entry{
 			"  limit; same-network and direct internet transfers are uncapped.\n" +
 			"  Workarounds:\n" +
 			"    - Run again from a different network so fsend can connect you directly.\n" +
-			"    - Self-host your own server (`fsend server`) and raise FSEND_MAX_RELAY_BYTES_PER_SESSION.",
+			"    - Self-host your own server (`fsend server`) and raise\n" +
+			"      FSEND_MAX_RELAY_BYTES_PER_SESSION.",
 	},
 	ErrUsage: {
 		Code: "E024", Exit: 24,

@@ -308,11 +308,13 @@ CONFIGURATION (environment variables — all optional)
   FSEND_LOG_LEVEL                       Default info
   FSEND_MAX_SESSIONS_PER_IP             Default 5
   FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN Default 30
-  FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MiB, counted in wire bytes after compression
-                                        (accepts e.g. "100MiB", "500m", "104857600")
-  FSEND_SERVER_PASSWORD                 Optional shared secret. When set, every endpoint except
-                                        /v1/health requires the X-Fsend-Auth header to match.
-                                        Clients set theirs with: fsend --connect <host:port>,<password>.
+  FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MiB, counted in wire bytes
+                                        after compression (accepts e.g.
+                                        "100MiB", "500m", "104857600")
+  FSEND_SERVER_PASSWORD                 Optional shared secret. When set, every
+                                        endpoint except /v1/health requires the
+                                        X-Fsend-Auth header to match. Clients:
+                                        fsend --connect <host:port>,<password>
 
 LEARN MORE
   https://github.com/polius/fsend

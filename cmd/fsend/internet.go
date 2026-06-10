@@ -420,14 +420,16 @@ func retryNoticeFor(f *flags) func(attempt int, wait time.Duration, lastErr erro
 	if f.quiet {
 		return nil
 	}
+	// uxlog.Println coordinates with a live progress bar so the notice
+	// prints above it instead of colliding with the in-place redraw.
 	return func(attempt int, wait time.Duration, lastErr error) {
 		if f.debug {
-			fmt.Fprintf(os.Stderr, "  %s Connection interrupted (%s) — retrying in %s (attempt %d/%d)\n",
-				uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts)
+			uxlog.Println(fmt.Sprintf("  %s Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
+				uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts))
 			return
 		}
-		fmt.Fprintf(os.Stderr, "  %s Connection interrupted — retrying in %s (attempt %d/%d)\n",
-			uxlog.Retry(), wait, attempt, retry.DefaultAttempts)
+		uxlog.Println(fmt.Sprintf("  %s Connection interrupted — retrying in %s (attempt %d/%d)",
+			uxlog.Retry(), wait, attempt, retry.DefaultAttempts))
 	}
 }
 
