@@ -1,9 +1,45 @@
 package landisc
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestQuery_MissIsBounded pins the watchdog contract: with no sender
+// announcing the code, Query must report a miss within timeout +
+// watchdogGrace — never hang. A wedged pion/mdns query used to block
+// forever (and keep multicasting, poisoning later receivers); callers
+// rely on a prompt miss to fall through to the pairing-server path.
+func TestQuery_MissIsBounded(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	start := time.Now()
+	res, err := Query(context.Background(), "zzz-wdog-tst", timeout)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("Query found a sender for a code nobody announces: %+v", res)
+	}
+	// Generous bound: timeout + watchdogGrace plus slack for -race CI.
+	if limit := timeout + watchdogGrace + 2*time.Second; elapsed > limit {
+		t.Errorf("Query took %v, want < %v", elapsed, limit)
+	}
+}
+
+// TestQuery_CancelledContext documents shutdown behavior: a cancelled
+// context must surface as a prompt error, not wait out the watchdog —
+// SIGINT during the LAN probe should not stall the exit path.
+func TestQuery_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if _, err := Query(ctx, "zzz-wdog-tst", 300*time.Millisecond); err == nil {
+		t.Fatal("Query with cancelled context returned no error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("cancelled Query took %v, want < 1s", elapsed)
+	}
+}
 
 // TestPortForCode_Deterministic locks in the property both peers depend
 // on: same code derives the same UDP port, so the receiver knows where
