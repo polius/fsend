@@ -101,6 +101,37 @@ const barWidth = 40
 // figure becomes meaningful.
 const rateThreshold = 1 << 20
 
+// activeProgress is the bar currently drawing on the terminal, if any.
+// Println routes through it so foreign lines (retry notices) land between
+// refresh frames instead of inside one. There is only ever one bar at a
+// time per process.
+var (
+	activeMu       sync.Mutex
+	activeProgress *Progress
+)
+
+// Println writes a full line to stderr. While a TTY progress bar is
+// live, the line is handed to mpb so it prints above the bar instead of
+// colliding with the in-place redraw.
+func Println(line string) {
+	activeMu.Lock()
+	p := activeProgress
+	activeMu.Unlock()
+	if p != nil && p.mp != nil {
+		if _, err := fmt.Fprintln(p.mp, line); err == nil {
+			return
+		}
+		// mpb already shut down (ErrDone) — fall through to plain stderr.
+	}
+	fmt.Fprintln(os.Stderr, line)
+}
+
+func setActive(p *Progress) {
+	activeMu.Lock()
+	activeProgress = p
+	activeMu.Unlock()
+}
+
 // New constructs a Progress that writes to stderr (the only sink the spec
 // allows for visual output).
 //
@@ -117,6 +148,7 @@ func New(totalBytes int64) *Progress {
 		}}
 	}
 	p := &Progress{}
+	defer setActive(p)
 
 	p.mp = mpb.New(
 		mpb.WithOutput(os.Stderr),
@@ -277,6 +309,7 @@ func (p *Progress) Done() {
 		p.bar.Abort(false)
 	}
 	p.mp.Wait()
+	setActive(nil)
 }
 
 // IsTTY reports whether w refers to a terminal.

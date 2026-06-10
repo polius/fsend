@@ -44,13 +44,13 @@ func Check() string { return Marker(gCheck) }
 // Cross returns the failure glyph (✗ or [FAIL]).
 func Cross() string { return Marker(gCross) }
 
-// Warn returns the warning glyph (⚠ or [WARN]).
+// Warn returns the warning glyph (⚠ or [!]).
 func Warn() string { return Marker(gWarn) }
 
-// Info returns the informational glyph (ℹ or [INFO]).
+// Info returns the informational glyph (ℹ or [i]).
 func Info() string { return Marker(gInfo) }
 
-// Retry returns the retry glyph (↻ or [RETRY]).
+// Retry returns the retry glyph (⟳ or [~]).
 func Retry() string { return Marker(gRetry) }
 
 // PasswordChip renders the "password required" artifact chip, degrading
@@ -87,13 +87,6 @@ func glyphForKind(k glyphKind) (utf8, ascii, color string) {
 	return "", "", ""
 }
 
-// IsTTY reports whether w refers to a terminal. Mirrors the helper that
-// already lives in this package; kept here so glyphs can be used without
-// importing the progress-bar code.
-//
-// Note: the canonical implementation is in uxlog.go; this file uses the
-// same name so call sites have one obvious helper.
-
 // ---------------------------------------------------------------------
 // Colour handling
 // ---------------------------------------------------------------------
@@ -122,7 +115,12 @@ var (
 // escapes (color, cursor movement). On Windows the first call flips the
 // console into VT mode; when that fails (legacy conhost) every renderer
 // degrades to its non-TTY output instead of printing escape garbage.
+// TERM=dumb gets the same degradation — those terminals are TTYs but
+// can't interpret escapes.
 func renderTTY(w io.Writer) bool {
+	if os.Getenv("TERM") == "dumb" {
+		return false
+	}
 	ansiOnce.Do(func() { ansiOK = enableANSI() })
 	return ansiOK && IsTTY(w)
 }
@@ -134,6 +132,8 @@ func renderTTY(w io.Writer) bool {
 //   - FORCE_COLOR set (any non-empty, non-"0") → enabled, even on non-TTYs
 //   - otherwise: enabled iff stderr is a TTY
 //
+// FORCE_COLOR affects colours only: glyph/spinner selection still keys
+// off the writer's TTY state, so pipes always get the ASCII fallbacks.
 // Cached after first check to avoid re-stat'ing stderr on every line.
 func colorEnabled() bool {
 	colorMu.Lock()

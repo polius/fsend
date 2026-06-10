@@ -85,14 +85,16 @@ func confirmUninstall(f *flags) bool {
 	if cfgPath != "" {
 		cfgDir = filepath.Dir(cfgPath)
 	}
-	fmt.Fprintln(os.Stderr, "This will remove:")
+	// Same shape as the receive prompts: two-space indent, no trailing
+	// colon, ASCII list markers (the • glyph has no pipe fallback).
+	fmt.Fprintln(os.Stderr, "  This will remove:")
 	if binPath != "" {
-		fmt.Fprintf(os.Stderr, "  • binary:     %s\n", binPath)
+		fmt.Fprintf(os.Stderr, "    - binary:     %s\n", binPath)
 	}
 	if cfgDir != "" {
-		fmt.Fprintf(os.Stderr, "  • config dir: %s\n", cfgDir)
+		fmt.Fprintf(os.Stderr, "    - config dir: %s\n", cfgDir)
 	}
-	fmt.Fprint(os.Stderr, "Continue? [y/N]: ")
+	fmt.Fprint(os.Stderr, "  Continue? [y/N] ")
 	switch readLine(os.Stdin) {
 	case "y", "yes":
 		return true

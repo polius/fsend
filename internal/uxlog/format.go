@@ -23,7 +23,12 @@ func HumanBytes(n int64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+	v := float64(n) / float64(div)
+	// Round values drop the decimal: "100 MB", not "100.0 MB".
+	if v == float64(int64(v)) {
+		return fmt.Sprintf("%d %cB", int64(v), "KMGTPE"[exp])
+	}
+	return fmt.Sprintf("%.1f %cB", v, "KMGTPE"[exp])
 }
 
 // HumanDuration renders elapsed in compact form. Sub-second durations

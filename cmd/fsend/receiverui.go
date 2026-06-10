@@ -42,6 +42,7 @@ type receiverUI struct {
 	prev           map[uint32]uint64
 	total          int64
 	bar            *uxlog.Progress
+	firstByte      time.Time // latched on first progress byte; see finishReceive
 	totalBytesHint int64
 	streamingTotal bool // HELLO carried TotalBytes=0 (piped stdin)
 	preApproved    bool // accept prompt already disclosed the overwrite
@@ -59,6 +60,8 @@ func newReceiverUI(ctx context.Context, f *flags, outDir string, sink bool, path
 // resolveOutDir resolves --out: "-" selects sink (stdout) mode, ""
 // defaults to the CWD. Directories come back absolute so the prompt and
 // the summary show a stable path regardless of how the user spelled it.
+// An explicit --out must already exist — failing fast here beats
+// accepting a transfer that is doomed at write time.
 func resolveOutDir(f *flags) (dir string, sink bool, err error) {
 	if f.outDir == "-" {
 		return "", true, nil
@@ -71,6 +74,15 @@ func resolveOutDir(f *flags) (dir string, sink bool, err error) {
 	}
 	if abs, absErr := filepath.Abs(dir); absErr == nil {
 		dir = abs
+	}
+	if f.outDir != "" {
+		st, statErr := os.Stat(dir)
+		switch {
+		case statErr != nil:
+			return "", false, fmt.Errorf("%w: --out directory does not exist: %s", fserrors.ErrUsage, dir)
+		case !st.IsDir():
+			return "", false, fmt.Errorf("%w: --out is not a directory: %s", fserrors.ErrUsage, dir)
+		}
 	}
 	return dir, false, nil
 }
@@ -209,6 +221,9 @@ func (ui *receiverUI) confirmOverwrite(relPath string, existing int64, incoming 
 func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
+	if ui.firstByte.IsZero() {
+		ui.firstByte = time.Now()
+	}
 	if ui.bar == nil && !ui.f.quiet {
 		ui.bar = uxlog.New(ui.totalBytesHint)
 	}
@@ -258,7 +273,14 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	ui.mu.Lock()
 	h := ui.hello
 	files := append([]string(nil), ui.files...)
+	firstByte := ui.firstByte
 	ui.mu.Unlock()
+
+	// Time from the first byte: the caller's window includes the accept
+	// prompt, and a 20 s deliberation would read as a glacial transfer.
+	if !firstByte.IsZero() {
+		elapsed = time.Since(firstByte)
+	}
 
 	if h != nil && h.TransferKind == wire.TransferText && !ui.sink {
 		if err := printTextPayload(files); err != nil {

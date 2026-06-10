@@ -351,9 +351,10 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			if errors.Is(lanErr, context.Canceled) {
 				continue
 			}
-			// Don't print the "must use a different network" notice when the
-			// user explicitly forced the LAN path with --mode=local:
-			// there is no other path, so the bare error is the whole story.
+			// Only the notice when there's another path left (not under
+			// --mode=local). Same-LAN receivers can still pair through
+			// the server (host↔host ICE), so this describes the loss of
+			// the discovery shortcut, not a reachability verdict.
 			if !lanDownNoticed && !f.quiet && !serverDisabled {
 				lanDownNoticed = true
 				// Pause the spinner so the notice prints on a clean
@@ -362,7 +363,7 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 				// winnerPicked (and Stop fires via deferred cleanup)
 				// or trigger another notice.
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local network unavailable — receiver must use a different network.")
+				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local-network discovery unavailable — connecting via the server instead.")
 				waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
 			}
 
@@ -377,14 +378,19 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			if errors.Is(serverErr, context.Canceled) {
 				continue
 			}
-			// Don't print the "only same-LAN receivers can connect" notice
-			// when the user explicitly forced the internet path with
-			// --mode=direct/relay: LAN is disabled, so the notice would
-			// be misleading.
-			if !serverDownNoticed && !f.quiet && !lanDisabled && isServerDown(serverErr) {
+			// Any server-path failure (unreachable, rate-limited, bad
+			// password, 5xx) leaves the code working on the local network
+			// only — say so, or the sender waits forever on a code that
+			// cross-network receivers can't redeem. Skipped when the user
+			// explicitly forced the internet path with --mode=direct/relay:
+			// LAN is disabled, so the notice would be misleading.
+			if !serverDownNoticed && !f.quiet && !lanDisabled {
 				serverDownNoticed = true
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unreachable — only receivers on your local network can connect.")
+				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unavailable — only receivers on your local network can connect.")
+				if entry, known := fserrors.Lookup(serverErr); known {
+					fmt.Fprintf(os.Stderr, "  [%s] %s\n", entry.Code, entry.Message)
+				}
 				waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 			}
 		}
@@ -401,11 +407,21 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 	// land on a clean line. The deferred Stop above is idempotent.
 	waitSpin.Stop()
 
+	pathInfo := connpath.FromLAN()
+	if winner.lan == nil {
+		pathInfo = winner.server.pathInfo
+	}
+	printPath(f, pathInfo)
+	// The receiver may now sit at its accept prompt for a while; without
+	// this line the sender stares at a dead terminal wondering whether
+	// the code even arrived.
+	if !f.quiet {
+		fmt.Fprintln(os.Stderr, uxlog.Check(), "Receiver connected — waiting for them to accept.")
+	}
+
 	if winner.lan != nil {
-		printPath(f, connpath.FromLAN())
 		return runSenderTransferOverLAN(ctx, f, items, kind, totalFiles, label, winner.lan)
 	}
-	printPath(f, winner.server.pathInfo)
 	return runSenderTransferOverInternet(ctx, f, items, kind, totalFiles, label, winner.server)
 }
 
@@ -469,7 +485,17 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	closeProg, progressFn, sentBytes, onStreamingEOF := newSenderProgress(f, items)
 	defer closeProg()
 
+	// Time from the first byte, not from here — the receiver may sit at
+	// its accept prompt for a while, and counting that wait makes the
+	// summary read like a glacial transfer.
 	start := time.Now()
+	var firstByte time.Time
+	progress := func(fi uint32, b uint64) {
+		if firstByte.IsZero() {
+			firstByte = time.Now()
+		}
+		progressFn(fi, b)
+	}
 	current := firstRes
 	opts := retry.Options{OnRetry: retryNoticeFor(f)}
 	if hasConsumableReader(items) {
@@ -498,7 +524,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 				TotalFiles:     totalFiles,
 				DisplayName:    displayName,
 				Password:       f.passArg,
-				ProgressFn:     progressFn,
+				ProgressFn:     progress,
 				OnStreamingEOF: onStreamingEOF,
 			})
 		})
@@ -515,7 +541,11 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	// Flush the bar first so its terminal frame lands above the summary
 	// (the deferred call is then a no-op).
 	closeProg()
-	printSendSummary(f, bytes, time.Since(start), pathInfo)
+	elapsed := time.Since(start)
+	if !firstByte.IsZero() {
+		elapsed = time.Since(firstByte)
+	}
+	printSendSummary(f, bytes, elapsed, pathInfo)
 	return nil
 }
 

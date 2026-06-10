@@ -40,7 +40,7 @@ type cache struct {
 	Latest    string    `json:"latest"`
 }
 
-// Notice returns a one-line upgrade message if a release newer than
+// Notice returns a short upgrade message if a release newer than
 // current is available, or "" when up to date, opted out, or anything
 // goes wrong. current is the running version (version.Version).
 //
@@ -56,7 +56,9 @@ func Notice(ctx context.Context, current string) string {
 	if latest == "" || !newer(latest, current) {
 		return ""
 	}
-	return fmt.Sprintf("A new fsend is available (%s → %s). Update: %s",
+	// Two lines: with the install command inline the notice runs past 80
+	// columns. The caller indents the first line; match it on the second.
+	return fmt.Sprintf("A new fsend is available (%s → %s).\n  Update: %s",
 		strings.TrimPrefix(current, "v"), latest, installCmd)
 }
 

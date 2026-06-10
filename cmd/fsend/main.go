@@ -153,9 +153,9 @@ func renderError(err error, debug bool) int {
 	//   - usage / source-not-found: the missing path or bad flag.
 	//   - relay-limit hits: the server's configured limit ("100 MiB").
 	detail := ""
-	// E001 names the server it tried so a stale --connect entry is
-	// self-diagnosing instead of reading as a network outage.
-	if errors.Is(err, fserrors.ErrServerUnreachable) {
+	// E001 and E018 name the server it tried so a stale --connect entry
+	// is self-diagnosing instead of reading as a network outage.
+	if errors.Is(err, fserrors.ErrServerUnreachable) || errors.Is(err, fserrors.ErrServerRetired) {
 		if cfg, cfgErr := config.Load(); cfgErr == nil {
 			detail = "Server: " + cfg.EffectiveServer()
 		}
@@ -173,10 +173,16 @@ func renderError(err error, debug bool) int {
 	// Pick the leading glyph based on severity: warnings (Exit==0, e.g.
 	// ErrConfigCorrupted) get ⚠, real failures get ✗. Without this,
 	// every catalog entry — including "this is fine, falling back to
-	// defaults" — would be flagged with a red cross.
+	// defaults" — would be flagged with a red cross. Deliberate user
+	// actions (Ctrl-C, the receiver's own decline) aren't failures
+	// either, so they get the neutral info glyph.
 	glyph := uxlog.Cross()
-	if entry.Exit == 0 {
+	switch {
+	case entry.Exit == 0:
 		glyph = uxlog.Warn()
+	case errors.Is(err, fserrors.ErrUserCancelled),
+		!errorRoleSender && errors.Is(err, fserrors.ErrReceiverDeclined):
+		glyph = uxlog.Info()
 	}
 
 	switch {
@@ -190,8 +196,16 @@ func renderError(err error, debug bool) int {
 		// path and lands here — by far the most common failure when
 		// codes are relayed verbally. Without the hint, the bare "no
 		// such file" sends those users hunting for a file problem.
-		if code.LooksLikeCode(detail) {
+		// Suppressed under an explicit --send: the user already told us
+		// the argument is a path.
+		switch {
+		case code.LooksLikeCode(detail) && !argsHaveFlag("--send"):
 			fmt.Fprintf(os.Stderr, "  If this was a receive code, check it with the sender — codes look like abc-defg-jkm.\n")
+		// Muscle-memory from other tools: there are no subcommands.
+		case detail == "version":
+			fmt.Fprintf(os.Stderr, "  For the fsend version, run: fsend --version\n")
+		case detail == "send" || detail == "receive":
+			fmt.Fprintf(os.Stderr, "  fsend has no %q subcommand — `fsend <file>` sends, `fsend <code>` receives.\n", detail)
 		}
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
@@ -234,8 +248,14 @@ func debugRequested() bool {
 	if v := os.Getenv("FSEND_DEBUG"); v != "" && v != "0" && v != "false" {
 		return true
 	}
+	return argsHaveFlag("--debug")
+}
+
+// argsHaveFlag scans os.Args for a literal flag token. Used by the error
+// renderer, which runs after cobra state is gone.
+func argsHaveFlag(name string) bool {
 	for _, a := range os.Args[1:] {
-		if a == "--debug" {
+		if a == name {
 			return true
 		}
 		if a == "--" {

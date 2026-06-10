@@ -91,7 +91,12 @@ func readPasswordHiddenCtx(ctx context.Context, prompt string) (string, error) {
 // Receiver side: hidden no-echo prompt. The receiver must type whatever
 // the sender configured, so a "random default" makes no sense; we just
 // reuse the standard hidden-password reader.
-func resolvePassword(f *flags, sender bool) error {
+//
+// ctx must come from signalContext(): once the handler is installed,
+// SIGINT only cancels the context, so a prompt that doesn't select on
+// ctx would leave Ctrl-C dead — and for the hidden prompt, the terminal
+// stuck with echo off.
+func resolvePassword(ctx context.Context, f *flags, sender bool) error {
 	if f.passArg != passPromptSentinel {
 		return nil
 	}
@@ -104,19 +109,42 @@ func resolvePassword(f *flags, sender bool) error {
 		return fmt.Errorf("%w: bare --pass needs a terminal; use --pass <value> or FSEND_PASS", fserrors.ErrUsage)
 	}
 	if sender {
-		pw, err := promptPasswordWithSuggestion()
+		pw, err := promptPasswordWithSuggestionCtx(ctx)
 		if err != nil {
 			return err
 		}
 		f.passArg = pw
 		return nil
 	}
-	pw, err := readPasswordHidden("Password for this transfer: ")
+	pw, err := readPasswordHiddenCtx(ctx, "Password for this transfer: ")
 	if err != nil {
 		return err
 	}
 	f.passArg = pw
 	return nil
+}
+
+// promptPasswordWithSuggestionCtx is promptPasswordWithSuggestion that
+// aborts on ctx cancellation (Ctrl-C at the prompt). The prompt echoes
+// normally, so unlike the hidden reader there is no terminal state to
+// restore — just move off the prompt line.
+func promptPasswordWithSuggestionCtx(ctx context.Context) (string, error) {
+	type result struct {
+		pw  string
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		pw, err := promptPasswordWithSuggestion()
+		ch <- result{pw, err}
+	}()
+	select {
+	case <-ctx.Done():
+		fmt.Fprintln(os.Stderr)
+		return "", context.Canceled
+	case r := <-ch:
+		return r.pw, r.err
+	}
 }
 
 // promptPasswordWithSuggestion offers a freshly-generated random password
