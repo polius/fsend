@@ -134,6 +134,42 @@ download() {
     fi
 }
 
+# winpath converts an MSYS/Cygwin path to a Windows path for native
+# tools (System32 tar.exe, PowerShell), which can't resolve /tmp/...
+# Falls through to the raw path where cygpath doesn't exist.
+winpath() {
+    cygpath -w "$1" 2>/dev/null || printf '%s' "$1"
+}
+
+# extract_zip unpacks a release zip with whatever the host actually has.
+# Git Bash — the shell the README points Windows users at — ships
+# neither unzip nor bsdtar in its own /usr/bin (its tar is GNU tar,
+# which cannot read zip), so the System32 bsdtar (Windows 10+) and
+# PowerShell fallbacks are the paths that fire there.
+extract_zip() {
+    zip="$1"
+    dest="$2"
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -q "$zip" -d "$dest"
+        return
+    fi
+    if command -v tar >/dev/null 2>&1 && tar --version 2>/dev/null | grep -q bsdtar; then
+        tar -xf "$zip" -C "$dest"
+        return
+    fi
+    systar="${SYSTEMROOT:-C:\\Windows}/System32/tar.exe"
+    if [ -x "$systar" ]; then
+        "$systar" -xf "$(winpath "$zip")" -C "$(winpath "$dest")"
+        return
+    fi
+    if command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -NonInteractive -Command \
+            "Expand-Archive -LiteralPath '$(winpath "$zip")' -DestinationPath '$(winpath "$dest")' -Force"
+        return
+    fi
+    err "no zip extractor found (need unzip, bsdtar, or PowerShell)"
+}
+
 verify_checksum() {
     archive="$1"
     sums="$2"
@@ -269,7 +305,7 @@ main() {
     info "extracting"
     case "$ext" in
         tar.gz) need tar; tar -xzf "$tmp/$archive" -C "$tmp" ;;
-        zip)    need unzip; unzip -q "$tmp/$archive" -d "$tmp" ;;
+        zip)    extract_zip "$tmp/$archive" "$tmp" ;;
     esac
     [ -f "$tmp/$bin_file" ] || err "binary $bin_file not found in archive"
 
