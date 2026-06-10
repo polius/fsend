@@ -314,6 +314,18 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 	return uxlog.StartSpinner("Waiting for receiver")
 }
 
+// hasConsumableReader reports whether any item is backed by a one-shot
+// reader (stdin, --text). Such items cannot be replayed: a retry would
+// resend from wherever the reader was left, so retries must be disabled.
+func hasConsumableReader(items []transfer.SourceItem) bool {
+	for _, it := range items {
+		if it.Reader != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // totalBytes sums the payload bytes across items.
 func totalBytes(items []transfer.SourceItem) int64 {
 	var t int64
@@ -496,6 +508,7 @@ func printSendSummary(f *flags, bytes int64, elapsed time.Duration, path connpat
 	}
 	parts := summaryParts(bytes, elapsed, path)
 	fmt.Fprintf(os.Stderr, "%s Sent  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
+	printUpdateNotice(f)
 }
 
 // printRecvSummary is the receive-side counterpart. The bytes figure is
@@ -514,9 +527,11 @@ func printRecvSummary(f *flags, destLabel string, bytes int64, elapsed time.Dura
 	if destLabel != "" {
 		fmt.Fprintf(os.Stderr, "%s Saved to %s  ·  %s\n",
 			uxlog.Check(), destLabel, strings.Join(parts, "  ·  "))
+		printUpdateNotice(f)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s Received  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
+	printUpdateNotice(f)
 }
 
 // summaryParts builds the bytes/duration/path/rate sequence that both

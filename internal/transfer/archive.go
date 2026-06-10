@@ -291,10 +291,20 @@ func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 	defer func() { _ = f.Close() }()
 	tr := tar.NewReader(f)
 
+	// Directories are created with owner rwx forced — a read-only entry
+	// (0555) extracted at its final mode would block writing the files
+	// inside it. The archived modes are applied after extraction,
+	// children before parents.
+	type dirMode struct {
+		path string
+		mode os.FileMode
+	}
+	var deferredDirs []dirMode
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return nil
+			break
 		}
 		if err != nil {
 			return fmt.Errorf("extract: read header: %w", err)
@@ -307,11 +317,20 @@ func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(clean, os.FileMode(hdr.Mode)&os.ModePerm); err != nil {
+			perm := os.FileMode(hdr.Mode) & os.ModePerm
+			if err := os.MkdirAll(clean, perm|0o700); err != nil {
 				return fmt.Errorf("extract: mkdir %s: %w", clean, err)
+			}
+			// MkdirAll no-ops on an existing dir (e.g. a previous extract
+			// already applied a read-only mode) — force owner rwx there too.
+			if st, err := os.Stat(clean); err == nil && st.Mode().Perm()&0o700 != 0o700 {
+				_ = os.Chmod(clean, st.Mode().Perm()|0o700)
 			}
 			if err := assertWithinTarget(clean, absTarget); err != nil {
 				return err
+			}
+			if perm != perm|0o700 {
+				deferredDirs = append(deferredDirs, dirMode{clean, perm})
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
@@ -329,6 +348,13 @@ func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 				return fmt.Errorf("extract: clear %s: %w", clean, err)
 			}
 			out, err := os.OpenFile(clean, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&os.ModePerm)
+			if errors.Is(err, os.ErrPermission) {
+				// Replacing an existing read-only file: O_TRUNC can't open
+				// it, but overwrite consent was already established
+				// (preflight or --overwrite) — remove and recreate.
+				_ = os.Remove(clean)
+				out, err = os.OpenFile(clean, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&os.ModePerm)
+			}
 			if err != nil {
 				return fmt.Errorf("extract: create %s: %w", clean, err)
 			}
@@ -366,6 +392,17 @@ func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 			// something fsend cares about transporting.
 		}
 	}
+
+	// Children before parents: chmod of a nested path needs search
+	// permission on every ancestor, so restrictive parents go last.
+	sort.Slice(deferredDirs, func(i, j int) bool {
+		return strings.Count(deferredDirs[i].path, string(os.PathSeparator)) >
+			strings.Count(deferredDirs[j].path, string(os.PathSeparator))
+	})
+	for _, d := range deferredDirs {
+		_ = os.Chmod(d.path, d.mode)
+	}
+	return nil
 }
 
 // preflightExtract walks the tar headers without consuming entry data and

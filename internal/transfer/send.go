@@ -13,6 +13,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/zeebo/blake3"
+	"golang.org/x/crypto/argon2"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
@@ -103,9 +104,14 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	if err := wire.WriteControl(s.Control, wire.TypeTransferComplete, nil); err != nil {
 		return fmt.Errorf("send: complete: %w", err)
 	}
-	ft, err = wire.ReadControl(s.Control, nil)
+	ft, ackBody, err := wire.ReadControlRaw(s.Control)
 	if err != nil {
 		return fmt.Errorf("send: read complete-ack: %w", err)
+	}
+	if ft == wire.TypeError {
+		// Receiver failed after the last byte landed (hash mismatch,
+		// extraction failure, refused overwrite). Surface the real reason.
+		return peerError(ackBody)
 	}
 	if ft != wire.TypeTransferAck {
 		return fmt.Errorf("%w: expected TRANSFER_ACK, got %v", fserrors.ErrProtocolError, ft)
@@ -118,6 +124,25 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	return nil
 }
 
+// peerError translates a receiver-reported ERROR frame into the
+// user-visible sentinel the CLI surfaces (rather than a generic
+// "protocol error"). All of these are terminal — retrying won't fix the
+// peer's disk or its verdict.
+func peerError(body []byte) error {
+	var ef wire.ErrorFrame
+	_ = wire.Decode(body, &ef)
+	switch ef.Code {
+	case wire.ErrCodeTargetExists:
+		return fserrors.ErrTargetExists
+	case wire.ErrCodeFileHashMismatch:
+		return fserrors.ErrHashMismatch
+	case wire.ErrCodeWriteFailed:
+		return fmt.Errorf("%w: receiver: %s", fserrors.ErrWriteFailed, ef.Message)
+	default:
+		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
+	}
+}
+
 func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptions) error {
 	if err := wire.WriteControl(s.Control, wire.TypeFileInfo, &it.Info); err != nil {
 		return fmt.Errorf("send: file-info %d: %w", it.Info.Index, err)
@@ -128,17 +153,8 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 		return fmt.Errorf("send: file-accept: %w", err)
 	}
 	if ft == wire.TypeError {
-		// Receiver declined for a specific reason. Translate the wire
-		// code into a user-visible sentinel so the CLI surfaces it
-		// (rather than a generic "protocol error").
-		var ef wire.ErrorFrame
-		_ = wire.Decode(body, &ef)
-		switch ef.Code {
-		case wire.ErrCodeTargetExists:
-			return fserrors.ErrTargetExists
-		default:
-			return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
-		}
+		// Receiver declined for a specific reason.
+		return peerError(body)
 	}
 	if ft != wire.TypeFileAccept {
 		return fmt.Errorf("%w: expected FILE_ACCEPT, got %v", fserrors.ErrProtocolError, ft)
@@ -382,7 +398,7 @@ func (rs *readerSeeker) Seek(offset int64, whence int) (int64, error) {
 // the transfer when --pass is set. Wire flow:
 //
 //	sender → receiver  PASSWORD_CHALLENGE{nonce}
-//	receiver → sender  PASSWORD_RESPONSE{HMAC-SHA256(password, nonce)}
+//	receiver → sender  PASSWORD_RESPONSE{HMAC(argon2id(password, nonce), nonce)}
 //	sender → receiver  PASSWORD_VERIFIED (on match)
 //	                or ERROR{ErrCodeWrongPassword} (on mismatch)
 //
@@ -426,11 +442,15 @@ func senderPasswordHandshake(s *Streams, password string) error {
 	return nil
 }
 
-// hmacPassword is the shared HMAC-SHA256(password, nonce) computation
-// used by both sides. Exposed at package scope so recv.go can reuse it
-// without duplicating the construction.
+// hmacPassword is the shared response-tag computation used by both sides.
+// The password is stretched with argon2id (salted by the session nonce)
+// before keying the HMAC: the receiver computes the tag over a
+// sender-chosen nonce, so anyone who knows the code could harvest a
+// (nonce, tag) pair and grind passwords offline — the stretch makes each
+// such guess cost ~64 MiB of memory and tens of milliseconds.
 func hmacPassword(password string, nonce []byte) []byte {
-	m := hmac.New(sha256.New, []byte(password))
+	key := argon2.IDKey([]byte(password), nonce, 2, 64*1024, 4, 32)
+	m := hmac.New(sha256.New, key)
 	m.Write(nonce)
 	return m.Sum(nil)
 }

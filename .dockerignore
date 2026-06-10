@@ -1,0 +1,8 @@
+.git
+.github
+docs
+test
+deploy
+scripts
+*.md
+LICENSE

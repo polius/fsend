@@ -96,6 +96,16 @@ default_prefix() {
     esac
 }
 
+# GNU wget supports an explicit TLS floor; busybox wget (Alpine) does
+# not and aborts on the unknown flag — it still validates certificates,
+# so emit the flag only when supported. Callers expand the result
+# unquoted on purpose (empty → no extra argument).
+wget_tls_opts() {
+    if wget --help 2>&1 | grep -q -- --secure-protocol; then
+        printf %s "--secure-protocol=TLSv1_2"
+    fi
+}
+
 download() {
     url="$1"
     out="$2"
@@ -103,7 +113,8 @@ download() {
         curl -fsSL --proto '=https' --tlsv1.2 -o "$out" "$url" \
             || err "download failed: $url"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$out" "$url" \
+        # shellcheck disable=SC2046
+        wget -q $(wget_tls_opts) -O "$out" "$url" \
             || err "download failed: $url"
     else
         err "need curl or wget to download fsend"
@@ -120,7 +131,8 @@ resolve_latest() {
             | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
             | head -n1
     else
-        wget -q --secure-protocol=TLSv1_2 -O- "$api" \
+        # shellcheck disable=SC2046
+        wget -q $(wget_tls_opts) -O- "$api" \
             | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
             | head -n1
     fi
