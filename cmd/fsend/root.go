@@ -189,7 +189,8 @@ EXAMPLES
 
 COMMON FLAGS
   --text "<string>"      Send a literal string instead of a file
-                         (the receiver prints it — nothing is saved)
+                         (the receiver prints it — nothing is saved;
+                         keep it with: fsend <code> > note.txt)
   --pass <password>      Require the receiver to enter a password.
                          Bare --pass prompts interactively — sender side
                          suggests a fresh random default (press Enter to

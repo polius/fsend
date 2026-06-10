@@ -34,7 +34,7 @@ without a positional argument.
 
 | Flag | Purpose |
 |---|---|
-| `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. |
+| `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. To keep it: `fsend <code> > note.txt`. |
 | `--pass <password>` | Require the receiver to supply this password. Bare `--pass` prompts interactively with a random default. Also `FSEND_PASS`. |
 | `--exclude <glob,…>` | Skip entries when bundling a directory. |
 | `--name <hostname>` | Override the hostname shown to the peer. |
