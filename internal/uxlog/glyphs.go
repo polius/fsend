@@ -29,7 +29,7 @@ const (
 // fallback with no colour so log files stay readable.
 func Marker(kind glyphKind) string {
 	utf8, ascii, color := glyphForKind(kind)
-	if !IsTTY(os.Stderr) {
+	if !renderTTY(os.Stderr) {
 		return ascii
 	}
 	if colorEnabled() {
@@ -104,7 +104,19 @@ var (
 	colorMu      sync.Mutex
 	colorChecked bool
 	colorAllow   bool
+
+	ansiOnce sync.Once
+	ansiOK   bool
 )
+
+// renderTTY reports whether w is a terminal that can interpret ANSI
+// escapes (color, cursor movement). On Windows the first call flips the
+// console into VT mode; when that fails (legacy conhost) every renderer
+// degrades to its non-TTY output instead of printing escape garbage.
+func renderTTY(w io.Writer) bool {
+	ansiOnce.Do(func() { ansiOK = enableANSI() })
+	return ansiOK && IsTTY(w)
+}
 
 // colorEnabled reports whether we should emit ANSI colour escapes.
 // Rules (de-facto standard):
@@ -125,7 +137,7 @@ func colorEnabled() bool {
 		colorAllow = on
 		return colorAllow
 	}
-	colorAllow = IsTTY(os.Stderr)
+	colorAllow = renderTTY(os.Stderr)
 	return colorAllow
 }
 
@@ -153,7 +165,7 @@ func ColorFor(w io.Writer) bool {
 	if on, ok := colorEnvOverride(); ok {
 		return on
 	}
-	return IsTTY(w)
+	return renderTTY(w)
 }
 
 // resetColorForTesting is exposed so unit tests can flip env vars

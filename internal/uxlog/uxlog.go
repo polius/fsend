@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/vbauerster/mpb/v8"
@@ -25,10 +26,69 @@ import (
 
 // Progress wraps an mpb.Progress + a single bar that tracks total bytes
 // across the whole transfer regardless of mode (single file, multi-file,
-// or tar-bundled directory).
+// or tar-bundled directory). On non-TTY stderr the mpb pair is nil and
+// plain carries a line-oriented renderer instead.
 type Progress struct {
-	mp  *mpb.Progress
-	bar *mpb.Bar
+	mp    *mpb.Progress
+	bar   *mpb.Bar
+	plain *plainProgress
+}
+
+// plainProgress renders progress as occasional complete lines — no
+// cursor movement, no in-place redraws — so pipes and CI logs stay
+// readable. mpb is unsuitable here: even its non-interactive mode
+// emits cursor-up/erase escapes between frames.
+type plainProgress struct {
+	mu       sync.Mutex
+	w        io.Writer
+	total    int64
+	current  int64
+	complete bool
+	closed   bool
+	lastLine time.Time
+}
+
+// plainInterval throttles plain-mode lines. One line per second keeps
+// long transfers observable without flooding logs.
+const plainInterval = time.Second
+
+func (p *plainProgress) add(n int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.current += n
+	if time.Since(p.lastLine) < plainInterval {
+		return
+	}
+	p.lastLine = time.Now()
+	if p.total > 0 {
+		fmt.Fprintf(p.w, "  %d%%  %s / %s\n",
+			p.current*100/p.total, HumanBytes(p.current), HumanBytes(p.total))
+		return
+	}
+	fmt.Fprintf(p.w, "  %s\n", HumanBytes(p.current))
+}
+
+func (p *plainProgress) setTotal(total int64, complete bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.total = total
+	p.complete = p.complete || complete
+}
+
+// done prints one terminal line for transfers that actually completed.
+// Partial transfers print nothing — the error line that follows is the
+// authoritative record. Idempotent: callers flush before the summary
+// and keep a deferred call as the safety net.
+func (p *plainProgress) done() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.current == 0 {
+		return
+	}
+	p.closed = true
+	if p.complete || (p.total > 0 && p.current >= p.total) {
+		fmt.Fprintf(p.w, "  done  %s\n", HumanBytes(p.current))
+	}
 }
 
 // barWidth caps the progress bar at a fixed column count. 40 leaves room
@@ -51,31 +111,23 @@ const rateThreshold = 1 << 20
 // front; for stdin/text transfers we pass 0 and the bar renders without
 // a percentage, ETA, or rate chip.
 func New(totalBytes int64) *Progress {
-	tty := IsTTY(os.Stderr)
+	if !renderTTY(os.Stderr) {
+		// Pipe/CI mode: line-oriented output only. The throttle starts
+		// now so fast transfers print just the final "done" line.
+		return &Progress{plain: &plainProgress{
+			w: os.Stderr, total: totalBytes, lastLine: time.Now(),
+		}}
+	}
 	p := &Progress{}
 
-	opts := []mpb.ContainerOption{
+	p.mp = mpb.New(
 		mpb.WithOutput(os.Stderr),
-		mpb.WithRefreshRate(100 * time.Millisecond), // spec: ≥10 Hz
-	}
-	if !tty {
-		// Pipe mode: emit periodic plain-text updates with no cursor
-		// manipulation. mpb still draws bars but we let it; downstream
-		// consumers see "\r"-overwritten lines that they can grep with
-		// the % column.
-		opts = append(opts, mpb.WithAutoRefresh())
-	}
-	p.mp = mpb.New(opts...)
+		mpb.WithRefreshRate(100*time.Millisecond), // spec: ≥10 Hz
+	)
 
-	// Unicode bar on TTYs; ASCII fallback on pipes so log files stay
-	// readable. The ━/╸/─ trio gives a calm, modern look without the
-	// "=====>" telegraph aesthetic the default style carries.
-	var style mpb.BarStyleComposer
-	if tty {
-		style = mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
-	} else {
-		style = mpb.BarStyle().Lbound("[").Rbound("]").Filler("#").Tip(">").Padding(" ")
-	}
+	// The ━/╸/─ trio gives a calm, modern look without the "=====>"
+	// telegraph aesthetic the default style carries.
+	style := mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
 
 	// Track elapsed locally — decor.Statistics doesn't carry it, and we
 	// want the rate decor to use the same "since New()" baseline the
@@ -170,19 +222,31 @@ func New(totalBytes int64) *Progress {
 // Safe to call from multiple goroutines (mpb's bar is internally
 // synchronized).
 func (p *Progress) Add(n int64) {
-	if p == nil || p.bar == nil {
+	if p == nil {
 		return
 	}
-	p.bar.IncrInt64(n)
+	if p.plain != nil {
+		p.plain.add(n)
+		return
+	}
+	if p.bar != nil {
+		p.bar.IncrInt64(n)
+	}
 }
 
 // SetTotal updates the bar's total. Useful for stdin transfers where the
 // final size is only known when EOF arrives.
 func (p *Progress) SetTotal(total int64, complete bool) {
-	if p == nil || p.bar == nil {
+	if p == nil {
 		return
 	}
-	p.bar.SetTotal(total, complete)
+	if p.plain != nil {
+		p.plain.setTotal(total, complete)
+		return
+	}
+	if p.bar != nil {
+		p.bar.SetTotal(total, complete)
+	}
 }
 
 // Done marks the bar complete and waits for mpb to flush. Always call
@@ -199,7 +263,14 @@ func (p *Progress) SetTotal(total int64, complete bool) {
 //     don't SetTotal here — that would render a misleading "done" on
 //     a partial bar.
 func (p *Progress) Done() {
-	if p == nil || p.mp == nil {
+	if p == nil {
+		return
+	}
+	if p.plain != nil {
+		p.plain.done()
+		return
+	}
+	if p.mp == nil {
 		return
 	}
 	if p.bar != nil && !p.bar.Completed() {

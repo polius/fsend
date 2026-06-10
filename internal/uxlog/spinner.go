@@ -55,7 +55,7 @@ func StartSpinner(msg string) *Spinner {
 	s := &Spinner{
 		msg:  msg,
 		w:    os.Stderr,
-		tty:  IsTTY(os.Stderr),
+		tty:  renderTTY(os.Stderr),
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
 	}

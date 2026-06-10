@@ -34,7 +34,7 @@ without a positional argument.
 
 | Flag | Purpose |
 |---|---|
-| `--text <string>` | Send a literal string instead of a file. |
+| `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. To keep it: `fsend <code> > note.txt`. |
 | `--pass <password>` | Require the receiver to supply this password. Bare `--pass` prompts interactively with a random default. Also `FSEND_PASS`. |
 | `--exclude <glob,…>` | Skip entries when bundling a directory. |
 | `--name <hostname>` | Override the hostname shown to the peer. |
@@ -60,12 +60,14 @@ sending, then confirms. Pass `--yes` to skip.
 |---|---|
 | `--yes` | Auto-accept. |
 | `--out <dir>` | Receive into this directory (created if missing). Default: cwd. |
+| `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files instead of failing with `E013`. |
 | `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
 
 ```sh
 fsend abc-defg-jkm
 fsend --yes --out ~/Downloads/incoming abc-defg-jkm
+fsend --yes --out - abc-defg-jkm > dump.sql   # pipe-to-pipe with the sender's `… | fsend`
 FSEND_PASS=swordfish fsend --yes abc-defg-jkm
 ```
 

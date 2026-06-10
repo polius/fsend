@@ -512,6 +512,9 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	if bytes == 0 {
 		bytes = totalBytes(items)
 	}
+	// Flush the bar first so its terminal frame lands above the summary
+	// (the deferred call is then a no-op).
+	closeProg()
 	printSendSummary(f, bytes, time.Since(start), pathInfo)
 	return nil
 }

@@ -26,9 +26,9 @@ func runUninstall(f *flags) error {
 	if cfgPath != "" {
 		dir := filepath.Dir(cfgPath)
 		if err := os.RemoveAll(dir); err == nil {
-			fmt.Fprintf(os.Stderr, "  %s Removed config dir: %s\n", uxlog.Check(), dir)
+			fmt.Fprintf(os.Stderr, "%s Removed config dir: %s\n", uxlog.Check(), dir)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "  %s Could not remove %s: %v\n", uxlog.Warn(), dir, err)
+			fmt.Fprintf(os.Stderr, "%s Could not remove %s: %v\n", uxlog.Warn(), dir, err)
 		}
 	}
 
@@ -54,16 +54,16 @@ func runUninstall(f *flags) error {
 	}
 
 	if err := os.Remove(binPath); err != nil {
-		fmt.Fprintf(os.Stderr, "  %s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
+		fmt.Fprintf(os.Stderr, "%s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
 		fmt.Fprintln(os.Stderr, "    Remove it manually, possibly with sudo.")
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "  %s Removed binary: %s\n", uxlog.Check(), binPath)
+	fmt.Fprintf(os.Stderr, "%s Removed binary: %s\n", uxlog.Check(), binPath)
 
 	// If the on-PATH name was a symlink, drop the dangling link too.
 	if rawPath != binPath {
 		if err := os.Remove(rawPath); err == nil {
-			fmt.Fprintf(os.Stderr, "  %s Removed symlink: %s\n", uxlog.Check(), rawPath)
+			fmt.Fprintf(os.Stderr, "%s Removed symlink: %s\n", uxlog.Check(), rawPath)
 		}
 	}
 

@@ -45,6 +45,16 @@ type RecvOptions struct {
 	// existing one and Overwrite is false. true → accept this file as if
 	// Overwrite were set; false or nil → E013 reject.
 	ConfirmOverwrite func(relativePath string, existingSize int64, incomingSize uint64) bool
+	// Sink, when non-nil, streams the payload to this writer instead of
+	// writing files under TargetDir. Single-payload transfers only
+	// (single file, text, piped stream); directory and multi-file
+	// transfers are declined before the Accept prompt. Resume never
+	// applies — emitted bytes can't be reconciled — so callers must not
+	// retry a sink receive.
+	Sink io.Writer
+	// OnFileDone is called with each file's final path after it has been
+	// verified and renamed into place. Not called in archive or Sink mode.
+	OnFileDone func(path string)
 }
 
 // Recv executes the full receiver-side protocol over the supplied streams.
@@ -59,6 +69,24 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	}
 	if hello.ProtocolVersion != wire.ProtocolVersion {
 		return fmt.Errorf("%w: peer speaks v%d, we speak v%d", fserrors.ErrProtocolError, hello.ProtocolVersion, wire.ProtocolVersion)
+	}
+
+	// Sink mode carries one byte stream; concatenating a directory tar or
+	// several files into it would hand the user garbage. Decline before
+	// the Accept prompt so the user isn't asked about a doomed transfer.
+	if opts.Sink != nil &&
+		(hello.TransferKind == wire.TransferDirectory || hello.TransferKind == wire.TransferMultiFile) {
+		ack := &wire.ReceiverHello{
+			Hostname: opts.Hostname, OS: opts.OS, ClientVersion: opts.ClientVersion,
+		}
+		_ = wire.WriteControl(s.Control, wire.TypeHelloAck, ack)
+		_ = s.Control.Close()
+		_, _ = io.Copy(io.Discard, s.Control)
+		what := "directory"
+		if hello.TransferKind == wire.TransferMultiFile {
+			what = "multi-file"
+		}
+		return fmt.Errorf("%w: cannot stream a %s transfer to stdout; receive it with --out <dir>", fserrors.ErrUsage, what)
 	}
 
 	accept := true
@@ -137,6 +165,9 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 }
 
 func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts RecvOptions, archiveMode bool) error {
+	if opts.Sink != nil {
+		return recvPayloadToSink(ctx, s, info, opts)
+	}
 	// In archive mode the sender's RelativePath is a fixed placeholder
 	// (ArchiveName); we don't actually surface that name to the user.
 	// We just need a stable, hidden temp location inside TargetDir for
@@ -411,34 +442,9 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 			return fmt.Errorf("%w: chunk file index %d, expected %d", fserrors.ErrProtocolError, c.FileIndex, info.Index)
 		}
 
-		plain := c.Payload
-		if c.Flags&wire.FlagCompressed != 0 {
-			if dec == nil {
-				// Cap per-decode memory so an authenticated-but-misbehaving
-				// peer can't RAM-bomb us with a high-ratio chunk. A single
-				// frame can hold at most MaxChunkSize of plaintext (the
-				// sender's invariant); 2× gives headroom for zstd's own
-				// scratch buffers without admitting GB-scale balloons that
-				// the klauspost default (1 GiB) allows.
-				dec, err = zstd.NewReader(nil, zstd.WithDecoderMaxMemory(2*wire.MaxChunkSize))
-				if err != nil {
-					return fmt.Errorf("recv: zstd reader: %w", err)
-				}
-			}
-			plain, err = dec.DecodeAll(c.Payload, nil)
-			if err != nil {
-				return fmt.Errorf("recv: zstd decode: %w", err)
-			}
-			// Belt-and-braces against a sender that crafts a frame the
-			// decoder accepts but whose plaintext exceeds the wire bound.
-			if len(plain) > wire.MaxChunkSize {
-				return fmt.Errorf("%w: decompressed chunk %d > limit %d", fserrors.ErrProtocolError, len(plain), wire.MaxChunkSize)
-			}
-		}
-
-		// BLAKE3 of uncompressed payload must match the per-chunk hash.
-		if hashEq := blakeHash32(plain); hashEq != c.Blake3Hash {
-			return fserrors.ErrHashMismatch
+		plain, err := chunkPlain(c, &dec)
+		if err != nil {
+			return err
 		}
 
 		// Enforce the declared size: a misbehaving peer that never sets
@@ -531,6 +537,119 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	if info.ModTime > 0 {
 		t := time.Unix(0, info.ModTime)
 		_ = os.Chtimes(target, t, t)
+	}
+	if opts.OnFileDone != nil {
+		opts.OnFileDone(target)
+	}
+	return nil
+}
+
+// chunkPlain decompresses (when flagged) and hash-verifies one chunk's
+// payload. dec is created lazily on the first compressed chunk and
+// reused; the caller owns its Close.
+func chunkPlain(c *wire.Chunk, dec **zstd.Decoder) ([]byte, error) {
+	plain := c.Payload
+	if c.Flags&wire.FlagCompressed != 0 {
+		if *dec == nil {
+			// Cap per-decode memory so an authenticated-but-misbehaving
+			// peer can't RAM-bomb us with a high-ratio chunk. A single
+			// frame can hold at most MaxChunkSize of plaintext (the
+			// sender's invariant); 2× gives headroom for zstd's own
+			// scratch buffers without admitting GB-scale balloons that
+			// the klauspost default (1 GiB) allows.
+			d, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(2*wire.MaxChunkSize))
+			if err != nil {
+				return nil, fmt.Errorf("recv: zstd reader: %w", err)
+			}
+			*dec = d
+		}
+		var err error
+		plain, err = (*dec).DecodeAll(c.Payload, nil)
+		if err != nil {
+			return nil, fmt.Errorf("recv: zstd decode: %w", err)
+		}
+		// Belt-and-braces against a sender that crafts a frame the
+		// decoder accepts but whose plaintext exceeds the wire bound.
+		if len(plain) > wire.MaxChunkSize {
+			return nil, fmt.Errorf("%w: decompressed chunk %d > limit %d", fserrors.ErrProtocolError, len(plain), wire.MaxChunkSize)
+		}
+	}
+	// BLAKE3 of uncompressed payload must match the per-chunk hash.
+	if blakeHash32(plain) != c.Blake3Hash {
+		return nil, fserrors.ErrHashMismatch
+	}
+	return plain, nil
+}
+
+// recvPayloadToSink streams one file's bytes to opts.Sink. No partial,
+// no resume, no rename: per-chunk hashes verify each piece before it is
+// emitted, and the root hash is still checked at the end — but by then
+// the bytes are already out, so a mismatch can only surface as an error
+// exit, never as withheld output.
+func recvPayloadToSink(ctx context.Context, s *Streams, info *wire.FileInfo, opts RecvOptions) error {
+	if info.IsDir || info.IsSymlink {
+		return fmt.Errorf("%w: non-file entry in a sink transfer", fserrors.ErrProtocolError)
+	}
+	decision := wire.FileAcceptDecision{Index: info.Index, Action: wire.ActionAcceptFull}
+	if err := wire.WriteControl(s.Control, wire.TypeFileAccept, &decision); err != nil {
+		return fmt.Errorf("recv: file-accept: %w", err)
+	}
+
+	verifier := blake3.New()
+	var written uint64
+	var dec *zstd.Decoder
+	defer func() {
+		if dec != nil {
+			dec.Close()
+		}
+	}()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c, err := wire.ReadChunk(s.Data)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if reason := tryReadPeerError(s.Control); reason != nil {
+					return reason
+				}
+				return fmt.Errorf("recv: stream closed mid-file: %w", fserrors.ErrConnectFailed)
+			}
+			return fmt.Errorf("recv: chunk: %w", err)
+		}
+		if c.FileIndex != info.Index {
+			return fmt.Errorf("%w: chunk file index %d, expected %d", fserrors.ErrProtocolError, c.FileIndex, info.Index)
+		}
+		plain, err := chunkPlain(c, &dec)
+		if err != nil {
+			return err
+		}
+		if !info.Streaming && written+uint64(len(plain)) > info.Size {
+			return fmt.Errorf("%w: received bytes exceed declared size %d", fserrors.ErrProtocolError, info.Size)
+		}
+		if len(plain) > 0 {
+			if _, err := opts.Sink.Write(plain); err != nil {
+				return classifyWriteErr("sink write", err)
+			}
+			_, _ = verifier.Write(plain)
+			written += uint64(len(plain))
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(info.Index, written)
+			}
+		}
+		if c.Flags&wire.FlagLastChunk != 0 {
+			break
+		}
+	}
+
+	// Same root-hash policy as the file path, including the synthetic
+	// (stdin / --text) skip.
+	var got, zero [32]byte
+	copy(got[:], verifier.Sum(nil))
+	syntheticSkip := !info.Resumable && info.Blake3Root == zero
+	if !syntheticSkip && got != info.Blake3Root {
+		declineTransfer(s, wire.ErrCodeFileHashMismatch, "root hash mismatch")
+		return fserrors.ErrHashMismatch
 	}
 	return nil
 }

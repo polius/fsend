@@ -18,7 +18,7 @@ $ fsend report.pdf                 # home Wi-Fi
 Share this code:  abc-defg-jkm
 
 $ fsend abc-defg-jkm               # café Wi-Fi, two continents away
-✓ Saved to ~/Downloads  ·  2.4 MB  ·  1.3s  ·  Direct over the internet
+✓ Saved report.pdf to ~/Downloads  ·  2.4 MB  ·  1.3s  ·  Direct over the internet
 ```
 
 ## About
