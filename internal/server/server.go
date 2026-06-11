@@ -626,6 +626,9 @@ func (s *Server) pullCandidates(w http.ResponseWriter, r *http.Request) {
 		// Skip silently on parse error — clients that send garbage just
 		// get the full candidate list starting at 0, which is harmless.
 		_, _ = fmt.Sscanf(v, "%d", &since)
+		if since < 0 {
+			since = 0 // negative would panic the slice below
+		}
 	}
 	tok := bearerToken(r)
 	s.mu.Lock()

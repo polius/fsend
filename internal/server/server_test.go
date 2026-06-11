@@ -341,6 +341,44 @@ func TestCandidates_RoutedByRoleToken(t *testing.T) {
 	}
 }
 
+// A negative since used to slice theirs[-1:] and panic the handler.
+func TestPullCandidates_NegativeSince(t *testing.T) {
+	srv := newTestServer(t)
+
+	c := createSession(t, srv.URL, testSlot)
+
+	jResp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
+	defer jResp.Body.Close()
+	var j JoinSessionResponse
+	_ = json.NewDecoder(jResp.Body).Decode(&j)
+
+	body, _ := json.Marshal(CandidatesPushRequest{Candidates: []string{"receiver-cand-1"}})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/session/"+c.SessionID+"/candidates", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+j.RoleToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/v1/session/"+c.SessionID+"/candidates?since=-1", nil)
+	req.Header.Set("Authorization", "Bearer "+c.RoleToken)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("since=-1 request failed (handler panic?): %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("since=-1: status = %d, want 200", resp.StatusCode)
+	}
+	var out CandidatesPullResponse
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if len(out.Candidates) != 1 || out.Candidates[0] != "receiver-cand-1" {
+		t.Errorf("since=-1 candidates = %v, want [receiver-cand-1]", out.Candidates)
+	}
+}
+
 func TestDeleteSession(t *testing.T) {
 	srv := newTestServer(t)
 	c := createSession(t, srv.URL, testSlot)
