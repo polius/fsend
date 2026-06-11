@@ -159,6 +159,9 @@ func TestRecv_RefusesPreplantedPartialSymlink(t *testing.T) {
 		payload[i] = byte(i)
 	}
 	root := blakeHash32(payload)
+	// Declare the payload size honestly so the consented-totals guard
+	// doesn't reject the transfer before the sidecar gate under test.
+	hello.TotalBytes = uint64(len(payload))
 
 	var wg sync.WaitGroup
 	wg.Add(2)

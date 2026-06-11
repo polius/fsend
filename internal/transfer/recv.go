@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -128,6 +129,18 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	// the target directory instead of renaming it into place.
 	archiveMode := hello.TransferKind == wire.TransferDirectory
 
+	// The user consented to the HELLO's totals at the accept prompt;
+	// without enforcement they are display-only, and a malicious sender
+	// could advertise "1 file · 5 B" and then stream FILE_INFO frames
+	// until the disk fills. Every kind carries exactly one FILE_INFO
+	// (directory transfers wrap everything in one tar) except multi-file,
+	// which carries TotalFiles.
+	maxFiles := uint64(1)
+	if hello.TransferKind == wire.TransferMultiFile {
+		maxFiles = uint64(hello.TotalFiles)
+	}
+	var filesSeen, bytesDeclared uint64
+
 	// File loop.
 	for {
 		if err := ctx.Err(); err != nil {
@@ -156,6 +169,24 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		if info.Streaming && hello.TransferKind != wire.TransferStdin {
 			declineTransfer(s, wire.ErrCodeProtocolError, "streaming file in non-stdin transfer")
 			return fmt.Errorf("%w: streaming FILE_INFO in a non-stdin transfer", fserrors.ErrProtocolError)
+		}
+		filesSeen++
+		if filesSeen > maxFiles {
+			declineTransfer(s, wire.ErrCodeProtocolError, "more files than HELLO declared")
+			return fmt.Errorf("%w: FILE_INFO count exceeds the %d declared in HELLO", fserrors.ErrProtocolError, maxFiles)
+		}
+		bytesDeclared += info.Size
+		if bytesDeclared > hello.TotalBytes {
+			declineTransfer(s, wire.ErrCodeProtocolError, "declared sizes exceed HELLO total")
+			return fmt.Errorf("%w: declared sizes exceed the %d bytes in HELLO", fserrors.ErrProtocolError, hello.TotalBytes)
+		}
+		// Legitimate senders only ever put bare basenames in RelativePath
+		// (Walk basenames, ArchiveName, synthetic stdin/text names); a
+		// separator means a peer creating directory trees the user never
+		// consented to.
+		if strings.ContainsAny(info.RelativePath, `/\`) {
+			declineTransfer(s, wire.ErrCodeProtocolError, "path separator in file name")
+			return fmt.Errorf("%w: RelativePath %q contains a path separator", fserrors.ErrProtocolError, info.RelativePath)
 		}
 		if err := recvOneFile(ctx, s, &info, opts, archiveMode); err != nil {
 			return err

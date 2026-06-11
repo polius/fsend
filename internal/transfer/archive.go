@@ -135,12 +135,21 @@ func BuildArchive(paths []string, excludes []string) (*ArchiveResult, error) {
 		return nil, err
 	}
 
+	// Tar entries are rooted at each argument's base name, so duplicate
+	// roots (compared case-insensitively — the receiver may be on
+	// macOS/Windows) would silently merge and the extractor would
+	// clobber colliding files. Reject them up front, like Walk.
+	seen := make(map[string]string, len(paths))
 	for _, p := range paths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return failClose(fmt.Errorf("archive: %s: %w", p, err))
 		}
 		root := filepath.Base(abs)
+		if prev, ok := seen[strings.ToLower(root)]; ok {
+			return failClose(fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, p, root))
+		}
+		seen[strings.ToLower(root)] = p
 		st, err := os.Lstat(abs)
 		if err != nil {
 			return failClose(fmt.Errorf("archive: %s: %w", p, err))
@@ -351,26 +360,44 @@ func ExtractArchive(tarPath, targetDir string, overwrite bool) error {
 			if err := assertWithinTarget(filepath.Dir(clean), absTarget); err != nil {
 				return err
 			}
-			if err := removePreexistingSymlink(clean); err != nil {
-				return fmt.Errorf("extract: clear %s: %w", clean, err)
+			// Write through a sidecar and rename into place, mirroring the
+			// non-archive receive path: a mid-extract failure (disk full,
+			// I/O error) must not leave a truncated file at its real name,
+			// indistinguishable from a complete one.
+			tmp := clean + partialSuffix
+			if err := removePreexistingSymlink(tmp); err != nil {
+				return fmt.Errorf("extract: clear %s: %w", tmp, err)
 			}
-			out, err := os.OpenFile(clean, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&os.ModePerm)
+			out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&os.ModePerm)
 			if errors.Is(err, os.ErrPermission) {
-				// Replacing an existing read-only file: O_TRUNC can't open
-				// it, but overwrite consent was already established
-				// (preflight or --overwrite) — remove and recreate.
-				_ = os.Remove(clean)
-				out, err = os.OpenFile(clean, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&os.ModePerm)
+				// Stale read-only sidecar from an interrupted extract:
+				// O_TRUNC can't open it — remove and recreate.
+				_ = os.Remove(tmp)
+				out, err = os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&os.ModePerm)
 			}
 			if err != nil {
-				return fmt.Errorf("extract: create %s: %w", clean, err)
+				return fmt.Errorf("extract: create %s: %w", tmp, err)
 			}
 			if _, err := io.Copy(out, tr); err != nil {
 				_ = out.Close()
+				_ = os.Remove(tmp)
 				return classifyWriteErr("extract "+clean, err)
 			}
 			if err := out.Close(); err != nil {
+				_ = os.Remove(tmp)
 				return fmt.Errorf("extract: close %s: %w", clean, err)
+			}
+			// os.Rename replaces atomically and overwrites a planted symlink
+			// rather than following it. Overwrite consent was already
+			// established (preflight or --overwrite); a read-only file at
+			// the destination can still block the rename on Windows —
+			// remove and retry.
+			if err := os.Rename(tmp, clean); err != nil {
+				_ = os.Remove(clean)
+				if err := os.Rename(tmp, clean); err != nil {
+					_ = os.Remove(tmp)
+					return fmt.Errorf("extract: finalize %s: %w", clean, err)
+				}
 			}
 			if !hdr.ModTime.IsZero() {
 				_ = os.Chtimes(clean, hdr.ModTime, hdr.ModTime)

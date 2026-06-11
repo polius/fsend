@@ -95,6 +95,36 @@ func TestBuildArchive_Deterministic(t *testing.T) {
 	}
 }
 
+// Two top-level args with the same base name would silently merge under
+// one tar root and the second's files would clobber the first's on
+// extract — both sides reporting success. Must be rejected up front,
+// case-insensitively (the receiver may be on macOS/Windows), mirroring
+// the multi-file Walk guard.
+func TestBuildArchive_RejectsDuplicateRootBasenames(t *testing.T) {
+	for _, tc := range []struct{ name, second string }{
+		{"exact duplicate", "photos"},
+		{"case-insensitive duplicate", "PHOTOS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			a := filepath.Join(root, "a", "photos")
+			b := filepath.Join(root, "b", tc.second)
+			for _, d := range []string{a, b} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(d, "pic.jpg"), []byte(d), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := BuildArchive([]string{a, b}, nil)
+			if !errors.Is(err, fserrors.ErrUsage) {
+				t.Fatalf("BuildArchive(%q, %q) = %v, want ErrUsage", a, b, err)
+			}
+		})
+	}
+}
+
 func TestBuildArchive_ExcludePatterns(t *testing.T) {
 	srcDir := t.TempDir()
 	for _, p := range []string{
@@ -417,6 +447,47 @@ func TestExtractArchive_ConflictWithoutOverwrite(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(clashPath); string(got) != "from archive" {
 		t.Errorf("overwrite did not replace clash.txt: %q", got)
+	}
+}
+
+// A mid-extract failure (disk full, I/O error, truncated tar) must not
+// leave a partial file at its final name — that's indistinguishable from
+// a complete one. Extraction writes through a sidecar and renames, like
+// the non-archive receive path; on failure the sidecar is removed.
+func TestExtractArchive_NoFinalFileOnTruncatedStream(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := bytes.Repeat([]byte("x"), 64*1024)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "big.bin", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cut off the tail: the header (first 512 bytes) survives but the
+	// body doesn't, so io.Copy fails mid-file.
+	tarPath := filepath.Join(dir, "trunc.tar")
+	if err := os.WriteFile(tarPath, buf.Bytes()[:1024], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ExtractArchive(tarPath, target, false); err == nil {
+		t.Fatal("expected extraction of a truncated tar to fail")
+	}
+	if _, err := os.Stat(filepath.Join(target, "big.bin")); err == nil {
+		t.Error("truncated file landed at its final name")
+	}
+	if _, err := os.Stat(filepath.Join(target, "big.bin"+partialSuffix)); err == nil {
+		t.Error("extraction sidecar not removed on failure")
 	}
 }
 
