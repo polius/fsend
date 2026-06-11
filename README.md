@@ -37,13 +37,19 @@ fsend lets any two computers transfer files **directly** to each other — no ac
 
 ## Install
 
+**Linux, macOS, FreeBSD** — x86 and ARM:
+
 ```bash
 curl -fsSL https://getfsend.alzina.dev | sh
 ```
 
-Works on Linux, macOS, FreeBSD, and Windows — x86 and ARM. On Windows, run
-this in a POSIX shell (MSYS / MinGW / Cygwin / Git Bash); the installed
-`fsend.exe` then runs in any terminal once its directory is on your PATH.
+**Windows** — run this in PowerShell:
+
+```powershell
+irm https://getfsend.alzina.dev/install.ps1 | iex
+```
+
+Both installers verify the release's SHA-256 checksum before installing.
 
 <details>
 <summary>Other install methods</summary>

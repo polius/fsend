@@ -46,10 +46,13 @@ func runUninstall(f *flags) error {
 		binPath = resolved
 	}
 
-	// On Windows the running .exe can't delete itself. Best we can do
-	// is print the path and ask the user to remove it by hand.
+	// On Windows the running .exe can't delete itself. Best we can do is
+	// print the path and ask the user to remove it by hand. install.ps1 also
+	// puts the install dir on the user PATH; we don't strip it automatically
+	// (the user may share that dir with other tools), so point at it instead.
 	if runtime.GOOS == "windows" {
 		fmt.Fprintf(os.Stderr, "  Delete this file to finish uninstall: %s\n", binPath)
+		fmt.Fprintf(os.Stderr, "  If you installed via install.ps1, also remove %s from your PATH.\n", filepath.Dir(binPath))
 		return nil
 	}
 
