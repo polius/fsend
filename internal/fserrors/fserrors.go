@@ -352,8 +352,9 @@ var catalog = map[error]Entry{
 	ErrServerStartup: {
 		Code: "E030", Exit: 30,
 		Message: "The server could not start.",
-		Action: "Check that the ports are free and you have permission to bind them\n" +
-			"  (FSEND_HTTP_ADDR, FSEND_UDP_ADDR). Binding :443 may need elevated privileges.",
+		Action: "Fix the setting named above, or check that the ports are free and you\n" +
+			"  have permission to bind them (FSEND_HTTP_ADDR, FSEND_UDP_ADDR).\n" +
+			"  Binding :443 may need elevated privileges.",
 	},
 	ErrPasswordRequired: {
 		Code: "E031", Exit: 31,
