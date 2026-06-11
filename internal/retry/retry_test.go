@@ -166,6 +166,8 @@ func TestIsTransient_Classification(t *testing.T) {
 		{"wrapped_code_already_claimed_terminal",
 			fmt.Errorf("lan dial: %w", fserrors.ErrCodeAlreadyClaimed), false},
 		{"ctx_canceled_terminal", context.Canceled, false},
+		{"password_required_terminal", fserrors.ErrPasswordRequired, false},
+		{"peer_cancelled_terminal", fserrors.ErrPeerCancelled, false},
 
 		// Wrapped terminal: must still not retry.
 		{"wrapped_hash_mismatch_terminal",

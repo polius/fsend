@@ -146,8 +146,7 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		var info wire.FileInfo
-		ft, err := wire.ReadControl(s.Control, &info)
+		ft, body, err := wire.ReadControlRaw(s.Control)
 		if err != nil {
 			return fmt.Errorf("recv: file-info: %w", err)
 		}
@@ -155,12 +154,18 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 			break
 		}
 		if ft == wire.TypeError {
-			// Re-read with payload — we already consumed the header.
-			// Simplification: treat any TypeError as protocol abort.
-			return fmt.Errorf("%w: peer sent ERROR", fserrors.ErrProtocolError)
+			// Sender aborted between files (e.g. Ctrl-C) — surface its
+			// stated reason instead of a generic protocol abort.
+			var ef wire.ErrorFrame
+			_ = wire.Decode(body, &ef)
+			return mapPeerError(ef)
 		}
 		if ft != wire.TypeFileInfo {
 			return fmt.Errorf("%w: expected FILE_INFO, got %v", fserrors.ErrProtocolError, ft)
+		}
+		var info wire.FileInfo
+		if err := wire.Decode(body, &info); err != nil {
+			return fmt.Errorf("recv: file-info: %w", err)
 		}
 		// Streaming exempts a file from the declared-size cap and the
 		// root-hash check. Only a stdin transfer legitimately needs that;
@@ -738,7 +743,11 @@ func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
 	password := opts.Password
 	if password == "" {
 		if opts.PromptPass == nil {
-			return fserrors.ErrWrongPassword
+			// --quiet with no --pass / FSEND_PASS: nothing to answer the
+			// challenge with. Decline explicitly or the sender misreads
+			// the teardown as a network drop and burns retries on it.
+			declineTransfer(s, wire.ErrCodePasswordRequired, "receiver has no password to offer")
+			return fserrors.ErrPasswordRequired
 		}
 		password, err = opts.PromptPass()
 		if err != nil {
@@ -802,13 +811,28 @@ func tryReadPeerError(r io.Reader) error {
 	if ft != wire.TypeError {
 		return nil
 	}
+	return mapPeerError(ef)
+}
+
+// mapPeerError translates a peer-reported ERROR frame into the
+// user-visible sentinel the CLI surfaces. Single source of truth for
+// both directions; all of these are terminal for the retry layer.
+func mapPeerError(ef wire.ErrorFrame) error {
 	switch ef.Code {
-	case wire.ErrCodePartialMismatch:
-		return fserrors.ErrPartialMismatch
+	case wire.ErrCodeWrongPassword:
+		return fserrors.ErrWrongPassword
+	case wire.ErrCodePasswordRequired:
+		return fserrors.ErrPasswordRequired
 	case wire.ErrCodeFileHashMismatch:
 		return fserrors.ErrHashMismatch
+	case wire.ErrCodePartialMismatch:
+		return fserrors.ErrPartialMismatch
+	case wire.ErrCodeTargetExists:
+		return fserrors.ErrTargetExists
 	case wire.ErrCodeWriteFailed:
 		return fmt.Errorf("%w: receiver: %s", fserrors.ErrWriteFailed, ef.Message)
+	case wire.ErrCodeCancelled:
+		return fserrors.ErrPeerCancelled
 	default:
 		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
 	}

@@ -194,8 +194,10 @@ var terminalSentinels = []error{
 	fserrors.ErrTargetExists,
 	fserrors.ErrServerRetired,
 	fserrors.ErrWrongPassword,      // wrong password is one-shot per session
+	fserrors.ErrPasswordRequired,   // receiver has no password to offer; retrying won't conjure one
 	fserrors.ErrCodeAlreadyClaimed, // sender already paired; no retry will recover
 	fserrors.ErrWriteFailed,        // peer's (or our) disk problem; retrying won't fix it
 	fserrors.ErrDiskFull,
-	context.Canceled, // user hit Ctrl-C
+	fserrors.ErrPeerCancelled, // peer hit Ctrl-C; it isn't coming back
+	context.Canceled,          // user hit Ctrl-C
 }

@@ -79,8 +79,8 @@ const (
 type ErrorCode uint16
 
 // ErrorCode values reported in TypeError frames. Only the codes a peer
-// actually emits live here — the receiver's switch in tryReadPeerError
-// is the source of truth for what gets mapped to a user-facing error.
+// actually emits live here — transfer.mapPeerError is the source of
+// truth for what gets mapped to a user-facing error.
 // Numeric values are kept stable so a peer running an older fsend can
 // still recognise them; new codes get fresh numbers.
 const (
@@ -99,6 +99,14 @@ const (
 	// extract, …). Terminal for the sender: retrying won't fix the
 	// receiver's disk.
 	ErrCodeWriteFailed ErrorCode = 13
+	// ErrCodePasswordRequired — sender demanded a password but the
+	// receiver had none to offer (--quiet with no --pass / FSEND_PASS).
+	// Distinct from ErrCodeWrongPassword: no attempt was ever made.
+	ErrCodePasswordRequired ErrorCode = 14
+	// ErrCodeCancelled — the peer cancelled deliberately (Ctrl-C).
+	// Terminal: lets the survivor skip its retry budget instead of
+	// misdiagnosing the teardown as a network drop.
+	ErrCodeCancelled ErrorCode = 15
 )
 
 // Chunk-frame flag bits.
