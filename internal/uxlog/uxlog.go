@@ -95,11 +95,11 @@ func (p *plainProgress) done() {
 const barWidth = 40
 
 // rateThreshold is the transfer size below which rate + ETA are
-// suppressed. Small transfers (sub-MiB) finish in less time than the
+// suppressed. Small transfers (sub-MB) finish in less time than the
 // PAKE handshake takes; reporting "13 B/s" for a 169 B file is just
-// noise. Above 1 MiB the steady-state throughput dominates and the
-// figure becomes meaningful.
-const rateThreshold = 1 << 20
+// noise. Above 1 MB the steady-state throughput dominates and the
+// figure becomes meaningful. Matches HumanRate's noise floor.
+const rateThreshold = 1000 * 1000
 
 // activeProgress is the bar currently drawing on the terminal, if any.
 // Println routes through it so foreign lines (retry notices) land between

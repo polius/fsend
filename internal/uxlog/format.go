@@ -6,15 +6,16 @@ import (
 )
 
 // HumanBytes renders a byte count in compact human-readable form.
-// Sub-KiB values render as whole bytes ("169 B"); larger values use one
-// decimal of precision against 1024-based units ("1.5 MB"). The unit
+// Sub-KB values render as whole bytes ("169 B"); larger values use one
+// decimal of precision against decimal (1000-based) units ("1.5 MB") —
+// matching what Finder/Explorer report for the same file. The unit
 // suffix is always uppercase "B" (bytes), never lowercase "b" (bits).
 //
 // Lives in uxlog (rather than cmd/fsend) so the progress-bar decorators
 // can share the exact same formatter the summary lines use — there's no
 // way for the two to drift apart and surprise the user.
 func HumanBytes(n int64) string {
-	const unit = 1024
+	const unit = 1000
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
 	}
@@ -61,16 +62,17 @@ func HumanDuration(d time.Duration) string {
 // dominates the rate). Callers can omit a trailing "(<rate>)" clause
 // cleanly instead of printing "4.2 GB/s" for a 12 KB transfer.
 //
-// The thresholds are tuned so a one-second 1 MiB transfer reports a
+// The thresholds are tuned so a one-second 1 MB transfer reports a
 // rate (genuinely useful), but a one-second 169 B transfer does not
 // (the number would be dominated by setup time).
 func HumanRate(bytes int64, elapsed time.Duration) string {
 	if elapsed < 100*time.Millisecond || bytes <= 0 {
 		return ""
 	}
-	// Sub-MiB transfers complete in less time than the connection setup
-	// takes, so the computed rate is just noise. Skip.
-	const rateNoiseFloor = 1 << 20
+	// Sub-MB transfers complete in less time than the connection setup
+	// takes, so the computed rate is just noise. Skip. Matches the
+	// HumanBytes "1 MB" boundary so any size displayed in MB has a rate.
+	const rateNoiseFloor = 1000 * 1000
 	if bytes < rateNoiseFloor {
 		return ""
 	}

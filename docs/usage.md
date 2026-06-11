@@ -148,7 +148,7 @@ Caddy + Docker stack.
 
 ## Exit codes
 
-Stable from v0.1.0. `0` means success; non-zero codes map to a specific
+Stable from v1.0.0. `0` means success; non-zero codes map to a specific
 failure.
 
 | Code  | When it happens |
