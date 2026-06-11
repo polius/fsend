@@ -17,7 +17,7 @@
     .\install.ps1 -Prefix C:\tools\bin -Version 1.2.3
 
 .PARAMETER Prefix
-  Install directory (default: %LOCALAPPDATA%\fsend\bin). Env: FSEND_PREFIX.
+  Install directory (default: %LOCALAPPDATA%\Programs\fsend). Env: FSEND_PREFIX.
 
 .PARAMETER Version
   Version to install, e.g. 1.2.3 or v1.2.3 (default: latest). Env: FSEND_VERSION.
@@ -56,7 +56,7 @@ Usage:
   .\install.ps1 [-Prefix DIR] [-Version VERSION]
 
 Parameters (or matching env var):
-  -Prefix DIR        Install location      (default: %LOCALAPPDATA%\fsend\bin; env FSEND_PREFIX)
+  -Prefix DIR        Install location      (default: %LOCALAPPDATA%\Programs\fsend; env FSEND_PREFIX)
   -Version VERSION   Version to install    (default: latest; env FSEND_VERSION)
   -Help              Show this help and exit
 
@@ -117,7 +117,11 @@ try {
         Download "https://github.com/$Repo/releases/download/$Version/checksums.txt" $checksums
     }
 
-    if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'fsend\bin' }
+    # %LOCALAPPDATA%\Programs (per-user, no admin) — deliberately NOT under
+    # %LOCALAPPDATA%\fsend, which is the config dir: `fsend --uninstall`
+    # RemoveAll's the config dir, and Windows can't delete a running .exe
+    # nested inside it ("Access is denied"). Keep the two trees separate.
+    if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'Programs\fsend' }
     Info "installing fsend $Version for windows-$arch into $Prefix"
 
     $archive = "fsend_${vnum}_windows_${arch}.zip"
