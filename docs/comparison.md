@@ -169,7 +169,9 @@ For the full threat-model discussion, see [Security](security.md).
 
 The codes carry comparable entropy. Both tools document one-shot
 auto-generated codes. The operational difference is fsend's bounded
-server-side TTL and the fact that its code is always system-generated:
+server-side TTL and the fact that its code is always randomly generated
+(by the client — it never reaches the server, which only sees a one-way
+slot derived from it):
 a leaked code is useful for at most one receiver, lives only as long as
 the sender keeps the process running, and is hard-capped at one hour by
 the server. croc's README does not specify an equivalent server-side
