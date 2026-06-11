@@ -6,3 +6,5 @@ deploy
 scripts
 *.md
 LICENSE
+dist
+fsend
