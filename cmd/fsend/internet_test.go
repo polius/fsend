@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,6 +90,55 @@ func TestJoinWithRetry_NonRetriableErrorPropagatesImmediately(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("retried a non-retriable error: %v elapsed", elapsed)
+	}
+}
+
+// A mistyped code must report E002, not E017: every 404 join burns the
+// server's per-IP budget, so a strict server can start throttling our
+// own retry loop mid-budget. Once we've seen "not found", a rate-limit
+// response means "still not found, stop asking" — surfacing it as "too
+// many attempts from your network" blames the user for our retries.
+func TestJoinWithRetry_RateLimitAfterNotFoundReportsNotFound(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) <= 2 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+	client := signaling.New(ts.URL, "test")
+
+	orig := joinRetryBudget
+	defer func() { joinRetryBudget = orig }()
+	joinRetryBudget = 30 * time.Second // must exit on the 429, not the budget
+
+	start := time.Now()
+	_, err := joinWithRetry(context.Background(), client, "abc-defg-jkm", &flags{quiet: true}, nil)
+
+	if !errors.Is(err, fserrors.ErrCodeNotFound) {
+		t.Errorf("expected ErrCodeNotFound when rate-limited after 404s, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Errorf("expected to stop on the first 429 (3 calls), got %d", got)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("kept retrying after the 429: %v elapsed", elapsed)
+	}
+}
+
+// A rate limit on the very first join is the genuine article (someone
+// behind this NAT really is hammering the server) and must surface as-is.
+func TestJoinWithRetry_ImmediateRateLimitPropagates(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+
+	_, err := joinWithRetry(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm", &flags{quiet: true}, nil)
+	if !errors.Is(err, fserrors.ErrRateLimited) {
+		t.Errorf("expected ErrRateLimited on first-attempt 429, got %v", err)
 	}
 }
 

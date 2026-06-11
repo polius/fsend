@@ -95,7 +95,8 @@ func confirmUninstall(f *flags) bool {
 		fmt.Fprintf(os.Stderr, "    - config dir: %s\n", cfgDir)
 	}
 	fmt.Fprint(os.Stderr, "  Continue? [y/N] ")
-	switch readLine(os.Stdin) {
+	line, _ := readLine(os.Stdin)
+	switch line {
 	case "y", "yes":
 		return true
 	default:

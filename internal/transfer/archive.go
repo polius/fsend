@@ -240,6 +240,13 @@ func addToTar(tw *tar.Writer, abs string, relTop string, st os.FileInfo, m exclu
 		return nil
 
 	default:
+		// FIFOs block os.Open until a writer appears (hanging the send
+		// before the code even prints) and sockets/devices can't be
+		// copied — skip them, mirroring the extract side's handling of
+		// exotic tar types.
+		if !mode.IsRegular() {
+			return nil
+		}
 		hdr.Typeflag = tar.TypeReg
 		hdr.Size = st.Size()
 		if err := tw.WriteHeader(hdr); err != nil {

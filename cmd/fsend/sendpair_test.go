@@ -1,13 +1,89 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/signaling"
 )
+
+// shrinkWaitRetryStep makes waitForReceiver's backoff test-fast.
+func shrinkWaitRetryStep(t *testing.T) {
+	t.Helper()
+	orig := waitRetryStep
+	waitRetryStep = 2 * time.Millisecond
+	t.Cleanup(func() { waitRetryStep = orig })
+}
+
+// A transient Wait failure (dropped poll, wifi roam, sleep/wake) must be
+// retried, not treated as fatal — the old behavior deleted the session
+// on the first blip, so the shared code died while the sender kept
+// "waiting" on a path nobody could reach.
+func TestWaitForReceiver_RetriesTransientFailures(t *testing.T) {
+	shrinkWaitRetryStep(t)
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch atomic.AddInt32(&calls, 1) {
+		case 1, 2:
+			w.WriteHeader(http.StatusBadGateway) // transient server hiccup
+		case 3:
+			w.WriteHeader(http.StatusNoContent) // normal long-poll tick
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`)) // receiver paired
+		}
+	}))
+	defer ts.Close()
+
+	resp, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm")
+	if err != nil || resp == nil {
+		t.Fatalf("expected pairing to survive transient failures, got resp=%v err=%v", resp, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 4 {
+		t.Errorf("expected 4 Wait calls (2 fail, 1 tick, 1 paired), got %d", got)
+	}
+}
+
+// Persistent failure must still give up (and let the caller delete the
+// session) rather than retry forever against a dead server.
+func TestWaitForReceiver_GivesUpAfterConsecutiveFailures(t *testing.T) {
+	shrinkWaitRetryStep(t)
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer ts.Close()
+
+	_, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm")
+	if err == nil {
+		t.Fatal("expected an error from a persistently failing server")
+	}
+	if got := atomic.LoadInt32(&calls); got != waitMaxConsecFails {
+		t.Errorf("expected exactly %d Wait calls, got %d", waitMaxConsecFails, got)
+	}
+}
+
+// A reaped session (server-side TTL) is not transient: surface the
+// dedicated expired error immediately.
+func TestWaitForReceiver_SessionReapedSurfacesExpired(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	_, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm")
+	if !errors.Is(err, fserrors.ErrSessionExpired) {
+		t.Errorf("expected ErrSessionExpired for a reaped session, got %v", err)
+	}
+}
 
 // timeAfter500ms is the shared deadline for the deadlock-regression
 // tests. Used as a generous upper bound on "drainBoth/drainLoser must

@@ -368,7 +368,17 @@ func writeChunk(s *Streams, info *wire.FileInfo, chunkIndex uint32, plain []byte
 		}
 	}
 	c.Payload = payload
-	return wire.WriteChunk(s.Data, c)
+	if err := wire.WriteChunk(s.Data, c); err != nil {
+		// The receiver cancels the data stream when its local write
+		// fails and posts the reason on control. Surface that instead
+		// of the bare stream error, which classifies as a transient
+		// network drop and triggers pointless retries.
+		if reason := tryReadPeerError(s.Control); reason != nil {
+			return reason
+		}
+		return err
+	}
+	return nil
 }
 
 func blakeHash32(b []byte) [32]byte {

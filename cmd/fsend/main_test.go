@@ -96,11 +96,11 @@ func TestReadLine(t *testing.T) {
 		"Y\n":       "y",
 		"  Yes  \n": "yes",
 		"\n":        "",
-		"":          "", // EOF → empty
+		"":          "", // EOF → empty (and eof=true, covered in helpers_test)
 		"\r\n":      "",
 	}
 	for in, want := range cases {
-		if got := readLine(strings.NewReader(in)); got != want {
+		if got, _ := readLine(strings.NewReader(in)); got != want {
 			t.Errorf("readLine(%q) = %q, want %q", in, got, want)
 		}
 	}

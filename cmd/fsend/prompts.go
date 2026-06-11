@@ -10,34 +10,42 @@ import (
 )
 
 // readLine reads one line from r, trims trailing CR/LF, lowercases it,
-// and returns the result. EOF and read errors both collapse to the empty
-// string so the caller sees "default" rather than a propagated read
-// error — empty input is a valid prompt response, not a failure mode.
+// and returns the result. eof is true when the read produced no input at
+// all (closed stdin, /dev/null, exhausted pipe) — callers that treat an
+// empty line as "take the default" must NOT do so on eof: nobody is
+// answering, and a default that consents to something is a footgun.
+// A read error that still yielded bytes is a valid answer line.
 //
 // When r is os.Stdin, the package-level shared bufio.Reader is used so
 // bytes are not lost between successive prompts (see stdinReader).
-func readLine(r io.Reader) string {
-	if r == os.Stdin {
-		line, _ := stdinReader().ReadString('\n')
-		return strings.ToLower(strings.TrimSpace(line))
+func readLine(r io.Reader) (line string, eof bool) {
+	br := stdinReader()
+	if r != os.Stdin {
+		br = bufio.NewReader(r)
 	}
-	br := bufio.NewReader(r)
-	line, _ := br.ReadString('\n')
-	return strings.ToLower(strings.TrimSpace(line))
+	raw, err := br.ReadString('\n')
+	return strings.ToLower(strings.TrimSpace(raw)), err != nil && raw == ""
 }
 
 // readLineCtx reads one line from os.Stdin but returns ok=false if ctx is
 // cancelled first — e.g. Ctrl-C while the prompt is waiting for input.
 // The blocked read goroutine is abandoned; that is harmless because a
 // cancelled ctx means the process is on its way down.
-func readLineCtx(ctx context.Context) (line string, ok bool) {
-	ch := make(chan string, 1)
-	go func() { ch <- readLine(os.Stdin) }()
+func readLineCtx(ctx context.Context) (line string, eof, ok bool) {
+	type res struct {
+		line string
+		eof  bool
+	}
+	ch := make(chan res, 1)
+	go func() {
+		l, e := readLine(os.Stdin)
+		ch <- res{l, e}
+	}()
 	select {
 	case <-ctx.Done():
-		return "", false
-	case s := <-ch:
-		return s, true
+		return "", false, false
+	case r := <-ch:
+		return r.line, r.eof, true
 	}
 }
 

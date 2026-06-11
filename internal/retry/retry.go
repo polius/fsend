@@ -195,5 +195,7 @@ var terminalSentinels = []error{
 	fserrors.ErrServerRetired,
 	fserrors.ErrWrongPassword,      // wrong password is one-shot per session
 	fserrors.ErrCodeAlreadyClaimed, // sender already paired; no retry will recover
-	context.Canceled,               // user hit Ctrl-C
+	fserrors.ErrWriteFailed,        // peer's (or our) disk problem; retrying won't fix it
+	fserrors.ErrDiskFull,
+	context.Canceled, // user hit Ctrl-C
 }
