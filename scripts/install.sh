@@ -63,6 +63,7 @@ detect_os() {
         linux)        echo "linux" ;;
         darwin)       echo "darwin" ;;
         freebsd)      echo "freebsd" ;;
+        openbsd)      echo "openbsd" ;;
         msys*|mingw*|cygwin*) echo "windows" ;;
         *)            err "unsupported OS: $os" ;;
     esac
@@ -74,6 +75,8 @@ detect_arch() {
         x86_64|amd64)  echo "amd64" ;;
         arm64|aarch64) echo "arm64" ;;
         armv7*)        echo "armv7" ;;
+        armv6*)        echo "armv6" ;;
+        riscv64)       echo "riscv64" ;;
         i386|i686)     echo "386" ;;
         *)             err "unsupported architecture: $arch" ;;
     esac
@@ -84,10 +87,11 @@ detect_arch() {
 # user sees "no prebuilt binary" instead of a mystifying download 404.
 check_release_target() {
     case "$1-$2" in
-        linux-amd64|linux-arm64|linux-386|linux-armv7) ;;
+        linux-amd64|linux-arm64|linux-386|linux-armv7|linux-armv6|linux-riscv64) ;;
         darwin-amd64|darwin-arm64) ;;
         windows-amd64|windows-arm64|windows-386) ;;
         freebsd-amd64|freebsd-arm64) ;;
+        openbsd-amd64|openbsd-arm64) ;;
         *) err "no prebuilt binary for $1/$2 — build from source: go install github.com/${REPO}/cmd/fsend@latest" ;;
     esac
 }
@@ -170,24 +174,27 @@ extract_zip() {
     err "no zip extractor found (need unzip, bsdtar, or PowerShell)"
 }
 
+# POSIX sh has no function scope: bare assignments here would clobber the
+# caller's globals. The archive name in particular is reused for extraction
+# after this returns, so keep these parameters underscore-prefixed.
 verify_checksum() {
-    archive="$1"
-    sums="$2"
-    expected="$(grep " $(basename "$archive")$" "$sums" | awk '{print $1}')"
-    [ -n "$expected" ] || err "no checksum found for $(basename "$archive")"
+    _archive="$1"
+    _sums="$2"
+    _expected="$(grep " $(basename "$_archive")$" "$_sums" | awk '{print $1}')"
+    [ -n "$_expected" ] || err "no checksum found for $(basename "$_archive")"
 
     if command -v sha256sum >/dev/null 2>&1; then
-        actual="$(sha256sum "$archive" | awk '{print $1}')"
+        _actual="$(sha256sum "$_archive" | awk '{print $1}')"
     elif command -v shasum >/dev/null 2>&1; then
-        actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+        _actual="$(shasum -a 256 "$_archive" | awk '{print $1}')"
     elif command -v sha256 >/dev/null 2>&1; then
-        actual="$(sha256 -q "$archive")"
+        _actual="$(sha256 -q "$_archive")"
     else
         err "no sha256 tool available (need sha256sum, shasum, or sha256)"
     fi
 
-    [ "$actual" = "$expected" ] \
-        || err "checksum mismatch: expected $expected, got $actual"
+    [ "$_actual" = "$_expected" ] \
+        || err "checksum mismatch: expected $_expected, got $_actual"
 }
 
 ensure_prefix() {
