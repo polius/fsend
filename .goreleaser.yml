@@ -26,6 +26,7 @@ builds:
       - darwin
       - windows
       - freebsd
+      - openbsd
     goarch:
       - amd64
       - arm64
@@ -46,6 +47,10 @@ builds:
       - { goos: freebsd, goarch: riscv64 }
       - { goos: windows, goarch: arm }
       - { goos: windows, goarch: riscv64 }
+      # OpenBSD: ship amd64 + arm64 only (the common desktop/server targets).
+      - { goos: openbsd, goarch: "386" }
+      - { goos: openbsd, goarch: arm }
+      - { goos: openbsd, goarch: riscv64 }
 
 archives:
   - id: fsend

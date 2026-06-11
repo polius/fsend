@@ -63,6 +63,7 @@ detect_os() {
         linux)        echo "linux" ;;
         darwin)       echo "darwin" ;;
         freebsd)      echo "freebsd" ;;
+        openbsd)      echo "openbsd" ;;
         msys*|mingw*|cygwin*) echo "windows" ;;
         *)            err "unsupported OS: $os" ;;
     esac
@@ -90,6 +91,7 @@ check_release_target() {
         darwin-amd64|darwin-arm64) ;;
         windows-amd64|windows-arm64|windows-386) ;;
         freebsd-amd64|freebsd-arm64) ;;
+        openbsd-amd64|openbsd-arm64) ;;
         *) err "no prebuilt binary for $1/$2 — build from source: go install github.com/${REPO}/cmd/fsend@latest" ;;
     esac
 }
