@@ -547,7 +547,7 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transf
 // both paths in this helper keeps the two transfer entry points purely
 // declarative.
 func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, pathInfo connpath.Info, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
-	closeProg, progressFn, sentBytes, onStreamingEOF := newSenderProgress(f, items)
+	closeProg, progressFn, onResume, stats, onStreamingEOF := newSenderProgress(f, items)
 	defer closeProg()
 
 	// Time from the first byte, not from here — the receiver may sit at
@@ -590,18 +590,21 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 				DisplayName:    displayName,
 				Password:       f.passArg,
 				ProgressFn:     progress,
+				OnResume:       onResume,
 				OnStreamingEOF: onStreamingEOF,
 			})
 		})
 	if err != nil {
 		return err
 	}
-	// Use the actual bytes counter so resumed transfers reflect what
-	// moved on the wire — not the full source size. printSendSummary
+	// moved counts the bytes this run pushed on the wire; skipped is the
+	// resumed prefix the receiver already had. The summary shows the
+	// full size but bases the rate on moved alone. printSendSummary
 	// no-ops under --quiet, so the outer guard isn't needed.
-	bytes := sentBytes()
-	if bytes == 0 {
-		bytes = totalBytes(items)
+	moved, skipped := stats()
+	total := moved + skipped
+	if total == 0 {
+		total, moved = totalBytes(items), totalBytes(items)
 	}
 	// Flush the bar first so its terminal frame lands above the summary
 	// (the deferred call is then a no-op).
@@ -610,7 +613,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	if !firstByte.IsZero() {
 		elapsed = time.Since(firstByte)
 	}
-	printSendSummary(f, bytes, elapsed, pathInfo)
+	printSendSummary(f, total, moved, elapsed, pathInfo)
 	return nil
 }
 

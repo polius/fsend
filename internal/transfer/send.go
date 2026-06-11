@@ -40,6 +40,11 @@ type SendOptions struct {
 	Password    string                                   // empty → no password challenge
 	ProgressFn  func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
 
+	// OnResume fires once per file the receiver elected to resume, after
+	// the partial-prefix verification passed and before any chunk flows.
+	// Lets the CLI announce the resume and count only the tail as moved.
+	OnResume func(fileIndex uint32, offset, total uint64)
+
 	// OnStreamingEOF fires exactly once per streaming item, immediately
 	// after the EOF chunk has been written. The CLI uses this hook to
 	// latch the progress bar's total to the real byte count (which is
@@ -80,6 +85,16 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	}
 	for _, it := range opts.Items {
 		hello.TotalBytes += it.Info.Size
+	}
+	// Multi-file: advertise the names (bare basenames from Walk) so the
+	// receiver's consent prompt isn't blind. Capped to bound frame size.
+	if opts.TransferKind == wire.TransferMultiFile {
+		for _, it := range opts.Items {
+			if len(hello.FileNames) == wire.MaxHelloFileNames {
+				break
+			}
+			hello.FileNames = append(hello.FileNames, it.Info.RelativePath)
+		}
 	}
 
 	if err := wire.WriteControl(s.Control, wire.TypeHello, hello); err != nil {
@@ -227,6 +242,9 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 			})
 			return fserrors.ErrPartialMismatch
 		}
+	}
+	if decision.Action == wire.ActionResume && decision.ResumeOffset > 0 && opts.OnResume != nil {
+		opts.OnResume(it.Info.Index, decision.ResumeOffset, it.Info.Size)
 	}
 
 	// Open source.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/quick"
@@ -15,9 +16,10 @@ func TestControl_HelloRoundtrip(t *testing.T) {
 		Hostname:        "Pol's MacBook",
 		OS:              "darwin",
 		ClientVersion:   "0.1.0",
-		TransferKind:    TransferSingleFile,
-		TotalFiles:      1,
+		TransferKind:    TransferMultiFile,
+		TotalFiles:      2,
 		TotalBytes:      4404019,
+		FileNames:       []string{"report.pdf", "notes.txt"},
 	}
 	var buf bytes.Buffer
 	if err := WriteControl(&buf, TypeHello, &want); err != nil {
@@ -32,7 +34,8 @@ func TestControl_HelloRoundtrip(t *testing.T) {
 	if ft != TypeHello {
 		t.Errorf("frame type = %v, want TypeHello", ft)
 	}
-	if got != want {
+	// SenderHello carries a slice (FileNames), so == doesn't apply.
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("roundtrip mismatch:\ngot:  %+v\nwant: %+v", got, want)
 	}
 }

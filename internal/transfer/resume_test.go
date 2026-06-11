@@ -70,6 +70,10 @@ func TestResume_ReusesAlignedPartial(t *testing.T) {
 	sniff := &controlSniffer{inner: b.Control}
 	b.Control = sniff
 
+	// Both sides must surface the resume to their UIs, with the offset
+	// — that's what powers the "Resuming from …" line and keeps the
+	// summary rate honest about bytes actually moved.
+	var sendResumeOff, recvResumeOff uint64
 	var sendErr, recvErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -78,12 +82,14 @@ func TestResume_ReusesAlignedPartial(t *testing.T) {
 		sendErr = Send(context.Background(), &a, SendOptions{
 			Items:        items,
 			TransferKind: wire.TransferSingleFile,
+			OnResume:     func(_ uint32, off, _ uint64) { sendResumeOff = off },
 		})
 	}()
 	go func() {
 		defer wg.Done()
 		recvErr = Recv(context.Background(), &b, RecvOptions{
 			TargetDir: dstDir,
+			OnResume:  func(_ uint32, off, _ uint64) { recvResumeOff = off },
 		})
 	}()
 	wg.Wait()
@@ -93,6 +99,12 @@ func TestResume_ReusesAlignedPartial(t *testing.T) {
 	}
 	if recvErr != nil {
 		t.Fatalf("recv: %v", recvErr)
+	}
+	if sendResumeOff != prefix {
+		t.Errorf("sender OnResume offset = %d, want %d", sendResumeOff, prefix)
+	}
+	if recvResumeOff != prefix {
+		t.Errorf("receiver OnResume offset = %d, want %d", recvResumeOff, prefix)
 	}
 
 	// Sniffer should have observed ActionResume with offset == prefix.

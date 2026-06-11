@@ -42,6 +42,10 @@ type RecvOptions struct {
 	Password      string                                      // pre-supplied (--pass or FSEND_PASS); used when sender requires a password
 	PromptPass    func() (string, error)                      // fallback when sender requires a password and Password is empty
 	ProgressFn    func(fileIndex uint32, bytesWritten uint64) // optional
+	// OnResume fires once per file we elected to resume, before any new
+	// bytes arrive. Lets the CLI announce the resume and count only the
+	// tail as moved. offset is chunk-aligned; total is the file's size.
+	OnResume func(fileIndex uint32, offset, total uint64)
 	// ConfirmOverwrite is called when an incoming file would clobber an
 	// existing one and Overwrite is false. true → accept this file as if
 	// Overwrite were set; false or nil → E013 reject.
@@ -141,6 +145,19 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	}
 	var filesSeen, bytesDeclared uint64
 
+	// Consent integrity: when the HELLO advertised the complete name
+	// list (multi-file with TotalFiles ≤ MaxHelloFileNames), the user
+	// consented to exactly those names — enforce that nothing else
+	// lands. Incomplete (capped) or absent lists can't be enforced.
+	var advertised map[string]bool
+	if hello.TransferKind == wire.TransferMultiFile &&
+		len(hello.FileNames) > 0 && uint32(len(hello.FileNames)) == hello.TotalFiles {
+		advertised = make(map[string]bool, len(hello.FileNames))
+		for _, n := range hello.FileNames {
+			advertised[n] = true
+		}
+	}
+
 	// File loop.
 	for {
 		if err := ctx.Err(); err != nil {
@@ -192,6 +209,10 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		if strings.ContainsAny(info.RelativePath, `/\`) {
 			declineTransfer(s, wire.ErrCodeProtocolError, "path separator in file name")
 			return fmt.Errorf("%w: RelativePath %q contains a path separator", fserrors.ErrProtocolError, info.RelativePath)
+		}
+		if advertised != nil && !advertised[info.RelativePath] {
+			declineTransfer(s, wire.ErrCodeProtocolError, "file not in advertised name list")
+			return fmt.Errorf("%w: file %q was not among the advertised names", fserrors.ErrProtocolError, info.RelativePath)
 		}
 		if err := recvOneFile(ctx, s, &info, opts, archiveMode); err != nil {
 			return err
@@ -387,6 +408,9 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	}
 	if err := wire.WriteControl(s.Control, wire.TypeFileAccept, &decision); err != nil {
 		return fmt.Errorf("recv: file-accept: %w", err)
+	}
+	if action == wire.ActionResume && opts.OnResume != nil {
+		opts.OnResume(info.Index, resumeOffset, info.Size)
 	}
 
 	// Open the partial sidecar (not the target). On full re-download we
