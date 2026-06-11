@@ -14,6 +14,7 @@ import (
 const (
 	srvKiB = 1024
 	srvMiB = 1024 * 1024
+	srvMB  = 1000 * 1000
 	srvGiB = 1024 * 1024 * 1024
 	srvTiB = 1024 * 1024 * 1024 * 1024
 )
@@ -149,8 +150,8 @@ func TestServerLoadConfigDefaults(t *testing.T) {
 	if cfg.maxNewSessionsPerMin != 30 {
 		t.Errorf("maxNewSessionsPerMin: got %d, want 30", cfg.maxNewSessionsPerMin)
 	}
-	if cfg.maxBytesPerSession != 100*srvMiB {
-		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 100*srvMiB)
+	if cfg.maxBytesPerSession != 100*srvMB {
+		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 100*srvMB)
 	}
 	if cfg.logLevel != slog.LevelInfo {
 		t.Errorf("logLevel: got %v, want info", cfg.logLevel)

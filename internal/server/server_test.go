@@ -452,7 +452,7 @@ func (f *fakeRelay) Status(t relay.Token) string    { return f.reason }
 func (f *fakeRelay) MaxBytesPerSession() uint64     { return f.maxBytes }
 
 // /v1/relay/status must echo back the operator-set byte ceiling so the
-// CLI can render a concrete error ("server limit 100 MiB") instead of a
+// CLI can render a concrete error ("server limit 100 MB") instead of a
 // generic "limit reached." Cap-hit carries the limit; idle just carries
 // the reason (the timeout is fixed, no value to surface).
 func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
@@ -461,7 +461,7 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 		reason    string
 		wantBytes uint64
 	}{
-		{name: "cap_hit", reason: relay.ReasonCapHit, wantBytes: 100 * 1024 * 1024},
+		{name: "cap_hit", reason: relay.ReasonCapHit, wantBytes: 100 * 1000 * 1000},
 		{name: "idle", reason: relay.ReasonIdle},
 	}
 	for _, c := range cases {
@@ -478,7 +478,7 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 			alloc := &fakeRelay{
 				tok:      relay.Token{1, 2, 3, 4},
 				reason:   c.reason,
-				maxBytes: 100 * 1024 * 1024,
+				maxBytes: 100 * 1000 * 1000,
 			}
 			s.WithRelay(alloc, 9999)
 			ts := httptest.NewServer(s.Handler())

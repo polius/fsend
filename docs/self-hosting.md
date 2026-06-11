@@ -150,4 +150,4 @@ All optional; defaults shown. Set under the `environment:` block in
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |
 | `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit. |
-| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | Wire bytes after compression. Accepts `500m`, `1GiB`, `104857600`. |
+| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MB` | Wire bytes after compression. Accepts `500m`, `1GiB`, `104857600`. |

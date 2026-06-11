@@ -63,7 +63,7 @@ const sessionIdleTimeout = 60 * time.Second
 // Default fills in zero values.
 func (c *ServerConfig) Default() {
 	if c.MaxBytesPerSession == 0 {
-		c.MaxBytesPerSession = 100 * 1024 * 1024 // 100 MiB
+		c.MaxBytesPerSession = 100 * 1000 * 1000 // 100 MB (decimal, matches displayed units)
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -78,7 +79,8 @@ func runReceive(f *flags, c string) error {
 		return runReceiveOverInternet(ctx, f, c, cfg, spin)
 	}
 
-	addr := q.IP.String() + ":" + strconv.Itoa(q.Port)
+	// JoinHostPort so an IPv6 announce dials as "[addr]:port".
+	addr := net.JoinHostPort(q.IP.String(), strconv.Itoa(q.Port))
 	if f.debug && !f.quiet {
 		fmt.Fprintln(os.Stderr, "    sender address:", addr)
 	}

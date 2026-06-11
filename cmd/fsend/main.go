@@ -151,7 +151,7 @@ func renderError(err error, debug bool) int {
 	// Surface wrap context as a second line so users see WHY without
 	// having to enable --debug. Used for:
 	//   - usage / source-not-found: the missing path or bad flag.
-	//   - relay-limit hits: the server's configured limit ("100 MiB").
+	//   - relay-limit hits: the server's configured limit ("100 MB").
 	detail := ""
 	// E001 and E018 name the server it tried so a stale --connect entry
 	// is self-diagnosing instead of reading as a network outage.
