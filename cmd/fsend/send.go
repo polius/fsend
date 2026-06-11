@@ -116,6 +116,11 @@ func runSend(f *flags, paths []string) error {
 // for the sender's "Sending …" line; "" means use the per-kind default.
 func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.TransferKind, uint32, string, func(), error) {
 	noop := func() {}
+	// --exclude is consulted only when bundling a directory; for text and
+	// stdin (and, below, plain files) it would be silently ignored.
+	if len(f.excludes) > 0 && (f.textArg != "" || (len(paths) == 1 && paths[0] == "-")) {
+		return nil, 0, 0, "", noop, errExcludeMisuse()
+	}
 	if f.textArg != "" {
 		return synthesizeText(f.textArg), wire.TransferText, 0, "", noop, nil
 	}
@@ -130,6 +135,9 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 	hasDir, err := containsDirectory(paths)
 	if err != nil {
 		return nil, 0, 0, "", noop, err
+	}
+	if !hasDir && len(f.excludes) > 0 {
+		return nil, 0, 0, "", noop, errExcludeMisuse()
 	}
 	if hasDir {
 		items, numFiles, cleanup, err := buildArchiveItem(paths, f.excludes)
@@ -170,6 +178,12 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		return items, wire.TransferSingleFile, 0, filepath.Base(paths[0]), noop, nil
 	}
 	return items, wire.TransferMultiFile, 0, uxlog.CountNoun(len(paths), "file"), noop, nil
+}
+
+// errExcludeMisuse is returned wherever --exclude would be silently
+// ignored: a receive, or a send with no directory to bundle.
+func errExcludeMisuse() error {
+	return fmt.Errorf("%w: --exclude only applies when sending a directory", fserrors.ErrUsage)
 }
 
 // mapLocalReadErr promotes a permission failure on a local source file

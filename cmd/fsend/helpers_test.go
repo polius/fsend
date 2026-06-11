@@ -644,6 +644,41 @@ func TestCollectItems_Directory_BuildsArchive(t *testing.T) {
 	}
 }
 
+// --exclude only affects directory bundling; anywhere else it was
+// silently ignored — now a usage error.
+func TestCollectItems_ExcludeWithoutDirectory(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(fp, []byte("body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		f     *flags
+		paths []string
+	}{
+		{"plain_file", &flags{excludes: []string{"*.log"}}, []string{fp}},
+		{"text", &flags{excludes: []string{"*.log"}, textArg: "hi"}, nil},
+		{"stdin", &flags{excludes: []string{"*.log"}}, []string{"-"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, _, err := collectItems(tc.f, tc.paths)
+			if !errors.Is(err, fserrors.ErrUsage) {
+				t.Fatalf("err = %v, want ErrUsage", err)
+			}
+			if !strings.Contains(err.Error(), "--exclude only applies when sending a directory") {
+				t.Errorf("err = %q, want --exclude hint", err)
+			}
+		})
+	}
+	// A directory among the inputs keeps --exclude valid.
+	_, _, _, _, cleanup, err := collectItems(&flags{excludes: []string{"*.log"}}, []string{dir})
+	if err != nil {
+		t.Fatalf("directory with --exclude must not error: %v", err)
+	}
+	cleanup()
+}
+
 // ---------------------------------------------------------------------------
 // prompts.go readLine
 // ---------------------------------------------------------------------------
