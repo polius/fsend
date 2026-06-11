@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -14,24 +15,29 @@ import (
 // install dir, and strips that dir from the user PATH.
 //
 // A running .exe can't delete its own image on Windows, so the delete is done
-// by a detached cmd that retries until this process exits and releases the
-// lock. The PATH edit happens here, synchronously, since it doesn't depend on
-// the binary being gone.
+// by a detached PowerShell that Wait-Process'es on our PID, then removes the
+// file the instant we exit and the lock drops. PowerShell (not cmd) with
+// single-quoted literal paths keeps double quotes out of the command line,
+// avoiding the cmd.exe/CreateProcess escaping pitfalls that mangle paths.
+// The PATH edit happens here, synchronously — it doesn't need the exe gone.
 func removeBinary(binPath string) error {
 	dir := filepath.Dir(binPath)
 	removeUserPathEntry(dir)
 
-	// `del` clears fsend.exe; the loop's leading ping gives us time to exit so
-	// the lock is released. Plain `rmdir` (no /s) only removes the dir if it's
-	// now empty, leaving any unrelated files the user put there untouched.
-	arg := fmt.Sprintf(
-		`for /L %%i in (1,1,10) do (ping 127.0.0.1 -n 2 >nul & del /f /q "%s" 2>nul) & rmdir "%s" 2>nul`,
-		binPath, dir)
-	cmd := exec.Command("cmd", "/C", arg)
+	// Remove-Item on the dir without -Recurse only deletes it if now empty,
+	// leaving any unrelated files the user put there untouched.
+	script := fmt.Sprintf(
+		`Wait-Process -Id %d -ErrorAction SilentlyContinue; `+
+			`Start-Sleep -Milliseconds 300; `+
+			`Remove-Item -LiteralPath %s -Force -ErrorAction SilentlyContinue; `+
+			`Remove-Item -LiteralPath %s -Force -ErrorAction SilentlyContinue`,
+		os.Getpid(), psSingleQuote(binPath), psSingleQuote(dir))
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive",
+		"-WindowStyle", "Hidden", "-Command", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow: true,
-		// DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: outlive us, no console.
-		CreationFlags: 0x00000008 | 0x00000200,
+		// CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: hidden, outlives us.
+		CreationFlags: 0x08000000 | 0x00000200,
 	}
 	return cmd.Start()
 }
