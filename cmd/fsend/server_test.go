@@ -11,12 +11,7 @@ import (
 	"time"
 )
 
-const (
-	srvKiB = 1024
-	srvMiB = 1024 * 1024
-	srvGiB = 1024 * 1024 * 1024
-	srvTiB = 1024 * 1024 * 1024 * 1024
-)
+const srvMB = 1000 * 1000
 
 func srvFreePortTCP(t *testing.T) int {
 	t.Helper()
@@ -59,16 +54,18 @@ func TestServerEnvOr(t *testing.T) {
 func TestServerEnvInt(t *testing.T) {
 	const k = "FSEND_TEST_ENV_INT"
 	os.Unsetenv(k)
-	if got := envInt(k, 42); got != 42 {
-		t.Errorf("unset: got %d, want 42", got)
+	if got, err := envInt(k, 42); err != nil || got != 42 {
+		t.Errorf("unset: got %d, %v; want 42", got, err)
 	}
 	t.Setenv(k, "7")
-	if got := envInt(k, 42); got != 7 {
-		t.Errorf("set: got %d, want 7", got)
+	if got, err := envInt(k, 42); err != nil || got != 7 {
+		t.Errorf("set: got %d, %v; want 7", got, err)
 	}
-	t.Setenv(k, "not-a-number")
-	if got := envInt(k, 42); got != 42 {
-		t.Errorf("bad: got %d, want 42", got)
+	for _, bad := range []string{"not-a-number", "-1", "1.5"} {
+		t.Setenv(k, bad)
+		if _, err := envInt(k, 42); err == nil {
+			t.Errorf("%q: want error, got nil", bad)
+		}
 	}
 }
 
@@ -76,33 +73,37 @@ func TestServerEnvBytes(t *testing.T) {
 	const k = "FSEND_TEST_ENV_BYTES"
 	const def uint64 = 100
 	cases := []struct {
-		in   string
-		want uint64
+		in      string
+		want    uint64
+		wantErr bool
 	}{
-		{"", def},
-		{"500", 500},
-		{"500b", 500},
-		{"500B", 500},
-		{"1k", 1000},
-		{"1kb", 1000},
-		{"1KB", 1000},
-		{"1ki", 1024},
-		{"1KiB", srvKiB},
-		{"1m", 1000 * 1000},
-		{"1MB", 1000 * 1000},
-		{"1MiB", srvMiB},
-		{"100MiB", 100 * srvMiB},
-		{"1g", 1000 * 1000 * 1000},
-		{"1GiB", srvGiB},
-		{"1t", 1000 * 1000 * 1000 * 1000},
-		{"1TiB", srvTiB},
-		{"  10MiB  ", 10 * srvMiB},
-		{"1.5MiB", uint64(1.5 * float64(srvMiB))},
-		{"0", 0},
-		{"-1", def},
-		{"not-a-number", def},
-		{"100ZZ", def},
-		{"M", def},
+		{in: "", want: def},
+		{in: "500", want: 500},
+		{in: "500b", want: 500},
+		{in: "500B", want: 500},
+		{in: "1kb", want: 1000},
+		{in: "1KB", want: 1000},
+		{in: "1MB", want: 1000 * 1000},
+		{in: "100mb", want: 100 * srvMB},
+		{in: "1GB", want: 1000 * 1000 * 1000},
+		{in: "1TB", want: 1000 * 1000 * 1000 * 1000},
+		{in: "  10MB  ", want: 10 * srvMB},
+		{in: "1.5MB", want: uint64(1.5 * float64(srvMB))},
+		{in: "0", want: 0},
+		// Binary and single-letter suffixes are rejected, not guessed at:
+		// fsend displays decimal units everywhere, and a silent fallback
+		// would hide the misconfiguration.
+		{in: "1KiB", wantErr: true},
+		{in: "100MiB", wantErr: true},
+		{in: "1GiB", wantErr: true},
+		{in: "500m", wantErr: true},
+		{in: "1k", wantErr: true},
+		{in: "1g", wantErr: true},
+		{in: "-1", wantErr: true},
+		{in: "not-a-number", wantErr: true},
+		{in: "100ZZ", wantErr: true},
+		{in: "M", wantErr: true},
+		{in: "MB", wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -111,8 +112,15 @@ func TestServerEnvBytes(t *testing.T) {
 			} else {
 				t.Setenv(k, c.in)
 			}
-			if got := envBytes(k, def); got != c.want {
-				t.Errorf("envBytes(%q): got %d, want %d", c.in, got, c.want)
+			got, err := envBytes(k, def)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("envBytes(%q): want error, got %d", c.in, got)
+				}
+				return
+			}
+			if err != nil || got != c.want {
+				t.Errorf("envBytes(%q): got %d, %v; want %d", c.in, got, err, c.want)
 			}
 		})
 	}
@@ -136,7 +144,10 @@ func clearServerEnv(t *testing.T) {
 
 func TestServerLoadConfigDefaults(t *testing.T) {
 	clearServerEnv(t)
-	cfg := loadServerConfig()
+	cfg, err := loadServerConfig()
+	if err != nil {
+		t.Fatalf("loadServerConfig: %v", err)
+	}
 	if cfg.httpAddr != ":8080" {
 		t.Errorf("httpAddr: got %q, want :8080", cfg.httpAddr)
 	}
@@ -149,8 +160,8 @@ func TestServerLoadConfigDefaults(t *testing.T) {
 	if cfg.maxNewSessionsPerMin != 30 {
 		t.Errorf("maxNewSessionsPerMin: got %d, want 30", cfg.maxNewSessionsPerMin)
 	}
-	if cfg.maxBytesPerSession != 100*srvMiB {
-		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 100*srvMiB)
+	if cfg.maxBytesPerSession != 100*srvMB {
+		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 100*srvMB)
 	}
 	if cfg.logLevel != slog.LevelInfo {
 		t.Errorf("logLevel: got %v, want info", cfg.logLevel)
@@ -163,8 +174,11 @@ func TestServerLoadConfigOverrides(t *testing.T) {
 	t.Setenv("FSEND_UDP_ADDR", ":29999")
 	t.Setenv("FSEND_MAX_SESSIONS_PER_IP", "12")
 	t.Setenv("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", "120")
-	t.Setenv("FSEND_MAX_RELAY_BYTES_PER_SESSION", "250MiB")
-	cfg := loadServerConfig()
+	t.Setenv("FSEND_MAX_RELAY_BYTES_PER_SESSION", "250MB")
+	cfg, err := loadServerConfig()
+	if err != nil {
+		t.Fatalf("loadServerConfig: %v", err)
+	}
 	if cfg.httpAddr != ":19999" {
 		t.Errorf("httpAddr: got %q", cfg.httpAddr)
 	}
@@ -177,8 +191,26 @@ func TestServerLoadConfigOverrides(t *testing.T) {
 	if cfg.maxNewSessionsPerMin != 120 {
 		t.Errorf("maxNewSessionsPerMin: got %d", cfg.maxNewSessionsPerMin)
 	}
-	if cfg.maxBytesPerSession != 250*srvMiB {
+	if cfg.maxBytesPerSession != 250*srvMB {
 		t.Errorf("maxBytesPerSession: got %d", cfg.maxBytesPerSession)
+	}
+}
+
+func TestServerLoadConfigRejectsBadValues(t *testing.T) {
+	// A typo'd limit must stop the server, not silently run the default.
+	cases := map[string]string{
+		"FSEND_MAX_RELAY_BYTES_PER_SESSION":     "1GiB",
+		"FSEND_MAX_SESSIONS_PER_IP":             "many",
+		"FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN": "-1",
+	}
+	for k, v := range cases {
+		t.Run(k+"="+v, func(t *testing.T) {
+			clearServerEnv(t)
+			t.Setenv(k, v)
+			if _, err := loadServerConfig(); err == nil {
+				t.Fatalf("%s=%q: want error, got nil", k, v)
+			}
+		})
 	}
 }
 
@@ -199,7 +231,10 @@ func TestServerLoadConfigLogLevels(t *testing.T) {
 			if input != "" {
 				t.Setenv("FSEND_LOG_LEVEL", input)
 			}
-			cfg := loadServerConfig()
+			cfg, err := loadServerConfig()
+			if err != nil {
+				t.Fatalf("loadServerConfig: %v", err)
+			}
 			if cfg.logLevel != want {
 				t.Errorf("FSEND_LOG_LEVEL=%q: got %v, want %v", input, cfg.logLevel, want)
 			}

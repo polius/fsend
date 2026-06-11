@@ -283,7 +283,10 @@ main() {
         [ -n "$vnum" ] || err "could not resolve latest version"
         version="v${vnum}"
     else
+        # Accept "-v 1.0.0" and "-v v1.0.0" alike: release tags are
+        # always v-prefixed, archive names never are.
         vnum="${version#v}"
+        version="v${vnum}"
         info "downloading checksums"
         download "https://github.com/${REPO}/releases/download/${version}/checksums.txt" "$tmp/checksums.txt"
     fi

@@ -15,13 +15,15 @@ or [run your own](self-hosting.md).
 Two computers on the same Wi-Fi can find each other with mDNS. Across
 the internet they can't — random machines behind random NATs have no
 way to find each other on their own. That's what the pairing server is
-for: a shared rendezvous keyed by the share code.
+for: a shared rendezvous keyed by a one-way *slot* derived from the
+share code (an argon2id stretch — both peers compute it locally and
+identically).
 
 It plays two roles, and only the first is always needed:
 
-- **Pairing** — both sides post the code; the server tells each one
-  where the other is. It learns the code (it has to, to match the
-  sides) but nothing about the file.
+- **Pairing** — both sides post the slot; the server tells each one
+  where the other is. It never learns the code itself (only the
+  memory-hard stretch of it) and nothing about the file.
 - **Relay** *(fallback only)* — when NAT topology blocks a direct
   connection, the server forwards encrypted UDP between the peers.
   Details below.

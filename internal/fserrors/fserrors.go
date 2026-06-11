@@ -99,6 +99,14 @@ var (
 	// config was invalid. An operator error, not an fsend bug, so it does
 	// not route through the E099 "file an issue" catchall.
 	ErrServerStartup = errors.New("server failed to start")
+	// E031 — the sender requires a password and the receiver had none to
+	// offer (--quiet with no --pass / FSEND_PASS), so the challenge was
+	// never answered. Distinct from E021: no password was entered at all.
+	ErrPasswordRequired = errors.New("password required")
+	// E032 — the peer deliberately cancelled (Ctrl-C) mid-transfer.
+	// Distinct from E020 so the survivor knows the teardown wasn't a
+	// network drop.
+	ErrPeerCancelled = errors.New("peer cancelled the transfer")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -276,7 +284,12 @@ var catalog = map[error]Entry{
 	ErrTransientFailure: {
 		Code: "E020", Exit: 20,
 		Message: "Transfer was interrupted and retries did not recover.",
-		Action: "Check your network connection and try again — fsend will resume\n" +
+		// Receiver wording: share codes are one-shot, so rerunning the
+		// same `fsend <code>` yields E002 — resume needs a fresh code
+		// from the sender.
+		Action: "Ask the sender to run fsend again, then use the new code — the\n" +
+			"  transfer will resume in this same directory.",
+		SenderAction: "Check your network connection and try again — fsend will resume\n" +
 			"  from where it left off.",
 	},
 	ErrWrongPassword: {
@@ -339,8 +352,25 @@ var catalog = map[error]Entry{
 	ErrServerStartup: {
 		Code: "E030", Exit: 30,
 		Message: "The server could not start.",
-		Action: "Check that the ports are free and you have permission to bind them\n" +
-			"  (FSEND_HTTP_ADDR, FSEND_UDP_ADDR). Binding :443 may need elevated privileges.",
+		Action: "Fix the setting named above, or check that the ports are free and you\n" +
+			"  have permission to bind them (FSEND_HTTP_ADDR, FSEND_UDP_ADDR).\n" +
+			"  Binding :443 may need elevated privileges.",
+	},
+	ErrPasswordRequired: {
+		Code: "E031", Exit: 31,
+		Message:       "This transfer requires a password.",
+		Action:        "Rerun with --pass <password> (or set FSEND_PASS).",
+		SenderMessage: "The receiver couldn't supply the password.",
+		SenderAction: "Run fsend again to issue a fresh code, and ask them to rerun with\n" +
+			"  --pass <password> (or FSEND_PASS).",
+	},
+	ErrPeerCancelled: {
+		Code: "E032", Exit: 32,
+		// Only the sender posts cancel notices today, so the base wording
+		// is receiver-facing.
+		Message: "The sender cancelled the transfer.",
+		Action: "Ask the sender to run fsend again, then use the new code — the\n" +
+			"  transfer will resume in this same directory.",
 	},
 }
 

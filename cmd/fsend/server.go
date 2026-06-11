@@ -68,7 +68,10 @@ func serverCmd() *cobra.Command {
 // from environment-driven config, traps SIGINT/SIGTERM, and blocks until
 // shutdown.
 func runServer() error {
-	cfg := loadServerConfig()
+	cfg, err := loadServerConfig()
+	if err != nil {
+		return fmt.Errorf("%w: %v", fserrors.ErrServerStartup, err)
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.logLevel}))
 	slog.SetDefault(logger)
 
@@ -159,14 +162,21 @@ type serverRuntimeConfig struct {
 	serverPassword       string
 }
 
-func loadServerConfig() serverRuntimeConfig {
+func loadServerConfig() (serverRuntimeConfig, error) {
 	cfg := serverRuntimeConfig{
-		httpAddr:             envOr("FSEND_HTTP_ADDR", ":8080"),
-		udpAddr:              envOr("FSEND_UDP_ADDR", ":443"),
-		maxSessionsPerIP:     envInt("FSEND_MAX_SESSIONS_PER_IP", 5),
-		maxNewSessionsPerMin: envInt("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", 30),
-		maxBytesPerSession:   envBytes("FSEND_MAX_RELAY_BYTES_PER_SESSION", 100*1024*1024),
-		serverPassword:       os.Getenv("FSEND_SERVER_PASSWORD"),
+		httpAddr:       envOr("FSEND_HTTP_ADDR", ":8080"),
+		udpAddr:        envOr("FSEND_UDP_ADDR", ":443"),
+		serverPassword: os.Getenv("FSEND_SERVER_PASSWORD"),
+	}
+	var err error
+	if cfg.maxSessionsPerIP, err = envInt("FSEND_MAX_SESSIONS_PER_IP", 5); err != nil {
+		return cfg, err
+	}
+	if cfg.maxNewSessionsPerMin, err = envInt("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", 30); err != nil {
+		return cfg, err
+	}
+	if cfg.maxBytesPerSession, err = envBytes("FSEND_MAX_RELAY_BYTES_PER_SESSION", 100*1000*1000); err != nil {
+		return cfg, err
 	}
 	switch strings.ToLower(os.Getenv("FSEND_LOG_LEVEL")) {
 	case "debug":
@@ -178,7 +188,7 @@ func loadServerConfig() serverRuntimeConfig {
 	default:
 		cfg.logLevel = slog.LevelInfo
 	}
-	return cfg
+	return cfg, nil
 }
 
 func envOr(name, def string) string {
@@ -203,64 +213,55 @@ func udpPortFromAddr(addr string) (int, error) {
 	return p, nil
 }
 
-func envInt(name string, def int) int {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+func envInt(name string, def int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return def, nil
 	}
-	return def
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s=%q: not a non-negative integer", name, v)
+	}
+	return n, nil
 }
 
-// envBytes reads a byte count with optional unit suffix ("100MiB", "50k",
-// "1048576") from name, falling back to def on missing or unparseable
-// input. Suffixes are case-insensitive; b/k/m/g/t are decimal (1000),
-// kib/mib/gib/tib are binary (1024).
-func envBytes(name string, def uint64) uint64 {
-	v := os.Getenv(name)
+// envBytes reads a byte count with optional decimal unit suffix
+// ("500MB", "1.5gb", "104857600") from name. Suffixes are
+// case-insensitive and decimal (KB = 1000) to match the units fsend
+// displays everywhere; binary forms ("MiB", "1ki") are rejected rather
+// than guessed at. Unset/blank → def; anything else unparseable is an
+// error — silently running with the default would hide an operator's
+// typo'd cap.
+func envBytes(name string, def uint64) (uint64, error) {
+	v := strings.TrimSpace(os.Getenv(name))
 	if v == "" {
-		return def
-	}
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return def
+		return def, nil
 	}
 	i := 0
 	for i < len(v) && (v[i] == '.' || (v[i] >= '0' && v[i] <= '9')) {
 		i++
 	}
 	num, suf := v[:i], strings.ToLower(strings.TrimSpace(v[i:]))
-	if num == "" {
-		return def
-	}
-	n, err := strconv.ParseFloat(num, 64)
-	if err != nil || n < 0 {
-		return def
-	}
 	var mul float64
 	switch suf {
 	case "", "b":
 		mul = 1
-	case "k", "kb":
+	case "kb":
 		mul = 1000
-	case "ki", "kib":
-		mul = 1024
-	case "m", "mb":
+	case "mb":
 		mul = 1000 * 1000
-	case "mi", "mib":
-		mul = 1024 * 1024
-	case "g", "gb":
+	case "gb":
 		mul = 1000 * 1000 * 1000
-	case "gi", "gib":
-		mul = 1024 * 1024 * 1024
-	case "t", "tb":
+	case "tb":
 		mul = 1000 * 1000 * 1000 * 1000
-	case "ti", "tib":
-		mul = 1024 * 1024 * 1024 * 1024
 	default:
-		return def
+		return 0, fmt.Errorf("%s=%q: unknown unit %q (use B, KB, MB, GB, TB, or a plain byte count)", name, v, suf)
 	}
-	return uint64(n * mul)
+	n, err := strconv.ParseFloat(num, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s=%q: not a byte count (use B, KB, MB, GB, TB, or a plain byte count)", name, v)
+	}
+	return uint64(n * mul), nil
 }
 
 // healthCheck pings the local server's /v1/health on the configured
@@ -298,7 +299,7 @@ EXAMPLE
 
   Internet-exposed: put a TLS-terminating reverse proxy in front of :8080.
   File data over UDP/443 is already end-to-end encrypted, but the HTTP
-  pairing channel carries the share code, bearer tokens, and the
+  pairing channel carries session slots, bearer tokens, and the
   FSEND_SERVER_PASSWORD header in plaintext.
   See deploy/compose/docker-compose.yml for a Caddy + Let's Encrypt setup.
 
@@ -308,9 +309,10 @@ CONFIGURATION (environment variables — all optional)
   FSEND_LOG_LEVEL                       Default info
   FSEND_MAX_SESSIONS_PER_IP             Default 5
   FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN Default 30
-  FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MiB, counted in wire bytes
-                                        after compression (accepts e.g.
-                                        "100MiB", "500m", "104857600")
+  FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MB, counted in wire bytes
+                                        after compression (accepts B, KB, MB,
+                                        GB, TB, or a plain byte count, e.g.
+                                        "100MB", "500KB", "104857600")
   FSEND_SERVER_PASSWORD                 Optional shared secret. When set, every
                                         endpoint except /v1/health requires the
                                         X-Fsend-Auth header to match. Clients:

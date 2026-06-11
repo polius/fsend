@@ -13,11 +13,15 @@ func TestHumanBytes(t *testing.T) {
 	}{
 		{0, "0 B"},
 		{512, "512 B"},
-		{1024, "1 KB"},
-		{1536, "1.5 KB"},
-		{1024 * 1024, "1 MB"},
-		{int64(2.5 * 1024 * 1024), "2.5 MB"},
-		{100 * 1024 * 1024, "100 MB"},
+		{999, "999 B"},
+		{1000, "1 KB"},
+		{1500, "1.5 KB"},
+		// Decimal units, matching Finder/Explorer: 1 KiB is 1.0 KB.
+		{1024, "1.0 KB"},
+		{1000 * 1000, "1 MB"},
+		{2_500_000, "2.5 MB"},
+		{100_000_000, "100 MB"},
+		{1_500_000_000, "1.5 GB"},
 	} {
 		if got := HumanBytes(tc.in); got != tc.want {
 			t.Errorf("HumanBytes(%d) = %q, want %q", tc.in, got, tc.want)
@@ -44,19 +48,19 @@ func TestHumanDuration(t *testing.T) {
 
 func TestHumanRate(t *testing.T) {
 	// Below 100ms is too noisy → empty.
-	if got := HumanRate(1024*1024, 50*time.Millisecond); got != "" {
+	if got := HumanRate(1000*1000, 50*time.Millisecond); got != "" {
 		t.Errorf("sub-100ms should yield empty, got %q", got)
 	}
 	// Zero bytes → empty.
 	if got := HumanRate(0, time.Second); got != "" {
 		t.Errorf("zero bytes should yield empty, got %q", got)
 	}
-	// Sub-MiB is dominated by handshake noise → empty.
-	if got := HumanRate(64*1024, time.Second); got != "" {
-		t.Errorf("sub-MiB should yield empty, got %q", got)
+	// Sub-MB is dominated by handshake noise → empty.
+	if got := HumanRate(64*1000, time.Second); got != "" {
+		t.Errorf("sub-MB should yield empty, got %q", got)
 	}
-	// 1 MiB / 1s ≈ 1.0 MB/s.
-	if got := HumanRate(1024*1024, time.Second); !strings.HasSuffix(got, "/s") {
+	// 1 MB / 1s = 1 MB/s.
+	if got := HumanRate(1000*1000, time.Second); !strings.HasSuffix(got, "/s") {
 		t.Errorf("got %q, want trailing /s", got)
 	}
 }

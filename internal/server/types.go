@@ -11,21 +11,20 @@ import (
 
 // CreateSessionRequest is the body of POST /v1/session.
 //
-// Code is optional. When the client supplies one (and it matches the
-// canonical code format and isn't currently in use), the server adopts
-// it instead of generating a fresh one. The client-suggested-code path
-// exists so the sender can register on the pairing server with the
-// same code it already announced on LAN — eliminating the "different
-// code on LAN vs internet" race that otherwise leaves receivers with
-// an E002 from the server. On empty/invalid/taken code, the server
-// silently falls back to generation; the actual code is always echoed
-// back in CreateSessionResponse.Code.
+// Slot is required: the argon2id-stretched lookup key the client derives
+// from its locally-generated code (internal/code.Slot). The raw code
+// never reaches the server — it is the PAKE secret, and a server that
+// knew it could MITM the transfer. The server only matches the two
+// peers that derived the same slot.
 type CreateSessionRequest struct {
 	ClientVersion string `json:"client_version"`
-	Code          string `json:"code,omitempty"`
+	Slot          string `json:"slot"`
 }
 
 // CreateSessionResponse is the success body of POST /v1/session.
+//
+// There is no code (or slot) field: the client generated the code and
+// owns it; the server has nothing to add.
 //
 // RoleToken is an opaque bearer credential the sender includes on
 // subsequent /candidates calls so the server can route candidate batches
@@ -33,7 +32,6 @@ type CreateSessionRequest struct {
 // peers behind the same NAT can't disambiguate.
 type CreateSessionResponse struct {
 	SessionID        string   `json:"session_id"`
-	Code             string   `json:"code"`
 	YourObservedAddr string   `json:"your_observed_addr"`
 	IceCredentials   IceCreds `json:"ice_credentials"`
 	TTLSeconds       int      `json:"ttl_seconds"`
@@ -41,12 +39,12 @@ type CreateSessionResponse struct {
 	RoleToken        string   `json:"role_token"`
 }
 
-// JoinSessionRequest is the body of POST /v1/session/<code>/join.
+// JoinSessionRequest is the body of POST /v1/session/<slot>/join.
 type JoinSessionRequest struct {
 	ClientVersion string `json:"client_version"`
 }
 
-// JoinSessionResponse is the success body of POST /v1/session/<code>/join.
+// JoinSessionResponse is the success body of POST /v1/session/<slot>/join.
 type JoinSessionResponse struct {
 	SessionID          string   `json:"session_id"`
 	YourObservedAddr   string   `json:"your_observed_addr"`
@@ -56,8 +54,8 @@ type JoinSessionResponse struct {
 	RoleToken          string   `json:"role_token"`
 }
 
-// WaitRequest is the body of POST /v1/session/<code>/wait. It carries no
-// fields today — the code in the path is the only input — but is kept as
+// WaitRequest is the body of POST /v1/session/<slot>/wait. It carries no
+// fields today — the slot in the path is the only input — but is kept as
 // a named type so the wire shape has somewhere to grow.
 type WaitRequest struct{}
 
@@ -139,7 +137,7 @@ type IceCreds struct {
 // increment used.
 type session struct {
 	ID              string
-	Code            string
+	Slot            string // argon2id stretch of the code — the server never holds the code itself
 	SenderAddr      string
 	SenderRateKey   string
 	SenderICE       IceCreds

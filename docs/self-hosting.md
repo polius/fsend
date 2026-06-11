@@ -133,7 +133,9 @@ The client only speaks plain HTTP to loopback (`localhost`, `127.0.0.1`,
 reachable from the same machine with `fsend --connect 127.0.0.1:8080`,
 but clients on other hosts need TLS in front of it (see above). **Do
 not** expose a no-TLS server to the public internet — signaling carries
-share codes and bearer tokens in cleartext.
+session slots and bearer tokens in cleartext. (The share code itself
+never crosses the wire — the server only ever sees an argon2id-stretched
+slot derived from it — but the slots and tokens still deserve TLS.)
 
 ## Configuration
 
@@ -148,4 +150,4 @@ All optional; defaults shown. Set under the `environment:` block in
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |
 | `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit. |
-| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | Wire bytes after compression. Accepts `500m`, `1GiB`, `104857600`. |
+| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MB` | Wire bytes after compression. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`104857600`). |

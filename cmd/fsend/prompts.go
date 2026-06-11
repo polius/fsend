@@ -23,6 +23,12 @@ func readLine(r io.Reader) (line string, eof bool) {
 	if r != os.Stdin {
 		br = bufio.NewReader(r)
 	}
+	return readLineFrom(br)
+}
+
+// readLineFrom is readLine for callers that loop over one prompt (and so
+// must hold a single buffered reader to avoid losing bytes between reads).
+func readLineFrom(br *bufio.Reader) (line string, eof bool) {
 	raw, err := br.ReadString('\n')
 	return strings.ToLower(strings.TrimSpace(raw)), err != nil && raw == ""
 }

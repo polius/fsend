@@ -40,7 +40,8 @@ type receiverUI struct {
 	hello          *wire.SenderHello
 	files          []string
 	prev           map[uint32]uint64
-	total          int64
+	total          int64 // bytes received this run (excludes resumed prefixes)
+	skipped        int64 // resumed prefixes already on disk; see onResume
 	bar            *uxlog.Progress
 	firstByte      time.Time // latched on first progress byte; see finishReceive
 	totalBytesHint int64
@@ -99,6 +100,7 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 		Password:      ui.f.passArg,
 		PromptPass:    receiverPasswordPrompt(ui.ctx, ui.f),
 		ProgressFn:    ui.progress,
+		OnResume:      ui.onResume,
 		OnFileDone:    ui.onFileDone,
 	}
 	if ui.sink {
@@ -225,6 +227,29 @@ func (ui *receiverUI) confirmOverwrite(relPath string, existing int64, incoming 
 	}
 }
 
+// onResume announces a resumed file and fast-forwards the bookkeeping
+// past the on-disk prefix: the bar starts at the resume point, but the
+// prefix is booked as skipped, not received — so the summary's rate
+// reflects only bytes that actually moved. On a mid-run retry prev
+// already covers the prefix (we received those bytes ourselves).
+func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
+	ui.mu.Lock()
+	if offset > ui.prev[fileIndex] {
+		d := int64(offset - ui.prev[fileIndex])
+		ui.prev[fileIndex] = offset
+		ui.skipped += d
+		if ui.bar == nil && !ui.f.quiet {
+			ui.bar = uxlog.New(ui.totalBytesHint)
+		}
+		ui.bar.Add(d)
+	}
+	quiet := ui.f.quiet
+	ui.mu.Unlock()
+	if !quiet {
+		uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
+	}
+}
+
 func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
@@ -246,10 +271,12 @@ func (ui *receiverUI) onFileDone(path string) {
 	ui.mu.Unlock()
 }
 
-func (ui *receiverUI) bytes() int64 {
+// bytes returns the landed total (received + resumed prefixes) and the
+// bytes that actually moved this run, for the summary line.
+func (ui *receiverUI) bytes() (total, moved int64) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
-	return ui.total
+	return ui.total + ui.skipped, ui.total
 }
 
 // close flushes the progress bar. Idempotent: callers flush explicitly
@@ -293,10 +320,12 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		if err := printTextPayload(files); err != nil {
 			return err
 		}
-		printRecvSummary(f, "Received text", ui.bytes(), elapsed, ui.pathInfo)
+		total, moved := ui.bytes()
+		printRecvSummary(f, "Received text", total, moved, elapsed, ui.pathInfo)
 		return nil
 	}
-	printRecvSummary(f, ui.headline(h, files), ui.bytes(), elapsed, ui.pathInfo)
+	total, moved := ui.bytes()
+	printRecvSummary(f, ui.headline(h, files), total, moved, elapsed, ui.pathInfo)
 	return nil
 }
 
@@ -351,15 +380,16 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 
 // printRecvSummary renders the post-transfer success line. headline is
 // the fully-formed "Saved X to Y" / "Received" clause; the parts that
-// follow scan size → time → route. Suppressed under --quiet.
-func printRecvSummary(f *flags, headline string, bytes int64, elapsed time.Duration, path connpath.Info) {
+// follow scan size → time → route. On a resumed transfer moved < total
+// and the size gains a "(X received)" clause. Suppressed under --quiet.
+func printRecvSummary(f *flags, headline string, total, moved int64, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
 	if headline == "" {
 		headline = "Received"
 	}
-	parts := summaryParts(bytes, elapsed, path)
+	parts := summaryParts(total, moved, "received", elapsed, path)
 	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", uxlog.Check(), headline, strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
 }

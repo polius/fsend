@@ -3,6 +3,11 @@
 // It speaks the same JSON HTTP API and exposes a tiny Go API to the rest
 // of fsend so the CLI's send and receive flows don't need to know about
 // URL paths, JSON shapes, or long-poll mechanics.
+//
+// The share code never leaves the client: it is the PAKE secret, and a
+// pairing server that learned it could MITM the transfer. Every server
+// round-trip identifies the session by the code's argon2id slot
+// (internal/code.Slot) — in URLs, bodies, everywhere.
 package signaling
 
 import (
@@ -16,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/server"
 )
@@ -54,37 +60,72 @@ func (c *Client) WithPassword(pw string) *Client {
 	return c
 }
 
-// Create requests a new session. The returned response carries the code
-// the sender must share out-of-band.
+// CreateResult is Create's return value: the server's session metadata
+// plus the client-owned code. The server never returns (or sees) the
+// code — only its argon2id slot — so it lives here, not in
+// server.CreateSessionResponse.
+type CreateResult struct {
+	server.CreateSessionResponse
+	Code string
+}
+
+// createAttempts bounds how many fresh codes Create tries when the
+// server reports the slot taken (409). With ~2^45 codes an honest
+// collision is effectively impossible, so one retry round-trip is
+// already generous insurance.
+const createAttempts = 3
+
+// Create registers a new session, keyed server-side by the argon2id
+// slot of the code — the raw code is never sent.
 //
-// suggestedCode lets the caller propose the code they've already shown
-// the user (e.g., the LAN-phase code). When non-empty and free on the
-// server, the server adopts it. Empty / invalid / taken values fall
-// back to server-side generation. Callers should always read the actual
-// code from the response, not assume it equals their suggestion.
-func (c *Client) Create(ctx context.Context, suggestedCode string) (*server.CreateSessionResponse, error) {
-	var out server.CreateSessionResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session",
-		server.CreateSessionRequest{ClientVersion: c.version, Code: suggestedCode}, &out, nil)
-	return &out, err
+// codeStr is the code the caller has already shown the user (e.g., the
+// LAN-phase code); a slot collision then surfaces as
+// fserrors.ErrCodeAlreadyClaimed, because silently switching to a code
+// the user never saw would strand the receiver. When codeStr is empty,
+// Create generates the code itself and owns it — a 409 just means
+// regenerate and retry. Callers read the final code from the result.
+func (c *Client) Create(ctx context.Context, codeStr string) (*CreateResult, error) {
+	generated := codeStr == ""
+	for attempt := 1; ; attempt++ {
+		if generated {
+			var err error
+			codeStr, err = code.Generate()
+			if err != nil {
+				return nil, fmt.Errorf("generating code: %w", err)
+			}
+		}
+		var out server.CreateSessionResponse
+		err := c.do(ctx, http.MethodPost, "/v1/session",
+			server.CreateSessionRequest{ClientVersion: c.version, Slot: code.Slot(codeStr)}, &out, nil)
+		if err == nil {
+			return &CreateResult{CreateSessionResponse: out, Code: codeStr}, nil
+		}
+		if generated && errors.Is(err, fserrors.ErrCodeAlreadyClaimed) && attempt < createAttempts {
+			continue
+		}
+		return nil, err
+	}
 }
 
 // Join attempts to pair as a receiver, returning the sender's reflected
-// address and ICE credentials.
-func (c *Client) Join(ctx context.Context, code string) (*server.JoinSessionResponse, error) {
+// address and ICE credentials. The session is addressed by the code's
+// slot; the code itself stays on this machine.
+func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionResponse, error) {
 	var out server.JoinSessionResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session/"+code+"/join",
+	err := c.do(ctx, http.MethodPost, "/v1/session/"+code.Slot(codeStr)+"/join",
 		server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
 	return &out, err
 }
 
-// Wait long-polls until a receiver pairs with this session.
+// Wait long-polls until a receiver pairs with this session. Addressed
+// by slot, like Join (code.Slot memoizes, so the repeated polls don't
+// re-pay the argon2id stretch).
 //
 // Returns (nil, nil) on timeout (HTTP 204) — caller should retry until
 // the session TTL expires.
-func (c *Client) Wait(ctx context.Context, code string) (*server.WaitResponse, error) {
+func (c *Client) Wait(ctx context.Context, codeStr string) (*server.WaitResponse, error) {
 	var out server.WaitResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session/"+code+"/wait",
+	err := c.do(ctx, http.MethodPost, "/v1/session/"+code.Slot(codeStr)+"/wait",
 		server.WaitRequest{}, &out, allowNoContent())
 	if errors.Is(err, errNoContent) {
 		return nil, nil

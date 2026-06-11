@@ -461,6 +461,113 @@ func TestPasswordHandshake_Wrong(t *testing.T) {
 	}
 }
 
+// TestPasswordHandshake_NoPasswordAvailable covers the quiet receiver
+// with nothing to answer the challenge (--quiet --yes, no --pass /
+// FSEND_PASS → PromptPass nil): both sides must fail terminally with
+// ErrPasswordRequired — the sender via the receiver's decline frame,
+// not a connection teardown it would misread as a network drop.
+func TestPasswordHandshake_NoPasswordAvailable(t *testing.T) {
+	srcDir, dstDir := t.TempDir(), t.TempDir()
+	srcPath := filepath.Join(srcDir, "blob.bin")
+	if err := os.WriteFile(srcPath, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Walk([]string{srcPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, b := pipePair()
+	defer a.Close()
+	defer b.Close()
+
+	var sendErr, recvErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sendErr = Send(context.Background(), &a, SendOptions{
+			Items: items, TransferKind: wire.TransferSingleFile, Password: "swordfish",
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		recvErr = Recv(context.Background(), &b, RecvOptions{
+			TargetDir: dstDir, // Password empty, PromptPass nil
+		})
+	}()
+	wg.Wait()
+	if !errors.Is(sendErr, fserrors.ErrPasswordRequired) {
+		t.Errorf("Send err = %v, want ErrPasswordRequired", sendErr)
+	}
+	if !errors.Is(recvErr, fserrors.ErrPasswordRequired) {
+		t.Errorf("Recv err = %v, want ErrPasswordRequired", recvErr)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "blob.bin")); err == nil {
+		t.Errorf("destination file was created despite missing password")
+	}
+}
+
+// TestSenderCancel_NotifiesReceiver verifies a sender Ctrl-C mid-transfer
+// posts the cancel notice: the receiver gets the terminal ErrPeerCancelled
+// (no transient "stream closed" it would burn retries on) and keeps its
+// partial sidecar for a later resume.
+func TestSenderCancel_NotifiesReceiver(t *testing.T) {
+	const fileSize = 3 * 1024 * 1024 // several chunks
+
+	srcDir, dstDir := t.TempDir(), t.TempDir()
+	srcPath := filepath.Join(srcDir, "big.bin")
+	payload := make([]byte, fileSize)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(srcPath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Walk([]string{srcPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, b := pipePair()
+	defer a.Close()
+	defer b.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var sendErr, recvErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sendErr = Send(ctx, &a, SendOptions{
+			Items: items, TransferKind: wire.TransferSingleFile,
+			// Cancel after the first chunk lands — the Ctrl-C-mid-transfer shape.
+			ProgressFn: func(uint32, uint64) { cancel() },
+		})
+		// Production closes the QUIC session when Send returns; mirror it
+		// so the receiver's stream reads unblock.
+		a.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		recvErr = Recv(context.Background(), &b, RecvOptions{TargetDir: dstDir})
+	}()
+	wg.Wait()
+
+	if !errors.Is(sendErr, context.Canceled) {
+		t.Errorf("Send err = %v, want context.Canceled", sendErr)
+	}
+	if !errors.Is(recvErr, fserrors.ErrPeerCancelled) {
+		t.Errorf("Recv err = %v, want ErrPeerCancelled", recvErr)
+	}
+	// The partial must survive so a fresh code can resume it.
+	if _, err := os.Stat(filepath.Join(dstDir, "big.bin"+partialSuffix)); err != nil {
+		t.Errorf("partial sidecar missing after cancel: %v", err)
+	}
+}
+
 func blakeFile(t *testing.T, path string) [32]byte {
 	t.Helper()
 	f, err := os.Open(path)

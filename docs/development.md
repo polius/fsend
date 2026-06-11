@@ -102,7 +102,7 @@ FSEND_HTTP_ADDR=":18080" /tmp/fsend server --health-check
 | `FSEND_HTTP_ADDR` | `:8080` | Signaling listener |
 | `FSEND_UDP_ADDR` | `:443` | Relay listener (UDP) |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MiB` | |
+| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MB` | |
 
 Full list: `/tmp/fsend server --help`. For deployment, ports, and all
 tunables, see [Self-hosting](self-hosting.md).

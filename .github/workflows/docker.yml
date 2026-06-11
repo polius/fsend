@@ -32,7 +32,9 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            # Tag-pushes only: a workflow_dispatch from a branch must not
+            # repoint `latest` at an untagged build.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
       # Mirrors the goreleaser ldflags so the image doesn't report "fsend dev".
       - id: buildmeta
         run: |

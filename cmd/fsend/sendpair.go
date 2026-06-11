@@ -140,8 +140,9 @@ var errPairedGone = fmt.Errorf("%w: the receiver paired but the connection could
 // returns once the receiver has paired and the QUIC SenderHandshake
 // over the established data path is up.
 //
-// The function owns the server-side session lifecycle: it Creates with
-// our suggested code, long-polls Wait until a receiver Joins, runs ICE
+// The function owns the server-side session lifecycle: it Creates a
+// session keyed by our code's argon2id slot (the server never learns
+// the code itself), long-polls Wait until a receiver Joins, runs ICE
 // (falling back to a server-side relay on failure), then runs the QUIC
 // handshake. The cleanup func threaded onto the returned pairing
 // guarantees the server session is Deleted and resources released on
@@ -256,7 +257,7 @@ func waitForReceiver(ctx context.Context, client *signaling.Client, code string)
 // The debug --mode flag short-circuits the ladder:
 //   - modeDirect: only ICE; surface the ICE error if it fails (no relay fallback).
 //   - modeRelay:  skip ICE entirely; allocate the relay immediately.
-func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *server.CreateSessionResponse, waitResp *server.WaitResponse) (net.PacketConn, connpath.Info, error) {
+func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *signaling.CreateResult, waitResp *server.WaitResponse) (net.PacketConn, connpath.Info, error) {
 	if f != nil && f.mode == modeRelay {
 		return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 	}
@@ -546,7 +547,7 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, items []transf
 // both paths in this helper keeps the two transfer entry points purely
 // declarative.
 func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, displayName string, pathInfo connpath.Info, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
-	closeProg, progressFn, sentBytes, onStreamingEOF := newSenderProgress(f, items)
+	closeProg, progressFn, onResume, stats, onStreamingEOF := newSenderProgress(f, items)
 	defer closeProg()
 
 	// Time from the first byte, not from here — the receiver may sit at
@@ -589,18 +590,21 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 				DisplayName:    displayName,
 				Password:       f.passArg,
 				ProgressFn:     progress,
+				OnResume:       onResume,
 				OnStreamingEOF: onStreamingEOF,
 			})
 		})
 	if err != nil {
 		return err
 	}
-	// Use the actual bytes counter so resumed transfers reflect what
-	// moved on the wire — not the full source size. printSendSummary
+	// moved counts the bytes this run pushed on the wire; skipped is the
+	// resumed prefix the receiver already had. The summary shows the
+	// full size but bases the rate on moved alone. printSendSummary
 	// no-ops under --quiet, so the outer guard isn't needed.
-	bytes := sentBytes()
-	if bytes == 0 {
-		bytes = totalBytes(items)
+	moved, skipped := stats()
+	total := moved + skipped
+	if total == 0 {
+		total, moved = totalBytes(items), totalBytes(items)
 	}
 	// Flush the bar first so its terminal frame lands above the summary
 	// (the deferred call is then a no-op).
@@ -609,7 +613,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	if !firstByte.IsZero() {
 		elapsed = time.Since(firstByte)
 	}
-	printSendSummary(f, bytes, elapsed, pathInfo)
+	printSendSummary(f, total, moved, elapsed, pathInfo)
 	return nil
 }
 

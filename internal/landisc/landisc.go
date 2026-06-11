@@ -231,19 +231,32 @@ func openMulticast() (*ipv4.PacketConn, *ipv6.PacketConn, error) {
 }
 
 // PreferredLocalIP returns the first non-loopback IPv4 address found on
-// this machine's interfaces. Used by Announce to publish a routable LAN IP.
+// this machine's interfaces, or a global-unicast IPv6 on IPv6-only
+// networks. Used by Announce to publish a routable LAN IP.
+//
+// Link-local IPv6 is excluded: it needs a zone, which pion/mdns's
+// LocalAddress can't carry.
 //
 // Falls back to 127.0.0.1 if nothing else is available — useful for
 // loopback-only test environments.
 func PreferredLocalIP() net.IP {
 	addrs, err := net.InterfaceAddrs()
 	if err == nil {
+		var v6 net.IP
 		for _, a := range addrs {
-			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-				if v4 := ipnet.IP.To4(); v4 != nil {
-					return v4
-				}
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.IsLoopback() {
+				continue
 			}
+			if v4 := ipnet.IP.To4(); v4 != nil {
+				return v4
+			}
+			if v6 == nil && ipnet.IP.IsGlobalUnicast() {
+				v6 = ipnet.IP
+			}
+		}
+		if v6 != nil {
+			return v6
 		}
 	}
 	return net.IPv4(127, 0, 0, 1)

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/zeebo/blake3"
@@ -39,6 +40,11 @@ type SendOptions struct {
 	Password    string                                   // empty → no password challenge
 	ProgressFn  func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
 
+	// OnResume fires once per file the receiver elected to resume, after
+	// the partial-prefix verification passed and before any chunk flows.
+	// Lets the CLI announce the resume and count only the tail as moved.
+	OnResume func(fileIndex uint32, offset, total uint64)
+
 	// OnStreamingEOF fires exactly once per streaming item, immediately
 	// after the EOF chunk has been written. The CLI uses this hook to
 	// latch the progress bar's total to the real byte count (which is
@@ -52,6 +58,17 @@ type SendOptions struct {
 //  3. For each file: write FILE_INFO, read FILE_ACCEPT, stream chunks if accepted
 //  4. Write TRANSFER_COMPLETE, read TRANSFER_ACK
 func Send(ctx context.Context, s *Streams, opts SendOptions) error {
+	err := send(ctx, s, opts)
+	// A Ctrl-C here looks like a network drop to the receiver, which
+	// burns its retry budget before failing with the wrong diagnosis —
+	// best-effort tell it the teardown is deliberate.
+	if errors.Is(err, context.Canceled) {
+		notifyCancel(s)
+	}
+	return err
+}
+
+func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	totalFiles := opts.TotalFiles
 	if totalFiles == 0 {
 		totalFiles = uint32(len(opts.Items))
@@ -68,6 +85,16 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	}
 	for _, it := range opts.Items {
 		hello.TotalBytes += it.Info.Size
+	}
+	// Multi-file: advertise the names (bare basenames from Walk) so the
+	// receiver's consent prompt isn't blind. Capped to bound frame size.
+	if opts.TransferKind == wire.TransferMultiFile {
+		for _, it := range opts.Items {
+			if len(hello.FileNames) == wire.MaxHelloFileNames {
+				break
+			}
+			hello.FileNames = append(hello.FileNames, it.Info.RelativePath)
+		}
 	}
 
 	if err := wire.WriteControl(s.Control, wire.TypeHello, hello); err != nil {
@@ -131,15 +158,24 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 func peerError(body []byte) error {
 	var ef wire.ErrorFrame
 	_ = wire.Decode(body, &ef)
-	switch ef.Code {
-	case wire.ErrCodeTargetExists:
-		return fserrors.ErrTargetExists
-	case wire.ErrCodeFileHashMismatch:
-		return fserrors.ErrHashMismatch
-	case wire.ErrCodeWriteFailed:
-		return fmt.Errorf("%w: receiver: %s", fserrors.ErrWriteFailed, ef.Message)
-	default:
-		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
+	return mapPeerError(ef)
+}
+
+// notifyCancel posts a cancel ERROR so the peer can tell a deliberate
+// Ctrl-C from a network drop. Data closes first so the receiver's chunk
+// read EOFs into its read-control path (same ordering as the
+// partial-mismatch abort). Bounded to a second — the notice must never
+// hold the user's cancel hostage to a wedged peer.
+func notifyCancel(s *Streams) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = s.Data.Close()
+		declineTransfer(s, wire.ErrCodeCancelled, "sender cancelled")
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
 	}
 }
 
@@ -206,6 +242,9 @@ func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptio
 			})
 			return fserrors.ErrPartialMismatch
 		}
+	}
+	if decision.Action == wire.ActionResume && decision.ResumeOffset > 0 && opts.OnResume != nil {
+		opts.OnResume(it.Info.Index, decision.ResumeOffset, it.Info.Size)
 	}
 
 	// Open source.
@@ -422,13 +461,21 @@ func senderPasswordHandshake(s *Streams, password string) error {
 	if err := wire.WriteControl(s.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
 		return fmt.Errorf("send: password challenge: %w", err)
 	}
-	var resp wire.PasswordResponse
-	ft, err := wire.ReadControl(s.Control, &resp)
+	ft, body, err := wire.ReadControlRaw(s.Control)
 	if err != nil {
 		return fmt.Errorf("send: read password response: %w", err)
 	}
+	if ft == wire.TypeError {
+		// Receiver bailed before answering — e.g. it has no password to
+		// offer (--quiet with no --pass). Surface its stated reason.
+		return peerError(body)
+	}
 	if ft != wire.TypePasswordResponse {
 		return fmt.Errorf("%w: expected PASSWORD_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
+	}
+	var resp wire.PasswordResponse
+	if err := wire.Decode(body, &resp); err != nil {
+		return fmt.Errorf("send: decode password response: %w", err)
 	}
 	expected := hmacPassword(password, nonce[:])
 	if subtle.ConstantTimeCompare(expected, resp.HMAC[:]) != 1 {

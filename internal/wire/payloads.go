@@ -27,7 +27,22 @@ type SenderHello struct {
 	// falls back to its pre-DisplayName rendering. Bumping the protocol
 	// version is therefore not required for this field.
 	DisplayName string
+
+	// FileNames lists the bare file names of a multi-file transfer so
+	// the receiver's accept prompt can show what would land on disk
+	// instead of asking for blind consent to "N files". Capped at
+	// MaxHelloFileNames entries to bound the frame size; when the list
+	// is complete (len == TotalFiles) the receiver also enforces that
+	// every received RelativePath is one of these names. Empty for
+	// other transfer kinds and for older senders (additive gob field).
+	FileNames []string
 }
+
+// MaxHelloFileNames caps SenderHello.FileNames. Basenames are ≤255
+// bytes on common filesystems, so 16 names stay far below the 64 KiB
+// control-frame limit while covering most multi-file sends completely
+// (which is what makes name enforcement possible on the receiver).
+const MaxHelloFileNames = 16
 
 // PasswordChallenge is sent by the sender right after a positive
 // HELLO_ACK when SenderHello.HasPassword is true. The nonce is fresh per

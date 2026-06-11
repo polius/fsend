@@ -73,8 +73,10 @@ func runSend(f *flags, paths []string) error {
 
 	// Print the artifact (code + receive command) exactly once, here,
 	// before any path is attempted. Both LAN and internet paths use the
-	// same locally-generated code — LAN announces it via mDNS, and the
-	// pairing server adopts it via the suggested-code field on Create.
+	// same locally-generated code — LAN announces an argon2id-derived
+	// name via mDNS, and the internet path registers the code's argon2id
+	// slot with the pairing server (the raw code never leaves this
+	// machine except via the user). The code shown here is final.
 	// The returned spinner animates "Waiting for receiver" until the
 	// pair coordinator stops it (on pair success or before printing an
 	// intermediate notice).
@@ -114,6 +116,11 @@ func runSend(f *flags, paths []string) error {
 // for the sender's "Sending …" line; "" means use the per-kind default.
 func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.TransferKind, uint32, string, func(), error) {
 	noop := func() {}
+	// --exclude is consulted only when bundling a directory; for text and
+	// stdin (and, below, plain files) it would be silently ignored.
+	if len(f.excludes) > 0 && (f.textArg != "" || (len(paths) == 1 && paths[0] == "-")) {
+		return nil, 0, 0, "", noop, errExcludeMisuse()
+	}
 	if f.textArg != "" {
 		return synthesizeText(f.textArg), wire.TransferText, 0, "", noop, nil
 	}
@@ -128,6 +135,9 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 	hasDir, err := containsDirectory(paths)
 	if err != nil {
 		return nil, 0, 0, "", noop, err
+	}
+	if !hasDir && len(f.excludes) > 0 {
+		return nil, 0, 0, "", noop, errExcludeMisuse()
 	}
 	if hasDir {
 		items, numFiles, cleanup, err := buildArchiveItem(paths, f.excludes)
@@ -168,6 +178,12 @@ func collectItems(f *flags, paths []string) ([]transfer.SourceItem, wire.Transfe
 		return items, wire.TransferSingleFile, 0, filepath.Base(paths[0]), noop, nil
 	}
 	return items, wire.TransferMultiFile, 0, uxlog.CountNoun(len(paths), "file"), noop, nil
+}
+
+// errExcludeMisuse is returned wherever --exclude would be silently
+// ignored: a receive, or a send with no directory to bundle.
+func errExcludeMisuse() error {
+	return fmt.Errorf("%w: --exclude only applies when sending a directory", fserrors.ErrUsage)
 }
 
 // mapLocalReadErr promotes a permission failure on a local source file
@@ -375,42 +391,61 @@ func totalBytes(items []transfer.SourceItem) int64 {
 // newSenderProgress builds a per-file delta-accumulating ProgressFn that
 // drives a single overall progress bar. Returns a close func the caller
 // should defer (no-op when --quiet), the ProgressFn for transfer.Send,
-// a sentBytes getter that callers use to render the post-transfer summary
-// — reflects actual bytes moved, which matters under resume —, and an
-// onStreamingEOF hook that latches the bar to the real total when an
-// unknown-size streaming item EOFs.
+// an onResume hook that announces a resumed file and books its on-disk
+// prefix as skipped rather than moved, a stats getter the post-transfer
+// summary uses (moved = bytes actually sent this run; skipped = resumed
+// prefixes), and an onStreamingEOF hook that latches the bar to the real
+// total when an unknown-size streaming item EOFs.
 //
-// Under --quiet the bar is suppressed but sentBytes still accumulates so
-// summary rendering (in non-quiet callers) stays accurate without
+// Under --quiet the bar and the resume notice are suppressed but the
+// counters still accumulate so summary rendering stays accurate without
 // branching on the flag in two places.
-func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), progressFn func(fileIndex uint32, bytesSent uint64), sentBytes func() int64, onStreamingEOF func(fileIndex uint32, finalBytes uint64)) {
+func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), progressFn func(fileIndex uint32, bytesSent uint64), onResume func(fileIndex uint32, offset, total uint64), stats func() (moved, skipped int64), onStreamingEOF func(fileIndex uint32, finalBytes uint64)) {
 	prev := make(map[uint32]uint64)
-	var total int64
-	if f.quiet {
-		return func() {},
-			func(fi uint32, b uint64) {
-				d := b - prev[fi]
-				prev[fi] = b
-				total += int64(d)
-			},
-			func() int64 { return total },
-			func(uint32, uint64) {}
+	var moved, skipped int64
+	// bar is nil under --quiet; uxlog renders nil-safe.
+	var bar *uxlog.Progress
+	if !f.quiet {
+		// For streaming items the up-front total is 0 (size unknown). The
+		// bar renders an indeterminate progress; SetTotal is called from
+		// onStreamingEOF once the producer EOFs.
+		bar = uxlog.New(totalBytes(items))
 	}
-	// For streaming items the up-front total is 0 (size unknown). The
-	// bar renders an indeterminate progress; SetTotal is called from
-	// onStreamingEOF once the producer EOFs.
-	bar := uxlog.New(totalBytes(items))
 	return bar.Done,
 		func(fi uint32, b uint64) {
 			d := b - prev[fi]
 			prev[fi] = b
 			bar.Add(int64(d))
-			total += int64(d)
+			moved += int64(d)
 		},
-		func() int64 { return total },
+		func(fi uint32, offset, total uint64) {
+			// Fast-forward the per-file counter past the receiver's
+			// prefix so it isn't booked as moved; on a mid-run retry
+			// prev already covers it (the bytes were sent by us).
+			if offset > prev[fi] {
+				d := int64(offset - prev[fi])
+				prev[fi] = offset
+				skipped += d
+				bar.Add(d)
+			}
+			if !f.quiet {
+				uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
+			}
+		},
+		func() (int64, int64) { return moved, skipped },
 		func(_ uint32, finalBytes uint64) {
 			bar.SetTotal(int64(finalBytes), true)
 		}
+}
+
+// resumeNotice renders the "Resuming from 141 MB (71%)" clause shared by
+// both roles' resume lines.
+func resumeNotice(offset, total uint64) string {
+	s := "Resuming from " + uxlog.HumanBytes(int64(offset))
+	if total > 0 {
+		s += fmt.Sprintf(" (%d%%)", offset*100/total)
+	}
+	return s
 }
 
 // printSendSummary renders the post-transfer success line on the sender.
@@ -420,26 +455,34 @@ func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), p
 //
 // Suppressed under --quiet (the bare code on stdout is the contract;
 // nothing on stderr).
-func printSendSummary(f *flags, bytes int64, elapsed time.Duration, path connpath.Info) {
+func printSendSummary(f *flags, total, moved int64, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
-	parts := summaryParts(bytes, elapsed, path)
+	parts := summaryParts(total, moved, "sent", elapsed, path)
 	fmt.Fprintf(os.Stderr, "%s Sent  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
 }
 
 // summaryParts builds the bytes/duration/path/rate sequence that both
-// send and recv summaries share. Rate is appended only when humanRate
-// has a meaningful answer (above the noise floor) so tiny transfers
-// don't print a misleading "13 B/s" figure.
-func summaryParts(bytes int64, elapsed time.Duration, path connpath.Info) []string {
+// send and recv summaries share. moved is the byte count actually
+// transferred this run; on a resumed transfer it is below total, the
+// size gains a "(X sent)"/"(X received)" clause (verb per role), and
+// the rate is computed from moved so it reflects real throughput rather
+// than crediting the resumed prefix. Rate is appended only when
+// HumanRate has a meaningful answer (above the noise floor) so tiny
+// transfers don't print a misleading "13 B/s" figure.
+func summaryParts(total, moved int64, verb string, elapsed time.Duration, path connpath.Info) []string {
+	size := uxlog.HumanBytes(total)
+	if moved < total {
+		size += " (" + uxlog.HumanBytes(moved) + " " + verb + ")"
+	}
 	parts := []string{
-		uxlog.HumanBytes(bytes),
+		size,
 		uxlog.HumanDuration(elapsed),
 		path.Tag(),
 	}
-	if r := uxlog.HumanRate(bytes, elapsed); r != "" {
+	if r := uxlog.HumanRate(moved, elapsed); r != "" {
 		parts = append(parts, r)
 	}
 	return parts

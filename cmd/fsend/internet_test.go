@@ -158,7 +158,7 @@ func TestClassifyRelayDrop_MapsReasons(t *testing.T) {
 	}{
 		{
 			name:       "cap_hit_with_limit_includes_value",
-			body:       `{"state":"evicted","reason":"cap_hit","limit_bytes":104857600}`,
+			body:       `{"state":"evicted","reason":"cap_hit","limit_bytes":100000000}`,
 			runErr:     errors.New("idle timeout"),
 			wantErr:    fserrors.ErrRelayCapHit,
 			wantDetail: "Server limit: 100 MB",

@@ -644,6 +644,41 @@ func TestCollectItems_Directory_BuildsArchive(t *testing.T) {
 	}
 }
 
+// --exclude only affects directory bundling; anywhere else it was
+// silently ignored — now a usage error.
+func TestCollectItems_ExcludeWithoutDirectory(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(fp, []byte("body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		f     *flags
+		paths []string
+	}{
+		{"plain_file", &flags{excludes: []string{"*.log"}}, []string{fp}},
+		{"text", &flags{excludes: []string{"*.log"}, textArg: "hi"}, nil},
+		{"stdin", &flags{excludes: []string{"*.log"}}, []string{"-"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, _, err := collectItems(tc.f, tc.paths)
+			if !errors.Is(err, fserrors.ErrUsage) {
+				t.Fatalf("err = %v, want ErrUsage", err)
+			}
+			if !strings.Contains(err.Error(), "--exclude only applies when sending a directory") {
+				t.Errorf("err = %q, want --exclude hint", err)
+			}
+		})
+	}
+	// A directory among the inputs keeps --exclude valid.
+	_, _, _, _, cleanup, err := collectItems(&flags{excludes: []string{"*.log"}}, []string{dir})
+	if err != nil {
+		t.Fatalf("directory with --exclude must not error: %v", err)
+	}
+	cleanup()
+}
+
 // ---------------------------------------------------------------------------
 // prompts.go readLine
 // ---------------------------------------------------------------------------
@@ -700,6 +735,88 @@ func TestPromptAccept_YesAcceptsAcrossKinds(t *testing.T) {
 		if !strings.Contains(got, "Incoming") {
 			t.Errorf("kind %v: prompt block missing:\n%s", k, got)
 		}
+	}
+}
+
+func TestPromptAccept_MultiFileNamesShown(t *testing.T) {
+	got := captureStderr(t, func() {
+		h := wire.SenderHello{
+			TransferKind: wire.TransferMultiFile,
+			TotalFiles:   3,
+			TotalBytes:   100,
+			FileNames:    []string{"a.bin", "b.bin", "c.bin"},
+		}
+		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
+		_ = ui.promptAccept(h)
+	})
+	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("prompt missing %q:\n%s", name, got)
+		}
+	}
+	if strings.Contains(got, "more") {
+		t.Errorf("complete list must not print an overflow line:\n%s", got)
+	}
+}
+
+func TestPromptAccept_MultiFileNamesCapped(t *testing.T) {
+	names := make([]string, 8)
+	for i := range names {
+		names[i] = fmt.Sprintf("file%d.bin", i)
+	}
+	got := captureStderr(t, func() {
+		h := wire.SenderHello{
+			TransferKind: wire.TransferMultiFile,
+			TotalFiles:   20,
+			TotalBytes:   100,
+			FileNames:    names,
+		}
+		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
+		_ = ui.promptAccept(h)
+	})
+	// First five shown, the rest summarised against TotalFiles.
+	if !strings.Contains(got, "file4.bin") {
+		t.Errorf("fifth name missing:\n%s", got)
+	}
+	if strings.Contains(got, "file5.bin") {
+		t.Errorf("display cap exceeded:\n%s", got)
+	}
+	if !strings.Contains(got, "and 15 more") {
+		t.Errorf("overflow line missing:\n%s", got)
+	}
+}
+
+func TestPromptAccept_MultiFileNoNamesFromOldSender(t *testing.T) {
+	// Pre-FileNames senders leave the list nil; the prompt falls back to
+	// the bare count with no name lines and no overflow line.
+	got := captureStderr(t, func() {
+		h := wire.SenderHello{TransferKind: wire.TransferMultiFile, TotalFiles: 3, TotalBytes: 100}
+		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
+		_ = ui.promptAccept(h)
+	})
+	if !strings.Contains(got, "3 files") {
+		t.Errorf("count line missing:\n%s", got)
+	}
+	if strings.Contains(got, "more") {
+		t.Errorf("overflow line must not render without names:\n%s", got)
+	}
+}
+
+func TestSummaryParts_ResumeShowsMovedAndHonestRate(t *testing.T) {
+	// 200 MB total, 50 MB moved in 1s → size annotated with the moved
+	// clause and the rate computed from moved, not total.
+	total, moved := int64(200_000_000), int64(50_000_000)
+	parts := strings.Join(summaryParts(total, moved, "sent", time.Second, mustLANInfo()), "  ·  ")
+	if !strings.Contains(parts, "200 MB (50 MB sent)") {
+		t.Errorf("missing moved clause: %s", parts)
+	}
+	if !strings.Contains(parts, "50 MB/s") {
+		t.Errorf("rate must derive from moved bytes: %s", parts)
+	}
+	// Non-resumed: no annotation, rate from the full size.
+	parts = strings.Join(summaryParts(total, total, "sent", time.Second, mustLANInfo()), "  ·  ")
+	if strings.Contains(parts, "(") || !strings.Contains(parts, "200 MB/s") {
+		t.Errorf("non-resumed summary changed shape: %s", parts)
 	}
 }
 

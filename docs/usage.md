@@ -71,9 +71,10 @@ fsend --yes --out - abc-defg-jkm > dump.sql   # pipe-to-pipe with the sender's `
 FSEND_PASS=swordfish fsend --yes abc-defg-jkm
 ```
 
-Cancelled transfers leave a `.fsend-partial` sidecar and resume on the
-next run. If the source has changed since, the sidecar is discarded
-automatically.
+Interrupted transfers leave a `.fsend-partial` sidecar. Codes are
+one-shot, so to resume the sender runs `fsend` again and the receiver
+uses the fresh code — the transfer picks up where it left off. If the
+source has changed since, the sidecar is discarded automatically.
 
 ## Choosing a server (`--connect`)
 
@@ -142,13 +143,13 @@ docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
 
 Internet-exposed deployments need a TLS-terminating reverse proxy in
 front of `:8080` — file data on UDP/443 is already end-to-end encrypted,
-but the HTTP pairing channel carries share codes and bearer tokens in
+but the HTTP pairing channel carries session slots and bearer tokens in
 plaintext. See [Self-hosting](self-hosting.md) for the ready-made
 Caddy + Docker stack.
 
 ## Exit codes
 
-Stable from v0.1.0. `0` means success; non-zero codes map to a specific
+Stable from v1.0.0. `0` means success; non-zero codes map to a specific
 failure.
 
 | Code  | When it happens |
@@ -181,6 +182,8 @@ failure.
 | `28`  | `E028` — pairing server requires a password (missing or wrong). |
 | `29`  | `E029` — server closed the connection because no data was flowing. |
 | `30`  | `E030` — `fsend server` could not start (port in use or no permission to bind). |
+| `31`  | `E031` — transfer requires a password the receiver didn't have (`--pass` / `FSEND_PASS`). |
+| `32`  | `E032` — the other side cancelled the transfer. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 

@@ -48,7 +48,12 @@ const (
 // TLS session. It mixes the TLS RFC 5705 exporter into an HMAC tag —
 // the channel binding that defeats a relay/MITM: an attacker terminating
 // one TLS session with each side gets two different exporters, so the
-// tags can never match.
+// tags can never match. That argument assumes the attacker doesn't know
+// the code (or it could just run SPAKE2 honestly with each side) — which
+// is why the pairing server is never told it: it sees only an
+// argon2id-stretched slot (internal/code.Slot), and recovering the code
+// from a slot is a 2^44-average memory-hard search. The binding
+// therefore holds even against the pairing server and its relay.
 //
 // The tag is also direction-separated (sender and receiver compute
 // different tags) and bound to the SPAKE2 transcript. Direction

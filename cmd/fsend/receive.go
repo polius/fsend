@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -78,7 +79,8 @@ func runReceive(f *flags, c string) error {
 		return runReceiveOverInternet(ctx, f, c, cfg, spin)
 	}
 
-	addr := q.IP.String() + ":" + strconv.Itoa(q.Port)
+	// JoinHostPort so an IPv6 announce dials as "[addr]:port".
+	addr := net.JoinHostPort(q.IP.String(), strconv.Itoa(q.Port))
 	if f.debug && !f.quiet {
 		fmt.Fprintln(os.Stderr, "    sender address:", addr)
 	}
@@ -218,6 +220,23 @@ func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, f *flags) {
 	case wire.TransferMultiFile:
 		_, _ = fmt.Fprintf(w, "      %s  ·  %s%s\n",
 			uxlog.CountNoun(int(h.TotalFiles), "file"), uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
+		// Name what you're consenting to. FileNames is peer-supplied —
+		// sanitize like DisplayName. Capped at a handful here; the wire
+		// list itself is capped at wire.MaxHelloFileNames, and when it is
+		// complete the engine enforces that only these names land
+		// (transfer.Recv). Empty for pre-FileNames senders.
+		const nameDisplayCap = 5
+		shown := min(len(h.FileNames), nameDisplayCap)
+		for _, n := range h.FileNames[:shown] {
+			name := sanitizeForDisplay(n, 128)
+			if name == "" {
+				name = "(unnamed)"
+			}
+			_, _ = fmt.Fprintf(w, "        %s\n", name)
+		}
+		if more := int(h.TotalFiles) - shown; more > 0 && shown > 0 {
+			_, _ = fmt.Fprintf(w, "        %s\n", uxlog.Dim(fmt.Sprintf("… and %d more", more)))
+		}
 	case wire.TransferText:
 		_, _ = fmt.Fprintf(w, "      text  ·  %s%s\n",
 			uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)

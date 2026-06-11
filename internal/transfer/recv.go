@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +42,10 @@ type RecvOptions struct {
 	Password      string                                      // pre-supplied (--pass or FSEND_PASS); used when sender requires a password
 	PromptPass    func() (string, error)                      // fallback when sender requires a password and Password is empty
 	ProgressFn    func(fileIndex uint32, bytesWritten uint64) // optional
+	// OnResume fires once per file we elected to resume, before any new
+	// bytes arrive. Lets the CLI announce the resume and count only the
+	// tail as moved. offset is chunk-aligned; total is the file's size.
+	OnResume func(fileIndex uint32, offset, total uint64)
 	// ConfirmOverwrite is called when an incoming file would clobber an
 	// existing one and Overwrite is false. true → accept this file as if
 	// Overwrite were set; false or nil → E013 reject.
@@ -128,13 +133,37 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	// the target directory instead of renaming it into place.
 	archiveMode := hello.TransferKind == wire.TransferDirectory
 
+	// The user consented to the HELLO's totals at the accept prompt;
+	// without enforcement they are display-only, and a malicious sender
+	// could advertise "1 file · 5 B" and then stream FILE_INFO frames
+	// until the disk fills. Every kind carries exactly one FILE_INFO
+	// (directory transfers wrap everything in one tar) except multi-file,
+	// which carries TotalFiles.
+	maxFiles := uint64(1)
+	if hello.TransferKind == wire.TransferMultiFile {
+		maxFiles = uint64(hello.TotalFiles)
+	}
+	var filesSeen, bytesDeclared uint64
+
+	// Consent integrity: when the HELLO advertised the complete name
+	// list (multi-file with TotalFiles ≤ MaxHelloFileNames), the user
+	// consented to exactly those names — enforce that nothing else
+	// lands. Incomplete (capped) or absent lists can't be enforced.
+	var advertised map[string]bool
+	if hello.TransferKind == wire.TransferMultiFile &&
+		len(hello.FileNames) > 0 && uint32(len(hello.FileNames)) == hello.TotalFiles {
+		advertised = make(map[string]bool, len(hello.FileNames))
+		for _, n := range hello.FileNames {
+			advertised[n] = true
+		}
+	}
+
 	// File loop.
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		var info wire.FileInfo
-		ft, err := wire.ReadControl(s.Control, &info)
+		ft, body, err := wire.ReadControlRaw(s.Control)
 		if err != nil {
 			return fmt.Errorf("recv: file-info: %w", err)
 		}
@@ -142,12 +171,18 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 			break
 		}
 		if ft == wire.TypeError {
-			// Re-read with payload — we already consumed the header.
-			// Simplification: treat any TypeError as protocol abort.
-			return fmt.Errorf("%w: peer sent ERROR", fserrors.ErrProtocolError)
+			// Sender aborted between files (e.g. Ctrl-C) — surface its
+			// stated reason instead of a generic protocol abort.
+			var ef wire.ErrorFrame
+			_ = wire.Decode(body, &ef)
+			return mapPeerError(ef)
 		}
 		if ft != wire.TypeFileInfo {
 			return fmt.Errorf("%w: expected FILE_INFO, got %v", fserrors.ErrProtocolError, ft)
+		}
+		var info wire.FileInfo
+		if err := wire.Decode(body, &info); err != nil {
+			return fmt.Errorf("recv: file-info: %w", err)
 		}
 		// Streaming exempts a file from the declared-size cap and the
 		// root-hash check. Only a stdin transfer legitimately needs that;
@@ -156,6 +191,28 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		if info.Streaming && hello.TransferKind != wire.TransferStdin {
 			declineTransfer(s, wire.ErrCodeProtocolError, "streaming file in non-stdin transfer")
 			return fmt.Errorf("%w: streaming FILE_INFO in a non-stdin transfer", fserrors.ErrProtocolError)
+		}
+		filesSeen++
+		if filesSeen > maxFiles {
+			declineTransfer(s, wire.ErrCodeProtocolError, "more files than HELLO declared")
+			return fmt.Errorf("%w: FILE_INFO count exceeds the %d declared in HELLO", fserrors.ErrProtocolError, maxFiles)
+		}
+		bytesDeclared += info.Size
+		if bytesDeclared > hello.TotalBytes {
+			declineTransfer(s, wire.ErrCodeProtocolError, "declared sizes exceed HELLO total")
+			return fmt.Errorf("%w: declared sizes exceed the %d bytes in HELLO", fserrors.ErrProtocolError, hello.TotalBytes)
+		}
+		// Legitimate senders only ever put bare basenames in RelativePath
+		// (Walk basenames, ArchiveName, synthetic stdin/text names); a
+		// separator means a peer creating directory trees the user never
+		// consented to.
+		if strings.ContainsAny(info.RelativePath, `/\`) {
+			declineTransfer(s, wire.ErrCodeProtocolError, "path separator in file name")
+			return fmt.Errorf("%w: RelativePath %q contains a path separator", fserrors.ErrProtocolError, info.RelativePath)
+		}
+		if advertised != nil && !advertised[info.RelativePath] {
+			declineTransfer(s, wire.ErrCodeProtocolError, "file not in advertised name list")
+			return fmt.Errorf("%w: file %q was not among the advertised names", fserrors.ErrProtocolError, info.RelativePath)
 		}
 		if err := recvOneFile(ctx, s, &info, opts, archiveMode); err != nil {
 			return err
@@ -351,6 +408,9 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	}
 	if err := wire.WriteControl(s.Control, wire.TypeFileAccept, &decision); err != nil {
 		return fmt.Errorf("recv: file-accept: %w", err)
+	}
+	if action == wire.ActionResume && opts.OnResume != nil {
+		opts.OnResume(info.Index, resumeOffset, info.Size)
 	}
 
 	// Open the partial sidecar (not the target). On full re-download we
@@ -707,7 +767,11 @@ func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
 	password := opts.Password
 	if password == "" {
 		if opts.PromptPass == nil {
-			return fserrors.ErrWrongPassword
+			// --quiet with no --pass / FSEND_PASS: nothing to answer the
+			// challenge with. Decline explicitly or the sender misreads
+			// the teardown as a network drop and burns retries on it.
+			declineTransfer(s, wire.ErrCodePasswordRequired, "receiver has no password to offer")
+			return fserrors.ErrPasswordRequired
 		}
 		password, err = opts.PromptPass()
 		if err != nil {
@@ -771,13 +835,28 @@ func tryReadPeerError(r io.Reader) error {
 	if ft != wire.TypeError {
 		return nil
 	}
+	return mapPeerError(ef)
+}
+
+// mapPeerError translates a peer-reported ERROR frame into the
+// user-visible sentinel the CLI surfaces. Single source of truth for
+// both directions; all of these are terminal for the retry layer.
+func mapPeerError(ef wire.ErrorFrame) error {
 	switch ef.Code {
-	case wire.ErrCodePartialMismatch:
-		return fserrors.ErrPartialMismatch
+	case wire.ErrCodeWrongPassword:
+		return fserrors.ErrWrongPassword
+	case wire.ErrCodePasswordRequired:
+		return fserrors.ErrPasswordRequired
 	case wire.ErrCodeFileHashMismatch:
 		return fserrors.ErrHashMismatch
+	case wire.ErrCodePartialMismatch:
+		return fserrors.ErrPartialMismatch
+	case wire.ErrCodeTargetExists:
+		return fserrors.ErrTargetExists
 	case wire.ErrCodeWriteFailed:
 		return fmt.Errorf("%w: receiver: %s", fserrors.ErrWriteFailed, ef.Message)
+	case wire.ErrCodeCancelled:
+		return fserrors.ErrPeerCancelled
 	default:
 		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
 	}

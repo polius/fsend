@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
@@ -359,6 +360,13 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 				"to set a server password use --connect host:port,password",
 				fserrors.ErrUsage, f.posArgs[0])
 		}
+		// `fsend --connect abc-defg-jkm`: the code rides with the flag and
+		// would be persisted as the server host. Strict IsCode only —
+		// LooksLikeCode would reject legitimate hyphenated hostnames.
+		if len(f.connectArgsRaw) == 1 && code.IsCode(f.connectArgsRaw[0]) {
+			return fmt.Errorf("%w: --connect consumed %q as the server address; to receive: fsend %s",
+				fserrors.ErrUsage, f.connectArgsRaw[0], f.connectArgsRaw[0])
+		}
 		return runConnect(f)
 	}
 
@@ -381,6 +389,13 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		}
 	}
 
+	// `--pass=` (explicitly empty): the user asked for a password gate but
+	// supplied none — proceeding would run the transfer unprotected.
+	if cmd.Flags().Changed("pass") && f.passArg == "" {
+		return fmt.Errorf("%w: --pass requires a non-empty password (bare --pass prompts interactively)",
+			fserrors.ErrUsage)
+	}
+
 	// `fsend --pass file.pdf`: the value rides with the flag, so the file
 	// is consumed as the password — and with piped stdin that silently
 	// opens a session sending the wrong content. If the flag's value
@@ -390,6 +405,12 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		len(f.posArgs) == 0 && !cmd.Flags().Changed("text") {
 		if st, err := os.Stat(f.passArg); err == nil && !st.IsDir() {
 			return fmt.Errorf("%w: --pass consumed %q as the password; to send that file: fsend %s --pass",
+				fserrors.ErrUsage, f.passArg, f.passArg)
+		}
+		// Same trap with a (possibly mistyped) receive code as the value:
+		// with piped stdin it would silently stream stdin, code-as-password.
+		if code.IsCode(f.passArg) || code.LooksLikeCode(f.passArg) {
+			return fmt.Errorf("%w: --pass consumed %q as the password; to receive with a password: fsend %s --pass",
 				fserrors.ErrUsage, f.passArg, f.passArg)
 		}
 	}
@@ -426,7 +447,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		if len(f.posArgs) != 1 {
 			return fmt.Errorf("%w: --receive requires exactly one positional argument (the code)", fserrors.ErrUsage)
 		}
-		return runReceive(f, f.posArgs[0])
+		return startReceive(f, f.posArgs[0])
 	}
 
 	// --text is unambiguously send mode. An explicitly empty value
@@ -466,7 +487,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		if _, err := os.Stat(arg); err == nil {
 			return promptCodeOrPath(f, arg)
 		}
-		return runReceive(f, arg)
+		return startReceive(f, arg)
 	}
 	// Codes copied through iMessage / WhatsApp / Slack often have the
 	// first letter auto-capitalized. If the lowercased form is a valid
@@ -475,7 +496,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// match the regex) falls through to send.
 	if lowered := strings.ToLower(arg); lowered != arg && code.IsCode(lowered) {
 		if _, err := os.Stat(arg); os.IsNotExist(err) {
-			return runReceive(f, lowered)
+			return startReceive(f, lowered)
 		}
 	}
 	return runSend(f, []string{arg})
@@ -499,22 +520,50 @@ func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
 	}
 }
 
+// startReceive rejects send-only flags before handing off to runReceive,
+// so `fsend <code> --exclude '*.log'` fails fast instead of silently
+// ignoring the flag.
+func startReceive(f *flags, c string) error {
+	if len(f.excludes) > 0 {
+		return errExcludeMisuse()
+	}
+	return runReceive(f, c)
+}
+
 // promptCodeOrPath handles the rare collision case where a CLI arg both
 // matches the code regex AND names a real file in CWD.
 func promptCodeOrPath(f *flags, arg string) error {
-	fmt.Fprintf(os.Stderr, "\n  %q matches a code AND is a local file.\n", arg)
-	fmt.Fprintf(os.Stderr, "  [s]end this file, or [r]eceive with this code? (r): ")
-
-	resp, _ := readLine(os.Stdin)
-	switch resp {
-	case "s", "send":
+	send, err := askCodeOrPath(stdinReader(), arg)
+	if err != nil {
+		return err
+	}
+	if send {
 		return runSend(f, []string{arg})
-	case "r", "receive", "":
-		// Default on bare <enter>: receive. Codes are the surprising
-		// case (a filename happens to match the regex); receiving is
-		// almost always what the user meant.
-		return runReceive(f, arg)
-	default:
-		return fmt.Errorf("%w: choose 's' or 'r'", fserrors.ErrUsage)
+	}
+	return startReceive(f, arg)
+}
+
+// askCodeOrPath runs the send-or-receive disambiguation prompt. Default
+// on bare <enter>: receive — codes are the surprising case (a filename
+// happens to match the regex), so receiving is almost always what the
+// user meant. EOF must not take that default (see the readLine contract);
+// unrecognized input re-prompts instead of hard-erroring on a typo.
+func askCodeOrPath(br *bufio.Reader, arg string) (send bool, err error) {
+	fmt.Fprintf(os.Stderr, "\n  %q matches a code AND is a local file.\n", arg)
+	for {
+		fmt.Fprintf(os.Stderr, "  [s]end this file, or [r]eceive with this code? (r): ")
+		resp, eof := readLineFrom(br)
+		if eof {
+			fmt.Fprintln(os.Stderr)
+			return false, fmt.Errorf("%w: no input to answer the code-vs-file prompt; pass --receive (or --send) to choose without a prompt",
+				fserrors.ErrUsage)
+		}
+		switch resp {
+		case "s", "send":
+			return true, nil
+		case "r", "receive", "":
+			return false, nil
+		}
+		fmt.Fprintln(os.Stderr, "  Please answer s or r.")
 	}
 }
