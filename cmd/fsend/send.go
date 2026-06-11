@@ -73,8 +73,10 @@ func runSend(f *flags, paths []string) error {
 
 	// Print the artifact (code + receive command) exactly once, here,
 	// before any path is attempted. Both LAN and internet paths use the
-	// same locally-generated code — LAN announces it via mDNS, and the
-	// pairing server adopts it via the suggested-code field on Create.
+	// same locally-generated code — LAN announces an argon2id-derived
+	// name via mDNS, and the internet path registers the code's argon2id
+	// slot with the pairing server (the raw code never leaves this
+	// machine except via the user). The code shown here is final.
 	// The returned spinner animates "Waiting for receiver" until the
 	// pair coordinator stops it (on pair success or before printing an
 	// intermediate notice).

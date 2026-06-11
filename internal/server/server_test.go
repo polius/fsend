@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -42,20 +43,32 @@ func postJSON(t *testing.T, url string, body any) *http.Response {
 	return resp
 }
 
-func TestCreateSession_HappyPath(t *testing.T) {
-	srv := newTestServer(t)
-	resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{ClientVersion: "test"})
+// Slots are opaque to the server (any 32 lowercase hex chars), so the
+// tests use fixed literals instead of paying the argon2id derivation.
+const (
+	testSlot  = "0123456789abcdef0123456789abcdef"
+	testSlot2 = "fedcba9876543210fedcba9876543210"
+)
+
+// createSession POSTs /v1/session with the given slot and decodes the
+// response. Fails the test on any non-200.
+func createSession(t *testing.T, baseURL, slot string) CreateSessionResponse {
+	t.Helper()
+	resp := postJSON(t, baseURL+"/v1/session", CreateSessionRequest{ClientVersion: "test", Slot: slot})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d", resp.StatusCode)
+		t.Fatalf("create status = %d", resp.StatusCode)
 	}
 	var body CreateSessionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Code == "" {
-		t.Error("expected non-empty code")
-	}
+	return body
+}
+
+func TestCreateSession_HappyPath(t *testing.T) {
+	srv := newTestServer(t)
+	body := createSession(t, srv.URL, testSlot)
 	if body.SessionID == "" {
 		t.Error("expected non-empty session_id")
 	}
@@ -64,86 +77,53 @@ func TestCreateSession_HappyPath(t *testing.T) {
 	}
 }
 
-// CreateSession honors the client-suggested code when it's well-formed
-// and not already in use. This is what lets the sender register on the
-// pairing server with the same code it has already shown the user
-// from the LAN phase — no code change in the artifact, no E002 race for
-// the receiver.
-func TestCreateSession_AdoptsSuggestedCode(t *testing.T) {
+// Create requires a well-formed client-derived slot. There is no
+// server-side code generation to fall back to — the client owns the
+// code, the server only ever sees the argon2id slot.
+func TestCreateSession_RejectsMissingOrMalformedSlot(t *testing.T) {
 	srv := newTestServer(t)
-	suggested := "abc-defg-jkm"
-	resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Code: suggested})
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	var body CreateSessionResponse
-	_ = json.NewDecoder(resp.Body).Decode(&body)
-	if body.Code != suggested {
-		t.Errorf("server should have adopted suggested code %q, got %q", suggested, body.Code)
+	for _, tc := range []struct {
+		name string
+		slot string
+	}{
+		{"missing", ""},
+		{"raw code instead of slot", "abc-defg-jkm"},
+		{"too short", "0123456789abcdef"},
+		{"bad alphabet", "0123456789abcdefXX23456789abcdef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Slot: tc.slot})
+			defer resp.Body.Close()
+			if resp.StatusCode != 400 {
+				t.Errorf("status = %d, want 400", resp.StatusCode)
+			}
+		})
 	}
 }
 
-// When the suggested code is already taken by another live session, the
-// server falls back to generation rather than 409-ing. The user has
-// already seen and shared the suggestion; surfacing a fresh code in the
-// response is preferable to making them retry. Collisions are rare
-// enough (~17M codes) that the re-render is an edge case.
-func TestCreateSession_TakenSuggestionFallsBackToGenerated(t *testing.T) {
+// A taken slot is a 409 — the client regenerates a fresh code+slot and
+// retries. The server must never silently re-key the session: it has no
+// code to offer, and the client has already shown one to the user.
+func TestCreateSession_TakenSlotConflicts(t *testing.T) {
 	srv := newTestServer(t)
-	suggested := "abc-defg-jkm"
+	_ = createSession(t, srv.URL, testSlot)
 
-	first := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Code: suggested})
-	defer first.Body.Close()
-	var firstBody CreateSessionResponse
-	_ = json.NewDecoder(first.Body).Decode(&firstBody)
-	if firstBody.Code != suggested {
-		t.Fatalf("setup: first Create should have taken the suggested code")
-	}
-
-	second := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Code: suggested})
+	second := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Slot: testSlot})
 	defer second.Body.Close()
-	if second.StatusCode != 200 {
-		t.Fatalf("second Create should succeed (with a fresh code), got status %d", second.StatusCode)
+	if second.StatusCode != 409 {
+		t.Errorf("duplicate slot: status = %d, want 409", second.StatusCode)
 	}
-	var secondBody CreateSessionResponse
-	_ = json.NewDecoder(second.Body).Decode(&secondBody)
-	if secondBody.Code == suggested {
-		t.Errorf("server should have generated a fresh code on collision, got %q", secondBody.Code)
-	}
-	if secondBody.Code == "" {
-		t.Error("server returned an empty code")
-	}
-}
 
-// Malformed suggestions are ignored, not 400'd. The contract is "best
-// effort suggestion"; whatever the client sent, the response is always
-// a valid, usable code.
-func TestCreateSession_InvalidSuggestionFallsBack(t *testing.T) {
-	srv := newTestServer(t)
-	resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Code: "not a real code"})
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	var body CreateSessionResponse
-	_ = json.NewDecoder(resp.Body).Decode(&body)
-	if body.Code == "" || body.Code == "not a real code" {
-		t.Errorf("server should have generated a fresh code, got %q", body.Code)
-	}
+	// A different slot still goes through.
+	_ = createSession(t, srv.URL, testSlot2)
 }
 
 func TestJoin_HappyPath(t *testing.T) {
 	srv := newTestServer(t)
+	create := createSession(t, srv.URL, testSlot)
 
-	// Sender creates.
-	createResp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
-	defer createResp.Body.Close()
-	var create CreateSessionResponse
-	_ = json.NewDecoder(createResp.Body).Decode(&create)
-
-	// Receiver joins.
-	joinResp := postJSON(t, srv.URL+"/v1/session/"+create.Code+"/join", JoinSessionRequest{})
+	// Receiver joins via the same slot (derived from the same code).
+	joinResp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
 	defer joinResp.Body.Close()
 	if joinResp.StatusCode != 200 {
 		t.Fatalf("join status = %d", joinResp.StatusCode)
@@ -157,7 +137,7 @@ func TestJoin_HappyPath(t *testing.T) {
 
 func TestJoin_NotFound(t *testing.T) {
 	srv := newTestServer(t)
-	resp := postJSON(t, srv.URL+"/v1/session/aaa-bbbb-ccc/join", JoinSessionRequest{})
+	resp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
 	defer resp.Body.Close()
 	if resp.StatusCode != 404 {
 		t.Errorf("expected 404, got %d", resp.StatusCode)
@@ -166,14 +146,11 @@ func TestJoin_NotFound(t *testing.T) {
 
 func TestJoin_AlreadyClaimed(t *testing.T) {
 	srv := newTestServer(t)
-	create := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
-	defer create.Body.Close()
-	var c CreateSessionResponse
-	_ = json.NewDecoder(create.Body).Decode(&c)
+	_ = createSession(t, srv.URL, testSlot)
 
-	r1 := postJSON(t, srv.URL+"/v1/session/"+c.Code+"/join", JoinSessionRequest{})
+	r1 := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
 	r1.Body.Close()
-	r2 := postJSON(t, srv.URL+"/v1/session/"+c.Code+"/join", JoinSessionRequest{})
+	r2 := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
 	defer r2.Body.Close()
 	if r2.StatusCode != 409 {
 		t.Errorf("expected 409 on second join, got %d", r2.StatusCode)
@@ -182,10 +159,7 @@ func TestJoin_AlreadyClaimed(t *testing.T) {
 
 func TestWait_PairedReleases(t *testing.T) {
 	srv := newTestServer(t)
-	create := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
-	defer create.Body.Close()
-	var c CreateSessionResponse
-	_ = json.NewDecoder(create.Body).Decode(&c)
+	_ = createSession(t, srv.URL, testSlot)
 
 	// Sender starts waiting in a goroutine.
 	var wg sync.WaitGroup
@@ -193,14 +167,14 @@ func TestWait_PairedReleases(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resp := postJSON(t, srv.URL+"/v1/session/"+c.Code+"/wait", WaitRequest{})
+		resp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{})
 		defer resp.Body.Close()
 		waitStatus = resp.StatusCode
 	}()
 	time.Sleep(50 * time.Millisecond) // ensure waiter is parked
 
 	// Receiver joins → wakeup.
-	jr := postJSON(t, srv.URL+"/v1/session/"+c.Code+"/join", JoinSessionRequest{})
+	jr := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
 	jr.Body.Close()
 
 	wg.Wait()
@@ -211,16 +185,72 @@ func TestWait_PairedReleases(t *testing.T) {
 
 func TestWait_Timeout(t *testing.T) {
 	srv := newTestServer(t)
-	create := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
-	defer create.Body.Close()
-	var c CreateSessionResponse
-	_ = json.NewDecoder(create.Body).Decode(&c)
+	_ = createSession(t, srv.URL, testSlot)
 
-	resp := postJSON(t, srv.URL+"/v1/session/"+c.Code+"/wait", WaitRequest{})
+	resp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{})
 	defer resp.Body.Close()
 	// LongPollTimeout in test is 500ms.
 	if resp.StatusCode != 204 {
 		t.Errorf("expected 204 on timeout, got %d", resp.StatusCode)
+	}
+}
+
+// /wait must sit behind the same per-IP budget as create/join.
+// Before this, it answered 404/204 unthrottled for the exact lookup
+// join rate-limits — a free existence oracle over the slot space.
+func TestWait_UnknownSlotIsRateLimited(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          2 * time.Second,
+		PairedTTL:            5 * time.Second,
+		LongPollTimeout:      500 * time.Millisecond,
+		MaxSessionsPerIP:     10,
+		MaxNewSessionsPerMin: 3,
+	})
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	notFound, throttled := 0, 0
+	for i := 0; i < 6; i++ {
+		resp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{})
+		_ = resp.Body.Close()
+		switch resp.StatusCode {
+		case 404:
+			notFound++
+		case 429:
+			throttled++
+		default:
+			t.Fatalf("unexpected status %d at i=%d", resp.StatusCode, i)
+		}
+	}
+	if notFound != 3 || throttled != 3 {
+		t.Errorf("got %d×404 + %d×429, want 3+3 (probes must hit the budget)", notFound, throttled)
+	}
+}
+
+// The sender's legitimate poll cadence must never trip the /wait rate
+// limit: one Create plus a /wait every LongPollTimeout (25s in prod) is
+// ~3 events/min against a 30/min budget — even five concurrent sessions
+// behind one NAT stay comfortably under. Simulated against the bucket
+// directly so the test covers a full hour without sleeping.
+func TestWaitRateLimit_PollCadenceStaysUnderBudget(t *testing.T) {
+	s := New(Config{}) // prod defaults: 30 new sessions/min, 25s long-poll
+	const senders = 5  // MaxSessionsPerIP default — worst legitimate case
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := 0; i < senders; i++ {
+		if !s.allowNewSession("1.2.3.4", now) {
+			t.Fatalf("create #%d throttled", i+1)
+		}
+	}
+	for elapsed := time.Duration(0); elapsed < time.Hour; elapsed += s.cfg.LongPollTimeout {
+		for i := 0; i < senders; i++ {
+			if !s.allowNewSession("1.2.3.4", now.Add(elapsed)) {
+				t.Fatalf("wait poll at +%v throttled — legitimate cadence must never 429", elapsed)
+			}
+		}
 	}
 }
 
@@ -249,12 +279,9 @@ func TestHealth(t *testing.T) {
 func TestCandidates_RoutedByRoleToken(t *testing.T) {
 	srv := newTestServer(t)
 
-	cResp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
-	defer cResp.Body.Close()
-	var c CreateSessionResponse
-	_ = json.NewDecoder(cResp.Body).Decode(&c)
+	c := createSession(t, srv.URL, testSlot)
 
-	jResp := postJSON(t, srv.URL+"/v1/session/"+c.Code+"/join", JoinSessionRequest{})
+	jResp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
 	defer jResp.Body.Close()
 	var j JoinSessionResponse
 	_ = json.NewDecoder(jResp.Body).Decode(&j)
@@ -316,10 +343,7 @@ func TestCandidates_RoutedByRoleToken(t *testing.T) {
 
 func TestDeleteSession(t *testing.T) {
 	srv := newTestServer(t)
-	create := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
-	defer create.Body.Close()
-	var c CreateSessionResponse
-	_ = json.NewDecoder(create.Body).Decode(&c)
+	c := createSession(t, srv.URL, testSlot)
 
 	// Delete without the role token must be rejected.
 	noTok, _ := http.NewRequest(http.MethodDelete, srv.URL+"/v1/session/"+c.SessionID, nil)
@@ -344,7 +368,7 @@ func TestDeleteSession(t *testing.T) {
 	}
 
 	// Joining the deleted session should 404.
-	jr := postJSON(t, srv.URL+"/v1/session/"+c.Code+"/join", JoinSessionRequest{})
+	jr := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
 	defer jr.Body.Close()
 	if jr.StatusCode != 404 {
 		t.Errorf("expected 404 after delete, got %d", jr.StatusCode)
@@ -368,7 +392,7 @@ func TestServerPassword_Gate(t *testing.T) {
 
 	post := func(t *testing.T, path string, header string) int {
 		t.Helper()
-		body, _ := json.Marshal(CreateSessionRequest{})
+		body, _ := json.Marshal(CreateSessionRequest{Slot: testSlot})
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		if header != "" {
@@ -408,7 +432,7 @@ func TestServerPassword_Gate(t *testing.T) {
 // must not accidentally require auth after this feature lands.
 func TestServerPassword_OpenByDefault(t *testing.T) {
 	srv := newTestServer(t) // no ServerPassword set
-	resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{})
+	resp := postJSON(t, srv.URL+"/v1/session", CreateSessionRequest{Slot: testSlot})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("open server: status = %d, want 200", resp.StatusCode)
@@ -462,12 +486,7 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 
 			// Pair: create a session and allocate the relay token so
 			// /relay/status has a token to look up.
-			created := postJSON(t, ts.URL+"/v1/session", CreateSessionRequest{})
-			defer created.Body.Close()
-			var cr CreateSessionResponse
-			if err := json.NewDecoder(created.Body).Decode(&cr); err != nil {
-				t.Fatal(err)
-			}
+			cr := createSession(t, ts.URL, testSlot)
 			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/relay/allocate",
 				bytes.NewReader(mustJSON(t, RelayAllocateRequest{SessionID: cr.SessionID})))
 			req.Header.Set("Content-Type", "application/json")
@@ -522,12 +541,7 @@ func TestRelayStatus_RequiresRoleToken(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
-	created := postJSON(t, ts.URL+"/v1/session", CreateSessionRequest{})
-	defer created.Body.Close()
-	var cr CreateSessionResponse
-	if err := json.NewDecoder(created.Body).Decode(&cr); err != nil {
-		t.Fatal(err)
-	}
+	cr := createSession(t, ts.URL, testSlot)
 	allocReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/relay/allocate",
 		bytes.NewReader(mustJSON(t, RelayAllocateRequest{SessionID: cr.SessionID})))
 	allocReq.Header.Set("Authorization", "Bearer "+cr.RoleToken)
@@ -629,8 +643,11 @@ func TestRateLimit_V6BypassClosed(t *testing.T) {
 
 	ok, throttled := 0, 0
 	for i := 0; i < 20; i++ {
+		// Distinct slot per request so the concurrent-sessions cap is
+		// what bites, not a slot collision.
+		body := mustJSON(t, CreateSessionRequest{Slot: fmt.Sprintf("%032x", i+1)})
 		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/session",
-			bytes.NewReader([]byte(`{}`)))
+			bytes.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -713,20 +730,20 @@ func TestEvict_AbandonedSession(t *testing.T) {
 		MaxNewSessionsPerMin: 100,
 	})
 	now := time.Now()
-	mk := func(id, code string, lastSeen time.Time) {
+	mk := func(id, slot string, lastSeen time.Time) {
 		s.byID[id] = &session{
-			ID: id, Code: code, State: "waiting",
+			ID: id, Slot: slot, State: "waiting",
 			SenderRateKey: "1.2.3.4",
 			CreatedAt:     now.Add(-10 * time.Minute),
 			LastSeen:      lastSeen,
 			waiters:       make(chan struct{}),
 		}
-		s.byCode[code] = s.byID[id]
+		s.bySlot[slot] = s.byID[id]
 		s.ipCounts["1.2.3.4"]++
 	}
 	s.mu.Lock()
-	mk("alive", "aaa-aaaa-aaa", now.Add(-30*time.Second))
-	mk("dead", "bbb-bbbb-bbb", now.Add(-6*time.Minute))
+	mk("alive", testSlot, now.Add(-30*time.Second))
+	mk("dead", testSlot2, now.Add(-6*time.Minute))
 	s.mu.Unlock()
 
 	s.evict(now)

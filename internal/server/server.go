@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -103,7 +102,7 @@ type Server struct {
 	cfg      Config
 	started  time.Time
 	mu       sync.Mutex
-	byCode   map[string]*session
+	bySlot   map[string]*session
 	byID     map[string]*session
 	ipCounts map[string]int         // active sessions per source IP
 	ipBucket map[string]*rateBucket // new-session rate limiter per source IP
@@ -151,7 +150,7 @@ func New(cfg Config) *Server {
 	return &Server{
 		cfg:      cfg,
 		started:  time.Now(),
-		byCode:   make(map[string]*session),
+		bySlot:   make(map[string]*session),
 		byID:     make(map[string]*session),
 		ipCounts: make(map[string]int),
 		ipBucket: make(map[string]*rateBucket),
@@ -192,8 +191,8 @@ const AuthHeader = "X-Fsend-Auth"
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("POST /v1/session", s.createSession)
-	m.HandleFunc("POST /v1/session/{code}/join", s.joinSession)
-	m.HandleFunc("POST /v1/session/{code}/wait", s.waitSession)
+	m.HandleFunc("POST /v1/session/{slot}/join", s.joinSession)
+	m.HandleFunc("POST /v1/session/{slot}/wait", s.waitSession)
 	m.HandleFunc("POST /v1/session/{id}/candidates", s.pushCandidates)
 	m.HandleFunc("GET /v1/session/{id}/candidates", s.pullCandidates)
 	m.HandleFunc("DELETE /v1/session/{id}", s.deleteSession)
@@ -348,22 +347,22 @@ func (s *Server) evict(now time.Time) {
 			abandoned := now.Sub(sess.LastSeen) > s.cfg.AbandonedTTL
 			if expired || abandoned {
 				delete(s.byID, id)
-				delete(s.byCode, sess.Code)
+				delete(s.bySlot, sess.Slot)
 				s.releaseIP(sess.SenderRateKey)
 				close(sess.waiters)
 				reason := "expired"
 				if abandoned && !expired {
 					reason = "abandoned"
 				}
-				s.cfg.Logger.Debug("session evicted", "code", sess.Code, "reason", reason)
+				s.cfg.Logger.Debug("session evicted", "slot", sess.Slot, "reason", reason)
 			}
 		case "paired":
 			if now.Sub(sess.PairedAt) > s.cfg.PairedTTL {
 				delete(s.byID, id)
-				delete(s.byCode, sess.Code)
+				delete(s.bySlot, sess.Slot)
 				s.releaseIP(sess.SenderRateKey)
 				s.releaseIP(sess.ReceiverRateKey)
-				s.cfg.Logger.Debug("session evicted", "code", sess.Code, "reason", "paired_ttl")
+				s.cfg.Logger.Debug("session evicted", "slot", sess.Slot, "reason", "paired_ttl")
 			}
 		}
 	}
@@ -397,12 +396,20 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	clientIP := clientIP(r)
 	rateKey := rateLimitKey(clientIP)
 
-	// Parse body up-front so we can honor a client-suggested code. An
-	// empty/missing body is fine — old clients don't send one and we
-	// fall back to server-side generation as before.
+	// The slot is required and client-derived: the client generates the
+	// code locally and sends only its argon2id stretch (internal/code.Slot).
+	// The server never sees the code, so it can't run the PAKE against
+	// either peer. Validate the shape so the session table only ever
+	// holds well-formed slots.
 	var body CreateSessionRequest
-	if r.Body != nil {
-		_ = decodeJSON(r, &body) // bad json → treat as empty body
+	if err := decodeJSON(r, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "bad json")
+		return
+	}
+	slot := strings.ToLower(strings.TrimSpace(body.Slot))
+	if code.ValidateSlot(slot) != nil {
+		writeJSONError(w, http.StatusBadRequest, "missing or malformed slot")
+		return
 	}
 
 	s.mu.Lock()
@@ -417,34 +424,21 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Adopt the client's code when it's valid and free; otherwise generate.
-	// We do not 409 on a taken suggestion — the client has already shown
-	// the code to the user, and falling back silently is preferable to
-	// asking the user to re-share. The response carries the actual code so
-	// the (rare) collision case is correct, just visibly different.
-	c := strings.ToLower(strings.TrimSpace(body.Code))
-	if c != "" && code.Validate(c) == nil {
-		if _, taken := s.byCode[c]; taken {
-			c = ""
-		}
-	} else {
-		c = ""
-	}
-	if c == "" {
-		var err error
-		c, err = s.generateUniqueCode()
-		if err != nil {
-			s.mu.Unlock()
-			writeJSONError(w, http.StatusInternalServerError, "code generation failed")
-			return
-		}
+	// Taken slot → 409; the client owns code generation, so it retries
+	// with a fresh code+slot. With ~2^45 codes an honest collision is
+	// effectively impossible, so this is bounded-retry insurance, not a
+	// hot path.
+	if _, taken := s.bySlot[slot]; taken {
+		s.mu.Unlock()
+		writeJSONError(w, http.StatusConflict, "slot already in use")
+		return
 	}
 
 	sid := ulid.Make().String()
 	senderTok := newRoleToken()
 	sess := &session{
 		ID:            sid,
-		Code:          c,
+		Slot:          slot,
 		SenderAddr:    clientIP,
 		SenderRateKey: rateKey,
 		SenderICE:     newIceCreds(),
@@ -454,15 +448,14 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		LastSeen:      time.Now(),
 		waiters:       make(chan struct{}),
 	}
-	s.byCode[c] = sess
+	s.bySlot[slot] = sess
 	s.byID[sid] = sess
 	s.ipCounts[rateKey]++
 	s.mu.Unlock()
-	s.cfg.Logger.Debug("session created", "code", c, "ip", clientIP)
+	s.cfg.Logger.Debug("session created", "slot", slot, "ip", clientIP)
 
 	writeJSON(w, http.StatusOK, CreateSessionResponse{
 		SessionID:        sid,
-		Code:             c,
 		YourObservedAddr: r.RemoteAddr,
 		IceCredentials:   sess.SenderICE,
 		TTLSeconds:       int(s.cfg.UnpairedTTL.Seconds()),
@@ -472,21 +465,22 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
-	c := strings.ToLower(r.PathValue("code"))
+	slot := strings.ToLower(r.PathValue("slot"))
 	clientIP := clientIP(r)
 	rateKey := rateLimitKey(clientIP)
 
 	s.mu.Lock()
 	// Rate-limit symmetrically with createSession: a join is the same
 	// shape of new-session activity from the server's perspective, and
-	// without this an attacker could probe the code space (or churn
-	// joins against a known code) at line rate.
+	// without this an attacker could probe the code space (each guess
+	// submitted as its derived slot) or churn joins against a known
+	// slot at line rate.
 	if !s.allowNewSession(rateKey, time.Now()) {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
 		return
 	}
-	sess, ok := s.byCode[c]
+	sess, ok := s.bySlot[slot]
 	if !ok {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusNotFound, "code not found")
@@ -519,14 +513,24 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		RoleToken:          sess.ReceiverToken,
 	}
 	s.mu.Unlock()
-	s.cfg.Logger.Debug("session paired", "code", c, "ip", clientIP)
+	s.cfg.Logger.Debug("session paired", "slot", slot, "ip", clientIP)
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
-	c := strings.ToLower(r.PathValue("code"))
+	slot := strings.ToLower(r.PathValue("slot"))
 	s.mu.Lock()
-	sess, ok := s.byCode[c]
+	// Same rate limit as create/join. Without it, /wait is an
+	// unthrottled existence oracle over the slot space (404 vs 204 for
+	// the same lookup join performs). The legitimate sender polls once
+	// per LongPollTimeout (~25s ≈ 2-3/min), far under the default
+	// 30/min budget — see TestWaitRateLimit_PollCadenceStaysUnderBudget.
+	if !s.allowNewSession(rateLimitKey(clientIP(r)), time.Now()) {
+		s.mu.Unlock()
+		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
+		return
+	}
+	sess, ok := s.bySlot[slot]
 	if !ok {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusNotFound, "code not found")
@@ -557,7 +561,7 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	case <-waiters:
 		// Re-fetch in case janitor evicted between wakeup and now.
 		s.mu.Lock()
-		final, ok := s.byCode[c]
+		final, ok := s.bySlot[slot]
 		var finalAddr string
 		var finalICE IceCreds
 		if ok {
@@ -673,10 +677,10 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(s.byID, id)
-	delete(s.byCode, sess.Code)
+	delete(s.bySlot, sess.Slot)
 	s.releaseIP(sess.SenderRateKey)
 	s.releaseIP(sess.ReceiverRateKey)
-	s.cfg.Logger.Debug("session deleted", "code", sess.Code)
+	s.cfg.Logger.Debug("session deleted", "slot", sess.Slot)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -702,21 +706,6 @@ func (s *Server) releaseIP(key string) {
 	if s.ipCounts[key] <= 0 {
 		delete(s.ipCounts, key)
 	}
-}
-
-// generateUniqueCode picks a fresh code that isn't currently in use.
-// Caller must hold s.mu.
-func (s *Server) generateUniqueCode() (string, error) {
-	for i := 0; i < 5; i++ {
-		c, err := code.Generate()
-		if err != nil {
-			return "", err
-		}
-		if _, taken := s.byCode[c]; !taken {
-			return c, nil
-		}
-	}
-	return "", errors.New("could not pick a unique code")
 }
 
 // iceCredEnc is Crockford-style base32 (no padding) used for ICE

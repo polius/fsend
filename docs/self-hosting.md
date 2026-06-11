@@ -133,7 +133,9 @@ The client only speaks plain HTTP to loopback (`localhost`, `127.0.0.1`,
 reachable from the same machine with `fsend --connect 127.0.0.1:8080`,
 but clients on other hosts need TLS in front of it (see above). **Do
 not** expose a no-TLS server to the public internet — signaling carries
-share codes and bearer tokens in cleartext.
+session slots and bearer tokens in cleartext. (The share code itself
+never crosses the wire — the server only ever sees an argon2id-stretched
+slot derived from it — but the slots and tokens still deserve TLS.)
 
 ## Configuration
 

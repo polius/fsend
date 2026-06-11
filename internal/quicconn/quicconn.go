@@ -106,7 +106,9 @@ func SenderTLSConfig() (*tls.Config, error) {
 // step in authenticatePeer, which binds the SPAKE2-derived secret to
 // this specific TLS session via the RFC 5705 exporter. A MITM that
 // terminates the TLS session ends up with a different exporter and
-// fails that tag check.
+// fails that tag check — including the pairing server itself, which
+// never learns the code (it sees only the argon2id slot) and so cannot
+// run the PAKE with either side.
 func ReceiverTLSConfig() *tls.Config {
 	return &tls.Config{
 		InsecureSkipVerify: true,

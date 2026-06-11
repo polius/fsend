@@ -298,7 +298,7 @@ EXAMPLE
 
   Internet-exposed: put a TLS-terminating reverse proxy in front of :8080.
   File data over UDP/443 is already end-to-end encrypted, but the HTTP
-  pairing channel carries the share code, bearer tokens, and the
+  pairing channel carries session slots, bearer tokens, and the
   FSEND_SERVER_PASSWORD header in plaintext.
   See deploy/compose/docker-compose.yml for a Caddy + Let's Encrypt setup.
 

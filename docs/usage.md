@@ -142,7 +142,7 @@ docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
 
 Internet-exposed deployments need a TLS-terminating reverse proxy in
 front of `:8080` — file data on UDP/443 is already end-to-end encrypted,
-but the HTTP pairing channel carries share codes and bearer tokens in
+but the HTTP pairing channel carries session slots and bearer tokens in
 plaintext. See [Self-hosting](self-hosting.md) for the ready-made
 Caddy + Docker stack.
 

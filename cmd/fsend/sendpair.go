@@ -140,8 +140,9 @@ var errPairedGone = fmt.Errorf("%w: the receiver paired but the connection could
 // returns once the receiver has paired and the QUIC SenderHandshake
 // over the established data path is up.
 //
-// The function owns the server-side session lifecycle: it Creates with
-// our suggested code, long-polls Wait until a receiver Joins, runs ICE
+// The function owns the server-side session lifecycle: it Creates a
+// session keyed by our code's argon2id slot (the server never learns
+// the code itself), long-polls Wait until a receiver Joins, runs ICE
 // (falling back to a server-side relay on failure), then runs the QUIC
 // handshake. The cleanup func threaded onto the returned pairing
 // guarantees the server session is Deleted and resources released on
@@ -256,7 +257,7 @@ func waitForReceiver(ctx context.Context, client *signaling.Client, code string)
 // The debug --mode flag short-circuits the ladder:
 //   - modeDirect: only ICE; surface the ICE error if it fails (no relay fallback).
 //   - modeRelay:  skip ICE entirely; allocate the relay immediately.
-func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *server.CreateSessionResponse, waitResp *server.WaitResponse) (net.PacketConn, connpath.Info, error) {
+func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *signaling.CreateResult, waitResp *server.WaitResponse) (net.PacketConn, connpath.Info, error) {
 	if f != nil && f.mode == modeRelay {
 		return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 	}

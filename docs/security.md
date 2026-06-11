@@ -18,7 +18,10 @@ peer-authentication layer:
 A network eavesdropper is stopped by TLS. An active MITM that
 terminates TLS itself (including a malicious pairing server or relay)
 ends up with a different channel binding on each side and is caught by
-the SPAKE2 confirmation before any file data flows.
+the SPAKE2 confirmation before any file data flows. This holds even
+against the pairing server because it never learns the share code — it
+sees only an argon2id-stretched *slot* derived from it (see below) —
+so it cannot run the SPAKE2 handshake with either side.
 
 ## Post-quantum forward secrecy
 
@@ -51,16 +54,20 @@ need a meeting point to swap addresses before they can talk directly.
 ```
    Sender                   Pairing server                  Receiver
       │                  ┌───────────────────┐                │
-      │  "I'm here,      │   matchmaker:     │  "I have code  │
-      │   code abc-..."  │   pair two peers  │   abc-..."     │
-      │ ────────────────►│   who share the   │◄────────────── │
-      │                  │   same code       │                │
+      │  "I'm here,      │   matchmaker:     │  "I have slot  │
+      │   slot 3f9a..."  │   pair two peers  │   3f9a..."     │
+      │ ────────────────►│   who derived the │◄────────────── │
+      │                  │   same slot       │                │
       │                  └─────────┬─────────┘                │
       │                            │                          │
       │   "here are each other's public addresses — go talk"  │
       │                            │                          │
       └────── direct peer-to-peer (server steps aside) ───────┘
 ```
+
+Both sides derive the *slot* — a one-way argon2id stretch of the share
+code — locally and identically, so they meet at the same rendezvous
+without the server ever seeing the code itself.
 
 That's the whole job: introduce the two peers, then get out of the way.
 In the typical cross-network case the file flows peer-to-peer and the
@@ -78,7 +85,8 @@ carrier moving sealed envelopes. It moves the parcel; it can't open it.
 | File contents                                     | ✗ never         |
 | File names, sizes, hashes                         | ✗ never         |
 | Ciphertext (on the relay-fallback path)           | ✓ as opaque bytes — not decryptable, not even by the server's operator |
-| The share code and your IP                        | ✓ briefly, in memory only, for pairing — never written to disk |
+| The share code                                    | ✗ never — only an argon2id-stretched slot derived from it; recovering the code from a slot is a memory-hard brute-force of the whole code space |
+| Your IP                                           | ✓ briefly, in memory only, for pairing — never written to disk |
 
 End-to-end encryption means even the operator of the server can't
 decrypt traffic that goes through it. The encryption keys never leave
@@ -90,9 +98,10 @@ Effectively nothing:
 
 - **No access log. No per-transfer log line.** The default log level
   only emits lifecycle events — startup, shutdown, and errors.
-- **No IP addresses or share codes in logs** at the default level.
-  (`FSEND_LOG_LEVEL=debug` logs both for troubleshooting — don't run a
-  privacy-sensitive server at debug level.)
+- **No IP addresses in logs** at the default level, and share codes
+  never reach the server at all. (`FSEND_LOG_LEVEL=debug` logs IPs and
+  session slots for troubleshooting — don't run a privacy-sensitive
+  server at debug level.)
 - **No database, no persistence layer.** Pairing state never touches
   disk — it lives in RAM, evicts within an hour at most (ten minutes
   once a transfer has paired), and is gone forever on restart.
@@ -107,6 +116,14 @@ Codes look like `abc-defg-jkm` — three letter-groups (3-4-3) from the
 23-letter alphabet `abcdefghjkmnpqrstuvwxyz` (`i`, `l`, `o` are
 excluded for legibility). Codes are:
 
+- **Never sent to the pairing server** — both peers register and join
+  with a *slot*: a fixed-salt argon2id stretch of the code (64 MiB,
+  hex-encoded). The server matches the two peers that derived the same
+  slot. Recovering a code from a leaked slot means a memory-hard search
+  of the ~2^45 code space — ~2^44 argon2id evaluations at 64 MiB each
+  on average — which is what makes the SPAKE2 channel binding effective
+  *against the server itself*: not knowing the code, it cannot run the
+  handshake with either side.
 - **One-shot** — once claimed by a receiver, the same code can't be reused.
 - **Server-side TTL** — codes expire on the server after one hour if no
   receiver pairs, or after ten minutes once a receiver has paired. Ctrl-C
