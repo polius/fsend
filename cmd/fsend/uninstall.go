@@ -46,10 +46,17 @@ func runUninstall(f *flags) error {
 		binPath = resolved
 	}
 
-	// On Windows the running .exe can't delete itself. Best we can do
-	// is print the path and ask the user to remove it by hand.
+	// On Windows a running .exe can't delete its own image, so removeBinary
+	// hands off to a detached helper that deletes it once we exit and strips
+	// the install dir from PATH — keeping uninstall hands-off like elsewhere.
 	if runtime.GOOS == "windows" {
-		fmt.Fprintf(os.Stderr, "  Delete this file to finish uninstall: %s\n", binPath)
+		if err := removeBinary(binPath); err != nil {
+			fmt.Fprintf(os.Stderr, "%s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
+			fmt.Fprintf(os.Stderr, "    Delete it manually to finish: %s\n", binPath)
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "%s Removed binary: %s\n", uxlog.Check(), binPath)
+		fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
 		return nil
 	}
 
