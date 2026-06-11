@@ -505,7 +505,7 @@ func promptCodeOrPath(f *flags, arg string) error {
 	fmt.Fprintf(os.Stderr, "\n  %q matches a code AND is a local file.\n", arg)
 	fmt.Fprintf(os.Stderr, "  [s]end this file, or [r]eceive with this code? (r): ")
 
-	resp := readLine(os.Stdin)
+	resp, _ := readLine(os.Stdin)
 	switch resp {
 	case "s", "send":
 		return runSend(f, []string{arg})

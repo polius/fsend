@@ -149,6 +149,14 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 		if ft != wire.TypeFileInfo {
 			return fmt.Errorf("%w: expected FILE_INFO, got %v", fserrors.ErrProtocolError, ft)
 		}
+		// Streaming exempts a file from the declared-size cap and the
+		// root-hash check. Only a stdin transfer legitimately needs that;
+		// accepting it elsewhere would let a sender who advertised a
+		// small size stream unbounded, unverified bytes.
+		if info.Streaming && hello.TransferKind != wire.TransferStdin {
+			declineTransfer(s, wire.ErrCodeProtocolError, "streaming file in non-stdin transfer")
+			return fmt.Errorf("%w: streaming FILE_INFO in a non-stdin transfer", fserrors.ErrProtocolError)
+		}
 		if err := recvOneFile(ctx, s, &info, opts, archiveMode); err != nil {
 			return err
 		}
@@ -366,6 +374,11 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 		}
 	}
 	if err != nil {
+		// FILE_ACCEPT is already out, so the sender is streaming chunks:
+		// abort the data stream and say why (same shape as a mid-loop
+		// write failure), or the sender misreads this as a network drop.
+		_ = s.Data.Close()
+		declineTransfer(s, wire.ErrCodeWriteFailed, "open failed: "+err.Error())
 		return fmt.Errorf("%w: open partial: %v", fserrors.ErrWriteFailed, err)
 	}
 	defer func() { _ = f.Close() }()
@@ -374,9 +387,13 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 	// with what the sender will start writing from resumeOffset.
 	if action == wire.ActionResume {
 		if err := f.Truncate(int64(resumeOffset)); err != nil {
+			_ = s.Data.Close()
+			declineTransfer(s, wire.ErrCodeWriteFailed, "truncate failed: "+err.Error())
 			return fmt.Errorf("%w: truncate partial: %v", fserrors.ErrWriteFailed, err)
 		}
 		if _, err := f.Seek(int64(resumeOffset), io.SeekStart); err != nil {
+			_ = s.Data.Close()
+			declineTransfer(s, wire.ErrCodeWriteFailed, "seek failed: "+err.Error())
 			return fmt.Errorf("%w: seek: %v", fserrors.ErrWriteFailed, err)
 		}
 	}
@@ -457,6 +474,14 @@ func recvOneFile(ctx context.Context, s *Streams, info *wire.FileInfo, opts Recv
 
 		if len(plain) > 0 {
 			if _, err := f.Write(plain); err != nil {
+				// Abort the data stream first (Close cancels the QUIC
+				// read side) so the sender's chunk writes fail fast
+				// instead of blocking on flow control, then say why —
+				// otherwise the sender misreads our exit as a network
+				// drop and burns retries telling the user to check
+				// their connection.
+				_ = s.Data.Close()
+				declineTransfer(s, wire.ErrCodeWriteFailed, "write failed: "+err.Error())
 				return classifyWriteErr("write", err)
 			}
 			// blake3.Hasher.Write never returns an error — it just
@@ -629,6 +654,9 @@ func recvPayloadToSink(ctx context.Context, s *Streams, info *wire.FileInfo, opt
 		}
 		if len(plain) > 0 {
 			if _, err := opts.Sink.Write(plain); err != nil {
+				// Same shape as the file path: abort data, then explain.
+				_ = s.Data.Close()
+				declineTransfer(s, wire.ErrCodeWriteFailed, "write failed: "+err.Error())
 				return classifyWriteErr("sink write", err)
 			}
 			_, _ = verifier.Write(plain)
@@ -748,6 +776,8 @@ func tryReadPeerError(r io.Reader) error {
 		return fserrors.ErrPartialMismatch
 	case wire.ErrCodeFileHashMismatch:
 		return fserrors.ErrHashMismatch
+	case wire.ErrCodeWriteFailed:
+		return fmt.Errorf("%w: receiver: %s", fserrors.ErrWriteFailed, ef.Message)
 	default:
 		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
 	}

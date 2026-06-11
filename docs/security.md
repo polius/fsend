@@ -90,7 +90,9 @@ Effectively nothing:
 
 - **No access log. No per-transfer log line.** The default log level
   only emits lifecycle events — startup, shutdown, and errors.
-- **No IP addresses or share codes in logs**, at any level.
+- **No IP addresses or share codes in logs** at the default level.
+  (`FSEND_LOG_LEVEL=debug` logs both for troubleshooting — don't run a
+  privacy-sensitive server at debug level.)
 - **No database, no persistence layer.** Pairing state never touches
   disk — it lives in RAM, evicts within an hour at most (ten minutes
   once a transfer has paired), and is gone forever on restart.

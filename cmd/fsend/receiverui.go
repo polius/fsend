@@ -181,8 +181,15 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello) bool {
 	for {
 		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", question)
 		// Decline on Ctrl-C; the caller maps a cancelled ctx to E026.
-		line, ok := readLineCtx(ui.ctx)
+		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
+			return false
+		}
+		// Closed stdin must not take the interactive yes-default: a cron
+		// job or `fsend <code> </dev/null` would silently consent to
+		// writing files (and pre-approve an overwrite).
+		if eof {
+			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — declining. Pass --yes to accept automatically.\n", uxlog.Info())
 			return false
 		}
 		switch line {
@@ -206,7 +213,7 @@ func (ui *receiverUI) confirmOverwrite(relPath string, existing int64, incoming 
 	fmt.Fprintf(os.Stderr, "  %s already exists  ·  local %s  ·  incoming %s\n",
 		relPath, uxlog.HumanBytes(existing), uxlog.HumanBytes(int64(incoming)))
 	fmt.Fprint(os.Stderr, "  Overwrite? [y/N] ")
-	line, ok := readLineCtx(ui.ctx)
+	line, _, ok := readLineCtx(ui.ctx)
 	if !ok {
 		return false
 	}

@@ -59,14 +59,14 @@ sending, then confirms. Pass `--yes` to skip.
 | Flag | Purpose |
 |---|---|
 | `--yes` | Auto-accept. |
-| `--out <dir>` | Receive into this directory (created if missing). Default: cwd. |
+| `--out <dir>` | Receive into this directory (must already exist). Default: cwd. |
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files instead of failing with `E013`. |
 | `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
 
 ```sh
 fsend abc-defg-jkm
-fsend --yes --out ~/Downloads/incoming abc-defg-jkm
+fsend --yes --out ~/Downloads abc-defg-jkm
 fsend --yes --out - abc-defg-jkm > dump.sql   # pipe-to-pipe with the sender's `… | fsend`
 FSEND_PASS=swordfish fsend --yes abc-defg-jkm
 ```

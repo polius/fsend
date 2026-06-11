@@ -62,11 +62,11 @@ func (p *plainProgress) add(n int64) {
 	}
 	p.lastLine = time.Now()
 	if p.total > 0 {
-		fmt.Fprintf(p.w, "  %d%%  %s / %s\n",
+		_, _ = fmt.Fprintf(p.w, "  %d%%  %s / %s\n",
 			p.current*100/p.total, HumanBytes(p.current), HumanBytes(p.total))
 		return
 	}
-	fmt.Fprintf(p.w, "  %s\n", HumanBytes(p.current))
+	_, _ = fmt.Fprintf(p.w, "  %s\n", HumanBytes(p.current))
 }
 
 func (p *plainProgress) setTotal(total int64, complete bool) {

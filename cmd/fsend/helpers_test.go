@@ -651,14 +651,17 @@ func TestCollectItems_Directory_BuildsArchive(t *testing.T) {
 func TestReadLine_BasicCases(t *testing.T) {
 	for _, tc := range []struct {
 		in, want string
+		eof      bool
 	}{
-		{"yes\n", "yes"},
-		{"  Y \n", "y"},
-		{"NO\r\n", "no"},
-		{"", ""},
+		{"yes\n", "yes", false},
+		{"  Y \n", "y", false},
+		{"NO\r\n", "no", false},
+		{"n", "n", false}, // unterminated final line is still an answer
+		{"", "", true},    // closed stdin must be distinguishable from bare Enter
 	} {
-		if got := readLine(strings.NewReader(tc.in)); got != tc.want {
-			t.Errorf("readLine(%q) = %q, want %q", tc.in, got, tc.want)
+		got, eof := readLine(strings.NewReader(tc.in))
+		if got != tc.want || eof != tc.eof {
+			t.Errorf("readLine(%q) = (%q, %v), want (%q, %v)", tc.in, got, eof, tc.want, tc.eof)
 		}
 	}
 }

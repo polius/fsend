@@ -118,6 +118,24 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 	}, nil
 }
 
+// waitMaxConsecFails is how many consecutive Wait failures the sender
+// tolerates (sleeping 2s·n between attempts) before giving up on the
+// internet path and deleting the session.
+const waitMaxConsecFails = 6
+
+// firstAcceptTimeout bounds the first QUIC accept after the receiver
+// joins. The receiver's connect ladder (LAN dial → ICE → relay, with
+// dial retries) gives up well inside this window, so expiry means the
+// receiver is gone — without the bound the sender spins "Waiting for
+// receiver" forever.
+const firstAcceptTimeout = 60 * time.Second
+
+// errPairedGone marks failures after a receiver claimed the code. The
+// LAN race can't recover from these — a receiver that joined via the
+// server already failed LAN discovery — so the coordinator aborts
+// instead of waiting on a doomed LAN listener.
+var errPairedGone = fmt.Errorf("%w: the receiver paired but the connection could not be established", fserrors.ErrConnectFailed)
+
 // pairOverInternet runs the full pairing-server + ICE/relay handshake and
 // returns once the receiver has paired and the QUIC SenderHandshake
 // over the established data path is up.
@@ -139,42 +157,32 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 	// ctx may already be cancelled (e.g., the LAN path won the race).
 	deleteSession := func() { _ = client.Delete(context.Background(), created.SessionID, created.RoleToken) }
 
-	// Long-poll indefinitely until the receiver pairs, the user
-	// cancels, or the server reaps the session. The server's per-call
-	// long-poll timeout returns nil periodically; we just re-issue.
-	// There is no client-side deadline — the user controls the wait
-	// duration by keeping the terminal open.
-	//
-	// If the server reaps the session out from under us (unpaired TTL
-	// hit on the server side; ErrCodeNotFound from Wait), we surface a
-	// dedicated "session expired" error instead of the receiver-side
-	// E002 wording.
-	var waitResp *server.WaitResponse
-	for waitResp == nil {
-		resp, err := client.Wait(ctx, created.Code)
-		if err != nil {
-			if errors.Is(err, fserrors.ErrCodeNotFound) {
-				deleteSession()
-				return nil, fserrors.ErrSessionExpired
-			}
-			deleteSession()
-			return nil, err
-		}
-		waitResp = resp
+	waitResp, err := waitForReceiver(ctx, client, created.Code)
+	if err != nil {
+		deleteSession()
+		return nil, err
 	}
 
 	// Establish the underlying data path: ICE-direct first, relay fallback.
 	pc, pathInfo, err := establishInternetDataPath(ctx, f, client, created, waitResp)
 	if err != nil {
 		deleteSession()
+		if ctx.Err() == nil {
+			err = fmt.Errorf("%w: %v", errPairedGone, err)
+		}
 		return nil, err
 	}
 
 	// Bring up QUIC on the established PacketConn and run the sender
 	// handshake on the first peer. Retries re-Accept on the same listener.
-	ln, res, teardown, err := senderQUICAccept(ctx, pc, created.Code)
+	acceptCtx, cancelAccept := context.WithTimeout(ctx, firstAcceptTimeout)
+	ln, res, teardown, err := senderQUICAccept(acceptCtx, pc, created.Code)
+	cancelAccept()
 	if err != nil {
 		deleteSession()
+		if ctx.Err() == nil {
+			err = fmt.Errorf("%w: %v", errPairedGone, err)
+		}
 		return nil, err
 	}
 
@@ -191,6 +199,53 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 			deleteSession()
 		},
 	}, nil
+}
+
+// waitRetryStep scales the backoff between Wait retries (n·step for the
+// n-th consecutive failure). Var so tests can shrink it.
+var waitRetryStep = 2 * time.Second
+
+// waitForReceiver long-polls Wait until the receiver pairs, the user
+// cancels, or the server reaps the session. The server's per-call
+// long-poll timeout returns nil periodically; we just re-issue. There
+// is no client-side deadline — the user controls the wait duration by
+// keeping the terminal open.
+//
+// If the server reaps the session (unpaired TTL; ErrCodeNotFound from
+// Wait), we surface a dedicated "session expired" error instead of the
+// receiver-side E002 wording.
+//
+// Anything else is retried with backoff: senders wait minutes, and a
+// single dropped poll (wifi roam, laptop sleep/wake) must not abandon a
+// session the server still holds. The give-up threshold counts
+// consecutive failures, not elapsed time — a wall-clock deadline would
+// expire during a long sleep and kill the code on wake.
+func waitForReceiver(ctx context.Context, client *signaling.Client, code string) (*server.WaitResponse, error) {
+	consecFails := 0
+	for {
+		resp, err := client.Wait(ctx, code)
+		switch {
+		case err == nil:
+			consecFails = 0
+			if resp != nil {
+				return resp, nil
+			}
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		case errors.Is(err, fserrors.ErrCodeNotFound):
+			return nil, fserrors.ErrSessionExpired
+		default:
+			consecFails++
+			if consecFails >= waitMaxConsecFails {
+				return nil, err
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(consecFails) * waitRetryStep):
+			}
+		}
+	}
 }
 
 // establishInternetDataPath wraps the ICE-then-relay ladder. On ICE
@@ -377,6 +432,15 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 			serverErr = res.err
 			if errors.Is(serverErr, context.Canceled) {
 				continue
+			}
+			// A receiver claimed the code and then the connection died.
+			// That receiver already failed LAN discovery, so waiting on
+			// the LAN listener can never pair — abort the race.
+			if errors.Is(serverErr, errPairedGone) {
+				waitSpin.Stop()
+				cancelPair()
+				drainBoth(lanCh, serverCh, lanDone, serverDone)
+				return serverErr
 			}
 			// Any server-path failure (unreachable, rate-limited, bad
 			// password, 5xx) leaves the code working on the local network
