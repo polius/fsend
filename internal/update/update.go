@@ -1,10 +1,11 @@
 // Package update implements a best-effort "a newer fsend exists" check.
 //
-// It is deliberately passive: it never downloads or replaces anything, it
-// only tells the user a new release is out and how to get it. The result
-// of the GitHub lookup is cached for a day so normal runs do no network
-// I/O, and every failure path is silent — an update check must never
-// disturb a transfer.
+// It is deliberately passive: it never downloads or replaces anything,
+// it only reports whether a new release is out (the actual replacement
+// — `fsend --update` — lives in cmd/fsend and shells out to the
+// platform installer). The result of the GitHub lookup is cached for a
+// day so normal runs do no network I/O, and every failure path of the
+// passive check is silent — it must never disturb a transfer.
 package update
 
 import (
@@ -29,9 +30,11 @@ var apiURL = "https://api.github.com/repos/polius/fsend/releases/latest"
 const (
 	cacheFile     = "update-check.json"
 	checkInterval = 24 * time.Hour
-	httpTimeout   = 2 * time.Second
-	// installCmd is the one-liner we point users at — same as the README.
-	installCmd = "curl -fsSL https://getfsend.alzina.dev | sh"
+	// noticeTimeout keeps the passive check from ever stalling a
+	// transfer; explicitTimeout gives `fsend --update` a real chance on
+	// slow links.
+	noticeTimeout   = 2 * time.Second
+	explicitTimeout = 15 * time.Second
 )
 
 // cache is the on-disk memo of the last lookup. Latest has no leading "v".
@@ -53,13 +56,24 @@ func Notice(ctx context.Context, current string) string {
 		return ""
 	}
 	latest := latestVersion(ctx)
-	if latest == "" || !newer(latest, current) {
+	if latest == "" || !Newer(latest, current) {
 		return ""
 	}
-	// Two lines: with the install command inline the notice runs past 80
-	// columns. The caller indents the first line; match it on the second.
-	return fmt.Sprintf("A new fsend is available (%s → %s).\n  Update: %s",
-		strings.TrimPrefix(current, "v"), latest, installCmd)
+	return fmt.Sprintf("A new fsend is available (%s → %s). Update: fsend --update",
+		strings.TrimPrefix(current, "v"), latest)
+}
+
+// Latest returns the latest release version (no leading "v") from a
+// fresh lookup, bypassing the daily cache: an explicit `fsend --update`
+// deserves a current answer. ok is false when the lookup failed.
+func Latest(ctx context.Context) (string, bool) {
+	ctx, cancel := context.WithTimeout(ctx, explicitTimeout)
+	defer cancel()
+	latest, ok := fetchLatest(ctx)
+	if ok {
+		writeCache(cachePath(), cache{CheckedAt: time.Now(), Latest: latest})
+	}
+	return latest, ok
 }
 
 // latestVersion returns the latest release version (no leading "v"),
@@ -70,6 +84,8 @@ func latestVersion(ctx context.Context) string {
 	if c, ok := readCache(path); ok && time.Since(c.CheckedAt) < checkInterval {
 		return c.Latest
 	}
+	ctx, cancel := context.WithTimeout(ctx, noticeTimeout)
+	defer cancel()
 	latest, ok := fetchLatest(ctx)
 	if !ok {
 		// Network failed: stamp the attempt so we don't retry (and re-pay
@@ -86,11 +102,9 @@ func latestVersion(ctx context.Context) string {
 	return latest
 }
 
-// fetchLatest queries the GitHub API for the latest release tag.
+// fetchLatest queries the GitHub API for the latest release tag. The
+// caller bounds ctx (notice vs explicit timeouts differ).
 func fetchLatest(ctx context.Context) (string, bool) {
-	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
-	defer cancel()
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return "", false
@@ -155,10 +169,10 @@ func writeCache(path string, c cache) {
 	}
 }
 
-// newer reports whether semver latest is strictly greater than current.
+// Newer reports whether semver latest is strictly greater than current.
 // Pre-release and build metadata are ignored — /latest only returns
 // stable tags, and we never want to nag about a dev build's own suffix.
-func newer(latest, current string) bool {
+func Newer(latest, current string) bool {
 	lMaj, lMin, lPat, ok1 := parse(latest)
 	cMaj, cMin, cPat, ok2 := parse(current)
 	if !ok1 || !ok2 {

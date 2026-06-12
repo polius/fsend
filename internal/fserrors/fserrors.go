@@ -107,6 +107,10 @@ var (
 	// Distinct from E020 so the survivor knows the teardown wasn't a
 	// network drop.
 	ErrPeerCancelled = errors.New("peer cancelled the transfer")
+	// E033 — `fsend --update` could not complete: the release lookup
+	// failed or the installer exited nonzero. An environment problem,
+	// not a bug, so it skips the E099 "file an issue" catchall.
+	ErrUpdateFailed = errors.New("update failed")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -371,6 +375,12 @@ var catalog = map[error]Entry{
 		Message: "The sender cancelled the transfer.",
 		Action: "Ask the sender to run fsend again, then use the new code — the\n" +
 			"  transfer will resume in this same directory.",
+	},
+	ErrUpdateFailed: {
+		Code: "E033", Exit: 33,
+		Message: "Could not update fsend.",
+		Action: "Check your internet connection and try again, or reinstall:\n" +
+			"    https://github.com/polius/fsend#install",
 	},
 }
 

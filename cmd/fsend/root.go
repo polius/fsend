@@ -46,6 +46,7 @@ type flags struct {
 	// Misc
 	quiet     bool
 	debug     bool
+	update    bool
 	uninstall bool
 
 	// First-positional args, recorded after parsing.
@@ -131,6 +132,7 @@ Examples:
 
 	// Misc
 	c.Flags().BoolVar(&f.debug, "debug", false, "verbose logging to stderr")
+	c.Flags().BoolVar(&f.update, "update", false, "update fsend to the latest release")
 	c.Flags().BoolVar(&f.uninstall, "uninstall", false, "remove the fsend binary and config dir")
 
 	c.Flags().StringVar(&f.mode, "mode", "", "")
@@ -268,6 +270,7 @@ ADVANCED FLAGS
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
   --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
+  --update               Update fsend to the latest release
   --uninstall            Remove the fsend binary and its config dir
 
 LEARN MORE
@@ -332,7 +335,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "pass", "yes", "out", "overwrite", "name", "exclude", "mode", "uninstall"} {
+		for _, conflict := range []string{"send", "receive", "text", "pass", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "uninstall"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}
@@ -355,7 +358,14 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		return runConnect(f)
 	}
 
-	// --uninstall is a maintenance command; never combine with transfer.
+	// --update / --uninstall are maintenance commands; never combine
+	// with transfer or with each other.
+	if f.update && f.uninstall {
+		return fmt.Errorf("%w: --update and --uninstall are mutually exclusive", fserrors.ErrUsage)
+	}
+	if f.update {
+		return runUpdate()
+	}
 	if f.uninstall {
 		return runUninstall(f)
 	}

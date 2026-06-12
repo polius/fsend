@@ -108,6 +108,16 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			[]string{"--receive", "abc-defg-jkm", "--exclude=*.log"},
 			"--exclude only applies when sending a directory",
 		},
+		{
+			"connect_with_update",
+			[]string{"--connect=host:443", "--update"},
+			"--connect cannot be combined with --update",
+		},
+		{
+			"update_with_uninstall",
+			[]string{"--update", "--uninstall"},
+			"--update and --uninstall are mutually exclusive",
+		},
 	}
 	for _, c := range cases {
 		c := c

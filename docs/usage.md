@@ -100,6 +100,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
 | `--quiet` | Suppress non-error output. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
+| `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
 | `--uninstall` | Remove the binary and the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |
 | `--help` / `-h` | Show inline help. |
 | `--version` / `-v` | Print version. |
@@ -115,9 +116,9 @@ Config is at `~/.config/fsend/config.json` (Linux),
 Flags always win when both are set.
 
 After a successful transfer, fsend checks GitHub at most once a day for a
-newer release and, if one exists, prints a one-line upgrade hint. The
-check is skipped when output is piped or `--quiet` is set, and can be
-turned off entirely with `FSEND_NO_UPDATE_CHECK=1`.
+newer release and, if one exists, prints a one-line hint to run
+`fsend --update`. The check is skipped when output is piped or `--quiet`
+is set, and can be turned off entirely with `FSEND_NO_UPDATE_CHECK=1`.
 
 ## `fsend server`
 
