@@ -14,10 +14,12 @@
 </p>
 
 ```bash
-$ fsend report.pdf                 # home Wi-Fi
+# Sender — home Wi-Fi
+$ fsend report.pdf
 On the other machine, run:  fsend abc-defg-jkm
 
-$ fsend abc-defg-jkm               # café Wi-Fi, two continents away
+# Receiver — café Wi-Fi, two continents away
+$ fsend abc-defg-jkm
 ✓ Saved report.pdf to ~/Downloads  ·  2.4 MB  ·  1.3s  ·  Direct over the internet
 ```
 
