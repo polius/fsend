@@ -500,11 +500,7 @@ func printPath(f *flags, info connpath.Info) {
 	if f.quiet || !f.debug {
 		return
 	}
-	glyph := uxlog.Check()
-	if info.Kind == connpath.KindRelay {
-		glyph = uxlog.Warn()
-	}
-	fmt.Fprintln(os.Stderr, glyph, info.Headline())
+	fmt.Fprintln(os.Stderr, uxlog.Check(), info.Headline())
 	if d := info.Detail(); d != "" {
 		fmt.Fprintln(os.Stderr, "    ICE candidate pair:", d)
 	}

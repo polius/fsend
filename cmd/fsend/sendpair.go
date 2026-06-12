@@ -502,14 +502,12 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 	// The receiver may now sit at its accept prompt for a while; without
 	// this line the sender stares at a dead terminal wondering whether
 	// the code even arrived. The path rides along so both sides see the
-	// route before any bytes flow; relay keeps the warning glyph.
+	// route before any bytes flow. ✓ even for relay: the glyph reports
+	// the connect succeeding, the chip carries the route — same neutral
+	// treatment as the receiver chip and the summary tag.
 	if !f.quiet {
-		glyph := uxlog.Check()
-		if pathInfo.Kind == connpath.KindRelay {
-			glyph = uxlog.Warn()
-		}
 		fmt.Fprintf(os.Stderr, "%s Receiver connected (%s) — waiting for them to accept.\n",
-			glyph, pathInfo.Chip())
+			uxlog.Check(), pathInfo.Chip())
 	}
 
 	if winner.lan != nil {
