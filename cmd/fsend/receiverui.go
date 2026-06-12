@@ -143,7 +143,7 @@ func (ui *receiverUI) accept(h wire.SenderHello) bool {
 // promptAccept renders the incoming-transfer block on stderr and asks
 // whether to receive:
 //
-//	Incoming from <peer>  [· via relay]
+//	Incoming from <peer>  ·  <path chip>
 //
 //	    <artifact>  ·  <size>  [🔒 password]
 //	    [⚠ already in <dir> · will overwrite if you accept]
@@ -160,9 +160,11 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello) bool {
 		return f.yes
 	}
 	peer := sanitizeRemote(h.Hostname)
+	// Same route transparency as the sender's "Receiver connected (…)"
+	// line: every path gets the chip, not just the relay.
 	pathChip := ""
-	if ui.pathInfo.Kind == connpath.KindRelay {
-		pathChip = uxlog.Dim("  ·  via relay")
+	if ui.pathInfo.Kind != connpath.KindUnknown {
+		pathChip = uxlog.Dim("  ·  " + ui.pathInfo.Chip())
 	}
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "  Incoming from %s%s\n", peer, pathChip)

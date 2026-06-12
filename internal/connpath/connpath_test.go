@@ -94,6 +94,23 @@ func TestTag_CompactForms(t *testing.T) {
 	}
 }
 
+func TestChip_MidLineForms(t *testing.T) {
+	cases := []struct {
+		info Info
+		want string
+	}{
+		{Info{Kind: KindLocal}, "local network"},
+		{Info{Kind: KindDirectNAT}, "direct over the internet"},
+		{FromRelay("relay.example.com:443"), "relayed via relay.example.com:443"},
+		{Info{Kind: KindRelay}, "relayed"},
+	}
+	for _, c := range cases {
+		if got := c.info.Chip(); got != c.want {
+			t.Errorf("Chip() = %q, want %q", got, c.want)
+		}
+	}
+}
+
 func TestDetail(t *testing.T) {
 	if d := FromICE("srflx", "host").Detail(); d != "srflx → host" {
 		t.Errorf("Detail() = %q, want %q", d, "srflx → host")

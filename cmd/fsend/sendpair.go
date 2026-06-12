@@ -490,7 +490,7 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 
 	cancelPair()
 	drainLoser(lanCh, serverCh, winner, lanDone, serverDone)
-	// Stop the wait spinner now so the path headline and progress bar
+	// Stop the wait spinner now so the connected line and progress bar
 	// land on a clean line. The deferred Stop above is idempotent.
 	waitSpin.Stop()
 
@@ -501,9 +501,15 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 	printPath(f, pathInfo)
 	// The receiver may now sit at its accept prompt for a while; without
 	// this line the sender stares at a dead terminal wondering whether
-	// the code even arrived.
+	// the code even arrived. The path rides along so both sides see the
+	// route before any bytes flow; relay keeps the warning glyph.
 	if !f.quiet {
-		fmt.Fprintln(os.Stderr, uxlog.Check(), "Receiver connected — waiting for them to accept.")
+		glyph := uxlog.Check()
+		if pathInfo.Kind == connpath.KindRelay {
+			glyph = uxlog.Warn()
+		}
+		fmt.Fprintf(os.Stderr, "%s Receiver connected (%s) — waiting for them to accept.\n",
+			glyph, pathInfo.Chip())
 	}
 
 	if winner.lan != nil {

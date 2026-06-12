@@ -491,26 +491,21 @@ func hostnameOrDefault(s string) string {
 	return h
 }
 
-// printPath renders the connection-path status line. Only the relay
-// path warrants a standalone headline (⚠ Relayed via <host> — the one
-// route users should know about before bytes flow); direct paths stay
-// silent here because the summary line already carries the path tag,
-// and repeating it read as padding. --debug restores the headline for
-// every path plus the selected ICE candidate types. --quiet suppresses
-// everything.
+// printPath renders the --debug path trace: the standalone headline
+// plus the selected ICE candidate types. The user-facing path display
+// lives inline on the "Receiver connected" line (sender) and the
+// "Incoming from" line (receiver), so non-debug runs print nothing
+// extra here — a standalone headline would repeat the inline chip.
 func printPath(f *flags, info connpath.Info) {
-	if f.quiet {
+	if f.quiet || !f.debug {
 		return
 	}
-	switch {
-	case info.Kind == connpath.KindRelay:
-		fmt.Fprintln(os.Stderr, uxlog.Warn(), info.Headline())
-	case f.debug:
-		fmt.Fprintln(os.Stderr, uxlog.Check(), info.Headline())
+	glyph := uxlog.Check()
+	if info.Kind == connpath.KindRelay {
+		glyph = uxlog.Warn()
 	}
-	if f.debug {
-		if d := info.Detail(); d != "" {
-			fmt.Fprintln(os.Stderr, "    ICE candidate pair:", d)
-		}
+	fmt.Fprintln(os.Stderr, glyph, info.Headline())
+	if d := info.Detail(); d != "" {
+		fmt.Fprintln(os.Stderr, "    ICE candidate pair:", d)
 	}
 }
