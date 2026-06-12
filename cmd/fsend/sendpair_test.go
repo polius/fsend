@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
+
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/signaling"
 )
@@ -294,4 +296,28 @@ func TestDrainLoser_LoserErrored(t *testing.T) {
 		winner := sendPairOutcome{server: &internetSenderPairing{cleanup: func() {}}}
 		drainLoser(lanCh, serverCh, winner, false, true)
 	})
+}
+
+// isReceiverClose must fire only on a remote application close — the
+// receiver deliberately hanging up — and not on local closes or idle
+// timeouts, which keep the re-accept grace for a possible re-dial.
+func TestIsReceiverClose(t *testing.T) {
+	remote := &quic.ApplicationError{Remote: true}
+	local := &quic.ApplicationError{Remote: false}
+
+	if !isReceiverClose(remote) {
+		t.Error("remote application close should classify as receiver close")
+	}
+	if !isReceiverClose(fmt.Errorf("send: chunk: %w", remote)) {
+		t.Error("wrapped remote close should classify as receiver close")
+	}
+	if isReceiverClose(local) {
+		t.Error("local close must not classify as receiver close")
+	}
+	if isReceiverClose(&quic.IdleTimeoutError{}) {
+		t.Error("idle timeout must not classify as receiver close")
+	}
+	if isReceiverClose(nil) {
+		t.Error("nil must not classify as receiver close")
+	}
 }

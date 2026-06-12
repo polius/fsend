@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -254,4 +255,89 @@ func inodeOf(path string) (uint64, error) {
 		return 0, nil
 	}
 	return uint64(st.Ino), nil
+}
+
+// The flagship recovery path: the receiver dies mid-transfer (Ctrl-C)
+// and is re-run with the same code. The sender must re-enter pairing —
+// fresh mDNS announce, fresh server session — and the rerun must resume
+// from the .fsend-partial rather than restart.
+func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "big.bin")
+	writeRandom(t, srcFile, 64*1024*1024)
+
+	xdg := h.newXDG(t)
+	s := h.startSender(t, xdg, srcFile)
+	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
+	code := s.waitForCode(t, 5*time.Second)
+
+	// Attempt 1 — interrupt the receiver once a meaningful prefix is on
+	// disk, so the rerun has something to resume from.
+	r1 := h.fsendCmd(xdg, "--yes", code)
+	r1.Dir = dst
+	var r1Err bytes.Buffer
+	r1.Stderr = &r1Err
+	if err := r1.Start(); err != nil {
+		t.Fatalf("start recv1: %v", err)
+	}
+	if !waitForSidecarSize(dst, 4*1024*1024, 10*time.Second) {
+		_ = r1.Process.Kill()
+		_ = r1.Wait()
+		t.Fatal("sidecar never reached 4 MiB — receiver never got going")
+	}
+	if err := r1.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("signal recv1: %v", err)
+	}
+	_ = r1.Wait()
+
+	// The sender must go back to waiting rather than exit.
+	if !waitForStderr(s, "Receiver disconnected", 15*time.Second) {
+		t.Fatalf("sender never re-entered pairing\n--- sender stderr ---\n%s", s.stderr.String())
+	}
+
+	// Attempt 2 — same code, same dst: must pair again and resume.
+	r2 := h.fsendCmd(xdg, "--yes", code)
+	r2.Dir = dst
+	var r2Err bytes.Buffer
+	r2.Stderr = &r2Err
+	if err := r2.Run(); err != nil {
+		t.Fatalf("rerun receiver failed (exit %d)\n--- recv2 stderr ---\n%s\n--- sender stderr ---\n%s",
+			exitCodeOf(t, err), r2Err.String(), s.stderr.String())
+	}
+	if got := s.wait(t, 10*time.Second); got != 0 {
+		t.Fatalf("sender exit = %d\n--- sender stderr ---\n%s", got, s.stderr.String())
+	}
+	if !strings.Contains(r2Err.String(), "Resuming from") {
+		t.Errorf("rerun did not resume from the partial\n--- recv2 stderr ---\n%s", r2Err.String())
+	}
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "big.bin"))
+}
+
+// waitForSidecarSize polls until a *.fsend-partial under dir reaches
+// minBytes, or the budget elapses.
+func waitForSidecarSize(dir string, minBytes int64, budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*.fsend-partial"))
+		for _, m := range matches {
+			if st, err := os.Stat(m); err == nil && st.Size() >= minBytes {
+				return true
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return false
+}
+
+// waitForStderr polls a sender's stderr for substr within budget.
+func waitForStderr(s *senderProc, substr string, budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if strings.Contains(s.stderr.String(), substr) {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return false
 }
