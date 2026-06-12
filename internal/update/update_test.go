@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/polius/fsend/internal/config"
 )
@@ -26,8 +27,8 @@ func TestNewer(t *testing.T) {
 		{"0.1.0", "dev", false},
 	}
 	for _, c := range cases {
-		if got := newer(c.latest, c.current); got != c.want {
-			t.Errorf("newer(%q, %q) = %v, want %v", c.latest, c.current, got, c.want)
+		if got := Newer(c.latest, c.current); got != c.want {
+			t.Errorf("Newer(%q, %q) = %v, want %v", c.latest, c.current, got, c.want)
 		}
 	}
 }
@@ -58,5 +59,33 @@ func TestNotice(t *testing.T) {
 	t.Setenv("FSEND_NO_UPDATE_CHECK", "1")
 	if msg := Notice(context.Background(), "0.1.0"); msg != "" {
 		t.Fatalf("expected no notice when opted out, got %q", msg)
+	}
+}
+
+func TestLatest(t *testing.T) {
+	config.SetPathForTesting(filepath.Join(t.TempDir(), "config.json"))
+	t.Cleanup(func() { config.SetPathForTesting("") })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name":"v2.0.0"}`))
+	}))
+	t.Cleanup(srv.Close)
+	apiURL = srv.URL
+
+	// A fresh cache with a stale answer must be bypassed.
+	writeCache(cachePath(), cache{CheckedAt: time.Now(), Latest: "1.0.0"})
+	latest, ok := Latest(context.Background())
+	if !ok || latest != "2.0.0" {
+		t.Fatalf("Latest() = (%q, %v), want (\"2.0.0\", true)", latest, ok)
+	}
+	// And the fresh answer is written back for the passive check.
+	if c, ok := readCache(cachePath()); !ok || c.Latest != "2.0.0" {
+		t.Errorf("cache after Latest() = (%+v, %v), want Latest 2.0.0", c, ok)
+	}
+
+	// Lookup failure reports ok=false, never a stale value.
+	srv.Close()
+	if latest, ok := Latest(context.Background()); ok {
+		t.Fatalf("Latest() after server close = (%q, true), want ok=false", latest)
 	}
 }

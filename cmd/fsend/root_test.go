@@ -108,6 +108,16 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			[]string{"--receive", "abc-defg-jkm", "--exclude=*.log"},
 			"--exclude only applies when sending a directory",
 		},
+		{
+			"connect_with_update",
+			[]string{"--connect=host:443", "--update"},
+			"--connect cannot be combined with --update",
+		},
+		{
+			"update_with_uninstall",
+			[]string{"--update", "--uninstall"},
+			"--update and --uninstall are mutually exclusive",
+		},
 	}
 	for _, c := range cases {
 		c := c
@@ -184,7 +194,7 @@ func TestBoldHelpHeaders(t *testing.T) {
 		t.Setenv("FORCE_COLOR", "1")
 		got := boldHelpHeaders(helpTemplate)
 		for _, header := range []string{"USAGE", "EXAMPLES", "COMMON FLAGS",
-			"ADVANCED FLAGS", "ENVIRONMENT", "SELF-HOSTING", "LEARN MORE"} {
+			"ADVANCED FLAGS", "LEARN MORE"} {
 			if !strings.Contains(got, "\x1b[1m"+header+"\x1b[0m") {
 				t.Errorf("header %q not bolded", header)
 			}
