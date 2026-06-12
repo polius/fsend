@@ -270,23 +270,8 @@ ADVANCED FLAGS
   --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
   --uninstall            Remove the fsend binary and its config dir
 
-ENVIRONMENT
-  FSEND_PASS             Used as --pass when the flag is not given
-                         (keeps the password out of argv)
-  FSEND_NO_UPDATE_CHECK  Set to 1 to disable the daily check for a newer
-                         fsend release
-
-SELF-HOSTING
-  fsend server                 Run your own pairing + relay server
-                               (env-var config — see "fsend server --help")
-
-SHELL COMPLETIONS
-  fsend completion <shell>     Print a completion script
-                               (bash, zsh, fish, powershell)
-
 LEARN MORE
-  Docs    https://github.com/polius/fsend
-  Issues  https://github.com/polius/fsend/issues
+  https://github.com/polius/fsend
 `
 
 // boldHelpHeaders wraps the ALL-CAPS section headers (USAGE, EXAMPLES,
@@ -307,7 +292,7 @@ func boldHelpHeaders(tpl string) string {
 }
 
 // isHelpHeader reports whether line is a column-0 ALL-CAPS section
-// header ("COMMON FLAGS", "SELF-HOSTING", …). Body lines are indented,
+// header ("COMMON FLAGS", "ADVANCED FLAGS", …). Body lines are indented,
 // and the version header line starts lowercase, so neither matches.
 func isHelpHeader(line string) bool {
 	if line == "" || (line[0] < 'A' || line[0] > 'Z') {
