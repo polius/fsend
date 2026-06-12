@@ -172,7 +172,9 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello) bool {
 	renderArtifact(os.Stderr, h, ui.outDir, f)
 	fmt.Fprintln(os.Stderr)
 	if f.yes {
-		fmt.Fprintln(os.Stderr, uxlog.Check(), "Accepting (--yes)")
+		// Info, not Check: nothing has succeeded yet — this only echoes
+		// that the flag skipped the prompt.
+		fmt.Fprintln(os.Stderr, uxlog.Info(), "Accepting (--yes)")
 		return true
 	}
 	question := "Save to " + saveTargetLabel(ui.outDir) + "?"
@@ -382,7 +384,7 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 
 // printRecvSummary renders the post-transfer success line. headline is
 // the fully-formed "Saved X to Y" / "Received" clause; the parts that
-// follow scan size → time → route. On a resumed transfer moved < total
+// follow scan size → time → rate → route. On a resumed transfer moved < total
 // and the size gains a "(X received)" clause. Suppressed under --quiet.
 func printRecvSummary(f *flags, headline string, total, moved int64, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {

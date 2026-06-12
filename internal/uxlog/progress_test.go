@@ -49,8 +49,8 @@ func TestProgress_AbortBeforeComplete(t *testing.T) {
 // TestProgress_StreamingSetTotal mirrors the streamed-stdin code path:
 // the bar is constructed with total=0 (size unknown), bytes flow in via
 // Add(), and at EOF the producer calls SetTotal(actual, true) so the
-// bar latches to "done" instead of "aborted". Regression guard for the
-// streaming-stdin work.
+// bar completes (and is removed) instead of aborting. Regression guard
+// for the streaming-stdin work.
 func TestProgress_StreamingSetTotal(t *testing.T) {
 	silenceStderr(t)
 	p := New(0)

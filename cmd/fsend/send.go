@@ -71,7 +71,7 @@ func runSend(f *flags, paths []string) error {
 	// corruption warning, which must not land on the spinner's line.
 	cfg := loadConfig(f.quiet)
 
-	// Print the artifact (code + receive command) exactly once, here,
+	// Print the artifact (the receive command) exactly once, here,
 	// before any path is attempted. Both LAN and internet paths use the
 	// same locally-generated code — LAN announces an argon2id-derived
 	// name via mDNS, and the internet path registers the code's argon2id
@@ -312,8 +312,8 @@ func shortRand() string {
 	return string(b[:])
 }
 
-// printSendArtifact renders the "code + receive command" block on stderr
-// and starts an animated "Waiting for receiver" spinner. Callers must
+// printSendArtifact renders the receive-command block on stderr and
+// starts an animated "Waiting for receiver" spinner. Callers must
 // Stop the spinner before printing anything else to stderr.
 //
 // Output rules:
@@ -330,7 +330,7 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 	fmt.Fprintln(os.Stderr)
 	switch kind {
 	case wire.TransferSingleFile:
-		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %s\n",
+		fmt.Fprintf(os.Stderr, "  Sending %s  ·  %s\n",
 			items[0].Info.RelativePath, uxlog.HumanBytes(int64(items[0].Info.Size)))
 	case wire.TransferDirectory:
 		// Archive transfers carry one SourceItem (the tar) whose Size is
@@ -341,28 +341,27 @@ func printSendArtifact(f *flags, c string, items []transfer.SourceItem, kind wir
 		for _, it := range items {
 			total += it.Info.Size
 		}
-		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %s  ·  %s\n",
+		fmt.Fprintf(os.Stderr, "  Sending %s  ·  %s  ·  %s\n",
 			label, uxlog.CountNoun(int(totalFiles), "file"), uxlog.HumanBytes(int64(total)))
 	case wire.TransferMultiFile:
-		fmt.Fprintf(os.Stderr, "  Sending  %s  ·  %s\n",
+		fmt.Fprintf(os.Stderr, "  Sending %s  ·  %s\n",
 			uxlog.CountNoun(len(items), "file"), uxlog.HumanBytes(totalBytes(items)))
 	case wire.TransferText:
-		fmt.Fprintf(os.Stderr, "  Sending  text  ·  %s\n",
+		fmt.Fprintf(os.Stderr, "  Sending text  ·  %s\n",
 			uxlog.HumanBytes(totalBytes(items)))
 	case wire.TransferStdin:
 		// Stdin is streamed: size isn't known until the producer EOFs.
 		// Print a placeholder; the progress bar carries the live byte
 		// count.
-		fmt.Fprintln(os.Stderr, "  Sending  stdin stream  ·  size unknown")
+		fmt.Fprintln(os.Stderr, "  Sending stdin stream  ·  size unknown")
 	}
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  Share this code:")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "      %s\n", uxlog.Code(c))
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  On the other machine, run:")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "      fsend %s\n", c)
+	// The command is the single artifact: pasted as a whole, or the
+	// highlighted code dictated out of it. A separate "Share this code"
+	// block would repeat the same code four lines apart.
+	fmt.Fprintf(os.Stderr, "      fsend %s\n", uxlog.Code(c))
 	fmt.Fprintln(os.Stderr)
 	return uxlog.StartSpinner("Waiting for receiver")
 }
@@ -403,16 +402,22 @@ func totalBytes(items []transfer.SourceItem) int64 {
 func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), progressFn func(fileIndex uint32, bytesSent uint64), onResume func(fileIndex uint32, offset, total uint64), stats func() (moved, skipped int64), onStreamingEOF func(fileIndex uint32, finalBytes uint64)) {
 	prev := make(map[uint32]uint64)
 	var moved, skipped int64
-	// bar is nil under --quiet; uxlog renders nil-safe.
+	// bar is nil under --quiet and until the first byte: an eager bar
+	// would draw 0% while the receiver still sits at its accept prompt —
+	// that window belongs to the "Waiting for them to accept" spinner.
+	// Mirrors the receiver's lazy bar; uxlog renders nil-safe.
 	var bar *uxlog.Progress
-	if !f.quiet {
-		// For streaming items the up-front total is 0 (size unknown). The
-		// bar renders an indeterminate progress; SetTotal is called from
-		// onStreamingEOF once the producer EOFs.
-		bar = uxlog.New(totalBytes(items))
+	ensureBar := func() {
+		if bar == nil && !f.quiet {
+			// For streaming items the up-front total is 0 (size unknown).
+			// The bar renders an indeterminate progress; SetTotal is
+			// called from onStreamingEOF once the producer EOFs.
+			bar = uxlog.New(totalBytes(items))
+		}
 	}
-	return bar.Done,
+	return func() { bar.Done() },
 		func(fi uint32, b uint64) {
+			ensureBar()
 			d := b - prev[fi]
 			prev[fi] = b
 			bar.Add(int64(d))
@@ -426,6 +431,7 @@ func newSenderProgress(f *flags, items []transfer.SourceItem) (closeFn func(), p
 				d := int64(offset - prev[fi])
 				prev[fi] = offset
 				skipped += d
+				ensureBar()
 				bar.Add(d)
 			}
 			if !f.quiet {
@@ -451,7 +457,7 @@ func resumeNotice(offset, total uint64) string {
 // printSendSummary renders the post-transfer success line on the sender.
 // The artifact name is already shown in printSendArtifact at session
 // start, so the summary deliberately omits it — repeating reads as
-// padding. Path tag goes last so the line scans size → time → route.
+// padding. The line scans size → time → rate → route.
 //
 // Suppressed under --quiet (the bare code on stdout is the contract;
 // nothing on stderr).
@@ -464,8 +470,9 @@ func printSendSummary(f *flags, total, moved int64, elapsed time.Duration, path 
 	printUpdateNotice(f)
 }
 
-// summaryParts builds the bytes/duration/path/rate sequence that both
-// send and recv summaries share. moved is the byte count actually
+// summaryParts builds the bytes/duration/rate/path sequence that both
+// send and recv summaries share: the numbers cluster together and the
+// route reads as the closing note. moved is the byte count actually
 // transferred this run; on a resumed transfer it is below total, the
 // size gains a "(X sent)"/"(X received)" clause (verb per role), and
 // the rate is computed from moved so it reflects real throughput rather
@@ -480,12 +487,11 @@ func summaryParts(total, moved int64, verb string, elapsed time.Duration, path c
 	parts := []string{
 		size,
 		uxlog.HumanDuration(elapsed),
-		path.Tag(),
 	}
 	if r := uxlog.HumanRate(moved, elapsed); r != "" {
 		parts = append(parts, r)
 	}
-	return parts
+	return append(parts, path.Tag())
 }
 
 // displayPath renders an absolute filesystem path for display: a

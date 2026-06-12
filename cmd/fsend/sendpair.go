@@ -499,15 +499,16 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 		pathInfo = winner.server.pathInfo
 	}
 	printPath(f, pathInfo)
-	// The receiver may now sit at its accept prompt for a while; without
-	// this line the sender stares at a dead terminal wondering whether
-	// the code even arrived. The path rides along so both sides see the
-	// route before any bytes flow. ✓ even for relay: the glyph reports
-	// the connect succeeding, the chip carries the route — same neutral
-	// treatment as the receiver chip and the summary tag.
+	// Without this line the sender stares at a dead terminal wondering
+	// whether the code even arrived. The path rides along as a dim chip —
+	// same shape as the receiver's "Incoming from <peer>  ·  <chip>" — so
+	// both sides see the route before any bytes flow. ✓ even for relay:
+	// the glyph reports the connect succeeding, the chip carries the
+	// route. The accept wait itself is a spinner, started in
+	// runSenderTransferLoop.
 	if !f.quiet {
-		fmt.Fprintf(os.Stderr, "%s Receiver connected (%s) — waiting for them to accept.\n",
-			uxlog.Check(), pathInfo.Chip())
+		fmt.Fprintf(os.Stderr, "%s Receiver connected%s\n",
+			uxlog.Check(), uxlog.Dim("  ·  "+pathInfo.Chip()))
 	}
 
 	if winner.lan != nil {
@@ -576,6 +577,13 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	closeProg, progressFn, onResume, stats, onStreamingEOF := newSenderProgress(f, items)
 	defer closeProg()
 
+	// The receiver may sit at its accept prompt for a while; the spinner
+	// owns that window. The first event off the wire — a byte, a resume
+	// notice, a retry — stops it so the progress bar (or notice line)
+	// lands on a clean row. Stop is idempotent and nil-safe (--quiet).
+	spin := startWaitSpinner(f, "Waiting for them to accept")
+	defer spin.Stop()
+
 	// Time from the first byte, not from here — the receiver may sit at
 	// its accept prompt for a while, and counting that wait makes the
 	// summary read like a glacial transfer.
@@ -584,11 +592,22 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	progress := func(fi uint32, b uint64) {
 		if firstByte.IsZero() {
 			firstByte = time.Now()
+			spin.Stop()
 		}
 		progressFn(fi, b)
 	}
+	resume := func(fi uint32, offset, total uint64) {
+		spin.Stop()
+		onResume(fi, offset, total)
+	}
 	current := firstRes
 	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	if notice := opts.OnRetry; notice != nil {
+		opts.OnRetry = func(attempt int, wait time.Duration, lastErr error) {
+			spin.Stop()
+			notice(attempt, wait, lastErr)
+		}
+	}
 	if hasConsumableReader(items) {
 		// A partially-consumed stdin/--text reader would resend from an
 		// arbitrary offset and still pass per-chunk hashes; fail instead.
@@ -616,7 +635,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 				DisplayName:    displayName,
 				Password:       f.passArg,
 				ProgressFn:     progress,
-				OnResume:       onResume,
+				OnResume:       resume,
 				OnStreamingEOF: onStreamingEOF,
 			})
 		})
