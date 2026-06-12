@@ -28,10 +28,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/pion/ice/v4"
+	"github.com/pion/stun/v3"
 )
 
 // Options bundle the inputs callers must supply.
@@ -41,17 +43,18 @@ import (
 // likewise come from the peer's signaling response. Both pairs are short
 // random strings; see internal/server.newIceCreds.
 //
-// There is no STUN-server URL here on purpose: the fsend pairing server
-// does not run a STUN reflector (the UDP port carries the custom relay
-// protocol), so configuring one would produce zero server-reflexive
-// candidates while delaying gather-completion by pion's STUN timeout.
-// NAT hole-punching relies on host + peer-reflexive candidates; if
-// those don't connect, the sender falls back to the relay.
+// STUNAddr is the "host:port" of the STUN server used to gather
+// server-reflexive candidates — in fsend, the relay's UDP socket, which
+// answers STUN alongside its own framing (see internal/relay.handleSTUN).
+// Without srflx candidates, two NATed peers only exchange private
+// addresses and can never hole-punch. Empty disables srflx gathering
+// (host candidates only), e.g. when the server has no relay.
 type Options struct {
 	LocalUfrag  string
 	LocalPwd    string
 	RemoteUfrag string
 	RemotePwd   string
+	STUNAddr    string
 }
 
 // Agent is fsend's ICE coordinator.
@@ -99,10 +102,6 @@ func New(opts Options) (*Agent, error) {
 
 	disc, fail, ka := defaultTimeouts()
 
-	// CandidateTypeServerReflexive stays in the filter so that if a peer
-	// happens to send us an srflx candidate (e.g. they ran a build with a
-	// real STUN server wired in) pion accepts it. We just don't gather
-	// srflx ourselves — no STUN URL is configured.
 	agentOpts := []ice.AgentOption{
 		ice.WithNetworkTypes([]ice.NetworkType{
 			ice.NetworkTypeUDP4,
@@ -116,6 +115,21 @@ func New(opts Options) (*Agent, error) {
 		ice.WithDisconnectedTimeout(disc),
 		ice.WithFailedTimeout(fail),
 		ice.WithKeepaliveInterval(ka),
+	}
+	if opts.STUNAddr != "" {
+		// Built as a struct rather than stun.ParseURI: the RFC 7064 URI
+		// grammar (and pion's parser) mishandles IPv6 literals.
+		host, portStr, err := net.SplitHostPort(opts.STUNAddr)
+		if err != nil {
+			return nil, fmt.Errorf("iceconn: STUNAddr: %w", err)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("iceconn: STUNAddr port: %w", err)
+		}
+		agentOpts = append(agentOpts, ice.WithUrls([]*stun.URI{
+			{Scheme: stun.SchemeTypeSTUN, Host: host, Port: port},
+		}))
 	}
 
 	inner, err := ice.NewAgentWithOptions(agentOpts...)

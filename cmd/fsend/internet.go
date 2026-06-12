@@ -27,8 +27,13 @@ import (
 )
 
 // iceBudget caps the total time we'll spend trying to establish a direct
-// path before falling back to the relay.
-const iceBudget = 15 * time.Second
+// path before falling back to the relay. With srflx candidates (STUN via
+// the relay socket), a viable direct path completes within ~2s worldwide:
+// gather, one signaling poll (200 ms), and connectivity checks are all
+// RTT-scale. This bounds the *unviable* cases (symmetric NAT, filtered
+// UDP) — paths that need the relay regardless — so generosity here only
+// delays the inevitable fallback.
+const iceBudget = 5 * time.Second
 
 // signalingClient builds a client pointed at the configured server.
 //
@@ -88,13 +93,23 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 		return err
 	}
 
+	// Allocate the relay before ICE: its UDP address is the STUN server
+	// for srflx gathering. Mirrors establishInternetDataPath — see the
+	// rationale there.
+	alloc, allocErr := client.AllocateRelay(ctx, joined.SessionID, joined.RoleToken)
+	stunAddr := ""
+	if allocErr == nil {
+		stunAddr = alloc.RelayAddr
+	}
+
 	// --- Try ICE direct path ---
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, joined.SessionID, joined.RoleToken, iceconn.Options{
 		LocalUfrag:  joined.YourIceCredentials.Ufrag,
 		LocalPwd:    joined.YourIceCredentials.Pwd,
 		RemoteUfrag: joined.PeerIceCredentials.Ufrag,
 		RemotePwd:   joined.PeerIceCredentials.Pwd,
-	}, false /* controlled */)
+		STUNAddr:    stunAddr,
+	}, false /* controlled */, f.debug)
 	if iceErr == nil {
 		defer func() { _ = iceConn.Close() }()
 		// Stop the spinner; the receive UX is owned by runReceiverQUICOver
@@ -108,9 +123,8 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}
 
 	// --- Fall back to relay ---
-	alloc, err := client.AllocateRelay(ctx, joined.SessionID, joined.RoleToken)
-	if err != nil {
-		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
+	if allocErr != nil {
+		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)
 	}
 	relayConn, err := dialRelay(alloc)
 	if err != nil {
@@ -217,7 +231,15 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 //
 // controlling=true → sender role (calls Dial).
 // controlling=false → receiver role (calls Accept).
-func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, roleToken string, opts iceconn.Options, controlling bool) (net.PacketConn, connpath.Info, error) {
+//
+// debug enables candidate-level stderr logging — the data needed to
+// diagnose "why did this pair of networks relay?" reports.
+func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, roleToken string, opts iceconn.Options, controlling bool, debug bool) (net.PacketConn, connpath.Info, error) {
+	debugf := func(format string, args ...any) {
+		if debug {
+			fmt.Fprintf(os.Stderr, "DEBUG: "+format+"\n", args...)
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, iceBudget)
 	defer cancel()
 
@@ -250,6 +272,7 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 				if !ok {
 					return
 				}
+				debugf("ICE local candidate: %s", cstr)
 				if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, []string{cstr}); err != nil {
 					// Best-effort: pion's ICE will keep going with whatever
 					// candidates have already crossed; surface in --debug only.
@@ -278,6 +301,7 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 				continue
 			}
 			for _, cstr := range resp.Candidates {
+				debugf("ICE remote candidate: %s", cstr)
 				_ = agent.AddRemoteCandidate(cstr)
 			}
 			since = resp.NextSince
