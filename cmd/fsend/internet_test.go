@@ -256,3 +256,75 @@ func newSignalingTestServer(t *testing.T) (*server.Server, string) {
 	t.Cleanup(ts.Close)
 	return s, ts.URL
 }
+
+// A claimed code may be a stale session whose receiver died: the sender
+// Deletes and re-Creates it when it re-enters pairing. joinWithRetry
+// must ride out the "already paired" window and join the fresh session.
+func TestJoinWithRetry_RetriesWhenStaleSessionReplaced(t *testing.T) {
+	_, baseURL := newSignalingTestServer(t)
+	senderClient := signaling.New(baseURL, "test")
+	deadReceiver := signaling.New(baseURL, "test")
+	receiverClient := signaling.New(baseURL, "test")
+	code := "abc-defg-jkm"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	created, err := senderClient.Create(ctx, code)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := deadReceiver.Join(ctx, code); err != nil {
+		t.Fatalf("first Join: %v", err)
+	}
+
+	// Second receiver starts polling against the now-paired session.
+	var wg sync.WaitGroup
+	var joinErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, joinErr = joinWithRetry(ctx, receiverClient, code, &flags{quiet: true}, nil)
+	}()
+
+	// Sender re-enters pairing: stale session out, fresh one in.
+	time.Sleep(500 * time.Millisecond)
+	if err := senderClient.Delete(ctx, created.SessionID, created.RoleToken); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := senderClient.Create(ctx, code); err != nil {
+		t.Fatalf("re-Create: %v", err)
+	}
+
+	wg.Wait()
+	if joinErr != nil {
+		t.Errorf("joinWithRetry should have joined the replacement session, got %v", joinErr)
+	}
+}
+
+// When the stale session is never replaced, the budget must end with
+// the honest E003 — the code really is held by another receiver.
+func TestJoinWithRetry_GivesUpOnClaimedAfterBudget(t *testing.T) {
+	_, baseURL := newSignalingTestServer(t)
+	senderClient := signaling.New(baseURL, "test")
+	firstReceiver := signaling.New(baseURL, "test")
+	code := "abc-defg-jkm"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := senderClient.Create(ctx, code); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := firstReceiver.Join(ctx, code); err != nil {
+		t.Fatalf("first Join: %v", err)
+	}
+
+	orig := joinRetryBudget
+	defer func() { joinRetryBudget = orig }()
+	joinRetryBudget = 500 * time.Millisecond
+
+	_, err := joinWithRetry(ctx, signaling.New(baseURL, "test"), code, &flags{quiet: true}, nil)
+	if !errors.Is(err, fserrors.ErrCodeAlreadyClaimed) {
+		t.Errorf("expected ErrCodeAlreadyClaimed after budget, got %v", err)
+	}
+}

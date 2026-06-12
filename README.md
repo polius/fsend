@@ -15,7 +15,7 @@
 
 ```bash
 $ fsend report.pdf                 # home Wi-Fi
-Share this code:  abc-defg-jkm
+On the other machine, run:  fsend abc-defg-jkm
 
 $ fsend abc-defg-jkm               # café Wi-Fi, two continents away
 ✓ Saved report.pdf to ~/Downloads  ·  2.4 MB  ·  1.3s  ·  Direct over the internet

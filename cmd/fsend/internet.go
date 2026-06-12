@@ -164,28 +164,29 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID,
 	return runErr
 }
 
-// joinWithRetry calls Join, retrying only on ErrCodeNotFound. The
-// receiver almost always wins the race against the sender's Create
-// (LAN window is ~5s, server RTT is <200ms), but a slow human or a
-// laggy network can still produce a few hundred milliseconds where the
-// server hasn't seen the code yet. Without retries that surfaced as
-// an instant, misleading E002 — telling the user the code expired when
-// it just hasn't been registered yet.
+// joinWithRetry calls Join, retrying on ErrCodeNotFound and
+// ErrCodeAlreadyClaimed. Not-found covers the receiver winning the race
+// against the sender's Create (slow human, laggy network) — without
+// retries that surfaced as an instant, misleading E002. Already-claimed
+// covers a stale session whose receiver died mid-transfer: the sender
+// Deletes and re-Creates it when it re-enters pairing, so within the
+// budget the slot flips from claimed to joinable.
 //
-// Other errors propagate immediately: code-already-claimed,
-// server-unreachable, ctx-cancelled, etc., are not transient and the
-// caller should hear about them on the first try.
+// Other errors propagate immediately: server-unreachable,
+// ctx-cancelled, etc., are not transient and the caller should hear
+// about them on the first try.
 //
 // Every join — including a 404 — counts against the server's per-IP
 // new-session budget (that's what stops code-space probing), so the
 // schedule is deliberately sparse: ~7 joins across the budget, not a
 // tight poll. And if the server starts throttling us mid-loop after
-// every attempt said "not found", the honest answer is E002, not E017 —
-// a mistyped code must not surface as "too many attempts".
+// retryable answers, the honest error is the last retryable one (E002/
+// E003), not E017 — a mistyped code must not surface as "too many
+// attempts".
 func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags, existing *uxlog.Spinner) (*server.JoinSessionResponse, error) {
 	deadline := time.Now().Add(joinRetryBudget)
 	delay := 500 * time.Millisecond
-	sawNotFound := false
+	var lastRetryable error
 	var spin *uxlog.Spinner
 	// Close over the variable so a spinner started inside the loop is
 	// still Stopped on return — a plain `defer spin.Stop()` would only
@@ -196,19 +197,20 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 		if err == nil {
 			return joined, nil
 		}
-		if sawNotFound && errors.Is(err, fserrors.ErrRateLimited) {
-			return nil, fserrors.ErrCodeNotFound
+		if lastRetryable != nil && errors.Is(err, fserrors.ErrRateLimited) {
+			return nil, lastRetryable
 		}
-		if !errors.Is(err, fserrors.ErrCodeNotFound) || time.Now().After(deadline) {
+		retryable := errors.Is(err, fserrors.ErrCodeNotFound) || errors.Is(err, fserrors.ErrCodeAlreadyClaimed)
+		if !retryable || time.Now().After(deadline) {
 			return nil, err
 		}
-		sawNotFound = true
+		lastRetryable = err
 		// Animate a single line for the duration of the wait so the
 		// user knows we're holding for the sender rather than stuck.
 		// If the caller already gave us a running spinner, leave it
 		// alone — two spinners would fight each other on stderr.
 		if spin == nil && existing == nil && !f.quiet {
-			spin = uxlog.StartSpinner("Waiting for sender to register code")
+			spin = uxlog.StartSpinner("Waiting for sender")
 		}
 		select {
 		case <-ctx.Done():

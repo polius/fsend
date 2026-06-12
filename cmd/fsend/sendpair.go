@@ -88,7 +88,7 @@ type sendPairOutcome struct {
 // as ctx.Err() — the coordinator treats that as "loser, no-op".
 func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 	port := landisc.PortForCode(code)
-	ln, err := quicconn.ListenAddr(":"+strconv.Itoa(port), code)
+	ln, err := listenLANWithRetry(ctx, port, code)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", fserrors.ErrLANListenerFailed, err)
 	}
@@ -200,6 +200,26 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 			deleteSession()
 		},
 	}, nil
+}
+
+// listenLANWithRetry binds the code's deterministic LAN port, retrying
+// briefly: on a re-pair round the previous listener's socket is only
+// released once its dead QUIC connection finishes draining, so an
+// immediate re-bind can lose that race and needlessly surrender the
+// LAN path to the server.
+func listenLANWithRetry(ctx context.Context, port int, code string) (*quicconn.Listener, error) {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ln, err := quicconn.ListenAddr(":"+strconv.Itoa(port), code)
+		if err == nil || time.Now().After(deadline) {
+			return ln, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // waitRetryStep scales the backoff between Wait retries (n·step for the
@@ -355,9 +375,42 @@ func senderQUICAccept(ctx context.Context, pc net.PacketConn, code string) (*qui
 	return ln, res, teardown, nil
 }
 
-// runSendParallel is the top-level coordinator. It runs the two pair
-// paths concurrently, picks the first that succeeds, cancels the loser,
-// and runs the transfer on the winner.
+// runSendParallel pairs and transfers, returning to "Waiting for
+// receiver" — same code — when the receiver vanishes mid-transfer.
+// Each round re-announces mDNS and re-Creates the server session (the
+// previous round's cleanup freed the slot), so a rerun `fsend <code>`
+// rediscovers the sender and resumes from its .fsend-partial. The wait
+// is unbounded, like the initial one: Ctrl-C ends it.
+//
+// Stdin/--text transfers can't replay their reader, so they fail as
+// before instead of re-pairing.
+func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
+	for {
+		err := runSendOnce(ctx, f, items, kind, totalFiles, label, code, cfg, waitSpin)
+		if err == nil || ctx.Err() != nil || hasConsumableReader(items) ||
+			(!errors.Is(err, fserrors.ErrTransientFailure) && !isReceiverClose(err)) {
+			return err
+		}
+		if !f.quiet {
+			fmt.Fprintf(os.Stderr, "%s Receiver disconnected — waiting for them to reconnect.\n", uxlog.Info())
+		}
+		waitSpin = startWaitSpinner(f, "Waiting for receiver")
+	}
+}
+
+// isReceiverClose reports whether err is the receiver deliberately
+// closing its QUIC connection (Ctrl-C, clean process exit). That
+// receiver will never re-dial the current pairing, so the re-accept
+// grace would be a dead wait. Network drops and kills surface as idle
+// timeouts instead and keep the grace.
+func isReceiverClose(err error) bool {
+	var appErr *quic.ApplicationError
+	return errors.As(err, &appErr) && appErr.Remote
+}
+
+// runSendOnce runs one pair-then-transfer round. It races the two pair
+// paths, picks the first that succeeds, cancels the loser, and runs the
+// transfer on the winner.
 //
 // Failure handling is deliberately asymmetric:
 //   - LAN-only failure (e.g. port conflict): keep waiting for the server
@@ -367,7 +420,7 @@ func senderQUICAccept(ctx context.Context, pc net.PacketConn, code string) (*qui
 //     ⚠ line so the user knows only same-LAN receivers can connect now.
 //   - Both fail: return the most informative error (E001 if the server
 //     was unreachable, otherwise the LAN error).
-func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
+func runSendOnce(ctx context.Context, f *flags, items []transfer.SourceItem, kind wire.TransferKind, totalFiles uint32, label, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
 	pairCtx, cancelPair := context.WithCancel(ctx)
 	defer cancelPair()
 	// Belt-and-braces: if we exit through an unusual path (panic-recover,
@@ -499,15 +552,16 @@ func runSendParallel(ctx context.Context, f *flags, items []transfer.SourceItem,
 		pathInfo = winner.server.pathInfo
 	}
 	printPath(f, pathInfo)
-	// The receiver may now sit at its accept prompt for a while; without
-	// this line the sender stares at a dead terminal wondering whether
-	// the code even arrived. The path rides along so both sides see the
-	// route before any bytes flow. ✓ even for relay: the glyph reports
-	// the connect succeeding, the chip carries the route — same neutral
-	// treatment as the receiver chip and the summary tag.
+	// Without this line the sender stares at a dead terminal wondering
+	// whether the code even arrived. The path rides along as a dim chip —
+	// same shape as the receiver's "Incoming from <peer>  ·  <chip>" — so
+	// both sides see the route before any bytes flow. ✓ even for relay:
+	// the glyph reports the connect succeeding, the chip carries the
+	// route. The accept wait itself is a spinner, started in
+	// runSenderTransferLoop.
 	if !f.quiet {
-		fmt.Fprintf(os.Stderr, "%s Receiver connected (%s) — waiting for them to accept.\n",
-			uxlog.Check(), pathInfo.Chip())
+		fmt.Fprintf(os.Stderr, "%s Receiver connected%s\n",
+			uxlog.Check(), uxlog.Dim("  ·  "+pathInfo.Chip()))
 	}
 
 	if winner.lan != nil {
@@ -576,6 +630,13 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	closeProg, progressFn, onResume, stats, onStreamingEOF := newSenderProgress(f, items)
 	defer closeProg()
 
+	// The receiver may sit at its accept prompt for a while; the spinner
+	// owns that window. The first event off the wire — a byte, a resume
+	// notice, a retry — stops it so the progress bar (or notice line)
+	// lands on a clean row. Stop is idempotent and nil-safe (--quiet).
+	spin := startWaitSpinner(f, "Waiting for them to accept")
+	defer spin.Stop()
+
 	// Time from the first byte, not from here — the receiver may sit at
 	// its accept prompt for a while, and counting that wait makes the
 	// summary read like a glacial transfer.
@@ -584,17 +645,35 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 	progress := func(fi uint32, b uint64) {
 		if firstByte.IsZero() {
 			firstByte = time.Now()
+			spin.Stop()
 		}
 		progressFn(fi, b)
 	}
+	resume := func(fi uint32, offset, total uint64) {
+		spin.Stop()
+		onResume(fi, offset, total)
+	}
 	current := firstRes
 	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	if notice := opts.OnRetry; notice != nil {
+		opts.OnRetry = func(attempt int, wait time.Duration, lastErr error) {
+			spin.Stop()
+			notice(attempt, wait, lastErr)
+		}
+	}
+	classify := retry.IsTransient
 	if hasConsumableReader(items) {
 		// A partially-consumed stdin/--text reader would resend from an
 		// arbitrary offset and still pass per-chunk hashes; fail instead.
 		opts.Attempts = 1
+	} else {
+		// A deliberate receiver close means no re-dial is coming: bail
+		// past the re-accept grace so runSendParallel re-pairs now. The
+		// raw error never reaches the user — the re-pair loop always
+		// catches it (re-pairable items only).
+		classify = func(err error) bool { return !isReceiverClose(err) && retry.IsTransient(err) }
 	}
-	err := retry.WithBackoff(ctx, opts, nil,
+	err := retry.WithBackoff(ctx, opts, classify,
 		func(attempt int) error {
 			if current == nil {
 				res, err := reaccept(ctx)
@@ -616,7 +695,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, items []transfer.Sourc
 				DisplayName:    displayName,
 				Password:       f.passArg,
 				ProgressFn:     progress,
-				OnResume:       onResume,
+				OnResume:       resume,
 				OnStreamingEOF: onStreamingEOF,
 			})
 		})

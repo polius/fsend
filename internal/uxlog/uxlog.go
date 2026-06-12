@@ -166,23 +166,20 @@ func New(totalBytes int64) *Progress {
 	hasTotal := totalBytes > 0
 	showRate := totalBytes >= rateThreshold
 
-	// Percentage on the left. OnComplete swaps it for "done" so the bar
-	// reads as terminal once the transfer is finished — no stale ETA
-	// chip lingering at 0s.
+	// Percentage on the left. The completed bar is removed (see
+	// BarRemoveOnComplete below), so no terminal-state swap is needed.
 	prependDecs := []decor.Decorator{
 		decor.Name("  "),
 		// "%d" renders "66%", matching plain mode — the default
 		// "% d" pads a space before the sign ("66 %").
-		decor.OnComplete(decor.NewPercentage("%d", decor.WC{W: 4}), "done"),
+		decor.NewPercentage("%d", decor.WC{W: 4}),
 		decor.Name("  "),
 	}
 	if !hasTotal {
 		// Streaming transfers (stdin) — no meaningful percentage.
-		// Replace with a static dots glyph that doesn't shift width
-		// when the transfer finishes (closeFn latches the total then).
 		prependDecs = []decor.Decorator{
 			decor.Name("  "),
-			decor.OnComplete(decor.Name("... "), "done"),
+			decor.Name("... "),
 			decor.Name("  "),
 		}
 	}
@@ -243,6 +240,10 @@ func New(totalBytes int64) *Progress {
 	p.bar = p.mp.New(totalBytes,
 		style,
 		mpb.BarWidth(barWidth),
+		// Progress is transient: a completed bar erases itself and the
+		// summary line that follows is the permanent record. Aborted
+		// (partial) bars stay — see Done().
+		mpb.BarRemoveOnComplete(),
 		mpb.PrependDecorators(prependDecs...),
 		mpb.AppendDecorators(appendDecs...),
 	)
@@ -284,16 +285,14 @@ func (p *Progress) SetTotal(total int64, complete bool) {
 // Done marks the bar complete and waits for mpb to flush. Always call
 // this before the caller exits.
 //
-// Two paths so the success case still renders the OnComplete suffix
-// ("done") instead of being silently aborted:
+// Two paths:
 //
-//   - Bar already at 100% (Completed reports true): the final Add()
-//     already triggered OnComplete; just Wait for mpb to flush.
-//   - Bar below 100% (aborted mid-transfer): Abort(false) so mpb
+//   - Bar at 100%: BarRemoveOnComplete erases it; just Wait for mpb
+//     to flush so the summary line lands on a clean row.
+//   - Bar below 100% (aborted mid-transfer): Abort(false) — keep the
+//     partial bar on screen as the record of where it stopped — so mpb
 //     releases the bar and Wait returns instead of hanging forever
-//     waiting for the bar to reach its declared total. We deliberately
-//     don't SetTotal here — that would render a misleading "done" on
-//     a partial bar.
+//     waiting for the bar to reach its declared total.
 func (p *Progress) Done() {
 	if p == nil {
 		return
