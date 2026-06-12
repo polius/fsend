@@ -123,12 +123,10 @@ func (i Info) Tag() string {
 	}
 }
 
-// Headline is the single line the CLI prints right after the data path
-// is established, e.g.
+// Headline is the standalone path line the CLI prints under --debug
+// right after the data path is established, e.g.
 //
-//	✓ Direct on local network
 //	✓ Direct over the internet
-//	⚠ Relayed via fsend.alzina.dev
 //
 // Identical to Tag() today — the old verbose form ("— same LAN, no NAT
 // crossed") was dropped because it read as jargon. Kept as a separate
@@ -136,6 +134,26 @@ func (i Info) Tag() string {
 // divergence.
 func (i Info) Headline() string {
 	return i.Tag()
+}
+
+// Chip returns the lowercase mid-line form shown when the connection is
+// established: "Receiver connected (local network)" on the sender,
+// "Incoming from <peer> · direct over the internet" on the receiver.
+// Tag remains the standalone capitalized form for summary lines.
+func (i Info) Chip() string {
+	switch i.Kind {
+	case KindLocal:
+		return "local network"
+	case KindDirectNAT:
+		return "direct over the internet"
+	case KindRelay:
+		if i.RelayAddr != "" {
+			return "relayed via " + i.RelayAddr
+		}
+		return "relayed"
+	default:
+		return "unknown"
+	}
 }
 
 // Detail returns the verbose ICE candidate trace for --debug output, e.g.

@@ -849,3 +849,42 @@ func TestPrintPath_QuietSuppressed(t *testing.T) {
 		t.Errorf("--quiet should suppress, got %q", got)
 	}
 }
+
+// The path now rides inline on the connected/incoming lines, so the
+// standalone headline is --debug only — even for relay.
+func TestPrintPath_DebugOnly(t *testing.T) {
+	relay := connpath.FromRelay("relay.example.com:443")
+	if got := captureStderr(t, func() { printPath(&flags{}, relay) }); got != "" {
+		t.Errorf("non-debug should print nothing, got %q", got)
+	}
+	got := captureStderr(t, func() { printPath(&flags{debug: true}, relay) })
+	if !strings.Contains(got, "Relayed via relay.example.com:443") {
+		t.Errorf("debug headline missing:\n%s", got)
+	}
+	got = captureStderr(t, func() { printPath(&flags{debug: true}, connpath.FromICE("srflx", "host")) })
+	if !strings.Contains(got, "ICE candidate pair: srflx → host") {
+		t.Errorf("debug ICE detail missing:\n%s", got)
+	}
+}
+
+// Route transparency: the accept prompt names the path for every kind.
+func TestPromptAccept_PathChipShown(t *testing.T) {
+	cases := []struct {
+		info connpath.Info
+		want string
+	}{
+		{connpath.FromLAN(), "local network"},
+		{connpath.FromICE("srflx", "host"), "direct over the internet"},
+		{connpath.FromRelay("relay.example.com:443"), "relayed via relay.example.com:443"},
+	}
+	for _, c := range cases {
+		got := captureStderr(t, func() {
+			h := wire.SenderHello{TransferKind: wire.TransferSingleFile, DisplayName: "x", TotalBytes: 1, TotalFiles: 1}
+			ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, c.info)
+			_ = ui.promptAccept(h)
+		})
+		if !strings.Contains(got, "Incoming from") || !strings.Contains(got, c.want) {
+			t.Errorf("prompt missing path chip %q:\n%s", c.want, got)
+		}
+	}
+}
