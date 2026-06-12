@@ -189,8 +189,10 @@ verify_checksum() {
         _actual="$(shasum -a 256 "$_archive" | awk '{print $1}')"
     elif command -v sha256 >/dev/null 2>&1; then
         _actual="$(sha256 -q "$_archive")"
+    elif command -v openssl >/dev/null 2>&1; then
+        _actual="$(openssl dgst -sha256 "$_archive" | awk '{print $NF}')"
     else
-        err "no sha256 tool available (need sha256sum, shasum, or sha256)"
+        err "no sha256 tool available (need sha256sum, shasum, sha256, or openssl)"
     fi
 
     [ "$_actual" = "$_expected" ] \
