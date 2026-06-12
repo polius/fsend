@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/polius/fsend/internal/iceconn"
 	"github.com/polius/fsend/internal/quicconn"
+	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -228,5 +230,46 @@ func TestICE_LoopbackThenQUIC(t *testing.T) {
 	}
 	if !bytes.Equal(got, payload) {
 		t.Errorf("destination bytes differ from source")
+	}
+}
+
+// TestSTUNAddr_GathersSrflx verifies that pointing STUNAddr at a relay
+// server's UDP socket yields a server-reflexive candidate — the
+// integration contract between iceconn and internal/relay.handleSTUN.
+func TestSTUNAddr_GathersSrflx(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relaySrv := relay.NewServer(serverConn, relay.ServerConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- relaySrv.Run(ctx) }()
+	defer func() { cancel(); _ = serverConn.Close(); <-done }()
+
+	agent, err := iceconn.New(iceconn.Options{
+		LocalUfrag: "uuuuu",
+		LocalPwd:   "ppppppppppppppppppppppppp",
+		STUNAddr:   serverConn.LocalAddr().String(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case c, ok := <-agent.LocalCandidates():
+			if !ok {
+				t.Fatal("gathering completed without a srflx candidate")
+			}
+			if strings.Contains(c, "srflx") {
+				return
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for srflx candidate")
+		}
 	}
 }

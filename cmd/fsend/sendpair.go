@@ -250,23 +250,38 @@ func waitForReceiver(ctx context.Context, client *signaling.Client, code string)
 }
 
 // establishInternetDataPath wraps the ICE-then-relay ladder. On ICE
-// success it returns the ICE-owning PacketConn; on failure it allocates
-// a server-side relay and returns a relay PacketConn. The pathInfo
-// reflects the choice for UX rendering.
+// success it returns the ICE-owning PacketConn; on failure it falls back
+// to a relay PacketConn. The pathInfo reflects the choice for UX
+// rendering.
+//
+// The relay is allocated *before* ICE runs: its UDP address doubles as
+// the STUN server for srflx gathering — without that, two NATed peers
+// only exchange private addresses and ICE is doomed to time out. The
+// allocation is idempotent and idle-evicted server-side, so it costs
+// nothing when ICE wins. If allocation fails (e.g. relay not enabled),
+// ICE still runs with host candidates only, and its failure surfaces
+// the allocation error — the same outcome the old post-ICE allocation
+// produced.
 //
 // The debug --mode flag short-circuits the ladder:
 //   - modeDirect: only ICE; surface the ICE error if it fails (no relay fallback).
-//   - modeRelay:  skip ICE entirely; allocate the relay immediately.
+//   - modeRelay:  skip ICE entirely; relay only.
 func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *signaling.CreateResult, waitResp *server.WaitResponse) (net.PacketConn, connpath.Info, error) {
 	if f != nil && f.mode == modeRelay {
 		return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
+	}
+	alloc, allocErr := client.AllocateRelay(ctx, created.SessionID, created.RoleToken)
+	stunAddr := ""
+	if allocErr == nil {
+		stunAddr = alloc.RelayAddr
 	}
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, created.RoleToken, iceconn.Options{
 		LocalUfrag:  created.IceCredentials.Ufrag,
 		LocalPwd:    created.IceCredentials.Pwd,
 		RemoteUfrag: waitResp.PeerIceCredentials.Ufrag,
 		RemotePwd:   waitResp.PeerIceCredentials.Pwd,
-	}, true /* controlling */)
+		STUNAddr:    stunAddr,
+	}, true /* controlling */, f != nil && f.debug)
 	if iceErr == nil {
 		return iceConn, icePath, nil
 	}
@@ -276,7 +291,14 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if f != nil && f.mode == modeDirect {
 		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=direct: %v", fserrors.ErrConnectFailed, iceErr)
 	}
-	return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
+	if allocErr != nil {
+		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)
+	}
+	rc, err := dialRelay(alloc)
+	if err != nil {
+		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
+	}
+	return rc, connpath.FromRelay(alloc.RelayAddr), nil
 }
 
 // allocAndDialRelay performs the relay allocation + dial steps. Shared

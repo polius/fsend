@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pion/stun/v3"
 )
 
 // Server is the UDP-relay half of `fsend server`.
@@ -18,6 +20,10 @@ import (
 // allocation, it tracks the two peers' addresses (set on first datagram
 // from each) and forwards traffic between them. The wire format is
 // documented in framing.go.
+//
+// The same socket also answers STUN binding requests so ICE clients can
+// gather server-reflexive candidates without a second server or port;
+// see handleSTUN.
 type Server struct {
 	conn   net.PacketConn
 	cfg    ServerConfig
@@ -173,12 +179,16 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
-	ver, token, _, ok := Parse(datagram)
-	if !ok {
-		return // silently drop malformed
-	}
-	if ver != ProtocolVersion {
+	// The socket carries two wire formats: relay frames start with
+	// ProtocolVersion (0x01), STUN requests with 0x00 (RFC 5389 §6) —
+	// the first byte demuxes them exactly.
+	if len(datagram) > 0 && datagram[0] != ProtocolVersion {
+		s.handleSTUN(datagram, src)
 		return
+	}
+	ver, token, _, ok := Parse(datagram)
+	if !ok || ver != ProtocolVersion {
+		return // silently drop malformed
 	}
 
 	s.mu.RLock()
@@ -226,6 +236,32 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 
 	if _, err := s.conn.WriteTo(datagram, dst); err != nil {
 		s.logger.Debug("relay: write failed", "err", err)
+	}
+}
+
+// handleSTUN answers a STUN binding request with the source's reflexive
+// address (RFC 5389). This is what lets ICE gather srflx candidates and
+// hole-punch through NATs instead of relaying; see internal/iceconn.
+//
+// Unauthenticated by design, like any public STUN server: the response
+// is barely larger than the request, so there's no amplification value,
+// and it discloses only the querier's own address.
+func (s *Server) handleSTUN(datagram []byte, src *net.UDPAddr) {
+	if !stun.IsMessage(datagram) {
+		return
+	}
+	req := &stun.Message{Raw: datagram}
+	if err := req.Decode(); err != nil || req.Type != stun.BindingRequest {
+		return
+	}
+	resp, err := stun.Build(req, stun.BindingSuccess,
+		&stun.XORMappedAddress{IP: src.IP, Port: src.Port},
+		stun.Fingerprint)
+	if err != nil {
+		return
+	}
+	if _, err := s.conn.WriteTo(resp.Raw, src); err != nil {
+		s.logger.Debug("relay: stun write failed", "err", err)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pion/stun/v3"
 )
 
 func TestFrame_RoundtripParse(t *testing.T) {
@@ -129,6 +131,71 @@ func TestRelay_EndToEnd(t *testing.T) {
 	wg.Wait()
 	if bGot != "real message" {
 		t.Errorf("B did not receive expected payload, got %q", bGot)
+	}
+
+	cancel()
+	_ = serverConn.Close()
+	<-srvErr
+}
+
+// TestServer_STUNBinding verifies the relay socket answers STUN binding
+// requests with the querier's reflexive address, and that non-STUN
+// datagrams starting with a non-relay version byte are silently dropped.
+func TestServer_STUNBinding(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
+
+	srv := NewServer(serverConn, ServerConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Run(ctx) }()
+
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	localAddr := client.LocalAddr().(*net.UDPAddr)
+
+	// Garbage that is neither relay frame nor STUN must not get a reply.
+	if _, err := client.WriteTo([]byte{0x00, 0xde, 0xad}, relayAddr); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := stun.Build(stun.TransactionID, stun.BindingRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WriteTo(req.Raw, relayAddr); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := make([]byte, 1500)
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := client.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("no STUN response: %v", err)
+	}
+	resp := &stun.Message{Raw: buf[:n]}
+	if err := resp.Decode(); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Type != stun.BindingSuccess {
+		t.Fatalf("response type: got %v, want BindingSuccess", resp.Type)
+	}
+	if resp.TransactionID != req.TransactionID {
+		t.Error("transaction ID mismatch")
+	}
+	var mapped stun.XORMappedAddress
+	if err := mapped.GetFrom(resp); err != nil {
+		t.Fatalf("XOR-MAPPED-ADDRESS: %v", err)
+	}
+	if !mapped.IP.Equal(localAddr.IP) || mapped.Port != localAddr.Port {
+		t.Errorf("mapped address: got %v:%d, want %v", mapped.IP, mapped.Port, localAddr)
 	}
 
 	cancel()
