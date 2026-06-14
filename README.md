@@ -91,11 +91,19 @@ fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
 | | |
 |---|---|
 | [How it works](docs/architecture.md) | Three transfer modes, raced concurrently — and why |
-| [Comparison](docs/comparison.md) | fsend vs croc — same surface, fundamentally different architecture |
 | [Security](docs/security.md) | Threat model — what the server can and cannot see |
 | [Usage](docs/usage.md) | Every flag, env var, and exit code |
 | [Self-hosting](docs/self-hosting.md) | Run your own pairing server in four steps |
 | [Development](docs/development.md) | Build and test from source |
+
+## Comparison
+
+How fsend compares to other code-based, end-to-end encrypted file-transfer tools:
+
+| | |
+|---|---|
+| [fsend vs croc](docs/comparison-croc.md) | Same surface — but croc always relays; fsend goes peer-to-peer |
+| [fsend vs magic-wormhole](docs/comparison-magic-wormhole.md) | Same surface — but no NAT hole-punching, and 16-bit codes by default |
 
 ## Contributing
 
