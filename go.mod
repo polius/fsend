@@ -9,7 +9,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pion/ice/v4 v4.2.7
 	github.com/pion/mdns/v2 v2.1.0
-	github.com/pion/stun/v3 v3.1.5
+	github.com/pion/stun/v3 v3.1.6
 	github.com/quic-go/quic-go v0.60.0
 	github.com/spf13/cobra v1.10.2
 	github.com/vbauerster/mpb/v8 v8.12.1
