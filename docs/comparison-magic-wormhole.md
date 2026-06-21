@@ -240,6 +240,7 @@ Day-to-day, both cover the basics — but the edges differ.
 | Stream payload to stdout          | `--out -`     | ✗ (text prints; files saved)|
 | Receiver confirmation prompt      | ✓ (`--yes`)   | ✓ (`--accept-file`)        |
 | Resume after interruption         | ✓             | ✗ (classic transit restarts)|
+| Skip unchanged files on re-send   | ✓             | ✗ (always re-sends everything)|
 | Password on top of the code       | `--pass`      | ✗ (the code is the secret) |
 | Custom code phrase                | ✗             | ✓ (`--code`)               |
 | Receiver allocates the code       | ✗             | ✓ (`--allocate`)           |

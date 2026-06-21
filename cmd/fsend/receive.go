@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -177,78 +176,43 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func() (string, error
 	}
 }
 
-// renderArtifact prints the indented artifact line and (for a single
-// file that would collide) the warning chip that pre-discloses the
-// overwrite. The chip means the user only ever sees one question per
-// transfer instead of an accept-then-overwrite double prompt.
-func renderArtifact(w io.Writer, h wire.SenderHello, outDir string, f *flags) {
+// renderArtifact prints the indented artifact line and the classification
+// breakdown. The breakdown is how the user learns, before consenting, that
+// most files are already up to date and only a few will move.
+func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySummary) {
 	pwChip := ""
 	if h.HasPassword {
 		pwChip = "  " + uxlog.PasswordChip()
 	}
-	switch h.TransferKind {
-	case wire.TransferSingleFile:
-		// DisplayName is peer-supplied; sanitize it like the hostname so a
-		// crafted filename can't inject ANSI/bidi into the accept prompt.
-		name := sanitizeForDisplay(h.DisplayName, 128)
-		if name == "" {
-			name = "file"
+	if h.Mode == wire.ModeStream {
+		if h.IsText {
+			_, _ = fmt.Fprintf(w, "      text%s\n", pwChip)
+		} else {
+			_, _ = fmt.Fprintf(w, "      stdin stream  ·  size unknown%s\n", pwChip)
 		}
-		_, _ = fmt.Fprintf(w, "      %s  ·  %s%s\n", name, uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
-		// outDir is "" in sink mode — nothing on disk to collide with.
-		if !f.overwrite && outDir != "" {
-			target := filepath.Join(outDir, name)
-			if st, err := os.Stat(target); err == nil && !st.IsDir() {
-				// Under --yes there is no accept prompt to consent
-				// through, so the transfer will fail with E013.
-				chip := fmt.Sprintf("already in %s (%s) — will be overwritten if you accept",
-					displayPath(outDir), uxlog.HumanBytes(st.Size()))
-				if f.yes {
-					chip = fmt.Sprintf("already in %s (%s) — rerun with --overwrite to replace",
-						displayPath(outDir), uxlog.HumanBytes(st.Size()))
-				}
-				_, _ = fmt.Fprintln(w, "      "+uxlog.Warn()+" "+uxlog.Dim(chip))
-			}
-		}
-	case wire.TransferDirectory:
-		name := sanitizeForDisplay(h.DisplayName, 128)
-		if name == "" {
-			name = "directory"
-		}
-		_, _ = fmt.Fprintf(w, "      %s  ·  %s  ·  %s%s\n",
-			name, uxlog.CountNoun(int(h.TotalFiles), "file"), uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
-	case wire.TransferMultiFile:
-		_, _ = fmt.Fprintf(w, "      %s  ·  %s%s\n",
-			uxlog.CountNoun(int(h.TotalFiles), "file"), uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
-		// Name what you're consenting to. FileNames is peer-supplied —
-		// sanitize like DisplayName. Capped at a handful here; the wire
-		// list itself is capped at wire.MaxHelloFileNames, and when it is
-		// complete the engine enforces that only these names land
-		// (transfer.Recv). Empty for pre-FileNames senders.
-		const nameDisplayCap = 5
-		shown := min(len(h.FileNames), nameDisplayCap)
-		for _, n := range h.FileNames[:shown] {
-			name := sanitizeForDisplay(n, 128)
-			if name == "" {
-				name = "(unnamed)"
-			}
-			_, _ = fmt.Fprintf(w, "        %s\n", name)
-		}
-		if more := int(h.TotalFiles) - shown; more > 0 && shown > 0 {
-			_, _ = fmt.Fprintf(w, "        %s\n", uxlog.Dim(fmt.Sprintf("… and %d more", more)))
-		}
-	case wire.TransferText:
-		_, _ = fmt.Fprintf(w, "      text  ·  %s%s\n",
-			uxlog.HumanBytes(int64(h.TotalBytes)), pwChip)
-	case wire.TransferStdin:
-		// Streamed stdin: sender's HELLO has TotalBytes=0 because the
-		// size is only known at EOF on the producer side. Show "size
-		// unknown" instead of "(0 B)".
-		size := uxlog.HumanBytes(int64(h.TotalBytes))
-		if h.TotalBytes == 0 {
-			size = "size unknown"
-		}
-		_, _ = fmt.Fprintf(w, "      stdin stream  ·  %s%s\n", size, pwChip)
+		return
+	}
+	// DisplayName is peer-supplied; sanitize so a crafted name can't inject
+	// ANSI/bidi into the prompt.
+	name := sanitizeForDisplay(h.DisplayName, 128)
+	if name == "" {
+		name = "files"
+	}
+	_, _ = fmt.Fprintf(w, "      %s  ·  %s  ·  %s%s\n",
+		name, uxlog.CountNoun(summary.Total, "item"), uxlog.HumanBytes(int64(summary.BytesToRecv)), pwChip)
+
+	var parts []string
+	if summary.NewItems > 0 {
+		parts = append(parts, fmt.Sprintf("%d new", summary.NewItems))
+	}
+	if summary.Identical > 0 {
+		parts = append(parts, fmt.Sprintf("%d up to date", summary.Identical))
+	}
+	if summary.Differing > 0 {
+		parts = append(parts, fmt.Sprintf("%d differ", summary.Differing))
+	}
+	if len(parts) > 0 {
+		_, _ = fmt.Fprintln(w, "      "+uxlog.Dim(strings.Join(parts, "  ·  ")))
 	}
 }
 

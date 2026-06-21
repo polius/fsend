@@ -198,6 +198,7 @@ var terminalSentinels = []error{
 	fserrors.ErrCodeAlreadyClaimed, // sender already paired; no retry will recover
 	fserrors.ErrWriteFailed,        // peer's (or our) disk problem; retrying won't fix it
 	fserrors.ErrDiskFull,
-	fserrors.ErrPeerCancelled, // peer hit Ctrl-C; it isn't coming back
-	context.Canceled,          // user hit Ctrl-C
+	fserrors.ErrPeerCancelled,       // peer hit Ctrl-C; it isn't coming back
+	fserrors.ErrIncompatibleVersion, // version mismatch; only an update fixes it
+	context.Canceled,                // user hit Ctrl-C
 }

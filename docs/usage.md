@@ -61,7 +61,9 @@ sending, then confirms. Pass `--yes` to skip.
 | `--yes` | Auto-accept. |
 | `--out <dir>` | Receive into this directory (must already exist). Default: cwd. |
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
-| `--overwrite` | Replace existing files instead of failing with `E013`. |
+| `--overwrite` | Replace existing files whose contents **differ**. Byte-identical files are always skipped silently regardless. Differing files without this flag are kept (your local edits are protected) and the receiver exits `E013`. |
+| `--dry-run` | Show what would transfer — `new` / `identical` / `differs` per path on stdout — and write nothing. |
+| `--checksum` | Decide whether a file is already present by comparing its **contents** (a BLAKE3 hash), not its size + modification time — like rsync's `-c`. Slower (reads the files that already exist), but unaffected by mismatched timestamps. |
 | `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
 
 ```sh
@@ -167,7 +169,7 @@ failure.
 | `10`  | `E010` — could not read the source file. |
 | `11`  | `E011` — file arrived corrupted; hash didn't match. |
 | `12`  | `E012` — path traversal rejected. |
-| `13`  | `E013` — target file exists; use `--overwrite`. |
+| `13`  | `E013` — one or more files differed and were kept (transfer otherwise completed); use `--overwrite` to replace them. |
 | `14`  | `E014` — could not reach the other side, even via the fallback relay. |
 | `15`  | `E015` — sender and receiver are on incompatible fsend versions. |
 | `17`  | `E017` — rate limited. |

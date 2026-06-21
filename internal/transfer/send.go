@@ -12,7 +12,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/zeebo/blake3"
 	"golang.org/x/crypto/argon2"
 
@@ -22,46 +21,30 @@ import (
 
 // SendOptions configures one send invocation.
 type SendOptions struct {
-	Items         []SourceItem
 	Hostname      string
 	OS            string
 	ClientVersion string
-	TransferKind  wire.TransferKind
-	// TotalFiles overrides the wire-level HELLO.TotalFiles. When zero,
-	// len(Items) is used. Archive transfers set this to the number of
-	// files packed into the tar so the receiver's prompt block shows
-	// the real file count instead of "1" (the tar wrapper).
-	TotalFiles uint32
-	// DisplayName is a peer-facing label rendered in the receiver's
-	// accept block: "report.pdf" for single-file, "myproject/" for a
-	// directory, "3 items" for multi-file. Empty for stdin/text — the
-	// receiver falls back to a kind-specific phrase.
+	Mode          wire.TransferMode
+
+	// ModeFiles inputs.
+	Sources []Source
+
+	// ModeStream inputs (stdin / --text).
+	Stream      io.Reader
+	IsText      bool
 	DisplayName string
-	Password    string                                   // empty → no password challenge
-	ProgressFn  func(fileIndex uint32, bytesSent uint64) // called periodically; may be nil
 
-	// OnResume fires once per file the receiver elected to resume, after
-	// the partial-prefix verification passed and before any chunk flows.
-	// Lets the CLI announce the resume and count only the tail as moved.
-	OnResume func(fileIndex uint32, offset, total uint64)
+	Password string
 
-	// OnStreamingEOF fires exactly once per streaming item, immediately
-	// after the EOF chunk has been written. The CLI uses this hook to
-	// latch the progress bar's total to the real byte count (which is
-	// only knowable at EOF for unknown-length streams). Nil-safe.
-	OnStreamingEOF func(fileIndex uint32, finalBytes uint64)
+	ProgressFn     func(index uint32, bytesSent uint64)
+	OnResume       func(index uint32, offset, total uint64)
+	OnSkip         func(index uint32)
+	OnStreamingEOF func(index uint32, finalBytes uint64)
 }
 
-// Send executes the full sender-side protocol over the supplied streams:
-//  1. Write HELLO
-//  2. Read HELLO_ACK (abort if receiver declined)
-//  3. For each file: write FILE_INFO, read FILE_ACCEPT, stream chunks if accepted
-//  4. Write TRANSFER_COMPLETE, read TRANSFER_ACK
+// Send executes the full sender-side protocol over the supplied streams.
 func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	err := send(ctx, s, opts)
-	// A Ctrl-C here looks like a network drop to the receiver, which
-	// burns its retry budget before failing with the wrong diagnosis —
-	// best-effort tell it the teardown is deliberate.
 	if errors.Is(err, context.Canceled) {
 		notifyCancel(s)
 	}
@@ -69,34 +52,16 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 }
 
 func send(ctx context.Context, s *Streams, opts SendOptions) error {
-	totalFiles := opts.TotalFiles
-	if totalFiles == 0 {
-		totalFiles = uint32(len(opts.Items))
-	}
 	hello := &wire.SenderHello{
 		ProtocolVersion: wire.ProtocolVersion,
 		Hostname:        opts.Hostname,
 		OS:              opts.OS,
 		ClientVersion:   opts.ClientVersion,
-		TransferKind:    opts.TransferKind,
-		TotalFiles:      totalFiles,
 		HasPassword:     opts.Password != "",
+		Mode:            opts.Mode,
+		IsText:          opts.IsText,
 		DisplayName:     opts.DisplayName,
 	}
-	for _, it := range opts.Items {
-		hello.TotalBytes += it.Info.Size
-	}
-	// Multi-file: advertise the names (bare basenames from Walk) so the
-	// receiver's consent prompt isn't blind. Capped to bound frame size.
-	if opts.TransferKind == wire.TransferMultiFile {
-		for _, it := range opts.Items {
-			if len(hello.FileNames) == wire.MaxHelloFileNames {
-				break
-			}
-			hello.FileNames = append(hello.FileNames, it.Info.RelativePath)
-		}
-	}
-
 	if err := wire.WriteControl(s.Control, wire.TypeHello, hello); err != nil {
 		return fmt.Errorf("send: hello: %w", err)
 	}
@@ -104,6 +69,9 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	var ack wire.ReceiverHello
 	ft, err := wire.ReadControl(s.Control, &ack)
 	if err != nil {
+		if errors.Is(err, wire.ErrUnsupportedVersion) {
+			return fserrors.ErrIncompatibleVersion
+		}
 		return fmt.Errorf("send: read hello-ack: %w", err)
 	}
 	if ft != wire.TypeHelloAck {
@@ -119,53 +87,273 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 		}
 	}
 
-	for _, it := range opts.Items {
+	if opts.Mode == wire.ModeStream {
+		return sendStream(ctx, s, opts)
+	}
+	return sendFiles(ctx, s, opts)
+}
+
+// sendFiles runs the listing → classify → data flow.
+func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
+	if err := sendListing(s.Control, opts.Sources); err != nil {
+		return fmt.Errorf("send: listing: %w", err)
+	}
+	decisions, err := senderNegotiate(s, opts.Sources)
+	if err != nil {
+		return err
+	}
+
+	packer, err := newChunkPacker(s.Data)
+	if err != nil {
+		return err
+	}
+	defer packer.Close()
+
+	for i := range opts.Sources {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := sendOneFile(ctx, s, &it, opts); err != nil {
+		src := &opts.Sources[i]
+		d, ok := decisions[src.Entry.Index]
+		if !ok || d.Action == wire.DecisionSkip {
+			if ok && opts.OnSkip != nil {
+				opts.OnSkip(src.Entry.Index)
+			}
+			continue
+		}
+		// Structural entries and empty files carry no data; the receiver
+		// materializes them from the listing.
+		if src.Entry.Type != wire.EntryFile || src.Entry.Size == 0 {
+			continue
+		}
+		if err := sendOneFile(ctx, s, packer, src, d, opts); err != nil {
 			return err
 		}
+	}
+	if err := packer.flush(); err != nil {
+		return err
 	}
 
 	if err := wire.WriteControl(s.Control, wire.TypeTransferComplete, nil); err != nil {
 		return fmt.Errorf("send: complete: %w", err)
 	}
-	ft, ackBody, err := wire.ReadControlRaw(s.Control)
+	ft, body, err := wire.ReadControlRaw(s.Control)
 	if err != nil {
 		return fmt.Errorf("send: read complete-ack: %w", err)
 	}
 	if ft == wire.TypeError {
-		// Receiver failed after the last byte landed (hash mismatch,
-		// extraction failure, refused overwrite). Surface the real reason.
-		return peerError(ackBody)
+		return peerError(body)
 	}
 	if ft != wire.TypeTransferAck {
 		return fmt.Errorf("%w: expected TRANSFER_ACK, got %v", fserrors.ErrProtocolError, ft)
 	}
-	// Signal graceful shutdown: close our send side of Control. The receiver
-	// is blocked reading-until-EOF on Control as its final step, so seeing
-	// our FIN unblocks it and lets it return cleanly. This ordering
-	// guarantees both sides finish before any transport close runs.
 	_ = s.Control.Close()
 	return nil
 }
 
-// peerError translates a receiver-reported ERROR frame into the
-// user-visible sentinel the CLI surfaces (rather than a generic
-// "protocol error"). All of these are terminal — retrying won't fix the
-// peer's disk or its verdict.
-func peerError(body []byte) error {
-	var ef wire.ErrorFrame
-	_ = wire.Decode(body, &ef)
-	return mapPeerError(ef)
+// senderNegotiate reads the receiver's classification, answering any
+// TypeVerifyRequest (--checksum) by hashing just the requested files before
+// the decision vector arrives.
+func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, error) {
+	byIndex := make(map[uint32]string, len(sources))
+	for _, src := range sources {
+		byIndex[src.Entry.Index] = src.AbsPath
+	}
+	out := make(map[uint32]wire.Decision)
+	for {
+		ft, body, err := wire.ReadControlRaw(s.Control)
+		if err != nil {
+			return nil, fmt.Errorf("send: negotiate: %w", err)
+		}
+		switch ft {
+		case wire.TypeVerifyRequest:
+			var idx []uint32
+			if err := wire.Decode(body, &idx); err != nil {
+				return nil, fmt.Errorf("send: verify request: %w", err)
+			}
+			resp := make([]wire.FileHash, 0, len(idx))
+			for _, i := range idx {
+				p, ok := byIndex[i]
+				if !ok || p == "" {
+					continue
+				}
+				h, err := hashFileRoot(p)
+				if err != nil {
+					return nil, fmt.Errorf("%w: hash %s: %v", fserrors.ErrReadFailed, p, err)
+				}
+				resp = append(resp, wire.FileHash{Index: i, Hash: h})
+			}
+			if err := wire.WriteControl(s.Control, wire.TypeVerifyResponse, resp); err != nil {
+				return nil, fmt.Errorf("send: verify response: %w", err)
+			}
+		case wire.TypeClassifyBatch:
+			var batch []wire.Decision
+			if err := wire.Decode(body, &batch); err != nil {
+				return nil, fmt.Errorf("send: decisions decode: %w", err)
+			}
+			for _, d := range batch {
+				out[d.Index] = d
+			}
+		case wire.TypeClassifyEnd:
+			return out, nil
+		case wire.TypeError:
+			var ef wire.ErrorFrame
+			_ = wire.Decode(body, &ef)
+			return nil, mapPeerError(ef)
+		default:
+			return nil, fmt.Errorf("%w: expected classification, got %v", fserrors.ErrProtocolError, ft)
+		}
+	}
 }
 
-// notifyCancel posts a cancel ERROR so the peer can tell a deliberate
-// Ctrl-C from a network drop. Data closes first so the receiver's chunk
-// read EOFs into its read-control path (same ordering as the
-// partial-mismatch abort). Bounded to a second — the notice must never
-// hold the user's cancel hostage to a wedged peer.
+// sendOneFile streams one regular file (resume-aware) through the packer,
+// computing its BLAKE3 root inline and emitting it on the EOF segment.
+func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Source, d wire.Decision, opts SendOptions) error {
+	f, err := os.Open(src.AbsPath)
+	if err != nil {
+		return fmt.Errorf("%w: %v", fserrors.ErrReadFailed, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	root := blake3.New()
+	offset := uint64(0)
+	if d.Action == wire.DecisionResume && d.ResumeOffset > 0 {
+		// Verify the receiver's partial matches our source before skipping
+		// those bytes — a mismatch means the source changed.
+		got, err := PrefixImohash(src.AbsPath, int64(d.ResumeOffset))
+		if err != nil {
+			return fmt.Errorf("%w: imohash source prefix: %v", fserrors.ErrReadFailed, err)
+		}
+		if got != d.PartialImohash {
+			_ = s.Data.Close()
+			declineTransfer(s, wire.ErrCodePartialMismatch, "receiver's partial does not match source")
+			return fserrors.ErrPartialMismatch
+		}
+		// Hash the prefix into the root (not sent) so the trailer covers the
+		// whole file, then seek to the resume point.
+		if err := hashPrefixInto(root, f, int64(d.ResumeOffset)); err != nil {
+			return fmt.Errorf("%w: hash prefix: %v", fserrors.ErrReadFailed, err)
+		}
+		if _, err := f.Seek(int64(d.ResumeOffset), io.SeekStart); err != nil {
+			return fmt.Errorf("%w: seek: %v", fserrors.ErrReadFailed, err)
+		}
+		offset = d.ResumeOffset
+		if opts.OnResume != nil {
+			opts.OnResume(src.Entry.Index, offset, src.Entry.Size)
+		}
+	}
+
+	sent := offset
+	rbuf := make([]byte, 256*1024)
+	for sent < src.Entry.Size {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Cap the read to the bytes we declared in the listing. Without this,
+		// a file that grew since the walk would overshoot its declared size
+		// and the receiver would reject the whole transfer. We send a clean
+		// snapshot of the first Size bytes instead.
+		toRead := uint64(len(rbuf))
+		if remaining := src.Entry.Size - sent; remaining < toRead {
+			toRead = remaining
+		}
+		n, rerr := f.Read(rbuf[:toRead])
+		if n > 0 {
+			_, _ = root.Write(rbuf[:n])
+			if err := packer.appendBytes(src.Entry.Index, rbuf[:n]); err != nil {
+				return sendChunkErr(s, err)
+			}
+			sent += uint64(n)
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(src.Entry.Index, sent)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return fmt.Errorf("%w: read %s: %v", fserrors.ErrReadFailed, src.AbsPath, rerr)
+		}
+	}
+	var r [32]byte
+	copy(r[:], root.Sum(nil))
+	return packer.endFile(src.Entry.Index, r)
+}
+
+// sendChunkErr surfaces a receiver-posted reason (e.g. write failure) instead
+// of the bare stream error, which would misclassify as a network drop.
+func sendChunkErr(s *Streams, err error) error {
+	if reason := tryReadPeerError(s.Control); reason != nil {
+		return reason
+	}
+	return err
+}
+
+// sendStream streams a single unknown-length reader (stdin/--text). Per-chunk
+// hashes verify integrity; a BLAKE3 root is emitted on the final segment.
+func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
+	packer, err := newChunkPacker(s.Data)
+	if err != nil {
+		return err
+	}
+	defer packer.Close()
+
+	root := blake3.New()
+	var sent uint64
+	rbuf := make([]byte, 256*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, rerr := opts.Stream.Read(rbuf)
+		if n > 0 {
+			_, _ = root.Write(rbuf[:n])
+			if err := packer.appendBytes(0, rbuf[:n]); err != nil {
+				return sendChunkErr(s, err)
+			}
+			sent += uint64(n)
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(0, sent)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return fmt.Errorf("%w: read stream: %v", fserrors.ErrReadFailed, rerr)
+		}
+	}
+	var r [32]byte
+	copy(r[:], root.Sum(nil))
+	if err := packer.endFile(0, r); err != nil {
+		return err
+	}
+	if err := packer.flush(); err != nil {
+		return err
+	}
+	if opts.OnStreamingEOF != nil {
+		opts.OnStreamingEOF(0, sent)
+	}
+
+	if err := wire.WriteControl(s.Control, wire.TypeTransferComplete, nil); err != nil {
+		return fmt.Errorf("send: complete: %w", err)
+	}
+	ft, body, err := wire.ReadControlRaw(s.Control)
+	if err != nil {
+		return fmt.Errorf("send: read complete-ack: %w", err)
+	}
+	if ft == wire.TypeError {
+		return peerError(body)
+	}
+	if ft != wire.TypeTransferAck {
+		return fmt.Errorf("%w: expected TRANSFER_ACK, got %v", fserrors.ErrProtocolError, ft)
+	}
+	_ = s.Control.Close()
+	return nil
+}
+
+// notifyCancel posts a cancel ERROR so the peer can tell a deliberate Ctrl-C
+// from a network drop. Bounded so a wedged peer can't hold the cancel hostage.
 func notifyCancel(s *Streams) {
 	done := make(chan struct{})
 	go func() {
@@ -179,280 +367,14 @@ func notifyCancel(s *Streams) {
 	}
 }
 
-func sendOneFile(ctx context.Context, s *Streams, it *SourceItem, opts SendOptions) error {
-	if err := wire.WriteControl(s.Control, wire.TypeFileInfo, &it.Info); err != nil {
-		return fmt.Errorf("send: file-info %d: %w", it.Info.Index, err)
-	}
-
-	ft, body, err := wire.ReadControlRaw(s.Control)
-	if err != nil {
-		return fmt.Errorf("send: file-accept: %w", err)
-	}
-	if ft == wire.TypeError {
-		// Receiver declined for a specific reason.
-		return peerError(body)
-	}
-	if ft != wire.TypeFileAccept {
-		return fmt.Errorf("%w: expected FILE_ACCEPT, got %v", fserrors.ErrProtocolError, ft)
-	}
-	var decision wire.FileAcceptDecision
-	if err := wire.Decode(body, &decision); err != nil {
-		return fmt.Errorf("send: decode file-accept: %w", err)
-	}
-
-	switch decision.Action {
-	case wire.ActionAbortAll:
-		return fserrors.ErrReceiverDeclined
-	case wire.ActionSkip:
-		return nil
-	case wire.ActionAcceptFull, wire.ActionResume:
-		// proceed below
-	default:
-		return fmt.Errorf("%w: unknown FileAccept action %d", fserrors.ErrProtocolError, decision.Action)
-	}
-
-	// Directory or symlink: no data to stream.
-	if it.Info.IsDir || it.Info.IsSymlink {
-		return nil
-	}
-
-	// On resume, verify the receiver's partial matches the bytes we're
-	// about to skip. Imohash collisions of well-formed (non-adversarial)
-	// inputs are ~2⁻⁶⁴ — if this check fails, the source has almost
-	// certainly changed since the receiver wrote its partial. Aborting
-	// with a clear error is better than silently producing a frankenfile.
-	if decision.Action == wire.ActionResume && it.AbsPath != "" && decision.ResumeOffset > 0 {
-		got, err := PrefixImohash(it.AbsPath, int64(decision.ResumeOffset))
-		if err != nil {
-			return fmt.Errorf("%w: imohash source prefix: %v", fserrors.ErrReadFailed, err)
-		}
-		if got != decision.PartialImohash {
-			// Close data first so the receiver's chunk-read EOFs and
-			// falls through to its peek-control path. Without this, an
-			// unbuffered transport (e.g. the in-memory pipe used in
-			// tests) deadlocks: the sender blocks writing the error
-			// frame on control while the receiver blocks reading from
-			// data. QUIC's per-stream buffers paper over the order in
-			// production, but the protocol contract is cleaner with the
-			// EOF signal sent explicitly.
-			_ = s.Data.Close()
-			_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-				Code:    wire.ErrCodePartialMismatch,
-				Message: "receiver's partial does not match source",
-			})
-			return fserrors.ErrPartialMismatch
-		}
-	}
-	if decision.Action == wire.ActionResume && decision.ResumeOffset > 0 && opts.OnResume != nil {
-		opts.OnResume(it.Info.Index, decision.ResumeOffset, it.Info.Size)
-	}
-
-	// Open source.
-	var src io.ReadSeeker
-	var closeFn func() error
-	if it.Reader != nil {
-		// Synthetic (stdin/text) — not resumable, no seek; wrap in a fake seeker.
-		// In v1 we only support stdin/text without resume, so seek would be
-		// called only with offset 0.
-		src = readerToSeeker(it.Reader)
-		closeFn = func() error { return nil }
-	} else {
-		f, err := os.Open(it.AbsPath)
-		if err != nil {
-			return fmt.Errorf("%w: %v", fserrors.ErrReadFailed, err)
-		}
-		src = f
-		closeFn = f.Close
-	}
-	defer func() { _ = closeFn() }()
-
-	// Seek to resume offset if requested.
-	if decision.Action == wire.ActionResume && decision.ResumeOffset > 0 {
-		if _, err := src.Seek(int64(decision.ResumeOffset), io.SeekStart); err != nil {
-			return fmt.Errorf("%w: seek: %v", fserrors.ErrReadFailed, err)
-		}
-	}
-
-	startChunk := uint32(decision.ResumeOffset / wire.MaxChunkSize)
-	bytesSentInFile := decision.ResumeOffset
-
-	// Streaming loop. We know it.Info.Size up front, so we can deterministically
-	// mark the last chunk rather than relying on EOF behavior of io.ReadFull.
-	// (io.ReadFull on a buffer-sized read returns nil error even when EOF is
-	// next, so EOF-based detection misses last chunk on aligned file sizes.)
-	buf := make([]byte, wire.MaxChunkSize)
-	chunkIndex := startChunk
-
-	enc, err := zstd.NewWriter(nil)
-	if err != nil {
-		return fmt.Errorf("send: zstd writer: %w", err)
-	}
-	defer func() { _ = enc.Close() }()
-
-	// Streaming items (e.g. piped stdin): size is not known up front.
-	// Read until EOF, mark the EOF chunk with FlagLastChunk. Resume is
-	// disabled and Blake3Root is zero — verification is per-chunk only,
-	// which matches the prior buffered-stdin behavior.
-	if it.Info.Streaming {
-		return sendStreamingChunks(ctx, s, &it.Info, src, buf, chunkIndex, enc, opts)
-	}
-
-	totalSize := it.Info.Size
-
-	// Edge case: empty file — emit one zero-length FlagLastChunk frame so
-	// the receiver still observes a "done" marker for this file.
-	if totalSize == 0 {
-		return writeChunk(s, &it.Info, chunkIndex, nil, true, enc)
-	}
-
-	for bytesSentInFile < totalSize {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		remaining := totalSize - bytesSentInFile
-		toRead := uint64(len(buf))
-		if remaining < toRead {
-			toRead = remaining
-		}
-
-		n, readErr := io.ReadFull(src, buf[:toRead])
-		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
-			return fmt.Errorf("%w: read: %v", fserrors.ErrReadFailed, readErr)
-		}
-		if uint64(n) != toRead {
-			return fmt.Errorf("%w: short read: expected %d, got %d", fserrors.ErrReadFailed, toRead, n)
-		}
-
-		bytesSentInFile += uint64(n)
-		isLast := bytesSentInFile >= totalSize
-		if err := writeChunk(s, &it.Info, chunkIndex, buf[:n], isLast, enc); err != nil {
-			return err
-		}
-		chunkIndex++
-		if opts.ProgressFn != nil {
-			opts.ProgressFn(it.Info.Index, bytesSentInFile)
-		}
-	}
-
-	return nil
+// peerError translates a receiver-reported ERROR frame body into a sentinel.
+func peerError(body []byte) error {
+	var ef wire.ErrorFrame
+	_ = wire.Decode(body, &ef)
+	return mapPeerError(ef)
 }
 
-// sendStreamingChunks drains src until EOF, emitting chunks of up to
-// MaxChunkSize each. The final (possibly empty) chunk carries
-// FlagLastChunk so the receiver knows the file is done.
-//
-// We treat io.EOF and io.ErrUnexpectedEOF identically: both mean "this
-// is the tail of the stream." A short read of exactly MaxChunkSize that
-// happens to align with EOF is rare in practice but handled correctly —
-// we'll emit one extra zero-length last chunk, which the receiver's
-// "len(plain) > 0" guard already tolerates.
-func sendStreamingChunks(
-	ctx context.Context,
-	s *Streams,
-	info *wire.FileInfo,
-	src io.Reader,
-	buf []byte,
-	startChunkIndex uint32,
-	enc *zstd.Encoder,
-	opts SendOptions,
-) error {
-	chunkIndex := startChunkIndex
-	var bytesSent uint64
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		n, readErr := io.ReadFull(src, buf)
-		isLast := readErr == io.EOF || readErr == io.ErrUnexpectedEOF
-		if readErr != nil && !isLast {
-			return fmt.Errorf("%w: read: %v", fserrors.ErrReadFailed, readErr)
-		}
-		bytesSent += uint64(n)
-		if err := writeChunk(s, info, chunkIndex, buf[:n], isLast, enc); err != nil {
-			return err
-		}
-		chunkIndex++
-		if opts.ProgressFn != nil && n > 0 {
-			opts.ProgressFn(info.Index, bytesSent)
-		}
-		if isLast {
-			if opts.OnStreamingEOF != nil {
-				opts.OnStreamingEOF(info.Index, bytesSent)
-			}
-			return nil
-		}
-	}
-}
-
-func writeChunk(s *Streams, info *wire.FileInfo, chunkIndex uint32, plain []byte, isLast bool, enc *zstd.Encoder) error {
-	c := &wire.Chunk{
-		FileIndex:  info.Index,
-		ChunkIndex: chunkIndex,
-	}
-	if isLast {
-		c.Flags |= wire.FlagLastChunk
-	}
-	// BLAKE3 of *uncompressed* payload.
-	c.Blake3Hash = blakeHash32(plain)
-
-	payload := plain
-	if len(plain) > 0 {
-		compressed := enc.EncodeAll(plain, nil)
-		// Adopt compressed only if it saves ≥10% — applied per-chunk so a
-		// single file that mixes compressible and incompressible regions
-		// still benefits where it can.
-		if len(compressed)+len(compressed)/10 < len(plain) {
-			payload = compressed
-			c.Flags |= wire.FlagCompressed
-		}
-	}
-	c.Payload = payload
-	if err := wire.WriteChunk(s.Data, c); err != nil {
-		// The receiver cancels the data stream when its local write
-		// fails and posts the reason on control. Surface that instead
-		// of the bare stream error, which classifies as a transient
-		// network drop and triggers pointless retries.
-		if reason := tryReadPeerError(s.Control); reason != nil {
-			return reason
-		}
-		return err
-	}
-	return nil
-}
-
-func blakeHash32(b []byte) [32]byte {
-	h := blake3.New()
-	// blake3.Hasher.Write never returns an error.
-	_, _ = h.Write(b)
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out
-}
-
-// readerToSeeker wraps an io.Reader to satisfy io.ReadSeeker. Seek is only
-// valid to offset 0; any other call panics — this is intentional, callers
-// that need real seek must pass a real *os.File.
-type readerSeeker struct{ r io.Reader }
-
-func readerToSeeker(r io.Reader) io.ReadSeeker      { return &readerSeeker{r} }
-func (rs *readerSeeker) Read(p []byte) (int, error) { return rs.r.Read(p) }
-func (rs *readerSeeker) Seek(offset int64, whence int) (int64, error) {
-	if offset != 0 || whence != io.SeekStart {
-		return 0, errors.New("transfer: cannot seek a non-seekable reader")
-	}
-	return 0, nil
-}
-
-// senderPasswordHandshake runs the challenge/response exchange that gates
-// the transfer when --pass is set. Wire flow:
-//
-//	sender → receiver  PASSWORD_CHALLENGE{nonce}
-//	receiver → sender  PASSWORD_RESPONSE{HMAC(argon2id(password, nonce), nonce)}
-//	sender → receiver  PASSWORD_VERIFIED (on match)
-//	                or ERROR{ErrCodeWrongPassword} (on mismatch)
-//
-// The constant-time compare is non-negotiable: a timing leak here would
-// trivially recover the password over a few thousand attempts.
+// senderPasswordHandshake runs the challenge/response that gates --pass.
 func senderPasswordHandshake(s *Streams, password string) error {
 	var nonce [32]byte
 	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
@@ -466,8 +388,6 @@ func senderPasswordHandshake(s *Streams, password string) error {
 		return fmt.Errorf("send: read password response: %w", err)
 	}
 	if ft == wire.TypeError {
-		// Receiver bailed before answering — e.g. it has no password to
-		// offer (--quiet with no --pass). Surface its stated reason.
 		return peerError(body)
 	}
 	if ft != wire.TypePasswordResponse {
@@ -480,15 +400,8 @@ func senderPasswordHandshake(s *Streams, password string) error {
 	expected := hmacPassword(password, nonce[:])
 	if subtle.ConstantTimeCompare(expected, resp.HMAC[:]) != 1 {
 		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-			Code:    wire.ErrCodeWrongPassword,
-			Message: "wrong password",
+			Code: wire.ErrCodeWrongPassword, Message: "wrong password",
 		})
-		// Symmetric shutdown: close our write side so the ERROR frame's
-		// FIN reaches the receiver before the deferred Conn.Close tears
-		// the QUIC connection down. Without this, the receiver races
-		// the connection-close error against the frame and surfaces a
-		// confusing "Application error 0x0 (remote)" instead of the
-		// real "wrong password."
 		_ = s.Control.Close()
 		_, _ = io.Copy(io.Discard, s.Control)
 		return fserrors.ErrWrongPassword
@@ -499,12 +412,8 @@ func senderPasswordHandshake(s *Streams, password string) error {
 	return nil
 }
 
-// hmacPassword is the shared response-tag computation used by both sides.
-// The password is stretched with argon2id (salted by the session nonce)
-// before keying the HMAC: the receiver computes the tag over a
-// sender-chosen nonce, so anyone who knows the code could harvest a
-// (nonce, tag) pair and grind passwords offline — the stretch makes each
-// such guess cost ~64 MiB of memory and tens of milliseconds.
+// hmacPassword is the shared response tag; argon2id stretches the password
+// (salted by the session nonce) before keying the HMAC.
 func hmacPassword(password string, nonce []byte) []byte {
 	key := argon2.IDKey([]byte(password), nonce, 2, 64*1024, 4, 32)
 	m := hmac.New(sha256.New, key)
