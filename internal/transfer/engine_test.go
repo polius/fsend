@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -230,33 +229,53 @@ func TestEngine_ManyTinyFilesPacked(t *testing.T) {
 	}
 }
 
-// Many more tiny files than fit in one chunk's segment count must still
-// transfer (the packer flushes on the segment cap, not just the byte buffer).
-func TestEngine_ManySmallFilesExceedSegmentCap(t *testing.T) {
-	if testing.Short() {
-		t.Skip("creates thousands of files")
+// More files than a single chunk's uint16 segment count can hold must be
+// split across chunks: the packer flushes on the segment cap, not only when
+// the byte buffer fills. Exercised at the packer level (no disk/pipe) so it
+// stays fast on every platform.
+func TestPacker_FlushesOnSegmentCap(t *testing.T) {
+	var buf bytes.Buffer
+	p, err := newChunkPacker(&buf)
+	if err != nil {
+		t.Fatal(err)
 	}
-	src, dst := t.TempDir(), t.TempDir()
-	const n = maxSegmentsPerChunk*2 + 100 // forces several segment-cap flushes
+	const n = maxSegmentsPerChunk + 50 // crosses the cap once → ≥2 chunks
 	for i := 0; i < n; i++ {
-		writeFile(t, filepath.Join(src, "tiny", "f"+strconv.Itoa(i)), []byte{byte(i), byte(i >> 8)})
-	}
-	var got int
-	se, re := fileTransfer(t, []string{filepath.Join(src, "tiny")}, dst, func(o *RecvOptions) {
-		o.OnFileDone = func(string) { got++ }
-	})
-	if se != nil || re != nil {
-		t.Fatalf("send=%v recv=%v", se, re)
-	}
-	if got != n {
-		t.Fatalf("received %d files, want %d", got, n)
-	}
-	// Spot-check a few landed correctly.
-	for _, i := range []int{0, maxSegmentsPerChunk, n - 1} {
-		want := []byte{byte(i), byte(i >> 8)}
-		if g := mustRead(t, filepath.Join(dst, "tiny", "f"+strconv.Itoa(i))); !bytes.Equal(g, want) {
-			t.Errorf("f%d content mismatch", i)
+		d := []byte{byte(i), byte(i >> 8)} // tiny files; byte buffer never fills
+		if err := p.appendBytes(uint32(i), d); err != nil {
+			t.Fatal(err)
 		}
+		if err := p.endFile(uint32(i), blakeHash32(d)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.flush(); err != nil {
+		t.Fatal(err)
+	}
+	p.Close()
+
+	chunks := 0
+	finalized := make(map[uint32]bool)
+	for {
+		c, err := wire.ReadChunk(&buf)
+		if err != nil {
+			break // drained
+		}
+		chunks++
+		if len(c.Segments) > maxSegmentsPerChunk {
+			t.Fatalf("chunk %d has %d segments, over the %d cap", chunks, len(c.Segments), maxSegmentsPerChunk)
+		}
+		for _, s := range c.Segments {
+			if s.EOF {
+				finalized[s.FileIndex] = true
+			}
+		}
+	}
+	if chunks < 2 {
+		t.Fatalf("segment cap should force ≥2 chunks, got %d", chunks)
+	}
+	if len(finalized) != n {
+		t.Fatalf("finalized %d files, want %d", len(finalized), n)
 	}
 }
 
