@@ -63,23 +63,8 @@ sending, then confirms. Pass `--yes` to skip.
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files whose contents **differ**. Byte-identical files are always skipped silently regardless. Differing files without this flag are kept (your local edits are protected) and the receiver exits `E013`. |
 | `--dry-run` | Show what would transfer — `new` / `identical` / `differs` per path on stdout — and write nothing. |
-| `--checksum` | Decide whether a file is already present by comparing its **contents** (a BLAKE3 hash), not its size + modification time — like rsync's `-c`. Slower (reads the files that already exist), but unaffected by mismatched timestamps. See [When to use `--checksum`](#when-to-use---checksum). |
+| `--checksum` | Decide whether a file is already present by comparing its **contents** (a BLAKE3 hash), not its size + modification time — like rsync's `-c`. Slower (reads the files that already exist), but unaffected by mismatched timestamps. |
 | `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
-
-By default fsend compares each incoming file against what's already on disk by
-size + modification time. Identical files are **skipped** with no transfer — so
-re-running `fsend ./folder` only moves what actually changed (and never
-re-sends an unchanged file). New files arrive; differing files are governed by
-`--overwrite`. fsend never deletes anything on the receiver.
-
-### `--checksum`
-
-By default fsend skips a file when its size and modification time match — fast,
-and reliable because fsend sets that time itself. `--checksum` compares the
-file's **contents** (a BLAKE3 hash) instead: slower, but can't be fooled by
-timestamps. Use it when the modification times can't be trusted to reflect what
-changed — for example when files were put there by another tool — or whenever
-certainty matters more than speed. Mirrors rsync's `-c`.
 
 ```sh
 fsend abc-defg-jkm
