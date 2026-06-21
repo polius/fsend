@@ -74,12 +74,40 @@ func classify(entries []wire.ListingEntry, targetDir string, checksum bool) ([]e
 				return nil, fserrors.ErrPathTraversal
 			}
 		}
-		plans = append(plans, classifyOne(e, target, checksum))
+		plans = append(plans, classifyOne(e, target, targetDir, checksum))
 	}
 	return plans, nil
 }
 
-func classifyOne(e wire.ListingEntry, target string, checksum bool) entryPlan {
+// ancestorBlocked reports whether target can't be placed because the nearest
+// existing ancestor directory is actually a non-directory (e.g. a file sits
+// where a parent folder needs to be). Walks up to targetDir. Portable: it
+// inspects file types rather than relying on Lstat's error code, which differs
+// across platforms (Unix ENOTDIR vs Windows ERROR_PATH_NOT_FOUND, the latter
+// reported as "not exist").
+func ancestorBlocked(target, targetDir string) bool {
+	rootAbs, err := filepath.Abs(targetDir)
+	if err != nil {
+		return false
+	}
+	dir := filepath.Dir(target)
+	for {
+		absDir, err := filepath.Abs(dir)
+		if err != nil || absDir == rootAbs {
+			return false // reached the (directory) transfer root
+		}
+		if st, err := os.Lstat(dir); err == nil {
+			return !st.IsDir() // first existing ancestor decides
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false // hit the filesystem root
+		}
+		dir = parent
+	}
+}
+
+func classifyOne(e wire.ListingEntry, target, targetDir string, checksum bool) entryPlan {
 	p := entryPlan{entry: e, target: target, disp: dispNew}
 	st, statErr := os.Lstat(target)
 	exists := statErr == nil
@@ -136,9 +164,9 @@ func classifyOne(e wire.ListingEntry, target string, checksum bool) entryPlan {
 			p.disp = dispConflict
 		case exists:
 			p.disp = dispDiffers
-		case statErr != nil && !os.IsNotExist(statErr):
-			// An ancestor is a file (ENOTDIR) or otherwise unreadable: the
-			// file can't be placed until that conflict is resolved.
+		case ancestorBlocked(target, targetDir):
+			// A file sits where one of this file's parent folders needs to be;
+			// it can't be placed until that conflict is resolved.
 			p.disp = dispConflict
 		default:
 			p.disp = dispNew
