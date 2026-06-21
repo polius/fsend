@@ -1,0 +1,420 @@
+package transfer
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/polius/fsend/internal/wire"
+)
+
+// harness wires Send and Recv over in-memory full-duplex pipes and runs them
+// concurrently, returning both errors.
+func runTransfer(t *testing.T, sendOpts SendOptions, recvOpts RecvOptions) (sendErr, recvErr error) {
+	t.Helper()
+	ctrlA, ctrlB := net.Pipe()
+	dataA, dataB := net.Pipe()
+	sender := &Streams{Control: ctrlA, Data: dataA}
+	receiver := &Streams{Control: ctrlB, Data: dataB}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); sendErr = Send(ctx, sender, sendOpts); sender.Close() }()
+	go func() { defer wg.Done(); recvErr = Recv(ctx, receiver, recvOpts); receiver.Close() }()
+	wg.Wait()
+	return sendErr, recvErr
+}
+
+// fileTransfer sends srcDir's contents into dstDir and returns both errors.
+func fileTransfer(t *testing.T, srcPaths []string, dstDir string, mutate func(*RecvOptions)) (error, error) {
+	t.Helper()
+	sources, err := Walk(srcPaths, nil)
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	recvOpts := RecvOptions{TargetDir: dstDir}
+	if mutate != nil {
+		mutate(&recvOpts)
+	}
+	return runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources}, recvOpts)
+}
+
+func writeFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func randBytes(n int) []byte {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return b
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
+}
+
+func TestEngine_SingleFile(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	data := randBytes(3 * wire.MaxChunkSize)
+	writeFile(t, filepath.Join(src, "report.pdf"), data)
+
+	se, re := fileTransfer(t, []string{filepath.Join(src, "report.pdf")}, dst, nil)
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "report.pdf")), data) {
+		t.Fatal("content mismatch")
+	}
+}
+
+// The whole stat-based default rests on fsend setting the source's mtime on
+// the receiver, so a re-send matches. Prove both: the date is preserved to the
+// second, and a second send then classifies as identical (skipped) — with no
+// hashing, on stat alone.
+func TestEngine_PreservesModTimeEnablingSkip(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	sp := filepath.Join(src, "f.bin")
+	writeFile(t, sp, randBytes(wire.MaxChunkSize+9))
+	// Stamp a distinct, sub-second-bearing mtime on the source.
+	want := time.Unix(1_700_000_123, 456_000_000)
+	if err := os.Chtimes(sp, want, want); err != nil {
+		t.Fatal(err)
+	}
+
+	if se, re := fileTransfer(t, []string{sp}, dst, nil); se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+
+	// Receiver's mtime must equal the source's, truncated to the second.
+	dstSt, err := os.Stat(filepath.Join(dst, "f.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dstSt.ModTime().Unix() != want.Unix() {
+		t.Fatalf("receiver mtime = %d, want %d (source second-granularity)", dstSt.ModTime().Unix(), want.Unix())
+	}
+
+	// Re-send: must be skipped purely on size+mtime (no content hashing).
+	var skipped int
+	se, re := fileTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+		o.OnSkip = func(uint32) { skipped++ }
+	})
+	if se != nil || re != nil {
+		t.Fatalf("resend send=%v recv=%v", se, re)
+	}
+	if skipped != 1 {
+		t.Fatalf("re-send should skip on stat alone; skipped=%d", skipped)
+	}
+}
+
+func TestEngine_Directory(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	files := map[string][]byte{
+		"proj/a.txt":         []byte("hello"),
+		"proj/sub/b.bin":     randBytes(2*wire.MaxChunkSize + 7),
+		"proj/sub/deep/c.go": []byte("package main"),
+		"proj/empty.txt":     {},
+	}
+	for rel, data := range files {
+		writeFile(t, filepath.Join(src, rel), data)
+	}
+	if err := os.MkdirAll(filepath.Join(src, "proj/emptydir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	se, re := fileTransfer(t, []string{filepath.Join(src, "proj")}, dst, nil)
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	for rel, data := range files {
+		if !bytes.Equal(mustRead(t, filepath.Join(dst, rel)), data) {
+			t.Errorf("%s content mismatch", rel)
+		}
+	}
+	if st, err := os.Stat(filepath.Join(dst, "proj/emptydir")); err != nil || !st.IsDir() {
+		t.Error("empty dir not recreated")
+	}
+}
+
+// `fsend .` sends the current directory's *contents*, not a wrapper folder:
+// the receiver gets the files at the top level, no parent-folder name.
+func TestEngine_DotSendsContentsNotWrapper(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), []byte("alpha"))
+	writeFile(t, filepath.Join(src, "sub", "b.txt"), []byte("beta"))
+
+	// Walk(".") with cwd = src must root entries at their own names, never at
+	// src's basename.
+	t.Chdir(src)
+	sources, err := Walk([]string{"."}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Base(src)
+	for _, s := range sources {
+		if s.Entry.RelativePath == base || strings.HasPrefix(s.Entry.RelativePath, base+"/") {
+			t.Fatalf("`.` wrapped contents under %q: %q", base, s.Entry.RelativePath)
+		}
+	}
+
+	// End-to-end: the receiver gets a.txt and sub/b.txt directly.
+	se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources}, RecvOptions{TargetDir: dst})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "a.txt")), []byte("alpha")) {
+		t.Error("a.txt should land at the top level")
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "sub", "b.txt")), []byte("beta")) {
+		t.Error("sub/b.txt should land at the top level")
+	}
+	if _, err := os.Stat(filepath.Join(dst, base)); err == nil {
+		t.Errorf("no wrapper folder %q should exist on the receiver", base)
+	}
+}
+
+func TestIsContentsRef(t *testing.T) {
+	for _, c := range []struct {
+		p    string
+		want bool
+	}{
+		{".", true}, {"./", true}, {"foo/.", true}, {"./.", true},
+		{"foo", false}, {"foo/", false}, {"..", false}, {"foo/bar", false},
+	} {
+		if got := IsContentsRef(c.p); got != c.want {
+			t.Errorf("IsContentsRef(%q) = %v, want %v", c.p, got, c.want)
+		}
+	}
+}
+
+func TestEngine_ManyTinyFilesPacked(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	want := map[string][]byte{}
+	for i := 0; i < 500; i++ {
+		rel := filepath.Join("tiny", "f"+pad(i))
+		data := []byte("content-" + pad(i))
+		want[rel] = data
+		writeFile(t, filepath.Join(src, rel), data)
+	}
+	se, re := fileTransfer(t, []string{filepath.Join(src, "tiny")}, dst, nil)
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	for rel, data := range want {
+		if !bytes.Equal(mustRead(t, filepath.Join(dst, rel)), data) {
+			t.Errorf("%s mismatch", rel)
+		}
+	}
+}
+
+// Many more tiny files than fit in one chunk's segment count must still
+// transfer (the packer flushes on the segment cap, not just the byte buffer).
+func TestEngine_ManySmallFilesExceedSegmentCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("creates thousands of files")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	const n = maxSegmentsPerChunk*2 + 100 // forces several segment-cap flushes
+	for i := 0; i < n; i++ {
+		writeFile(t, filepath.Join(src, "tiny", "f"+strconv.Itoa(i)), []byte{byte(i), byte(i >> 8)})
+	}
+	var got int
+	se, re := fileTransfer(t, []string{filepath.Join(src, "tiny")}, dst, func(o *RecvOptions) {
+		o.OnFileDone = func(string) { got++ }
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if got != n {
+		t.Fatalf("received %d files, want %d", got, n)
+	}
+	// Spot-check a few landed correctly.
+	for _, i := range []int{0, maxSegmentsPerChunk, n - 1} {
+		want := []byte{byte(i), byte(i >> 8)}
+		if g := mustRead(t, filepath.Join(dst, "tiny", "f"+strconv.Itoa(i))); !bytes.Equal(g, want) {
+			t.Errorf("f%d content mismatch", i)
+		}
+	}
+}
+
+func TestEngine_SkipIdenticalOnResend(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	a := randBytes(wire.MaxChunkSize + 100)
+	b := []byte("second file")
+	writeFile(t, filepath.Join(src, "a.bin"), a)
+	writeFile(t, filepath.Join(src, "b.txt"), b)
+
+	// First transfer.
+	se, re := fileTransfer(t, []string{filepath.Join(src, "a.bin"), filepath.Join(src, "b.txt")}, dst, nil)
+	if se != nil || re != nil {
+		t.Fatalf("first send=%v recv=%v", se, re)
+	}
+
+	// Second transfer: everything identical → all skipped, nothing sent.
+	var skipped []uint32
+	se, re = fileTransfer(t, []string{filepath.Join(src, "a.bin"), filepath.Join(src, "b.txt")}, dst, func(o *RecvOptions) {
+		o.OnSkip = func(i uint32) { skipped = append(skipped, i) }
+	})
+	if se != nil || re != nil {
+		t.Fatalf("second send=%v recv=%v", se, re)
+	}
+	if len(skipped) != 2 {
+		t.Errorf("expected 2 skipped, got %d", len(skipped))
+	}
+}
+
+func TestEngine_DifferingFileProtectedWithoutOverwrite(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "x.txt"), []byte("NEW CONTENT"))
+	writeFile(t, filepath.Join(dst, "x.txt"), []byte("old local edit"))
+
+	var kept []string
+	se, re := fileTransfer(t, []string{filepath.Join(src, "x.txt")}, dst, func(o *RecvOptions) {
+		o.OnConflictKept = func(rel string) { kept = append(kept, rel) }
+		// no Overwrite, no ConfirmOverwrite → keep local
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if got := mustRead(t, filepath.Join(dst, "x.txt")); string(got) != "old local edit" {
+		t.Errorf("local file was clobbered: %q", got)
+	}
+	if len(kept) != 1 {
+		t.Errorf("expected 1 conflict kept, got %d", len(kept))
+	}
+}
+
+func TestEngine_DifferingFileOverwritten(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "x.txt"), []byte("NEW CONTENT"))
+	writeFile(t, filepath.Join(dst, "x.txt"), []byte("old"))
+
+	se, re := fileTransfer(t, []string{filepath.Join(src, "x.txt")}, dst, func(o *RecvOptions) {
+		o.Overwrite = true
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if got := mustRead(t, filepath.Join(dst, "x.txt")); string(got) != "NEW CONTENT" {
+		t.Errorf("overwrite failed: %q", got)
+	}
+}
+
+func TestEngine_TypeConflictFileVsDir(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	// Source: foo is a directory. Dest: foo is a file.
+	writeFile(t, filepath.Join(src, "foo", "inner.txt"), []byte("inner"))
+	writeFile(t, filepath.Join(dst, "foo"), []byte("i am a file"))
+
+	// Without overwrite → kept (the file survives, dir not created).
+	se, re := fileTransfer(t, []string{filepath.Join(src, "foo")}, dst, nil)
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if st, err := os.Stat(filepath.Join(dst, "foo")); err != nil || st.IsDir() {
+		t.Error("conflict: existing file should be kept without --overwrite")
+	}
+
+	// With overwrite → the file is replaced by the directory tree.
+	se, re = fileTransfer(t, []string{filepath.Join(src, "foo")}, dst, func(o *RecvOptions) { o.Overwrite = true })
+	if se != nil || re != nil {
+		t.Fatalf("overwrite send=%v recv=%v", se, re)
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "foo", "inner.txt")), []byte("inner")) {
+		t.Error("conflict: dir tree should replace the file with --overwrite")
+	}
+}
+
+func TestEngine_DryRun(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "new.txt"), []byte("new"))
+	writeFile(t, filepath.Join(src, "same.txt"), []byte("same"))
+	writeFile(t, filepath.Join(dst, "same.txt"), []byte("same"))
+	// Make mtime match for the identical one.
+	srcSt, _ := os.Stat(filepath.Join(src, "same.txt"))
+	_ = os.Chtimes(filepath.Join(dst, "same.txt"), srcSt.ModTime(), srcSt.ModTime())
+
+	var got []ClassifiedEntry
+	// Dry run declines the transfer, so the receiver succeeds (it did its
+	// job: report the plan) while the sender sees a decline.
+	_, re := fileTransfer(t, []string{filepath.Join(src, "new.txt"), filepath.Join(src, "same.txt")}, dst, func(o *RecvOptions) {
+		o.DryRun = true
+		o.OnClassified = func(e []ClassifiedEntry) { got = e }
+	})
+	if re != nil {
+		t.Fatalf("dry-run recv=%v", re)
+	}
+	cats := map[string]string{}
+	for _, e := range got {
+		cats[e.RelativePath] = e.Category
+	}
+	if cats["new.txt"] != "new" {
+		t.Errorf("new.txt category = %q", cats["new.txt"])
+	}
+	if cats["same.txt"] != "identical" {
+		t.Errorf("same.txt category = %q", cats["same.txt"])
+	}
+	// Dry run must not write anything new.
+	if _, err := os.Stat(filepath.Join(dst, "new.txt")); err == nil {
+		t.Error("dry run wrote a file")
+	}
+}
+
+func TestEngine_Decline(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "f.txt"), []byte("data"))
+	se, re := fileTransfer(t, []string{filepath.Join(src, "f.txt")}, dst, func(o *RecvOptions) {
+		o.Accept = func(wire.SenderHello, ClassifySummary) bool { return false }
+	})
+	if re == nil || se == nil {
+		t.Fatalf("expected decline errors, got send=%v recv=%v", se, re)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "f.txt")); err == nil {
+		t.Error("declined transfer still wrote a file")
+	}
+}
+
+func TestEngine_SummaryBreakdown(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "new.txt"), []byte("n"))
+	writeFile(t, filepath.Join(src, "same.txt"), []byte("s"))
+	writeFile(t, filepath.Join(dst, "same.txt"), []byte("s"))
+	srcSt, _ := os.Stat(filepath.Join(src, "same.txt"))
+	_ = os.Chtimes(filepath.Join(dst, "same.txt"), srcSt.ModTime(), srcSt.ModTime())
+
+	var summary ClassifySummary
+	se, re := fileTransfer(t, []string{filepath.Join(src, "new.txt"), filepath.Join(src, "same.txt")}, dst, func(o *RecvOptions) {
+		o.Accept = func(_ wire.SenderHello, s ClassifySummary) bool { summary = s; return true }
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if summary.NewItems != 1 || summary.Identical != 1 {
+		t.Errorf("summary = %+v, want 1 new / 1 identical", summary)
+	}
+}
+
+func pad(i int) string { return fmt.Sprintf("%03d", i) }

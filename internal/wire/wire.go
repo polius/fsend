@@ -14,7 +14,11 @@ package wire
 //
 // Bumping this is a major-version change for fsend. New optional frame
 // types can be added without bumping by giving them unused type bytes.
-const ProtocolVersion = 0x01
+//
+// v2: listing/classify negotiation replaces the per-file lockstep; the
+// directory tar is gone. No backward compatibility with v1 — peers detect
+// the mismatch at HELLO and report a protocol error.
+const ProtocolVersion = 0x02
 
 // MaxControlFrameSize bounds gob payload size on control frames. One
 // FILE_INFO at a time is the largest control frame in flight, so a
@@ -33,14 +37,18 @@ type FrameType uint8
 // (sender → receiver or vice versa) and any preconditions.
 const (
 	TypeHello             FrameType = 0x01 // sender → receiver
-	TypeHelloAck          FrameType = 0x02 // receiver → sender
+	TypeHelloAck          FrameType = 0x02 // receiver → sender (carries accept/decline)
 	TypePasswordChallenge FrameType = 0x03 // sender → receiver (only if HELLO.HasPassword)
 	TypePasswordResponse  FrameType = 0x04 // receiver → sender
-	TypeFileInfo          FrameType = 0x05 // sender → receiver (per file)
-	TypeFileAccept        FrameType = 0x06 // receiver → sender (per file)
-	TypeTransferComplete  FrameType = 0x07 // sender → receiver
-	TypeTransferAck       FrameType = 0x08 // receiver → sender
+	TypeListingBatch      FrameType = 0x05 // sender → receiver: gob []ListingEntry (repeated)
+	TypeListingEnd        FrameType = 0x06 // sender → receiver: ends the listing
+	TypeClassifyBatch     FrameType = 0x07 // receiver → sender: gob []Decision (repeated)
+	TypeClassifyEnd       FrameType = 0x08 // receiver → sender: ends classification
 	TypePasswordVerified  FrameType = 0x09 // sender → receiver (positive ack of password)
+	TypeTransferComplete  FrameType = 0x0A // sender → receiver
+	TypeTransferAck       FrameType = 0x0B // receiver → sender
+	TypeVerifyRequest     FrameType = 0x0C // receiver → sender: gob []uint32 (--checksum)
+	TypeVerifyResponse    FrameType = 0x0D // sender → receiver: gob []FileHash
 	TypeError             FrameType = 0xFE
 )
 
@@ -49,30 +57,36 @@ const (
 	TypeChunk FrameType = 0x10
 )
 
-// TransferKind tells the receiver how to interpret the upcoming payload.
-type TransferKind uint8
+// TransferMode tells the receiver how to interpret the transfer.
+type TransferMode uint8
 
-// TransferKind values. TransferDirectory is the only kind that triggers
-// the tar-wrapping path on the receiver; all others stream into one
-// destination file (or stdout) each.
+// TransferMode values. ModeFiles runs the listing/classify negotiation;
+// ModeStream is the stdin/--text exception: one unknown-length stream with
+// no listing, no skip, no resume.
 const (
-	TransferSingleFile TransferKind = 1
-	TransferMultiFile  TransferKind = 2
-	TransferDirectory  TransferKind = 3
-	TransferStdin      TransferKind = 4
-	TransferText       TransferKind = 5
+	ModeFiles  TransferMode = 0
+	ModeStream TransferMode = 1
 )
 
-// FileAcceptAction is how the receiver responds to a FILE_INFO.
-type FileAcceptAction uint8
+// EntryType classifies one listing entry.
+type EntryType uint8
 
-// FileAcceptAction values. ActionResume carries a chunk-aligned offset;
-// every other action ignores the offset.
+// EntryType values.
 const (
-	ActionAcceptFull FileAcceptAction = 0
-	ActionResume     FileAcceptAction = 1
-	ActionSkip       FileAcceptAction = 2
-	ActionAbortAll   FileAcceptAction = 3
+	EntryFile    EntryType = 0
+	EntryDir     EntryType = 1
+	EntrySymlink EntryType = 2
+)
+
+// DecisionAction is the receiver's per-entry verdict in the classify phase.
+// The sender only learns what to do (send / skip / resume), never why.
+type DecisionAction uint8
+
+// DecisionAction values.
+const (
+	DecisionSend   DecisionAction = 0 // new, differing-and-overwrite, conflict-and-overwrite
+	DecisionSkip   DecisionAction = 1 // identical, or kept (differ/conflict without consent)
+	DecisionResume DecisionAction = 2 // valid partial; ResumeOffset/PartialImohash set
 )
 
 // ErrorCode is the catalog of error codes carried in TypeError frames.
@@ -107,10 +121,20 @@ const (
 	// Terminal: lets the survivor skip its retry budget instead of
 	// misdiagnosing the teardown as a network drop.
 	ErrCodeCancelled ErrorCode = 15
+	// ErrCodeListingInvalid — the sender's listing was malformed (bad path,
+	// duplicate, case-collision) or the data stream diverged from it.
+	ErrCodeListingInvalid ErrorCode = 16
+	// ErrCodeDeclined — the receiver declined at the accept prompt (after the
+	// listing, so it can't ride on HELLO_ACK like the stream-mode decline).
+	ErrCodeDeclined ErrorCode = 17
 )
 
-// Chunk-frame flag bits.
+// Chunk-frame flag bits (frame-level).
 const (
 	FlagCompressed = 1 << 0 // payload is zstd-compressed
-	FlagLastChunk  = 1 << 1 // last chunk of this file
+)
+
+// Segment flag bits (per-file within a chunk).
+const (
+	SegFlagEOF = 1 << 0 // last segment of this file; RootHash is set
 )

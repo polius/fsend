@@ -109,7 +109,7 @@ func TestQUIC_OverRelay(t *testing.T) {
 	}
 	defer senderLn.Close()
 
-	items, err := transfer.Walk([]string{srcPath})
+	items, err := transfer.Walk([]string{srcPath}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,11 +136,11 @@ func TestQUIC_OverRelay(t *testing.T) {
 		}
 		defer res.Close()
 		sendErr = transfer.Send(ctx, &res.Streams, transfer.SendOptions{
-			Items:         items,
+			Mode:          wire.ModeFiles,
+			Sources:       items,
 			Hostname:      "alice",
 			OS:            "darwin",
 			ClientVersion: "test",
-			TransferKind:  wire.TransferSingleFile,
 		})
 	}()
 

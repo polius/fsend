@@ -21,48 +21,35 @@ import (
 )
 
 // receiverUI bundles the receive-side engine callbacks (accept prompt,
-// progress bar, overwrite confirm) with the state they share: the
-// sender's HELLO, the finalized file paths, and the byte counter the
-// summary reports. One instance serves a whole receive, including
-// retries.
-//
-// The progress bar is created lazily on the first byte rather than at
-// accept time — the password handshake may still need to prompt on
-// stderr, and a rejected transfer must leave no half-rendered bar.
+// progress bar, overwrite confirm) with shared state. One instance serves a
+// whole receive, including retries.
 type receiverUI struct {
 	ctx      context.Context
 	f        *flags
-	outDir   string // absolute; "" in sink mode
+	outDir   string
 	sink     bool
 	pathInfo connpath.Info
 
-	mu             sync.Mutex
-	hello          *wire.SenderHello
-	files          []string
-	prev           map[uint32]uint64
-	total          int64 // bytes received this run (excludes resumed prefixes)
-	skipped        int64 // resumed prefixes already on disk; see onResume
-	bar            *uxlog.Progress
-	firstByte      time.Time // latched on first progress byte; see finishReceive
-	totalBytesHint int64
-	streamingTotal bool // HELLO carried TotalBytes=0 (piped stdin)
-	preApproved    bool // accept prompt already disclosed the overwrite
+	mu          sync.Mutex
+	hello       *wire.SenderHello
+	files       []string
+	prev        map[uint32]uint64
+	total       int64 // bytes received this run (excludes resumed prefixes)
+	skipped     int64 // resumed prefixes already on disk
+	skippedSame int   // files skipped because they were identical
+	kept        int   // differing/conflicting entries left untouched
+	bar         *uxlog.Progress
+	firstByte   time.Time
+	bytesHint   int64
 
 	closeOnce sync.Once
 }
 
 func newReceiverUI(ctx context.Context, f *flags, outDir string, sink bool, pathInfo connpath.Info) *receiverUI {
-	return &receiverUI{
-		ctx: ctx, f: f, outDir: outDir, sink: sink, pathInfo: pathInfo,
-		prev: make(map[uint32]uint64),
-	}
+	return &receiverUI{ctx: ctx, f: f, outDir: outDir, sink: sink, pathInfo: pathInfo, prev: make(map[uint32]uint64)}
 }
 
-// resolveOutDir resolves --out: "-" selects sink (stdout) mode, ""
-// defaults to the CWD. Directories come back absolute so the prompt and
-// the summary show a stable path regardless of how the user spelled it.
-// An explicit --out must already exist — failing fast here beats
-// accepting a transfer that is doomed at write time.
+// resolveOutDir resolves --out: "-" selects sink (stdout); "" defaults to CWD.
 func resolveOutDir(f *flags) (dir string, sink bool, err error) {
 	if f.outDir == "-" {
 		return "", true, nil
@@ -88,80 +75,53 @@ func resolveOutDir(f *flags) (dir string, sink bool, err error) {
 	return dir, false, nil
 }
 
-// recvOptions assembles the engine options around this UI's callbacks.
 func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 	o := transfer.RecvOptions{
-		Hostname:      hostname,
-		OS:            runtime.GOOS,
-		ClientVersion: version.Version,
-		TargetDir:     ui.outDir,
-		Overwrite:     ui.f.overwrite,
-		Accept:        ui.accept,
-		Password:      ui.f.passArg,
-		PromptPass:    receiverPasswordPrompt(ui.ctx, ui.f),
-		ProgressFn:    ui.progress,
-		OnResume:      ui.onResume,
-		OnFileDone:    ui.onFileDone,
+		Hostname:       hostname,
+		OS:             runtime.GOOS,
+		ClientVersion:  version.Version,
+		TargetDir:      ui.outDir,
+		Overwrite:      ui.f.overwrite,
+		DryRun:         ui.f.dryRun,
+		Checksum:       ui.f.checksum,
+		Accept:         ui.accept,
+		Password:       ui.f.passArg,
+		PromptPass:     receiverPasswordPrompt(ui.ctx, ui.f),
+		ProgressFn:     ui.progress,
+		OnResume:       ui.onResume,
+		OnSkip:         ui.onSkip,
+		OnFileDone:     ui.onFileDone,
+		OnConflictKept: ui.onConflictKept,
+		OnClassified:   ui.onClassified,
 	}
 	if ui.sink {
 		o.Sink = os.Stdout
 	}
-	// Under --quiet or --yes the confirm stays nil: the engine then
-	// rejects collisions with E013 instead of silently overwriting or
-	// blocking on a prompt nobody will answer.
+	// Under --quiet or --yes the confirm stays nil: the engine then keeps
+	// differing files (skip) instead of blocking on a prompt nobody answers.
 	if !ui.f.quiet && !ui.f.yes {
 		o.ConfirmOverwrite = ui.confirmOverwrite
 	}
 	return o
 }
 
-// accept records the HELLO, runs the prompt, and pre-approves the
-// per-file overwrite confirm when the prompt already disclosed the
-// collision — the user answers one question, not two.
-func (ui *receiverUI) accept(h wire.SenderHello) bool {
+// accept records the HELLO, then runs the accept prompt with the breakdown.
+func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummary) bool {
 	ui.mu.Lock()
 	cp := h
 	ui.hello = &cp
-	ui.totalBytesHint = int64(h.TotalBytes)
-	ui.streamingTotal = h.TotalBytes == 0
+	ui.bytesHint = int64(summary.BytesToRecv)
 	ui.mu.Unlock()
-
-	if !ui.promptAccept(h) {
-		return false
-	}
-	if !ui.sink && h.TransferKind == wire.TransferSingleFile && !ui.f.overwrite {
-		target := filepath.Join(ui.outDir, h.DisplayName)
-		if st, err := os.Stat(target); err == nil && !st.IsDir() {
-			ui.mu.Lock()
-			ui.preApproved = true
-			ui.mu.Unlock()
-		}
-	}
-	return true
+	return ui.promptAccept(h, summary)
 }
 
-// promptAccept renders the incoming-transfer block on stderr and asks
-// whether to receive:
-//
-//	Incoming from <peer>  ·  <path chip>
-//
-//	    <artifact>  ·  <size>  [🔒 password]
-//	    [⚠ already in <dir> · will overwrite if you accept]
-//
-//	Save to <path>/? [Y/n]
-//
-// The question adapts to the destination: "Write to stdout?" in sink
-// mode, "Accept?" for text (which prints rather than saves).
-// Unrecognized input re-prompts instead of defaulting — a stray typo
-// next to 'n' must not accept a transfer.
-func (ui *receiverUI) promptAccept(h wire.SenderHello) bool {
+// promptAccept renders the incoming-transfer block and asks whether to save.
+func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.ClassifySummary) bool {
 	f := ui.f
 	if f.quiet {
 		return f.yes
 	}
 	peer := sanitizeRemote(h.Hostname)
-	// Same route transparency as the sender's "Receiver connected (…)"
-	// line: every path gets the chip, not just the relay.
 	pathChip := ""
 	if ui.pathInfo.Kind != connpath.KindUnknown {
 		pathChip = uxlog.Dim("  ·  " + ui.pathInfo.Chip())
@@ -169,11 +129,10 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello) bool {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "  Incoming from %s%s\n", peer, pathChip)
 	fmt.Fprintln(os.Stderr)
-	renderArtifact(os.Stderr, h, ui.outDir, f)
+	renderArtifact(os.Stderr, h, summary)
 	fmt.Fprintln(os.Stderr)
+
 	if f.yes {
-		// Info, not Check: nothing has succeeded yet — this only echoes
-		// that the flag skipped the prompt.
 		fmt.Fprintln(os.Stderr, uxlog.Info(), "Accepting (--yes)")
 		return true
 	}
@@ -181,19 +140,15 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello) bool {
 	switch {
 	case ui.sink:
 		question = "Write to stdout?"
-	case h.TransferKind == wire.TransferText:
+	case h.Mode == wire.ModeStream && h.IsText:
 		question = "Accept?"
 	}
 	for {
 		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", question)
-		// Decline on Ctrl-C; the caller maps a cancelled ctx to E026.
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
 		}
-		// Closed stdin must not take the interactive yes-default: a cron
-		// job or `fsend <code> </dev/null` would silently consent to
-		// writing files (and pre-approve an overwrite).
 		if eof {
 			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — declining. Pass --yes to accept automatically.\n", uxlog.Info())
 			return false
@@ -208,34 +163,49 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello) bool {
 	}
 }
 
-func (ui *receiverUI) confirmOverwrite(relPath string, existing int64, incoming uint64) bool {
-	ui.mu.Lock()
-	pre := ui.preApproved
-	ui.mu.Unlock()
-	if pre {
-		return true
-	}
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  %s already exists  ·  local %s  ·  incoming %s\n",
-		relPath, uxlog.HumanBytes(existing), uxlog.HumanBytes(int64(incoming)))
-	fmt.Fprint(os.Stderr, "  Overwrite? [y/N] ")
-	line, _, ok := readLineCtx(ui.ctx)
-	if !ok {
-		return false
-	}
-	switch line {
-	case "y", "yes":
-		return true
-	default:
-		return false
+// confirmOverwrite is the consolidated prompt for differing/conflicting
+// entries. Returns true to overwrite all, false to keep all local copies.
+func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
+	const preview = 5
+	for {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "  %s differ from your local copies:\n", uxlog.CountNoun(len(conflicts), "file"))
+		shown := min(len(conflicts), preview)
+		for _, c := range conflicts[:shown] {
+			fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
+		}
+		if more := len(conflicts) - shown; more > 0 {
+			fmt.Fprintf(os.Stderr, "    %s\n", uxlog.Dim(fmt.Sprintf("… and %d more", more)))
+		}
+		fmt.Fprint(os.Stderr, "  Overwrite all? [y / N / l = list all] ")
+		line, _, ok := readLineCtx(ui.ctx)
+		if !ok {
+			return false
+		}
+		switch line {
+		case "y", "yes":
+			return true
+		case "l", "list":
+			for _, c := range conflicts {
+				fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
+			}
+			continue
+		default:
+			return false
+		}
 	}
 }
 
-// onResume announces a resumed file and fast-forwards the bookkeeping
-// past the on-disk prefix: the bar starts at the resume point, but the
-// prefix is booked as skipped, not received — so the summary's rate
-// reflects only bytes that actually moved. On a mid-run retry prev
-// already covers the prefix (we received those bytes ourselves).
+// conflictLabel renders one conflict, distinguishing type clashes from
+// content differences.
+func conflictLabel(c transfer.Conflict) string {
+	name := sanitizeForDisplay(c.RelativePath, 128)
+	if c.Kind != "differs" {
+		return fmt.Sprintf("%s  (%s)", name, c.Kind)
+	}
+	return name
+}
+
 func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 	ui.mu.Lock()
 	if offset > ui.prev[fileIndex] {
@@ -243,7 +213,7 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 		ui.prev[fileIndex] = offset
 		ui.skipped += d
 		if ui.bar == nil && !ui.f.quiet {
-			ui.bar = uxlog.New(ui.totalBytesHint)
+			ui.bar = uxlog.New(ui.bytesHint)
 		}
 		ui.bar.Add(d)
 	}
@@ -254,6 +224,25 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 	}
 }
 
+func (ui *receiverUI) onSkip(uint32) {
+	ui.mu.Lock()
+	ui.skippedSame++
+	ui.mu.Unlock()
+}
+
+func (ui *receiverUI) onConflictKept(string) {
+	ui.mu.Lock()
+	ui.kept++
+	ui.mu.Unlock()
+}
+
+// onClassified prints the dry-run categorization to stdout (greppable).
+func (ui *receiverUI) onClassified(entries []transfer.ClassifiedEntry) {
+	for _, e := range entries {
+		_, _ = fmt.Fprintf(os.Stdout, "%-9s %s\n", e.Category, e.RelativePath)
+	}
+}
+
 func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
@@ -261,12 +250,12 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 		ui.firstByte = time.Now()
 	}
 	if ui.bar == nil && !ui.f.quiet {
-		ui.bar = uxlog.New(ui.totalBytesHint)
+		ui.bar = uxlog.New(ui.bytesHint)
 	}
 	d := bytesWritten - ui.prev[fileIndex]
 	ui.prev[fileIndex] = bytesWritten
 	ui.total += int64(d)
-	ui.bar.Add(int64(d)) // nil-safe under --quiet
+	ui.bar.Add(int64(d))
 }
 
 func (ui *receiverUI) onFileDone(path string) {
@@ -275,67 +264,60 @@ func (ui *receiverUI) onFileDone(path string) {
 	ui.mu.Unlock()
 }
 
-// bytes returns the landed total (received + resumed prefixes) and the
-// bytes that actually moved this run, for the summary line.
 func (ui *receiverUI) bytes() (total, moved int64) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 	return ui.total + ui.skipped, ui.total
 }
 
-// close flushes the progress bar. Idempotent: callers flush explicitly
-// before the summary and keep a deferred call as the safety net.
 func (ui *receiverUI) close() {
 	ui.closeOnce.Do(func() {
 		ui.mu.Lock()
-		bar, total, streaming := ui.bar, ui.total, ui.streamingTotal
+		bar := ui.bar
 		ui.mu.Unlock()
-		if bar == nil {
-			return
+		if bar != nil {
+			bar.Done()
 		}
-		// Streaming transfers latch the bar to the real total so the
-		// terminal frame reads "done" instead of "aborted".
-		if streaming && total > 0 {
-			bar.SetTotal(total, true)
-		}
-		bar.Done()
 	})
 }
 
-// finishReceive runs the post-transfer epilogue: flush the bar, print a
-// received --text payload to stdout (text is a message, not a download),
-// and render the summary.
+// finishReceive runs the post-transfer epilogue. A dry run printed its plan
+// already, so it just returns. When differing files were kept (no consent),
+// it returns E013 so scripts get a non-zero exit, after showing the summary.
 func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	ui.close()
+	if f.dryRun {
+		return nil
+	}
 
 	ui.mu.Lock()
 	h := ui.hello
 	files := append([]string(nil), ui.files...)
 	firstByte := ui.firstByte
+	kept := ui.kept
+	skippedSame := ui.skippedSame
 	ui.mu.Unlock()
 
-	// Time from the first byte: the caller's window includes the accept
-	// prompt, and a 20 s deliberation would read as a glacial transfer.
 	if !firstByte.IsZero() {
 		elapsed = time.Since(firstByte)
 	}
 
-	if h != nil && h.TransferKind == wire.TransferText && !ui.sink {
+	if h != nil && h.Mode == wire.ModeStream && h.IsText && !ui.sink {
 		if err := printTextPayload(files); err != nil {
 			return err
 		}
 		total, moved := ui.bytes()
-		printRecvSummary(f, "Received text", total, moved, elapsed, ui.pathInfo)
+		printRecvSummary(f, "Received text", total, moved, kept, 0, elapsed, ui.pathInfo)
 		return nil
 	}
 	total, moved := ui.bytes()
-	printRecvSummary(f, ui.headline(h, files), total, moved, elapsed, ui.pathInfo)
+	printRecvSummary(f, ui.headline(h, files), total, moved, kept, skippedSame, elapsed, ui.pathInfo)
+	if kept > 0 {
+		return fserrors.ErrTargetExists
+	}
 	return nil
 }
 
-// printTextPayload writes the received text to stdout and removes the
-// carrier file. Terminal output gains a trailing newline so the shell
-// prompt doesn't glue to the payload; piped output stays byte-exact.
 func printTextPayload(files []string) error {
 	if len(files) == 0 {
 		return nil
@@ -354,25 +336,19 @@ func printTextPayload(files []string) error {
 	return nil
 }
 
-// headline names what landed where for the summary line: "Saved
-// hello.bin to ~/dir", "Saved 3 files to ~/dir", or bare "Received" in
-// sink mode. The piped-stdin name is only knowable from the finalized
-// path (the sender generates it), hence the files fallback.
+// headline names what landed where for the summary line.
 func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	if ui.sink {
 		return "Received"
 	}
 	name := ""
 	if h != nil {
-		switch h.TransferKind {
-		case wire.TransferSingleFile, wire.TransferDirectory:
-			name = sanitizeForDisplay(h.DisplayName, 128)
-		case wire.TransferMultiFile:
-			name = fmt.Sprintf("%d files", h.TotalFiles)
-		case wire.TransferStdin:
+		if h.Mode == wire.ModeStream {
 			if len(files) > 0 {
 				name = filepath.Base(files[0])
 			}
+		} else {
+			name = sanitizeForDisplay(h.DisplayName, 128)
 		}
 	}
 	dest := displayPath(ui.outDir)
@@ -382,18 +358,30 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	return "Saved " + name + " to " + dest
 }
 
-// printRecvSummary renders the post-transfer success line. headline is
-// the fully-formed "Saved X to Y" / "Received" clause; the parts that
-// follow scan size → time → rate → route. On a resumed transfer moved < total
-// and the size gains a "(X received)" clause. Suppressed under --quiet.
-func printRecvSummary(f *flags, headline string, total, moved int64, elapsed time.Duration, path connpath.Info) {
+// printRecvSummary renders the post-transfer success line.
+func printRecvSummary(f *flags, headline string, total, moved int64, kept, skippedSame int, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
 	if headline == "" {
 		headline = "Received"
 	}
+	// Nothing moved and nothing kept-back, but files were skipped as identical:
+	// a re-send where everything was already up to date. Say so plainly instead
+	// of "Saved … 0 B", which reads as if it did work.
+	if total == 0 && moved == 0 && kept == 0 && skippedSame > 0 {
+		fmt.Fprintf(os.Stderr, "%s Already up to date  ·  %s unchanged  ·  %s\n",
+			uxlog.Check(), uxlog.CountNoun(skippedSame, "file"), path.Tag())
+		printUpdateNotice(f)
+		return
+	}
 	parts := summaryParts(total, moved, "received", elapsed, path)
+	if skippedSame > 0 {
+		parts = append(parts, fmt.Sprintf("%s up to date", uxlog.CountNoun(skippedSame, "file")))
+	}
+	if kept > 0 {
+		parts = append(parts, fmt.Sprintf("%s kept (use --overwrite)", uxlog.CountNoun(kept, "file")))
+	}
 	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", uxlog.Check(), headline, strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
 }

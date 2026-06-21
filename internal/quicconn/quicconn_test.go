@@ -91,7 +91,7 @@ func TestQUIC_LoopbackTransfer(t *testing.T) {
 	defer ln.Close()
 	listenAddr := ln.ln.Addr().String()
 
-	items, err := transfer.Walk([]string{srcPath})
+	items, err := transfer.Walk([]string{srcPath}, nil)
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
@@ -112,11 +112,11 @@ func TestQUIC_LoopbackTransfer(t *testing.T) {
 		}
 		defer res.Close()
 		sendErr = transfer.Send(ctx, &res.Streams, transfer.SendOptions{
-			Items:         items,
+			Mode:          wire.ModeFiles,
+			Sources:       items,
 			Hostname:      "alice",
 			OS:            "darwin",
 			ClientVersion: "0.1.0-test",
-			TransferKind:  wire.TransferSingleFile,
 		})
 	}()
 

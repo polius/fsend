@@ -305,11 +305,9 @@ func TestReceive_Overwrite(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
-// Interactive: receiver answers "y" to the accept prompt for a
-// single-file collision. The accept-time chip already disclosed that
-// "yes" would overwrite, so a single "y" is enough — the engine sees
-// the consent flag set inside the Accept callback and treats the
-// pre-existing target as confirmed. File is clobbered, both sides exit 0.
+// Interactive: a differing file prompts twice — "Save?" then the
+// consolidated "Overwrite all?" — so two y's clobber the local copy and
+// both sides exit 0.
 func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
@@ -318,8 +316,8 @@ func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// One y: accept + implicit consent to overwrite (chip warned).
-	r := h.runPair(t, []string{srcFile}, dst, nil, "y\n")
+	// First y accepts the transfer; second y confirms overwriting the differ.
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\ny\n")
 	r.requireSuccess(t)
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
@@ -352,14 +350,12 @@ func TestReceive_DeclineWithCollision_PreservesExisting(t *testing.T) {
 	}
 }
 
-// Regression: when the receiver rejects with target-exists, the sender
-// must see E013 — not E099 ("Application error 0x0"). The fix is the
-// symmetric shutdown in recv.go around the ErrCodeTargetExists frame;
-// without it, the receiver's deferred QUIC close races the frame and
-// the sender sees a transport-level error. The pipe-based unit test
-// TestOverwriteRefused can't reproduce the race because pipes don't
-// have QUIC's application close.
-func TestReceive_OverwriteRefused_SenderSeesE013(t *testing.T) {
+// A differing file under --yes (so no overwrite prompt) and without
+// --overwrite is kept, not clobbered. The transfer never aborts: the sender
+// completes (it just skips that file) and exits 0, while the receiver signals
+// the kept conflict with a non-zero E013 exit. This is the additive-sync
+// contract — one local edit never sinks the rest of the transfer.
+func TestReceive_DifferingFileKept_ReceiverSeesE013(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
 	srcFile := filepath.Join(src, "p.bin")
@@ -369,11 +365,11 @@ func TestReceive_OverwriteRefused_SenderSeesE013(t *testing.T) {
 	}
 	r := h.runPair(t, []string{srcFile}, dst, []string{"--yes"}, "")
 	if r.receiverExitCode != 13 {
-		t.Errorf("receiver exit = %d, want 13 (E013)\nstderr:\n%s",
+		t.Errorf("receiver exit = %d, want 13 (E013, conflict kept)\nstderr:\n%s",
 			r.receiverExitCode, r.receiverErr)
 	}
-	if r.senderExitCode != 13 {
-		t.Errorf("sender exit = %d, want 13 (E013) — likely the recv-side TargetExists frame raced QUIC close\nstderr:\n%s",
+	if r.senderExitCode != 0 {
+		t.Errorf("sender exit = %d, want 0 (transfer completes; file skipped)\nstderr:\n%s",
 			r.senderExitCode, r.senderErr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
@@ -526,9 +522,10 @@ func TestDispatch_ForceReceive(t *testing.T) {
 // interactive flow when the sender used --pass and pins two related
 // UX properties:
 //
-//  1. Prompt ordering: the "Save to ...?" confirmation comes first,
-//     then the password prompt. This matches the rest of the receiver
-//     UX (decide whether you want it, then go through gates).
+//  1. Prompt ordering: the password prompt comes first, then the
+//     "Save to ...?" confirmation. The password gates content disclosure
+//     (the listing), so it must be answered before the receiver sees the
+//     breakdown and decides whether to accept.
 //  2. No progress-bar collision: the bar is materialized lazily on the
 //     first chunk, so mpb's stderr repaint can't overlap the password
 //     input line. A regression would re-introduce a garbled line like
@@ -542,15 +539,13 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Receiver stdin order matches the prompt order: "Y" for the save
-	// confirmation, then the password line. Both readers use a fresh
-	// bufio.Reader on os.Stdin per call, but feeding them in order
-	// keeps the bytes aligned.
+	// Receiver stdin order matches the new prompt order: the password line
+	// first, then "Y" for the save confirmation.
 	r := h.runPair(t,
 		[]string{"--pass=swordfish", srcFile},
 		dst,
 		nil, // no extra receiver flags — exercise the full interactive path
-		"Y\nswordfish\n",
+		"swordfish\nY\n",
 	)
 	r.requireSuccess(t)
 
@@ -562,9 +557,9 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	if passwordIdx < 0 {
 		t.Fatalf("password prompt not found in receiver stderr:\n%s", r.receiverErr)
 	}
-	if saveIdx >= passwordIdx {
-		t.Fatalf("save prompt (idx %d) should appear before password prompt (idx %d):\n%s",
-			saveIdx, passwordIdx, r.receiverErr)
+	if passwordIdx >= saveIdx {
+		t.Fatalf("password prompt (idx %d) should appear before save prompt (idx %d):\n%s",
+			passwordIdx, saveIdx, r.receiverErr)
 	}
 
 	// Bar collision regression: the line containing the password prompt

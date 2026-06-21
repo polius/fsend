@@ -111,6 +111,10 @@ var (
 	// failed or the installer exited nonzero. An environment problem,
 	// not a bug, so it skips the E099 "file an issue" catchall.
 	ErrUpdateFailed = errors.New("update failed")
+	// E034 — the two peers speak incompatible wire-protocol versions (a
+	// breaking fsend release changed the format). Resolved only by updating
+	// the older side; distinct from E015 so the message can say so.
+	ErrIncompatibleVersion = errors.New("incompatible fsend version")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -381,6 +385,12 @@ var catalog = map[error]Entry{
 		Message: "Could not update fsend.",
 		Action: "Check your internet connection and try again, or reinstall:\n" +
 			"    https://github.com/polius/fsend#install",
+	},
+	ErrIncompatibleVersion: {
+		Code: "E034", Exit: 34,
+		Message: "The other device is running an incompatible version of fsend.",
+		Action: "Update both sides to the latest version, then try again:\n" +
+			"    fsend --update",
 	},
 }
 

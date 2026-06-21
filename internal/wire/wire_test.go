@@ -16,16 +16,13 @@ func TestControl_HelloRoundtrip(t *testing.T) {
 		Hostname:        "Pol's MacBook",
 		OS:              "darwin",
 		ClientVersion:   "0.1.0",
-		TransferKind:    TransferMultiFile,
-		TotalFiles:      2,
-		TotalBytes:      4404019,
-		FileNames:       []string{"report.pdf", "notes.txt"},
+		Mode:            ModeFiles,
+		DisplayName:     "my-project/",
 	}
 	var buf bytes.Buffer
 	if err := WriteControl(&buf, TypeHello, &want); err != nil {
 		t.Fatalf("WriteControl: %v", err)
 	}
-
 	var got SenderHello
 	ft, err := ReadControl(&buf, &got)
 	if err != nil {
@@ -34,14 +31,12 @@ func TestControl_HelloRoundtrip(t *testing.T) {
 	if ft != TypeHello {
 		t.Errorf("frame type = %v, want TypeHello", ft)
 	}
-	// SenderHello carries a slice (FileNames), so == doesn't apply.
-	if !reflect.DeepEqual(got, want) {
+	if got != want {
 		t.Errorf("roundtrip mismatch:\ngot:  %+v\nwant: %+v", got, want)
 	}
 }
 
 func TestControl_EmptyPayload(t *testing.T) {
-	// TransferComplete carries no payload.
 	var buf bytes.Buffer
 	if err := WriteControl(&buf, TypeTransferComplete, nil); err != nil {
 		t.Fatalf("WriteControl: %v", err)
@@ -56,7 +51,6 @@ func TestControl_EmptyPayload(t *testing.T) {
 }
 
 func TestControl_VersionMismatchReportedClearly(t *testing.T) {
-	// Synthesize a frame with a bogus version byte.
 	buf := bytes.NewBuffer([]byte{0xFF /* bad ver */, byte(TypeHello), 0, 0, 0, 0})
 	_, err := ReadControl(buf, nil)
 	if !errors.Is(err, ErrUnsupportedVersion) {
@@ -65,7 +59,6 @@ func TestControl_VersionMismatchReportedClearly(t *testing.T) {
 }
 
 func TestControl_RejectOversizedFrame(t *testing.T) {
-	// Synthesize a header claiming a frame larger than the limit.
 	buf := bytes.NewBuffer([]byte{ProtocolVersion, byte(TypeHello), 0xFF, 0xFF, 0xFF, 0xFF})
 	_, err := ReadControl(buf, nil)
 	if !errors.Is(err, ErrFrameTooLarge) {
@@ -74,80 +67,73 @@ func TestControl_RejectOversizedFrame(t *testing.T) {
 }
 
 func TestControl_TruncatedReadReturnsEOF(t *testing.T) {
-	// Empty input → EOF (callers use this to detect peer-closed stream).
 	_, err := ReadControl(bytes.NewReader(nil), nil)
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF, got %v", err)
 	}
 }
 
-func TestControl_FileInfoWithBigPaths(t *testing.T) {
-	// Stress: a long Unicode path with edge characters.
-	want := FileInfo{
-		Index:        42,
-		RelativePath: "项目/子目录/文件 名.txt",
-		Size:         1234567,
-		Mode:         0o644,
-		ModTime:      1717414800000000000,
-		IsDir:        false,
-		Resumable:    true,
-	}
-	for i := range want.Blake3Root {
-		want.Blake3Root[i] = byte(i)
+func TestControl_ListingBatchRoundtrip(t *testing.T) {
+	want := []ListingEntry{
+		{Index: 0, RelativePath: "项目/子目录/文件 名.txt", Size: 1234567, ModTimeSec: 1717414800, Mode: 0o644, Type: EntryFile},
+		{Index: 1, RelativePath: "sub", Type: EntryDir, Mode: 0o755, ModTimeSec: 1717414800},
+		{Index: 2, RelativePath: "link", Type: EntrySymlink, SymlinkTarget: "../target"},
 	}
 	var buf bytes.Buffer
-	if err := WriteControl(&buf, TypeFileInfo, &want); err != nil {
+	if err := WriteControl(&buf, TypeListingBatch, want); err != nil {
 		t.Fatal(err)
 	}
-	var got FileInfo
-	if _, err := ReadControl(&buf, &got); err != nil {
+	var got []ListingEntry
+	ft, err := ReadControl(&buf, &got)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
-		t.Errorf("FileInfo roundtrip mismatch:\ngot:  %+v\nwant: %+v", got, want)
+	if ft != TypeListingBatch {
+		t.Errorf("frame type = %v, want TypeListingBatch", ft)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("listing roundtrip mismatch:\ngot:  %+v\nwant: %+v", got, want)
 	}
 }
 
-// TestControl_FileInfoStreaming exercises the additive Streaming field.
-// On the streaming path Size and Blake3Root are zero; Resumable is false.
-// The round-trip must preserve the flag so an older receiver (Streaming
-// not present in its decoded struct) still observes the expected zero
-// default for the unrelated size-driven fields.
-func TestControl_FileInfoStreaming(t *testing.T) {
-	want := FileInfo{
-		Index:        0,
-		RelativePath: "fsend-stdin-abc12345",
-		Mode:         0o644,
-		ModTime:      1717414800000000000,
-		Streaming:    true,
+func TestControl_DecisionBatchRoundtrip(t *testing.T) {
+	var imo [16]byte
+	for i := range imo {
+		imo[i] = byte(i)
+	}
+	want := []Decision{
+		{Index: 0, Action: DecisionSend},
+		{Index: 1, Action: DecisionSkip},
+		{Index: 2, Action: DecisionResume, ResumeOffset: 1 << 20, PartialImohash: imo},
 	}
 	var buf bytes.Buffer
-	if err := WriteControl(&buf, TypeFileInfo, &want); err != nil {
+	if err := WriteControl(&buf, TypeClassifyBatch, want); err != nil {
 		t.Fatal(err)
 	}
-	var got FileInfo
+	var got []Decision
 	if _, err := ReadControl(&buf, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
-		t.Errorf("Streaming FileInfo roundtrip mismatch:\ngot:  %+v\nwant: %+v", got, want)
-	}
-	if got.Size != 0 || got.Blake3Root != [32]byte{} || got.Resumable {
-		t.Errorf("streaming preconditions violated on decode: %+v", got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("decision roundtrip mismatch:\ngot:  %+v\nwant: %+v", got, want)
 	}
 }
 
-func TestChunk_Roundtrip(t *testing.T) {
+func TestChunk_SingleSegmentRoundtrip(t *testing.T) {
+	var root [32]byte
+	for i := range root {
+		root[i] = byte(i * 3)
+	}
 	original := &Chunk{
-		Flags:      FlagCompressed | FlagLastChunk,
-		FileIndex:  7,
-		ChunkIndex: 42,
+		Compressed: true,
 		Payload:    []byte("hello world, this is a chunk payload"),
+		Segments: []Segment{
+			{FileIndex: 7, Length: 36, EOF: true, RootHash: root},
+		},
 	}
-	for i := range original.Blake3Hash {
-		original.Blake3Hash[i] = byte(i * 3)
+	for i := range original.ChunkHash {
+		original.ChunkHash[i] = byte(i)
 	}
-
 	var buf bytes.Buffer
 	if err := WriteChunk(&buf, original); err != nil {
 		t.Fatalf("WriteChunk: %v", err)
@@ -156,28 +142,30 @@ func TestChunk_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadChunk: %v", err)
 	}
-	if got.Flags != original.Flags {
-		t.Errorf("Flags: got %x, want %x", got.Flags, original.Flags)
+	if got.Compressed != original.Compressed || got.ChunkHash != original.ChunkHash {
+		t.Error("chunk header mismatch")
 	}
-	if got.FileIndex != original.FileIndex {
-		t.Errorf("FileIndex: got %d, want %d", got.FileIndex, original.FileIndex)
-	}
-	if got.ChunkIndex != original.ChunkIndex {
-		t.Errorf("ChunkIndex: got %d, want %d", got.ChunkIndex, original.ChunkIndex)
-	}
-	if got.Blake3Hash != original.Blake3Hash {
-		t.Error("Blake3Hash mismatch")
+	if !reflect.DeepEqual(got.Segments, original.Segments) {
+		t.Errorf("segments mismatch:\ngot:  %+v\nwant: %+v", got.Segments, original.Segments)
 	}
 	if !bytes.Equal(got.Payload, original.Payload) {
-		t.Errorf("Payload mismatch: got %q, want %q", got.Payload, original.Payload)
+		t.Errorf("payload mismatch: got %q", got.Payload)
 	}
 }
 
-func TestChunk_EmptyPayload(t *testing.T) {
+func TestChunk_MultiSegmentPacked(t *testing.T) {
+	// Three small whole files packed into one uncompressed chunk.
+	a, b, c := []byte("aaa"), []byte("bb"), []byte("cccc")
+	payload := append(append(append([]byte{}, a...), b...), c...)
+	var r1, r2, r3 [32]byte
+	r1[0], r2[0], r3[0] = 1, 2, 3
 	original := &Chunk{
-		Flags:      FlagLastChunk,
-		FileIndex:  0,
-		ChunkIndex: 0,
+		Payload: payload,
+		Segments: []Segment{
+			{FileIndex: 0, Length: uint32(len(a)), EOF: true, RootHash: r1},
+			{FileIndex: 1, Length: uint32(len(b)), EOF: true, RootHash: r2},
+			{FileIndex: 2, Length: uint32(len(c)), EOF: true, RootHash: r3},
+		},
 	}
 	var buf bytes.Buffer
 	if err := WriteChunk(&buf, original); err != nil {
@@ -187,14 +175,33 @@ func TestChunk_EmptyPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Payload) != 0 {
-		t.Errorf("expected empty payload, got %d bytes", len(got.Payload))
+	if !reflect.DeepEqual(got.Segments, original.Segments) || !bytes.Equal(got.Payload, payload) {
+		t.Error("packed multi-segment chunk corrupted")
+	}
+}
+
+func TestChunk_LargeFileMidStreamSegment(t *testing.T) {
+	// A non-EOF segment carries no root hash.
+	original := &Chunk{
+		Payload:  bytes.Repeat([]byte{0xAB}, 1024),
+		Segments: []Segment{{FileIndex: 3, Length: 1024, EOF: false}},
+	}
+	var buf bytes.Buffer
+	if err := WriteChunk(&buf, original); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadChunk(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Segments[0].EOF || got.Segments[0].RootHash != [32]byte{} {
+		t.Error("non-EOF segment must not carry a root hash")
 	}
 }
 
 func TestChunk_MaxSize(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xAB}, MaxChunkSize)
-	original := &Chunk{Payload: payload}
+	original := &Chunk{Payload: payload, Segments: []Segment{{FileIndex: 0, Length: MaxChunkSize, EOF: true}}}
 	var buf bytes.Buffer
 	if err := WriteChunk(&buf, original); err != nil {
 		t.Fatal(err)
@@ -209,46 +216,57 @@ func TestChunk_MaxSize(t *testing.T) {
 }
 
 func TestChunk_TooLarge(t *testing.T) {
-	original := &Chunk{Payload: make([]byte, MaxChunkSize+1)}
+	original := &Chunk{Payload: make([]byte, MaxChunkSize+1), Segments: []Segment{{Length: MaxChunkSize + 1}}}
 	var buf bytes.Buffer
 	if err := WriteChunk(&buf, original); !errors.Is(err, ErrChunkTooLarge) {
 		t.Errorf("WriteChunk should reject oversized, got %v", err)
 	}
 }
 
-func TestChunk_RejectWrongTypeOnDataStream(t *testing.T) {
-	// Forge a frame whose first byte isn't TypeChunk.
-	hdr := []byte{
-		0x99, 0x00, // bogus type, no flags
-		0x00, 0x00, 0x00, 0x00, // length 0
-		0x00, 0x00, 0x00, 0x00, // file index
-		0x00, 0x00, 0x00, 0x00, // chunk index
+func TestChunk_RejectZeroSegments(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteChunk(&buf, &Chunk{Payload: []byte("x")}); !errors.Is(err, ErrMalformedChunk) {
+		t.Errorf("expected ErrMalformedChunk for zero segments, got %v", err)
 	}
-	// Pad to chunkHeaderSize so ReadFull succeeds.
-	hdr = append(hdr, bytes.Repeat([]byte{0}, chunkHeaderSize-len(hdr))...)
+}
+
+func TestChunk_RejectSegmentSumMismatch(t *testing.T) {
+	// Uncompressed payload whose segment lengths don't sum to it.
+	var buf bytes.Buffer
+	if err := WriteChunk(&buf, &Chunk{Payload: []byte("abcd"), Segments: []Segment{{Length: 2}}}); err != nil {
+		t.Fatalf("WriteChunk: %v", err)
+	}
+	if _, err := ReadChunk(&buf); !errors.Is(err, ErrMalformedChunk) {
+		t.Errorf("expected ErrMalformedChunk on sum mismatch, got %v", err)
+	}
+}
+
+func TestChunk_RejectWrongTypeOnDataStream(t *testing.T) {
+	hdr := make([]byte, chunkFixedHeader)
+	hdr[0] = 0x99 // bogus type
 	_, err := ReadChunk(bytes.NewReader(hdr))
 	if !errors.Is(err, ErrWrongFrameType) {
 		t.Errorf("expected ErrWrongFrameType, got %v", err)
 	}
 }
 
-// Property test: any payload bytes survive a round-trip.
+// Property test: any single-segment payload survives a round-trip.
 func TestChunk_PropertyRoundtrip(t *testing.T) {
-	prop := func(flags uint8, fileIdx, chunkIdx uint32, payload []byte) bool {
+	prop := func(compressed bool, fileIdx uint32, payload []byte) bool {
 		if len(payload) > MaxChunkSize {
-			return true // not a valid input; skip
+			return true
 		}
-		var hash [32]byte
+		var hash, root [32]byte
 		for i := range hash {
 			hash[i] = byte(i)
 		}
-		c := &Chunk{
-			Flags:      flags,
-			FileIndex:  fileIdx,
-			ChunkIndex: chunkIdx,
-			Blake3Hash: hash,
-			Payload:    payload,
+		seg := Segment{FileIndex: fileIdx, Length: uint32(len(payload)), EOF: true, RootHash: root}
+		// Compressed payloads need not match the segment sum, so only assert
+		// the sum invariant for the uncompressed case the codec enforces.
+		if compressed && len(payload) == 0 {
+			return true
 		}
+		c := &Chunk{Compressed: compressed, ChunkHash: hash, Segments: []Segment{seg}, Payload: payload}
 		var buf bytes.Buffer
 		if err := WriteChunk(&buf, c); err != nil {
 			return false
@@ -257,18 +275,14 @@ func TestChunk_PropertyRoundtrip(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		return got.Flags == c.Flags &&
-			got.FileIndex == c.FileIndex &&
-			got.ChunkIndex == c.ChunkIndex &&
-			got.Blake3Hash == c.Blake3Hash &&
-			bytes.Equal(got.Payload, c.Payload)
+		return got.Compressed == c.Compressed && got.ChunkHash == c.ChunkHash &&
+			reflect.DeepEqual(got.Segments, c.Segments) && bytes.Equal(got.Payload, c.Payload)
 	}
 	if err := quick.Check(prop, &quick.Config{MaxCount: 500}); err != nil {
 		t.Error(err)
 	}
 }
 
-// Property test: control frames with random ErrorFrame payloads round-trip.
 func TestControl_ErrorFramePropertyRoundtrip(t *testing.T) {
 	prop := func(code uint16, msgLen int) bool {
 		if msgLen < 0 {

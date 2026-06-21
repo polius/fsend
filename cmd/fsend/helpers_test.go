@@ -136,50 +136,33 @@ func TestShortRand(t *testing.T) {
 	}
 }
 
-func TestSynthesizeText(t *testing.T) {
-	items := synthesizeText("hello")
-	if len(items) != 1 {
-		t.Fatalf("len = %d, want 1", len(items))
-	}
-	it := items[0]
-	if it.Info.Size != 5 || it.Reader == nil {
-		t.Errorf("size=%d reader=%v", it.Info.Size, it.Reader)
-	}
-	if !strings.HasPrefix(it.Info.RelativePath, "fsend-text-") || !strings.HasSuffix(it.Info.RelativePath, ".txt") {
-		t.Errorf("name = %q", it.Info.RelativePath)
-	}
-	// Content the Reader replays should match the input.
-	got, err := io.ReadAll(it.Reader)
-	if err != nil || string(got) != "hello" {
-		t.Errorf("reader content = %q err=%v", got, err)
-	}
-}
-
-func TestSynthesizeStdin(t *testing.T) {
-	items, err := synthesizeStdin()
+func TestCollectPlan_Text(t *testing.T) {
+	plan, err := collectPlan(&flags{textArg: "hello"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("len = %d, want 1", len(items))
+	if plan.mode != wire.ModeStream || !plan.isText || plan.totalBytes != 5 {
+		t.Errorf("plan = %+v", plan)
 	}
-	it := items[0]
-	if !it.Info.Streaming {
-		t.Error("expected Streaming=true")
+	got, err := io.ReadAll(plan.stream)
+	if err != nil || string(got) != "hello" {
+		t.Errorf("stream content = %q err=%v", got, err)
 	}
-	if it.Info.Resumable {
-		t.Error("expected Resumable=false (stdin can't seek)")
+	if !strings.HasPrefix(plan.displayName, "fsend-text-") {
+		t.Errorf("name = %q", plan.displayName)
 	}
 }
 
-func TestTotalBytes(t *testing.T) {
-	items := []transfer.SourceItem{
-		{Info: wire.FileInfo{Size: 12}},
-		{Info: wire.FileInfo{Size: 34}},
-		{Info: wire.FileInfo{Size: 56}},
+func TestCollectPlan_Stdin(t *testing.T) {
+	plan, err := collectPlan(&flags{}, []string{"-"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := totalBytes(items); got != 12+34+56 {
-		t.Errorf("totalBytes = %d", got)
+	if plan.mode != wire.ModeStream || plan.isText {
+		t.Errorf("expected non-text stream mode, got %+v", plan)
+	}
+	if plan.stream != os.Stdin {
+		t.Error("expected stream backed by os.Stdin")
 	}
 }
 
@@ -560,93 +543,70 @@ func TestRetryNoticeFor_PrintsAttempt(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// send.go collectItems for text/stdin (the cases that don't touch disk)
+// send.go collectPlan
 // ---------------------------------------------------------------------------
 
-func TestCollectItems_Text(t *testing.T) {
-	items, kind, totalFiles, label, cleanup, err := collectItems(&flags{textArg: "hello"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-	if kind != wire.TransferText {
-		t.Errorf("kind = %v, want TransferText", kind)
-	}
-	if len(items) != 1 || items[0].Info.Size != 5 {
-		t.Errorf("items = %+v", items)
-	}
-	if totalFiles != 0 || label != "" {
-		t.Errorf("text should not set totalFiles/label: %d %q", totalFiles, label)
-	}
-}
-
-func TestCollectItems_Stdin(t *testing.T) {
-	items, kind, _, _, cleanup, err := collectItems(&flags{}, []string{"-"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-	if kind != wire.TransferStdin {
-		t.Errorf("kind = %v, want TransferStdin", kind)
-	}
-	if !items[0].Info.Streaming {
-		t.Error("stdin item must be Streaming")
-	}
-}
-
-func TestCollectItems_SingleFile(t *testing.T) {
+func TestCollectPlan_SingleFile(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "f.txt")
 	if err := os.WriteFile(fp, []byte("body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	items, kind, _, label, cleanup, err := collectItems(&flags{}, []string{fp})
+	plan, err := collectPlan(&flags{}, []string{fp})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
-	if kind != wire.TransferSingleFile {
-		t.Errorf("kind = %v, want TransferSingleFile", kind)
+	if plan.mode != wire.ModeFiles || plan.label != "f.txt" || plan.totalBytes != 4 {
+		t.Errorf("plan = %+v", plan)
 	}
-	if label != "f.txt" {
-		t.Errorf("label = %q, want f.txt", label)
-	}
-	if items[0].Info.Size != 4 {
-		t.Errorf("size = %d", items[0].Info.Size)
+	if plan.totalFiles != 1 {
+		t.Errorf("totalFiles = %d, want 1", plan.totalFiles)
 	}
 }
 
-func TestCollectItems_Directory_BuildsArchive(t *testing.T) {
+func TestCollectPlan_Directory(t *testing.T) {
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "proj")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(sub, "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(sub, "f.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	items, kind, totalFiles, label, cleanup, err := collectItems(&flags{}, []string{sub})
+	if err := os.WriteFile(filepath.Join(sub, "nested", "g.txt"), []byte("yy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := collectPlan(&flags{}, []string{sub})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
-	if kind != wire.TransferDirectory {
-		t.Errorf("kind = %v, want TransferDirectory", kind)
+	if plan.mode != wire.ModeFiles || plan.label != "proj/" {
+		t.Errorf("plan = %+v", plan)
 	}
-	if totalFiles == 0 {
-		t.Error("totalFiles must be > 0 for archive")
-	}
-	if label != "proj/" {
-		t.Errorf("label = %q, want proj/", label)
-	}
-	if items[0].Info.RelativePath != transfer.ArchiveName {
-		t.Errorf("archive wire-name = %q", items[0].Info.RelativePath)
+	if plan.totalFiles != 2 { // two regular files; dirs not counted
+		t.Errorf("totalFiles = %d, want 2", plan.totalFiles)
 	}
 }
 
-// --exclude only affects directory bundling; anywhere else it was
-// silently ignored — now a usage error.
-func TestCollectItems_ExcludeWithoutDirectory(t *testing.T) {
+// Sending the contents of an empty folder is a no-op; fail fast rather than
+// generate a code and wait on a receiver for nothing.
+func TestCollectPlan_EmptyContentsErrors(t *testing.T) {
+	dir := t.TempDir() // empty
+	// Literal "<dir>/." (not filepath.Join, which would clean the "." away) —
+	// this is what a shell passes for a contents send.
+	_, err := collectPlan(&flags{}, []string{dir + "/."})
+	if !errors.Is(err, fserrors.ErrUsage) {
+		t.Fatalf("empty contents send: err = %v, want ErrUsage", err)
+	}
+	// But sending the empty folder itself (wrapped) is allowed — it recreates
+	// the directory on the receiver.
+	if _, err := collectPlan(&flags{}, []string{dir}); err != nil {
+		t.Fatalf("sending an empty folder (wrapped) should be allowed: %v", err)
+	}
+}
+
+// --exclude only applies when a directory is among the inputs.
+func TestCollectPlan_ExcludeWithoutDirectory(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "f.txt")
 	if err := os.WriteFile(fp, []byte("body"), 0o644); err != nil {
@@ -662,21 +622,15 @@ func TestCollectItems_ExcludeWithoutDirectory(t *testing.T) {
 		{"stdin", &flags{excludes: []string{"*.log"}}, []string{"-"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, _, _, err := collectItems(tc.f, tc.paths)
+			_, err := collectPlan(tc.f, tc.paths)
 			if !errors.Is(err, fserrors.ErrUsage) {
 				t.Fatalf("err = %v, want ErrUsage", err)
 			}
-			if !strings.Contains(err.Error(), "--exclude only applies when sending a directory") {
-				t.Errorf("err = %q, want --exclude hint", err)
-			}
 		})
 	}
-	// A directory among the inputs keeps --exclude valid.
-	_, _, _, _, cleanup, err := collectItems(&flags{excludes: []string{"*.log"}}, []string{dir})
-	if err != nil {
+	if _, err := collectPlan(&flags{excludes: []string{"*.log"}}, []string{dir}); err != nil {
 		t.Fatalf("directory with --exclude must not error: %v", err)
 	}
-	cleanup()
 }
 
 // ---------------------------------------------------------------------------
@@ -705,100 +659,50 @@ func TestReadLine_BasicCases(t *testing.T) {
 // receive.go promptAccept under --yes / --quiet
 // ---------------------------------------------------------------------------
 
+func filesHello() wire.SenderHello {
+	return wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "proj/"}
+}
+
 func TestPromptAccept_QuietRequiresYes(t *testing.T) {
-	h := wire.SenderHello{TransferKind: wire.TransferSingleFile, DisplayName: "x", TotalBytes: 1}
+	h := filesHello()
+	sum := transfer.ClassifySummary{Total: 1, NewItems: 1, BytesToRecv: 1}
 	ui := newReceiverUI(context.Background(), &flags{quiet: true}, "/tmp", false, mustLANInfo())
-	if ui.promptAccept(h) {
+	if ui.promptAccept(h, sum) {
 		t.Error("quiet without --yes must decline")
 	}
 	ui = newReceiverUI(context.Background(), &flags{quiet: true, yes: true}, "/tmp", false, mustLANInfo())
-	if !ui.promptAccept(h) {
+	if !ui.promptAccept(h, sum) {
 		t.Error("quiet + --yes must accept")
 	}
 }
 
-func TestPromptAccept_YesAcceptsAcrossKinds(t *testing.T) {
-	for _, k := range []wire.TransferKind{
-		wire.TransferSingleFile,
-		wire.TransferMultiFile,
-		wire.TransferDirectory,
-		wire.TransferText,
-		wire.TransferStdin,
+func TestPromptAccept_YesAccepts(t *testing.T) {
+	for _, h := range []wire.SenderHello{
+		filesHello(),
+		{Mode: wire.ModeStream, IsText: true, DisplayName: "msg.txt"},
+		{Mode: wire.ModeStream, DisplayName: "stdin"},
 	} {
 		got := captureStderr(t, func() {
-			h := wire.SenderHello{TransferKind: k, DisplayName: "x", TotalBytes: 1, TotalFiles: 1}
 			ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
-			if !ui.promptAccept(h) {
-				t.Errorf("--yes must accept kind %v", k)
+			if !ui.promptAccept(h, transfer.ClassifySummary{Total: 1, NewItems: 1}) {
+				t.Errorf("--yes must accept hello %+v", h)
 			}
 		})
 		if !strings.Contains(got, "Incoming") {
-			t.Errorf("kind %v: prompt block missing:\n%s", k, got)
+			t.Errorf("prompt block missing:\n%s", got)
 		}
 	}
 }
 
-func TestPromptAccept_MultiFileNamesShown(t *testing.T) {
+func TestPromptAccept_ShowsBreakdown(t *testing.T) {
 	got := captureStderr(t, func() {
-		h := wire.SenderHello{
-			TransferKind: wire.TransferMultiFile,
-			TotalFiles:   3,
-			TotalBytes:   100,
-			FileNames:    []string{"a.bin", "b.bin", "c.bin"},
-		}
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
-		_ = ui.promptAccept(h)
+		_ = ui.promptAccept(filesHello(), transfer.ClassifySummary{Total: 10, NewItems: 3, Identical: 6, Differing: 1})
 	})
-	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
-		if !strings.Contains(got, name) {
-			t.Errorf("prompt missing %q:\n%s", name, got)
+	for _, want := range []string{"3 new", "6 up to date", "1 differ"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("breakdown missing %q:\n%s", want, got)
 		}
-	}
-	if strings.Contains(got, "more") {
-		t.Errorf("complete list must not print an overflow line:\n%s", got)
-	}
-}
-
-func TestPromptAccept_MultiFileNamesCapped(t *testing.T) {
-	names := make([]string, 8)
-	for i := range names {
-		names[i] = fmt.Sprintf("file%d.bin", i)
-	}
-	got := captureStderr(t, func() {
-		h := wire.SenderHello{
-			TransferKind: wire.TransferMultiFile,
-			TotalFiles:   20,
-			TotalBytes:   100,
-			FileNames:    names,
-		}
-		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
-		_ = ui.promptAccept(h)
-	})
-	// First five shown, the rest summarised against TotalFiles.
-	if !strings.Contains(got, "file4.bin") {
-		t.Errorf("fifth name missing:\n%s", got)
-	}
-	if strings.Contains(got, "file5.bin") {
-		t.Errorf("display cap exceeded:\n%s", got)
-	}
-	if !strings.Contains(got, "and 15 more") {
-		t.Errorf("overflow line missing:\n%s", got)
-	}
-}
-
-func TestPromptAccept_MultiFileNoNamesFromOldSender(t *testing.T) {
-	// Pre-FileNames senders leave the list nil; the prompt falls back to
-	// the bare count with no name lines and no overflow line.
-	got := captureStderr(t, func() {
-		h := wire.SenderHello{TransferKind: wire.TransferMultiFile, TotalFiles: 3, TotalBytes: 100}
-		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
-		_ = ui.promptAccept(h)
-	})
-	if !strings.Contains(got, "3 files") {
-		t.Errorf("count line missing:\n%s", got)
-	}
-	if strings.Contains(got, "more") {
-		t.Errorf("overflow line must not render without names:\n%s", got)
 	}
 }
 
@@ -822,14 +726,9 @@ func TestSummaryParts_ResumeShowsMovedAndHonestRate(t *testing.T) {
 
 func TestPromptAccept_PasswordChipRendered(t *testing.T) {
 	got := captureStderr(t, func() {
-		h := wire.SenderHello{
-			TransferKind: wire.TransferSingleFile,
-			DisplayName:  "x",
-			TotalBytes:   1,
-			HasPassword:  true,
-		}
+		h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "proj/", HasPassword: true}
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
-		_ = ui.promptAccept(h)
+		_ = ui.promptAccept(h, transfer.ClassifySummary{Total: 1, NewItems: 1})
 	})
 	if !strings.Contains(got, "password required") {
 		t.Errorf("expected password chip, got:\n%s", got)
@@ -879,9 +778,8 @@ func TestPromptAccept_PathChipShown(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := captureStderr(t, func() {
-			h := wire.SenderHello{TransferKind: wire.TransferSingleFile, DisplayName: "x", TotalBytes: 1, TotalFiles: 1}
 			ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, c.info)
-			_ = ui.promptAccept(h)
+			_ = ui.promptAccept(filesHello(), transfer.ClassifySummary{Total: 1, NewItems: 1})
 		})
 		if !strings.Contains(got, "Incoming from") || !strings.Contains(got, c.want) {
 			t.Errorf("prompt missing path chip %q:\n%s", c.want, got)

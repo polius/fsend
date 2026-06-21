@@ -33,6 +33,8 @@ type flags struct {
 	yes       bool
 	outDir    string
 	overwrite bool
+	dryRun    bool
+	checksum  bool
 
 	// Server selection — connectArgsRaw is the raw slice cobra hands
 	// back; "no flag" vs "empty flag" is distinguished via Flags().Changed.
@@ -112,7 +114,9 @@ Examples:
 	passFlag.DefValue = ""
 	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers")
 	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
-	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files on receive")
+	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files that differ on receive")
+	c.Flags().BoolVar(&f.dryRun, "dry-run", false, "show what would transfer (new/identical/differs), write nothing")
+	c.Flags().BoolVar(&f.checksum, "checksum", false, "decide identical files by content hash, not size+mtime (like rsync -c)")
 	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress non-error output")
 	c.Flags().StringVar(&f.hostname, "name", "", "override the hostname shown to the peer")
 	c.Flags().StringSliceVar(&f.excludes, "exclude", nil,

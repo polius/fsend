@@ -191,6 +191,7 @@ Day-to-day, the surface is very similar:
 | Send a literal string             | `--text`      | `--text`              |
 | Receiver confirmation prompt      | ✓ (`--yes`)   | ✓ (`--yes`)           |
 | Resume after interruption         | ✓             | ✓                     |
+| Skip unchanged files on re-send   | ✓ (size+mtime; `--checksum` to hash) | ✓ (always hashes) |
 | Password-gate the transfer        | `--pass`      | (code phrase doubles as the secret) |
 | Exclude paths when sending a dir  | `--exclude`   | `--exclude`           |
 | Custom output dir                 | `--out`       | `--out`               |
