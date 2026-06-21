@@ -259,7 +259,12 @@ COMMON FLAGS
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
   --yes                  Auto-accept incoming transfers (no prompt)
-  --overwrite            Overwrite existing files on receive
+  --overwrite            Replace existing files that differ (identical files
+                         are always skipped)
+  --dry-run              Show what would transfer (new/identical/differs),
+                         write nothing
+  --checksum             Decide identical files by content hash, not
+                         size+mtime (like rsync -c)
   --quiet                Suppress all non-error output
   --name <string>        Override the hostname shown to the peer
   --exclude <glob,…>     Skip entries matching these globs in a directory
