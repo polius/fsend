@@ -166,6 +166,7 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 		byIndex[src.Entry.Index] = src.AbsPath
 	}
 	out := make(map[uint32]wire.Decision)
+	hashed := make(map[uint32][32]byte) // hash each file at most once per session
 	for {
 		ft, body, err := wire.ReadControlRaw(s.Control)
 		if err != nil {
@@ -183,9 +184,14 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 				if !ok || p == "" {
 					continue
 				}
-				h, err := hashFileRoot(p)
-				if err != nil {
-					return nil, fmt.Errorf("%w: hash %s: %v", fserrors.ErrReadFailed, p, err)
+				// Cache so a replayed VERIFY_REQUEST can't make a hostile peer
+				// re-hash the same files indefinitely. Bounded by len(sources).
+				h, done := hashed[i]
+				if !done {
+					if h, err = hashFileRoot(p); err != nil {
+						return nil, fmt.Errorf("%w: hash %s: %v", fserrors.ErrReadFailed, p, err)
+					}
+					hashed[i] = h
 				}
 				resp = append(resp, wire.FileHash{Index: i, Hash: h})
 			}
@@ -199,6 +205,12 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 			}
 			for _, d := range batch {
 				out[d.Index] = d
+			}
+			// A well-behaved receiver returns at most one decision per entry we
+			// sent. More means a malformed or hostile peer trying to grow the
+			// map unbounded — the listing path is capped, so cap this too.
+			if len(out) > len(sources) {
+				return nil, fmt.Errorf("%w: more decisions than entries sent", fserrors.ErrProtocolError)
 			}
 		case wire.TypeClassifyEnd:
 			return out, nil
