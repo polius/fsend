@@ -18,21 +18,21 @@
     alt="fsend demo: the sender runs 'fsend report.pdf' and gets a share code; the receiver runs 'fsend <code>', accepts, and the file lands in ~/Downloads.">
 </p>
 
-<p align="center"><em>One command to send, one to receive — your bytes go straight between the two machines, end-to-end encrypted.</em></p>
+<p align="center"><em>One command to send, one to receive.</em></p>
 
 ## About
 
-fsend is a **command-line tool** that lets any two computers transfer files **straight to each other** — no accounts, no cloud, no third party storing the file.
+fsend is a **command-line tool** that lets any two computers transfer files and folders **straight to each other**.
 
 - **Peer-to-peer** — bytes go straight from sender to receiver at your own internet speed (relay only as a fallback)
 - **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the share code (PAKE); even the fallback relay never sees the file
 - **No ports to open** — works on any network, no router or firewall setup
 - **Send anything** — files, folders, multiple at once, stdin streams, or literal text
 - **Resumable** — connection drops? Rerun the same command and fsend picks up where it stopped
-- **Skips what's already there** — re-send a folder and the files already on the other side are skipped automatically
+- **Skips what's already there** — re-send a folder and only the new or changed files transfer
 - **Password-protected** — gate any transfer with `--pass`; receiver supplies it to unlock
 - **Post-quantum** — X25519 + ML-KEM-768 (NIST); designed so future quantum computers can't decrypt today's transfers
-- **Self-hostable** — deploy your own pairing server + relay with Docker compose (Caddy for TLS)
+- **Self-hostable** — deploy your own pairing server + relay with Docker compose
 - **Runs anywhere** — single static binary on Linux, macOS, FreeBSD, Windows; x86 and ARM
 
 ## Install
