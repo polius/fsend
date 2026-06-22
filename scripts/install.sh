@@ -6,6 +6,11 @@ BINARY="fsend"
 FSEND_VERSION="${FSEND_VERSION:-latest}"
 PREFIX="${PREFIX:-}"
 
+# Keyless-cosign identity of the release workflow. checksums.txt is signed
+# in CI (see .goreleaser.yml); these pin who is allowed to have signed it.
+COSIGN_IDENTITY_REGEXP="^https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v.*$"
+COSIGN_ISSUER="https://token.actions.githubusercontent.com"
+
 if [ -n "$PREFIX" ]; then
     PREFIX_EXPLICIT=1
 else
@@ -177,6 +182,40 @@ extract_zip() {
 # POSIX sh has no function scope: bare assignments here would clobber the
 # caller's globals. The archive name in particular is reused for extraction
 # after this returns, so keep these parameters underscore-prefixed.
+# verify_signature checks cosign's keyless signature on checksums.txt before
+# any checksum derived from it is trusted. The SHA-256 check alone only proves
+# the archive matches checksums.txt — both fetched over the same channel — so
+# it catches corruption, not a tampered release. The signature proves the file
+# came from the release workflow.
+#
+# cosign is optional: requiring it would break the common curl|sh path on hosts
+# without it. When absent we fall back to checksum-only and say so; a present
+# cosign that reports a bad signature is always fatal. Set
+# FSEND_REQUIRE_SIGNATURE=1 to refuse to install without verification.
+verify_signature() {
+    _sums="$1"  # checksums.txt
+    _base="$2"  # release download base URL
+    _dir="$3"   # temp dir
+    if ! command -v cosign >/dev/null 2>&1; then
+        if [ "${FSEND_REQUIRE_SIGNATURE:-0}" = "1" ]; then
+            err "FSEND_REQUIRE_SIGNATURE=1 but cosign is not installed"
+        fi
+        warn "cosign not found — verifying checksum only, not the release signature."
+        warn "  install cosign for full authenticity, or set FSEND_REQUIRE_SIGNATURE=1 to require it."
+        return 0
+    fi
+    download "${_base}/checksums.txt.sig" "${_dir}/checksums.txt.sig"
+    download "${_base}/checksums.txt.pem" "${_dir}/checksums.txt.pem"
+    cosign verify-blob \
+        --certificate "${_dir}/checksums.txt.pem" \
+        --signature "${_dir}/checksums.txt.sig" \
+        --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
+        --certificate-oidc-issuer "$COSIGN_ISSUER" \
+        "$_sums" >/dev/null 2>&1 \
+        || err "cosign signature verification failed for checksums.txt — refusing to install"
+    ok "signature verified"
+}
+
 verify_checksum() {
     _archive="$1"
     _sums="$2"
@@ -299,6 +338,10 @@ main() {
         info "downloading checksums"
         download "https://github.com/${REPO}/releases/download/${version}/checksums.txt" "$tmp/checksums.txt"
     fi
+    info "verifying signature"
+    verify_signature "$tmp/checksums.txt" \
+        "https://github.com/${REPO}/releases/download/${version}" "$tmp"
+
     info "installing fsend ${version} for ${os}-${arch} into ${PREFIX}"
 
     case "$os" in
