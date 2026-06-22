@@ -252,9 +252,11 @@ func ReceiverHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptR
 // shutdown contract.
 type streamCloser struct{ stream *quic.Stream }
 
-func (s *streamCloser) Read(p []byte) (int, error)  { return s.stream.Read(p) }
-func (s *streamCloser) Write(p []byte) (int, error) { return s.stream.Write(p) }
-func (s *streamCloser) Close() error                { return s.stream.Close() }
+func (s *streamCloser) Read(p []byte) (int, error)         { return s.stream.Read(p) }
+func (s *streamCloser) Write(p []byte) (int, error)        { return s.stream.Write(p) }
+func (s *streamCloser) Close() error                       { return s.stream.Close() }
+func (s *streamCloser) SetReadDeadline(t time.Time) error  { return s.stream.SetReadDeadline(t) }
+func (s *streamCloser) SetWriteDeadline(t time.Time) error { return s.stream.SetWriteDeadline(t) }
 
 // uniInCloser adapts a quic.ReceiveStream (read-only) to io.ReadWriteCloser.
 type uniInCloser struct{ s *quic.ReceiveStream }
@@ -263,16 +265,18 @@ func (u *uniInCloser) Read(p []byte) (int, error) { return u.s.Read(p) }
 func (u *uniInCloser) Write(_ []byte) (int, error) {
 	return 0, errors.New("quicconn: stream is receive-only")
 }
-func (u *uniInCloser) Close() error { u.s.CancelRead(0); return nil }
+func (u *uniInCloser) Close() error                      { u.s.CancelRead(0); return nil }
+func (u *uniInCloser) SetReadDeadline(t time.Time) error { return u.s.SetReadDeadline(t) }
 
 func wrapUniIn(s *quic.ReceiveStream) io.ReadWriteCloser { return &uniInCloser{s: s} }
 
 // uniOutCloser adapts a quic.SendStream (write-only) to io.ReadWriteCloser.
 type uniOutCloser struct{ s *quic.SendStream }
 
-func (u *uniOutCloser) Read(_ []byte) (int, error)  { return 0, io.EOF }
-func (u *uniOutCloser) Write(p []byte) (int, error) { return u.s.Write(p) }
-func (u *uniOutCloser) Close() error                { return u.s.Close() }
+func (u *uniOutCloser) Read(_ []byte) (int, error)         { return 0, io.EOF }
+func (u *uniOutCloser) Write(p []byte) (int, error)        { return u.s.Write(p) }
+func (u *uniOutCloser) Close() error                       { return u.s.Close() }
+func (u *uniOutCloser) SetWriteDeadline(t time.Time) error { return u.s.SetWriteDeadline(t) }
 
 func wrapUniOut(s *quic.SendStream) io.ReadWriteCloser { return &uniOutCloser{s: s} }
 
