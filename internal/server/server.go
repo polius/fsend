@@ -332,9 +332,20 @@ func (s *Server) StartJanitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			s.evict(now)
+			s.evictSafe(now)
 		}
 	}
+}
+
+// evictSafe runs one eviction sweep with panic recovery, so a bug in evict
+// can't silently kill the janitor and let the session maps grow unbounded.
+func (s *Server) evictSafe(now time.Time) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.cfg.Logger.Error("recovered panic in session janitor", "panic", r)
+		}
+	}()
+	s.evict(now)
 }
 
 func (s *Server) evict(now time.Time) {
@@ -385,8 +396,15 @@ func (s *Server) evict(now time.Time) {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, HealthResponse{
-		Status:        "ok",
+	status, code := "ok", http.StatusOK
+	// If a relay is wired and its read loop has died, report the degradation
+	// so an orchestrator restarts the container instead of trusting a zombie
+	// that still hands out relay tokens for a relay that forwards nothing.
+	if h, ok := s.relayAllocator.(interface{ Healthy() bool }); ok && !h.Healthy() {
+		status, code = "degraded", http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, HealthResponse{
+		Status:        status,
 		Version:       s.cfg.ServerVersion,
 		UptimeSeconds: int64(time.Since(s.started).Seconds()),
 	})

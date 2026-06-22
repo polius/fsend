@@ -222,3 +222,35 @@ func TestAllowSTUNResponse_RateCap(t *testing.T) {
 		t.Fatal("expected allow after window rollover")
 	}
 }
+
+func TestServer_DrainRejectsNewAllocations(t *testing.T) {
+	srv := NewServer(nil, ServerConfig{})
+	if _, err := srv.Allocate(); err != nil {
+		t.Fatalf("allocate before drain: %v", err)
+	}
+	srv.Drain()
+	if _, err := srv.Allocate(); err == nil {
+		t.Fatal("Allocate after Drain should be rejected")
+	}
+}
+
+func TestServer_HealthyByDefault(t *testing.T) {
+	if !NewServer(nil, ServerConfig{}).Healthy() {
+		t.Fatal("a fresh relay should report healthy")
+	}
+}
+
+func TestServer_ActiveAllocationsCountsLiveSessions(t *testing.T) {
+	srv := NewServer(nil, ServerConfig{})
+	if n := srv.ActiveAllocations(); n != 0 {
+		t.Fatalf("active = %d, want 0", n)
+	}
+	if _, err := srv.Allocate(); err != nil {
+		t.Fatal(err)
+	}
+	// A freshly-allocated session has lastActivity = now, so it counts as
+	// in-flight for drain purposes.
+	if n := srv.ActiveAllocations(); n != 1 {
+		t.Fatalf("active = %d, want 1", n)
+	}
+}

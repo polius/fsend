@@ -483,11 +483,36 @@ type fakeRelay struct {
 	tok      relay.Token
 	reason   string
 	maxBytes uint64
+	dead     bool
 }
 
 func (f *fakeRelay) Allocate() (relay.Token, error) { return f.tok, nil }
 func (f *fakeRelay) Status(t relay.Token) string    { return f.reason }
 func (f *fakeRelay) MaxBytesPerSession() uint64     { return f.maxBytes }
+func (f *fakeRelay) Healthy() bool                  { return !f.dead }
+
+// /v1/health must flip to 503/degraded once the relay read loop has died,
+// so an orchestrator restarts the container instead of trusting a zombie.
+func TestHealth_DegradedWhenRelayDead(t *testing.T) {
+	s := New(Config{ServerVersion: "0.0.0-test"})
+	s.WithRelay(&fakeRelay{dead: true}, 443)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	var h HealthResponse
+	_ = json.NewDecoder(resp.Body).Decode(&h)
+	if h.Status != "degraded" {
+		t.Fatalf("status = %q, want degraded", h.Status)
+	}
+}
 
 // /v1/relay/status must echo back the operator-set byte ceiling so the
 // CLI can render a concrete error ("server limit 100 MB") instead of a

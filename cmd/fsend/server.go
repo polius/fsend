@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -144,11 +145,47 @@ func runServer() error {
 		}
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Graceful shutdown: stop new relay allocations, then let in-flight HTTP
+	// (including 25s /wait long-polls) and in-flight relay transfers finish
+	// before tearing down. Both are bounded by shutdownGrace so a wedged
+	// session can't block shutdown forever; the container's stop_grace_period
+	// must exceed it (the compose file sets 35s).
+	relaySrv.Drain()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer shutdownCancel()
-	_ = httpSrv.Shutdown(shutdownCtx)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _ = httpSrv.Shutdown(shutdownCtx) }()
+	go func() { defer wg.Done(); drainRelay(shutdownCtx, relaySrv, logger) }()
+	wg.Wait()
 	cancel()
 	return nil
+}
+
+// shutdownGrace bounds graceful shutdown. Set above the 25s /wait long-poll so
+// in-flight polls return naturally rather than being severed; the deployment's
+// stop_grace_period must exceed it.
+const shutdownGrace = 30 * time.Second
+
+// drainRelay blocks until no relay transfer has moved bytes recently (so the
+// socket can close without cutting an in-flight transfer) or ctx expires. It
+// returns immediately when the relay is idle, so a quiet server still restarts
+// fast.
+func drainRelay(ctx context.Context, r *relay.Server, logger *slog.Logger) {
+	t := time.NewTicker(250 * time.Millisecond)
+	defer t.Stop()
+	for {
+		if n := r.ActiveAllocations(); n == 0 {
+			return
+		} else if ctx.Err() != nil {
+			logger.Warn("relay drain deadline reached; dropping active sessions", "active", n)
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-t.C:
+		}
+	}
 }
 
 // serverRuntimeConfig is the parsed environment for `fsend server`.

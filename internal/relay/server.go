@@ -40,7 +40,20 @@ type Server struct {
 	stunMu     sync.Mutex
 	stunWindow time.Time
 	stunCount  int
+
+	// healthy is true while the read loop is forwarding; it flips false if
+	// Run exits on a real socket error (not a graceful ctx cancel) so the
+	// signaling layer's /v1/health can report the zombie instead of lying.
+	healthy atomic.Bool
+	// draining rejects new allocations during graceful shutdown so the drain
+	// can converge while in-flight sessions finish.
+	draining atomic.Bool
 }
+
+// activeWindow bounds how recently an allocation must have forwarded a
+// datagram to count as in-flight for drain purposes. Long enough to span
+// QUIC's pacing gaps, short enough that drain converges once transfers stop.
+const activeWindow = 3 * time.Second
 
 // stunResponsesPerSec caps aggregate STUN binding replies. A few dozen
 // small packets per pairing is plenty for ICE gathering, so this leaves
@@ -106,13 +119,40 @@ type allocation struct {
 // lifecycle except for Close in Stop.
 func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 	cfg.Default()
-	return &Server{
+	s := &Server{
 		conn:      conn,
 		cfg:       cfg,
 		logger:    cfg.Logger,
 		allocs:    make(map[Token]*allocation),
 		tombstone: make(map[Token]tombstoneEntry),
 	}
+	s.healthy.Store(true) // assume up until Run proves otherwise
+	return s
+}
+
+// Healthy reports whether the relay read loop is still forwarding. It flips
+// false only when Run exits on a real socket error, so /v1/health can surface
+// a dead relay rather than reporting a healthy zombie.
+func (s *Server) Healthy() bool { return s.healthy.Load() }
+
+// Drain stops the relay from accepting new allocations so a graceful shutdown
+// can wait for existing in-flight sessions to finish before the socket closes.
+func (s *Server) Drain() { s.draining.Store(true) }
+
+// ActiveAllocations counts sessions that forwarded a datagram within
+// activeWindow — i.e. transfers currently moving bytes. Idle reservations
+// (allocated but unused) don't block a drain.
+func (s *Server) ActiveAllocations() int {
+	cutoff := time.Now().Add(-activeWindow).UnixNano()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, a := range s.allocs {
+		if a.lastActivity.Load() >= cutoff {
+			n++
+		}
+	}
+	return n
 }
 
 // MaxBytesPerSession exposes the configured byte ceiling so the
@@ -142,6 +182,9 @@ func (s *Server) Status(t Token) string {
 // in their datagrams. Called from the signaling layer's
 // POST /v1/relay/allocate handler.
 func (s *Server) Allocate() (Token, error) {
+	if s.draining.Load() {
+		return Token{}, errors.New("relay: server is draining")
+	}
 	var t Token
 	if _, err := rand.Read(t[:]); err != nil {
 		return Token{}, fmt.Errorf("relay: token rand: %w", err)
@@ -182,14 +225,29 @@ func (s *Server) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			// Other read errors (e.g. socket closed): bail out.
+			// Other read errors (e.g. socket closed): the relay is dead.
+			// Flag it so /v1/health stops reporting a healthy zombie.
+			s.healthy.Store(false)
 			return fmt.Errorf("relay: read: %w", err)
 		}
 		// Process inline — no goroutine per datagram (would be massive
-		// overhead). Forward is one syscall.
-		s.handle(buf[:n], addr.(*net.UDPAddr))
+		// overhead). Forward is one syscall. Recover per datagram so a
+		// crafted packet that trips a panic in handle can't take the whole
+		// server down with it.
+		s.handleSafe(buf[:n], addr.(*net.UDPAddr))
 		bufPool.Put(bufPtr)
 	}
+}
+
+// handleSafe runs handle with panic recovery so one malformed datagram can
+// never crash the whole server (and every other live session with it).
+func (s *Server) handleSafe(datagram []byte, src *net.UDPAddr) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("relay: recovered panic handling datagram", "panic", r)
+		}
+	}()
+	s.handle(datagram, src)
 }
 
 func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
@@ -319,27 +377,38 @@ func (s *Server) janitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			cutoff := now.Add(-sessionIdleTimeout).UnixNano()
-			nowNanos := now.UnixNano()
-			s.mu.Lock()
-			for tok, a := range s.allocs {
-				if a.lastActivity.Load() < cutoff {
-					delete(s.allocs, tok)
-					s.tombstone[tok] = tombstoneEntry{
-						reason:    ReasonIdle,
-						expiresAt: now.Add(TombstoneTTL).UnixNano(),
-					}
-				}
+			s.sweep(now)
+		}
+	}
+}
+
+// sweep evicts idle allocations and expired tombstones. Wrapped in panic
+// recovery so a bug here can't silently kill the janitor goroutine and let
+// the maps grow unbounded.
+func (s *Server) sweep(now time.Time) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("relay: recovered panic in janitor", "panic", r)
+		}
+	}()
+	cutoff := now.Add(-sessionIdleTimeout).UnixNano()
+	nowNanos := now.UnixNano()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for tok, a := range s.allocs {
+		if a.lastActivity.Load() < cutoff {
+			delete(s.allocs, tok)
+			s.tombstone[tok] = tombstoneEntry{
+				reason:    ReasonIdle,
+				expiresAt: now.Add(TombstoneTTL).UnixNano(),
 			}
-			// Expire tombstones by per-entry age — no bulk-wipe, so a
-			// burst of evictions can't blind every subsequent status
-			// lookup.
-			for tok, entry := range s.tombstone {
-				if entry.expiresAt < nowNanos {
-					delete(s.tombstone, tok)
-				}
-			}
-			s.mu.Unlock()
+		}
+	}
+	// Expire tombstones by per-entry age — no bulk-wipe, so a burst of
+	// evictions can't blind every subsequent status lookup.
+	for tok, entry := range s.tombstone {
+		if entry.expiresAt < nowNanos {
+			delete(s.tombstone, tok)
 		}
 	}
 }
