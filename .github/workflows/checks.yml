@@ -61,6 +61,21 @@ jobs:
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
 
+  # Bounded fuzzing of the parsers most exposed to a malicious peer (the wire
+  # codec and the path sanitizer). Seed corpora also run in the normal test
+  # job; this explores beyond them for a fixed budget.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: go test -run '^$' -fuzz='^FuzzReadControlRaw$' -fuzztime=30s ./internal/wire/
+      - run: go test -run '^$' -fuzz='^FuzzReadChunk$' -fuzztime=30s ./internal/wire/
+      - run: go test -run '^$' -fuzz='^FuzzSanitizeRelativePath$' -fuzztime=30s ./internal/transfer/
+
   deadcode:
     runs-on: ubuntu-latest
     steps:

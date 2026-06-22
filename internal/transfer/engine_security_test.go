@@ -216,3 +216,38 @@ func TestVersionMismatch_SenderReportsClearly(t *testing.T) {
 	_ = ctrlB.Close()
 	_ = dataB.Close()
 }
+
+// A hostile receiver must not be able to grow the sender's decision map past
+// the number of entries it actually sent.
+func TestSenderNegotiate_RejectsExcessDecisions(t *testing.T) {
+	ctrlA, ctrlB := net.Pipe()
+	sender := &Streams{Control: ctrlA}
+	sources := []Source{
+		{Entry: wire.ListingEntry{Index: 0}},
+		{Entry: wire.ListingEntry{Index: 1}},
+	}
+
+	res := make(chan error, 1)
+	go func() {
+		_, err := senderNegotiate(sender, sources)
+		res <- err
+	}()
+	go func() { _, _ = io.Copy(io.Discard, ctrlB) }() // drain any sender writes
+
+	batch := make([]wire.Decision, 0, 100)
+	for i := uint32(0); i < 100; i++ {
+		batch = append(batch, wire.Decision{Index: i, Action: wire.DecisionSend})
+	}
+	if err := wire.WriteControl(ctrlB, wire.TypeClassifyBatch, batch); err != nil {
+		t.Fatalf("write batch: %v", err)
+	}
+
+	select {
+	case err := <-res:
+		if !errors.Is(err, fserrors.ErrProtocolError) {
+			t.Fatalf("want ErrProtocolError, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("senderNegotiate did not reject excess decisions")
+	}
+}

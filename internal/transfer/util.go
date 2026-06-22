@@ -47,7 +47,14 @@ func pathIsUnder(child, parent string) bool {
 	if rel == "." {
 		return true
 	}
-	return !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
+	// A leading ".." is a real escape only when it is the ".." element itself
+	// (rel == ".." or "../…"), not a filename that merely starts with two dots
+	// — e.g. "..data", which Kubernetes secret mounts create. The old
+	// HasPrefix(rel, "..") test rejected those legitimate in-bounds names.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return !filepath.IsAbs(rel)
 }
 
 // symlinkEscapes reports whether placing a symlink at <targetDir>/<relPath>
