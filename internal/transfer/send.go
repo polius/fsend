@@ -52,6 +52,12 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 }
 
 func send(ctx context.Context, s *Streams, opts SendOptions) error {
+	// Bind the streams to ctx so a Ctrl-C parked in a blocked QUIC write
+	// unblocks promptly instead of waiting out the idle timeout. notifyCancel
+	// (called by the outer Send with the raw, unwrapped streams) is unaffected.
+	s, stop := bindCtx(ctx, s)
+	defer stop()
+
 	hello := &wire.SenderHello{
 		ProtocolVersion: wire.ProtocolVersion,
 		Hostname:        opts.Hostname,

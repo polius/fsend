@@ -66,6 +66,11 @@ type ClassifiedEntry struct {
 
 // Recv executes the full receiver-side protocol over the supplied streams.
 func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
+	// Bind the streams to ctx so a Ctrl-C parked in a blocked QUIC read
+	// unblocks promptly instead of waiting out the idle timeout.
+	s, stop := bindCtx(ctx, s)
+	defer stop()
+
 	var hello wire.SenderHello
 	ft, err := wire.ReadControl(s.Control, &hello)
 	if err != nil {
