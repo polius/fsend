@@ -113,3 +113,23 @@ excluded for legibility). Codes are:
   not user-selectable. To require a password on top of the code, add
   `--pass` when sending.
 
+## Release integrity
+
+Release archives are published with a `checksums.txt` that is **signed in
+CI with keyless [cosign](https://docs.sigstore.dev/)** (Sigstore Fulcio +
+Rekor), bound to the release workflow's identity. The installer and
+`fsend --update` verify two independent things:
+
+- **Authenticity** — if `cosign` is installed, the signature on
+  `checksums.txt` is verified against the release workflow's identity
+  before any checksum is trusted. This catches a *tampered* release, not
+  just a corrupted download — a SHA-256 match alone only proves the
+  archive matches `checksums.txt`, and both come from the same host.
+- **Integrity** — the downloaded archive's SHA-256 is checked against the
+  (now-trusted) `checksums.txt`.
+
+cosign is optional so the one-line install keeps working on hosts without
+it; in that case only the checksum is verified and the installer says so.
+Set `FSEND_REQUIRE_SIGNATURE=1` to refuse to install unless the signature
+is verified.
+

@@ -38,6 +38,11 @@ Set-StrictMode -Version Latest
 $Repo   = 'polius/fsend'
 $Binary = 'fsend.exe'
 
+# Keyless-cosign identity of the release workflow (checksums.txt is signed in
+# CI; see .goreleaser.yml). These pin who is allowed to have signed it.
+$CosignIdentityRegexp = "^https://github.com/$Repo/.github/workflows/release.yml@refs/tags/v.*$"
+$CosignIssuer = 'https://token.actions.githubusercontent.com'
+
 function Info($m) { Write-Host "› $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "✓ $m" -ForegroundColor Green }
 
@@ -88,6 +93,36 @@ function Download($url, $out) {
     }
 }
 
+# Verify-Signature checks cosign's keyless signature on checksums.txt before
+# any checksum derived from it is trusted. The SHA-256 check alone only proves
+# the archive matches checksums.txt (both fetched over the same channel); the
+# signature proves the file came from the release workflow. cosign is optional:
+# absent, we fall back to checksum-only unless FSEND_REQUIRE_SIGNATURE=1.
+function Verify-Signature($sums, $base, $dir) {
+    if (-not (Get-Command cosign -ErrorAction SilentlyContinue)) {
+        if ($env:FSEND_REQUIRE_SIGNATURE -eq '1') {
+            Err 'FSEND_REQUIRE_SIGNATURE=1 but cosign is not installed'
+        }
+        Write-Host '! cosign not found - verifying checksum only, not the release signature.' -ForegroundColor Yellow
+        Write-Host '  install cosign for full authenticity, or set FSEND_REQUIRE_SIGNATURE=1 to require it.' -ForegroundColor Yellow
+        return
+    }
+    $sig = Join-Path $dir 'checksums.txt.sig'
+    $pem = Join-Path $dir 'checksums.txt.pem'
+    Download "$base/checksums.txt.sig" $sig
+    Download "$base/checksums.txt.pem" $pem
+    & cosign verify-blob `
+        --certificate $pem `
+        --signature $sig `
+        --certificate-identity-regexp $CosignIdentityRegexp `
+        --certificate-oidc-issuer $CosignIssuer `
+        $sums 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Err 'cosign signature verification failed for checksums.txt - refusing to install'
+    }
+    Ok 'signature verified'
+}
+
 # Windows PowerShell 5.1 defaults to TLS 1.0/1.1; GitHub requires 1.2+.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -127,6 +162,9 @@ try {
     $archive = "fsend_${vnum}_windows_${arch}.zip"
     Info "downloading $archive"
     Download "https://github.com/$Repo/releases/download/$Version/$archive" (Join-Path $tmp $archive)
+
+    Info 'verifying signature'
+    Verify-Signature $checksums "https://github.com/$Repo/releases/download/$Version" $tmp
 
     Info 'verifying checksum'
     $row = Get-Content $checksums | Where-Object { $_ -match ("\s" + [regex]::Escape($archive) + "$") } | Select-Object -First 1
