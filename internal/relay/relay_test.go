@@ -202,3 +202,23 @@ func TestServer_STUNBinding(t *testing.T) {
 	_ = serverConn.Close()
 	<-srvErr
 }
+
+func TestAllowSTUNResponse_RateCap(t *testing.T) {
+	s := &Server{}
+	base := time.Unix(1700000000, 0)
+
+	// The whole per-second budget is allowed.
+	for i := 0; i < stunResponsesPerSec; i++ {
+		if !s.allowSTUNResponse(base) {
+			t.Fatalf("response %d denied within budget", i)
+		}
+	}
+	// One more in the same window is denied.
+	if s.allowSTUNResponse(base) {
+		t.Fatal("expected denial after budget exhausted")
+	}
+	// A new one-second window resets the budget.
+	if !s.allowSTUNResponse(base.Add(time.Second)) {
+		t.Fatal("expected allow after window rollover")
+	}
+}

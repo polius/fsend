@@ -32,7 +32,21 @@ type Server struct {
 	mu        sync.RWMutex
 	allocs    map[Token]*allocation
 	tombstone map[Token]tombstoneEntry // recently evicted tokens + reason; janitor expires by age
+
+	// STUN responses are a small (~2x) amplifier off a spoofable source.
+	// A global fixed-window cap bounds the reflector's aggregate output;
+	// it is deliberately NOT per-source, because the source IP is forgeable
+	// and a per-source map would itself be an unbounded-memory vector.
+	stunMu     sync.Mutex
+	stunWindow time.Time
+	stunCount  int
 }
+
+// stunResponsesPerSec caps aggregate STUN binding replies. A few dozen
+// small packets per pairing is plenty for ICE gathering, so this leaves
+// real clients ample headroom while keeping the reflector's contribution
+// to any amplification attack negligible (~40 KB/s of responses).
+const stunResponsesPerSec = 1000
 
 // tombstoneEntry records why an allocation was evicted, with the
 // monotonic-ish unix-nanos timestamp the janitor uses to expire it.
@@ -250,6 +264,9 @@ func (s *Server) handleSTUN(datagram []byte, src *net.UDPAddr) {
 	if !stun.IsMessage(datagram) {
 		return
 	}
+	if !s.allowSTUNResponse(time.Now()) {
+		return // aggregate cap hit; drop silently (ICE clients retry/fall back)
+	}
 	req := &stun.Message{Raw: datagram}
 	if err := req.Decode(); err != nil || req.Type != stun.BindingRequest {
 		return
@@ -263,6 +280,24 @@ func (s *Server) handleSTUN(datagram []byte, src *net.UDPAddr) {
 	if _, err := s.conn.WriteTo(resp.Raw, src); err != nil {
 		s.logger.Debug("relay: stun write failed", "err", err)
 	}
+}
+
+// allowSTUNResponse reports whether a STUN reply may be sent, enforcing a
+// global fixed-window rate cap. Cheap (one mutex, two fields) and holds no
+// per-source state, so it can't be turned into a memory-exhaustion vector
+// by source spoofing.
+func (s *Server) allowSTUNResponse(now time.Time) bool {
+	s.stunMu.Lock()
+	defer s.stunMu.Unlock()
+	if now.Sub(s.stunWindow) >= time.Second {
+		s.stunWindow = now
+		s.stunCount = 0
+	}
+	if s.stunCount >= stunResponsesPerSec {
+		return false
+	}
+	s.stunCount++
+	return true
 }
 
 func (s *Server) evict(t Token, reason string) {

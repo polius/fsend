@@ -99,22 +99,41 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 	var stopMDNSOnce sync.Once
 	stopMDNS := func() { stopMDNSOnce.Do(func() { _ = mdnsConn.Close() }) }
 
-	res, err := ln.Accept(ctx)
-	if err != nil {
-		stopMDNS()
-		_ = ln.Close()
-		return nil, err
-	}
-	stopMDNS()
-
-	return &lanSenderPairing{
-		listener: ln,
-		firstRes: res,
-		cleanup: func() {
+	// Keep accepting until the real receiver completes the handshake or the
+	// pairing window closes. A malicious LAN host can reach the deterministic
+	// port and complete TLS but fail SPAKE2 (it lacks the code); surrendering
+	// the LAN fast path to the first such impostor would be a trivial,
+	// repeatable denial of the same-LAN shortcut. Only ctx cancellation (the
+	// internet path won, or pairing gave up) ends the loop — the transfer
+	// still succeeds via the internet path meanwhile.
+	for {
+		res, err := ln.Accept(ctx)
+		if err == nil {
+			stopMDNS()
+			return &lanSenderPairing{
+				listener: ln,
+				firstRes: res,
+				cleanup: func() {
+					stopMDNS()
+					_ = ln.Close()
+				},
+			}, nil
+		}
+		if ctx.Err() != nil {
 			stopMDNS()
 			_ = ln.Close()
-		},
-	}, nil
+			return nil, err
+		}
+		// An impostor's failed handshake, not our window closing: keep
+		// listening, throttled so an instantly-erroring listener can't spin.
+		select {
+		case <-time.After(lanAcceptRetryDelay):
+		case <-ctx.Done():
+			stopMDNS()
+			_ = ln.Close()
+			return nil, ctx.Err()
+		}
+	}
 }
 
 // waitMaxConsecFails is how many consecutive Wait failures the sender
@@ -128,6 +147,11 @@ const waitMaxConsecFails = 6
 // receiver is gone — without the bound the sender spins "Waiting for
 // receiver" forever.
 const firstAcceptTimeout = 60 * time.Second
+
+// lanAcceptRetryDelay throttles re-Accept after a failed LAN handshake so a
+// wedged listener (instant errors) can't spin the CPU. Small enough that a
+// real receiver arriving right after an impostor barely waits.
+const lanAcceptRetryDelay = 100 * time.Millisecond
 
 // errPairedGone marks failures after a receiver claimed the code. The
 // LAN race can't recover from these — a receiver that joined via the

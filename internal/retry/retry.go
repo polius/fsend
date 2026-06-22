@@ -3,9 +3,10 @@
 // without surfacing them to the user.
 //
 // Scope is deliberately narrow: a `WithBackoff` function plus a
-// well-tested classifier for what counts as transient. Anything more
-// (jitter, circuit breakers, persistence) belongs in a dedicated lib —
-// fsend doesn't need it.
+// well-tested classifier for what counts as transient. It adds equal
+// jitter to each sleep so a fleet of clients recovering from the same
+// outage don't retry in lockstep against a shared relay; anything beyond
+// that (circuit breakers, persistence) belongs in a dedicated lib.
 package retry
 
 import (
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"strings"
 	"time"
@@ -90,17 +92,20 @@ func WithBackoff(ctx context.Context, opts Options, isTransient func(error) bool
 		if attempt == opts.Attempts {
 			return fmt.Errorf("%w: %v", fserrors.ErrTransientFailure, err)
 		}
+		sleep := jitter(wait)
 		if opts.OnRetry != nil {
-			opts.OnRetry(attempt+1, wait, err)
+			opts.OnRetry(attempt+1, sleep, err)
 		}
 		// Sleep, but honor ctx cancellation.
-		t := time.NewTimer(wait)
+		t := time.NewTimer(sleep)
 		select {
 		case <-t.C:
 		case <-ctx.Done():
 			t.Stop()
 			return ctx.Err()
 		}
+		// Grow the *nominal* schedule (1s, 3s, 9s…); jitter is re-applied
+		// to each sleep above, not compounded into the next interval.
 		wait *= 3
 		if wait > opts.Max {
 			wait = opts.Max
@@ -108,6 +113,17 @@ func WithBackoff(ctx context.Context, opts Options, isTransient func(error) bool
 	}
 	// Unreachable: the loop always returns inside the body.
 	return nil
+}
+
+// jitter applies equal jitter to a backoff interval: keep half, randomize
+// the other half, giving a sleep in [d/2, d]. Spreads a fleet's retries so
+// they don't all reconnect at the same instant after a shared outage.
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	half := d / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
 }
 
 // IsTransient is the default classifier. An error is transient when

@@ -122,7 +122,11 @@ func Load() (*Config, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return &Config{}, nil
 		}
-		return &Config{}, nil // can't read for any reason → use defaults silently
+		// Readable-but-denied (e.g. a chmod-000 or root-owned config)
+		// must not fall back to the public default *silently* — that
+		// would drop a user's custom server with no hint. Surface it as
+		// the same warn-and-default path corruption uses.
+		return &Config{}, fserrors.ErrConfigCorrupted
 	}
 	var c Config
 	if err := json.Unmarshal(data, &c); err != nil {

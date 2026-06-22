@@ -115,6 +115,10 @@ var (
 	// breaking fsend release changed the format). Resolved only by updating
 	// the older side; distinct from E015 so the message can say so.
 	ErrIncompatibleVersion = errors.New("incompatible fsend version")
+	// E035 — `fsend --uninstall` could not remove the binary (typically a
+	// privileged install dir needing sudo). A non-zero exit so scripts can
+	// tell a failed uninstall from a clean one.
+	ErrUninstallFailed = errors.New("uninstall failed")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -391,6 +395,12 @@ var catalog = map[error]Entry{
 		Message: "The other device is running an incompatible version of fsend.",
 		Action: "Update both sides to the latest version, then try again:\n" +
 			"    fsend --update",
+	},
+	ErrUninstallFailed: {
+		Code: "E035", Exit: 35,
+		Message: "fsend was not fully uninstalled.",
+		Action: "Remove the binary by hand (the path is printed above), " +
+			"possibly with sudo.",
 	},
 }
 
