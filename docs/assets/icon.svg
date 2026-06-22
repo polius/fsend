@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none" role="img" aria-label="fsend">
+  <!-- > prompt chevron -->
+  <path d="M 26 28 L 52 48 L 26 68" fill="none" stroke="#E0805A" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- _ cursor -->
+  <rect x="56" y="62" width="18" height="8" rx="3" fill="#E0805A"/>
+</svg>
