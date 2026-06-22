@@ -524,6 +524,13 @@ func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error 
 		declineTransfer(s, wire.ErrCodeFileHashMismatch, "root hash mismatch")
 		return fserrors.ErrHashMismatch
 	}
+	// Flush data to stable storage before the rename so a crash can't leave a
+	// size-correct, mtime-correct file with unpersisted (garbage) contents —
+	// which a later skip-unchanged run would then trust forever.
+	if err := rf.f.Sync(); err != nil {
+		_ = rf.f.Close()
+		return fmt.Errorf("%w: sync partial: %v", fserrors.ErrWriteFailed, err)
+	}
 	if err := rf.f.Close(); err != nil {
 		return fmt.Errorf("%w: close partial: %v", fserrors.ErrWriteFailed, err)
 	}
@@ -538,6 +545,7 @@ func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error 
 	if err := os.Rename(rf.partial, target); err != nil {
 		return fmt.Errorf("%w: finalize: %v", fserrors.ErrWriteFailed, err)
 	}
+	fsyncDir(filepath.Dir(target)) // make the rename itself durable
 	_ = os.Chmod(target, os.FileMode(rf.plan.entry.Mode)&os.ModePerm)
 	if rf.plan.entry.ModTimeSec > 0 {
 		t := time.Unix(rf.plan.entry.ModTimeSec, 0)
@@ -665,6 +673,13 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 		}
 	})
 	if f != nil {
+		// Flush data before the rename (see finalize) so a crash can't commit
+		// a correctly-named file with unpersisted contents.
+		if err == nil {
+			if serr := f.Sync(); serr != nil {
+				err = fmt.Errorf("%w: sync stream file: %v", fserrors.ErrWriteFailed, serr)
+			}
+		}
 		_ = f.Close()
 		if err != nil {
 			_ = os.Remove(target + partialSuffix)
@@ -677,6 +692,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 		if err := os.Rename(target+partialSuffix, target); err != nil {
 			return fmt.Errorf("%w: finalize: %v", fserrors.ErrWriteFailed, err)
 		}
+		fsyncDir(filepath.Dir(target)) // make the rename itself durable
 		if opts.OnFileDone != nil {
 			opts.OnFileDone(target)
 		}

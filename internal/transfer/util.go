@@ -23,6 +23,20 @@ func hashPrefixInto(h *blake3.Hasher, f *os.File, n int64) error {
 	return err
 }
 
+// fsyncDir flushes a directory's entries to stable storage so a rename
+// into it survives a crash. Best-effort: directory fsync is a POSIX notion
+// not supported on every platform (notably Windows), so errors are ignored.
+// Durability of the file *contents* is guaranteed separately by syncing the
+// file before it is renamed into place.
+func fsyncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	_ = d.Sync()
+	_ = d.Close()
+}
+
 // pathIsUnder reports whether child is the same as parent or lives below it
 // in the filesystem hierarchy. Both must be absolute and clean.
 func pathIsUnder(child, parent string) bool {
