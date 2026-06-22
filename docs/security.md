@@ -41,42 +41,20 @@ decryptable by a future large-scale quantum computer.
 
 ## What the pairing server can see
 
-It's a matchmaker, not a middleman — and even when it has to step in as
-a fallback, it can't read your files.
+It's a matchmaker, not a middleman. Its only job is to introduce two
+peers who can't otherwise find each other across NAT, then step aside —
+for the full mechanics see
+[How it works → Why a server?](architecture.md#why-a-server). What matters
+for the threat model is how little it observes even while doing that job:
 
-### Why the server has to exist
-
-Two machines on different networks usually can't see each other. Both
-sit behind home or office routers (NAT) that hide them from the public
-internet, so neither side knows where to send the first packet. They
-need a meeting point to swap addresses before they can talk directly.
-
-```
-   Sender                   Pairing server                  Receiver
-      │                  ┌───────────────────┐                │
-      │  "I'm here,      │   matchmaker:     │  "I have slot  │
-      │   slot 3f9a..."  │   pair two peers  │   3f9a..."     │
-      │ ────────────────►│   who derived the │◄────────────── │
-      │                  │   same slot       │                │
-      │                  └─────────┬─────────┘                │
-      │                            │                          │
-      │   "here are each other's public addresses — go talk"  │
-      │                            │                          │
-      └────── direct peer-to-peer (server steps aside) ───────┘
-```
-
-Both sides derive the *slot* — a one-way argon2id stretch of the share
-code — locally and identically, so they meet at the same rendezvous
-without the server ever seeing the code itself.
-
-That's the whole job: introduce the two peers, then get out of the way.
-In the typical cross-network case the file flows peer-to-peer and the
-server never sees a single byte of it.
-
-When the two networks make a direct connection impossible (hard NAT,
-locked-down corporate firewalls), the server falls back to forwarding
-**already-encrypted** UDP datagrams between the peers — think of a mail
-carrier moving sealed envelopes. It moves the parcel; it can't open it.
+- The two peers meet at a *slot* — a one-way argon2id stretch of the
+  share code that each computes locally — so the server pairs them
+  **without ever seeing the code itself**.
+- In the typical cross-network case the file flows peer-to-peer and the
+  server never sees a byte of it.
+- When NAT topology forces the fallback relay, it forwards
+  **already-encrypted** UDP datagrams — a mail carrier moving sealed
+  envelopes. It moves the parcel; it can't open it.
 
 ### Visibility
 
@@ -87,10 +65,6 @@ carrier moving sealed envelopes. It moves the parcel; it can't open it.
 | Ciphertext (on the relay-fallback path)           | ✓ as opaque bytes — not decryptable, not even by the server's operator |
 | The share code                                    | ✗ never — only an argon2id-stretched slot derived from it; recovering the code from a slot is a memory-hard brute-force of the whole code space |
 | Your IP                                           | ✓ briefly, in memory only, for pairing — never written to disk |
-
-End-to-end encryption means even the operator of the server can't
-decrypt traffic that goes through it. The encryption keys never leave
-the two peers.
 
 ### What it writes to disk
 
