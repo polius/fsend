@@ -20,14 +20,14 @@
 # set by the column count, NOT this resolution. Width hugs fsend's longest line
 # — the receiver's one-line "Saved …" summary (97 cols, deterministic) — with
 # ~3 cols of margin so it never wraps and the card carries no dead space. (cols
-# = (Width-100)/15, rows = (Height-240)/30 for this font/padding/bar: ~100 x ~30.)
+# = (Width-100)/15, rows = (Height-240)/30 for this font/padding/bar: ~100 x ~29.)
 
 Output "/tmp/fsend-demo/demo.mp4"
 
 Set FontFamily "JetBrains Mono"   # matches the fsend wordmark
 Set FontSize 24
 Set Width 1600
-Set Height 1100
+Set Height 1070
 Set Padding 32
 Set Margin 8
 Set MarginFill "#E0805A"          # thin fsend-coral edge
