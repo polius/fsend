@@ -47,6 +47,20 @@ jobs:
           version: latest
           args: --timeout=5m
 
+  # Catch known CVEs in the standard library and dependencies. "1.26"
+  # floats to the latest patch, so this also fails if go.mod pins a
+  # toolchain that has fallen behind a security release.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
   deadcode:
     runs-on: ubuntu-latest
     steps:
