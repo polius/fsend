@@ -24,6 +24,7 @@ linters:
         - G304
         - G305
         - G402
+        - G404 # weak RNG: math/rand/v2 is used only for retry jitter, not for any secret
         - G602
   exclusions:
     rules:

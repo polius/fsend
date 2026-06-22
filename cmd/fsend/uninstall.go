@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/polius/fsend/internal/config"
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/uxlog"
 )
 
@@ -53,7 +54,7 @@ func runUninstall(f *flags) error {
 		if err := removeBinary(binPath); err != nil {
 			fmt.Fprintf(os.Stderr, "%s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
 			fmt.Fprintf(os.Stderr, "    Delete it manually to finish: %s\n", binPath)
-			return nil
+			return fserrors.ErrUninstallFailed
 		}
 		fmt.Fprintf(os.Stderr, "%s Removed binary: %s\n", uxlog.Check(), binPath)
 		fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
@@ -63,7 +64,7 @@ func runUninstall(f *flags) error {
 	if err := os.Remove(binPath); err != nil {
 		fmt.Fprintf(os.Stderr, "%s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
 		fmt.Fprintln(os.Stderr, "    Remove it manually, possibly with sudo.")
-		return nil
+		return fserrors.ErrUninstallFailed
 	}
 	fmt.Fprintf(os.Stderr, "%s Removed binary: %s\n", uxlog.Check(), binPath)
 

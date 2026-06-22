@@ -11,8 +11,8 @@ peer-authentication layer:
 
 1. **TLS 1.3 over QUIC** carries all file bytes — standard transport
    security, terminated at the two peers (not at the server).
-2. **SPAKE2 (RFC 9382)**, run from the share code and bound to the TLS
-   handshake via the RFC 5705 channel-binding exporter, proves the
+2. **SPAKE2** (a balanced PAKE), run from the share code and bound to the
+   TLS handshake via the RFC 5705 channel-binding exporter, proves the
    other end of that TLS connection is the peer holding the code.
 
 A network eavesdropper is stopped by TLS. An active MITM that

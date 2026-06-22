@@ -63,7 +63,7 @@ sending, then confirms. Pass `--yes` to skip.
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files whose contents **differ**. Byte-identical files are always skipped silently regardless. Differing files without this flag are kept (your local edits are protected) and the receiver exits `E013`. |
 | `--dry-run` | Show what would transfer — `new` / `identical` / `differs` per path on stdout — and write nothing. |
-| `--checksum` | Decide whether a file is already present by comparing its **contents** (a BLAKE3 hash), not its size + modification time — like rsync's `-c`. Slower (reads the files that already exist), but unaffected by mismatched timestamps. |
+| `--checksum` | Decide whether a file is already present by comparing its **contents** (a BLAKE3 hash), not its size + modification time — like rsync's `-c`. Slower (reads the files that already exist), but unaffected by mismatched timestamps. By default a local file with the same size **and** mtime is assumed identical and skipped without reading it; use `--checksum` when a file may have changed in place without its size or timestamp changing. |
 | `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
 
 ```sh

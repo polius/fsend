@@ -1,4 +1,5 @@
-// Package pake wraps a symmetric SPAKE2 (RFC 9382) handshake.
+// Package pake wraps a symmetric SPAKE2 handshake (the Abdalla–Pointcheval
+// construction, as in python-spake2 — not the RFC 9382 wire encoding).
 //
 // Both peers feed the same short code in; after exchanging one message
 // each, both derive the same 32-byte key. The code itself never crosses

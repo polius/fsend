@@ -184,7 +184,7 @@ guarantee is where they separate.
 | | **fsend** | **croc** | **magic-wormhole** |
 |---|---|---|---|
 | End-to-end encrypted | ✓ | ✓ | ✓ |
-| PAKE protocol | **SPAKE2 (RFC 9382, IETF-standardized)** | `schollz/pake` v3 (Boneh–Shoup textbook PAKE2) | SPAKE2 (`python-spake2`, symmetric mode) |
+| PAKE protocol | SPAKE2 (`gospake2`, symmetric / python-spake2 construction) | `schollz/pake` v3 (Boneh–Shoup textbook PAKE2) | SPAKE2 (`python-spake2`, symmetric mode) |
 | Defense-in-depth layers | **Two independent** — TLS 1.3 (QUIC) **+** SPAKE2 channel-bound to the TLS handshake (RFC 5705) | One — AEAD keyed from PAKE | One — secretbox keyed from SPAKE2 |
 | AEAD cipher | TLS 1.3 ciphers (AES-GCM / ChaCha20-Poly1305) | AES-256-GCM | NaCl secretbox (XSalsa20-Poly1305) |
 | Key derivation | TLS 1.3 KDF + SPAKE2 + RFC 5705 exporter binding | PBKDF2-SHA256, 100 iterations (over the PAKE key) | HKDF-SHA256 from the SPAKE2 key |
