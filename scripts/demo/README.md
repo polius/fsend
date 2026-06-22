@@ -2,16 +2,19 @@
 
 This directory generates the animated demo at the top of the repo README
 (`docs/assets/demo.svg`) — a scripted, fully local fsend transfer shown as two
-terminals (sender + receiver) side by side.
+terminals (sender + receiver) side by side — plus raster **`demo.mp4`** and
+**`demo.gif`** exports of the same animation for places that don't render SVG
+(Reddit, chat apps, social posts).
 
 Everything runs **locally and offline**: a loopback-only `fsend server`, a
 throwaway config/home, and a `/dev/urandom` payload. Nothing touches your real
 fsend config, and no real network or pairing server is involved.
 
-The demo is an **animated SVG** (not a WebP/GIF): it's vector, so it stays
+The README demo is an **animated SVG** (not a WebP/GIF): it's vector, so it stays
 razor-sharp at any size and on any display density, it's a fraction of the size,
 and — because it animates via CSS rather than decoding hundreds of raster frames
-— it's cheap to play even on weak mobile CPUs.
+— it's cheap to play even on weak mobile CPUs. The `.mp4`/`.gif` are **derived
+from that SVG**, not recorded separately, so they always match it.
 
 This file is the complete runbook: with it, the demo can be regenerated from
 scratch with no other context.
@@ -27,13 +30,19 @@ npm install -g svg-term-cli              # cast -> animated SVG (needs node)
 pip install fonttools brotli             # subset + embed JetBrains Mono (woff2)
 brew install --cask font-jetbrains-mono  # the embedded terminal font
 
-# 2. regenerate docs/assets/demo.svg
+# 2. regenerate docs/assets/demo.svg  (the README asset)
 scripts/demo/record-svg.sh
+
+# 3. (optional) regenerate the raster exports from that SVG
+pip install websocket-client             # drives headless Chrome over CDP
+python3 scripts/demo/render-video.py     # -> docs/assets/demo.{mp4,gif}
 ```
 
-`record-svg.sh` is the single entry point. It builds fsend, records the scripted
-transfer, renders the SVG, embeds the font, and frames it. Re-run it any time the
-CLI output or styling changes.
+`record-svg.sh` is the single entry point for the SVG: it builds fsend, records
+the scripted transfer, renders the SVG, embeds the font, and frames it. Re-run it
+any time the CLI output or styling changes — then re-run `render-video.py` to
+refresh the `.mp4`/`.gif` (it just re-bakes whatever `demo.svg` currently is, so
+it needs **none** of the recording deps above — only Chrome + ffmpeg).
 
 > Note for headless/CI runs: recording drives a local loopback transfer over a
 > PTY. If it fails to start a session, run it with normal local-network access.
@@ -49,14 +58,19 @@ CLI output or styling changes.
 | `catppuccin-mocha.xresources` | The terminal **palette** svg-term applies to the cast. |
 | `svg-postprocess.py`       | Renders the cast with svg-term, then adds the **hold, embedded font, and chrome**. |
 | `record-svg.sh`            | Orchestrates: build → record → render → write `docs/assets/demo.svg`. |
+| `render-video.py`          | Re-bakes `demo.svg` into `demo.mp4` + `demo.gif` via headless Chrome. |
 | `README.md`                | This runbook. |
 
-Output: `docs/assets/demo.svg`, embedded in the repo README via
-`<img src="docs/assets/demo.svg" width="820">`.
+Outputs:
+- `docs/assets/demo.svg` — embedded in the repo README via
+  `<img src="docs/assets/demo.svg" width="820">`.
+- `docs/assets/demo.mp4` (~0.6 MB) — H.264, the file to upload where SVG isn't
+  rendered.
+- `docs/assets/demo.gif` (~0.4 MB) — fallback for places that take only GIF.
 
 ---
 
-## The pipeline, end to end
+## The SVG pipeline, end to end
 
 ```
 record-svg.sh
@@ -109,12 +123,66 @@ broken demo.
 
 ---
 
+## The raster exports (mp4 + gif)
+
+`render-video.py` turns the finished `demo.svg` into video **without
+re-recording** — the SVG stays the single source of truth, so the exports can
+never drift from it. It does **not** use the recording deps (tmux, svg-term,
+fonttools); it only needs Google Chrome, ffmpeg, and the `websocket-client`
+python package.
+
+```
+render-video.py docs/assets/demo.svg
+  ├─ parse              (read width/height, animation-duration, @keyframes stops)
+  ├─ headless Chrome    (load the SVG on a flat backdrop; CDP over a websocket)
+  │     ├─ device metrics   (exact viewport at 2x scale — supersample the text)
+  │     ├─ pause animation  (Web Animations API: el.getAnimations()[0].pause())
+  │     └─ scrub + shoot     (set currentTime per fps tick; screenshot each stop)
+  └─ ffmpeg
+        ├─ demo.mp4     (libx264 -crf 18, yuv420p, +faststart, 2158x1414 @30fps)
+        └─ demo.gif     (global palette, dither=none, full 2x res @15fps)
+```
+
+### How it stays sharp **and** steady
+
+The two problems with "SVG → video" are blurry text and a trembling image; the
+script is built to avoid both:
+
+- **Deterministic scrub, not a real-time screencast.** Chrome's screencast emits
+  frames only when something changes, at irregular timestamps; resampling that to
+  a fixed frame rate makes the text edges shimmer. Instead we **pause** the SVG's
+  CSS animation and **seek** `currentTime` to evenly spaced ticks, screenshotting
+  each. Held frames come out byte-identical and exactly `1/FPS` apart, so the
+  image is rock-steady and x264/GIF dedupe the repeats (which is why the files
+  stay tiny). We only screenshot once per distinct `@keyframes` stop and reuse it
+  for the held ticks, so a 27 s clip is ~250 screenshots, not 800.
+- **2× supersample.** Capturing at `deviceScaleFactor=2` (→ 2158×1414) renders
+  the small terminal text at double density; encoding from that keeps it crisp
+  where a 1× capture would look soft under chroma subsampling.
+- **Exact viewport.** `Emulation.setDeviceMetricsOverride` forces the viewport to
+  the SVG's exact size — headless Chrome otherwise picks a shorter height and
+  clips the bottom pane.
+
+### mp4 vs gif
+
+- **`demo.mp4`** is the one to share: H.264 / `yuv420p` / even dimensions plays
+  everywhere (Reddit converts it to native video), and it's ~0.6 MB.
+- **`demo.gif`** is the fallback for the few places that accept only GIF. It's
+  kept at the **full 2× resolution** (no downscale — averaging the supersampled
+  text is exactly what reintroduces blur) with a global 256-colour palette and
+  `dither=none` (the terminal art is flat colour, so error-diffusion would only
+  add grain with no gradients to smooth). Built from the clean PNG frames it's
+  ~0.4 MB; building a GIF from the mp4 instead balloons it ~7× because the mp4's
+  chroma noise wrecks inter-frame compression.
+
+---
+
 ## Why these choices (so they aren't re-litigated)
 
-- **SVG, not WebP/GIF.** Vector stays crisp at every size and pixel density with
-  no per-frame raster decode, so it sidesteps the resolution/retina trade-offs a
-  raster demo forces and plays smoothly on weak mobile CPUs. It's also far
-  smaller and themable as text.
+- **SVG, not WebP/GIF, for the README.** Vector stays crisp at every size and
+  pixel density with no per-frame raster decode, so it sidesteps the
+  resolution/retina trade-offs a raster demo forces and plays smoothly on weak
+  mobile CPUs. It's also far smaller and themable as text.
 - **Embedded font, not a font stack.** GitHub viewers won't have JetBrains Mono
   installed; embedding a subset (~40 KB) keeps the wordmark font everywhere.
   External `@font-face` URLs are blocked in GitHub's `<img>`-rendered SVG, so the
@@ -127,6 +195,13 @@ broken demo.
 - **`ptyrec.py`, not asciinema/termtosvg.** `termtosvg` can't capture a
   full-screen tmux session (it records empty), and `asciinema rec` won't fix the
   PTY geometry headlessly. A tiny PTY recorder does exactly what's needed.
+- **Raster exports re-bake the SVG, they don't re-record.** One source of truth;
+  `demo.mp4`/`demo.gif` can't drift from the README animation, and refreshing
+  them is a ~50 s Chrome pass with no tmux/transfer involved.
+- **Headless Chrome, not a Python SVG renderer, for rasterizing.** Chrome renders
+  the CSS + woff2 exactly as a browser does (pixel-identical); `cairosvg`
+  mis-rendered the braille spinner glyph as tofu and was ~100× slower (it
+  re-parses the embedded font on every frame).
 
 ---
 
@@ -155,6 +230,10 @@ session are cleaned up on exit.
 | Coral border / window radius | `MARGIN`, `WIN_R` in `svg-postprocess.py` |
 | Traffic-light size / position | `DOT_R`, `DOTS`, `DOT_CY` in `svg-postprocess.py` |
 | Embedded font | `find_font()` in `svg-postprocess.py` |
+| mp4 frame rate / scrub cadence | `FPS` in `render-video.py` |
+| Supersample factor (sharpness vs size) | `SCALE` in `render-video.py` |
+| gif frame rate (smoothness vs size) | `GIF_FPS` in `render-video.py` |
+| Chrome location | `CHROME` in `render-video.py` |
 
 ---
 
@@ -172,3 +251,14 @@ session are cleaned up on exit.
   check the `even-vertical` split in `do_setup` and the `ROWS` in `ptyrec.py`.
 - **Transfer shows a LAN-discovery notice or the wrong path.** Confirm the
   `fsend` shim (with `--mode=direct`) is on the panes' `PATH`.
+- **`render-video.py`: `ModuleNotFoundError: websocket`.** Install the CDP client:
+  `pip install websocket-client` (note: *not* the `websockets` package).
+- **`render-video.py`: "Chrome did not expose a DevTools port".** Chrome failed
+  to launch — confirm it's installed and that `CHROME` points at the binary.
+- **`render-video.py`: "could not hook the SVG animation".** svg-term's output
+  changed so the animated `<g style="animation-name:p">` element or its
+  `@keyframes p` no longer matches; update the selector/parse near the top of
+  `render-video.py`.
+- **mp4/gif look blurry or jittery.** Both are guarded by design (2× supersample
+  + constant-cadence scrub). If it regresses, check `SCALE` is ≥2 and that no
+  downscale crept back into the gif filter (`gif_vf`).
