@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Drives a scripted two-pane (sender / receiver) fsend transfer, used to
-# record the README demo (see demo.tape). Everything runs locally and
+# record the README demo (see record-svg.sh). Everything runs locally and
 # offline: an isolated fsend pairing server on loopback, two tmux panes,
 # and a background "director" that types the commands, scrapes the dynamic
 # share code out of the sender pane, and pastes it into the receiver.
@@ -9,7 +9,7 @@
 # Usage:
 #   scripts/demo/demo.sh          # set up + play in one terminal (manual preview)
 #   scripts/demo/demo.sh setup    # build, start server, build the tmux session
-#   scripts/demo/demo.sh play     # attach + run the director (used by demo.tape)
+#   scripts/demo/demo.sh play     # attach + run the director (used by record-svg.sh)
 #
 # Nothing here touches your real fsend config or home dir.
 set -euo pipefail
@@ -63,8 +63,8 @@ do_setup() {
   # Panes inherit this: silence macOS bash's "default shell is now zsh" notice.
   export BASH_SILENCE_DEPRECATION_WARNING=1
 
-  # The 1 GiB payload is cached (generation is the slow part — record.sh
-  # pre-warms it before recording). Hardlink it into the sender's home so each
+  # The 1 GiB payload is cached (generation is the slow part). Hardlink it
+  # into the sender's home so each
   # run is instant; it's outside HOME_DIR, which is wiped above.
   ensure_payload
   ln -f "$PAYLOAD" "$HOME_DIR/$FILE"
@@ -196,9 +196,9 @@ director() {
   enter "$P1"
   await "$P1" 'Saved' || true
 
-  # Keep the session alive just past the end of the recording (demo.tape's
-  # Sleep). The real end-of-loop pause is added in record.sh as a long delay on
-  # the final WebP frame, so we don't record a long tail of identical frames.
+  # Keep the session alive just past the end of the recording. The real
+  # end-of-loop pause is added by svg-postprocess.py (it rescales the SVG
+  # keyframes to hold the final frame), so we don't record a long static tail.
   sleep 4
 }
 
@@ -219,7 +219,7 @@ do_play() {
 }
 
 case "${1:-all}" in
-  payload) ensure_payload ;;   # pre-warm the 1 GiB cache (record.sh calls this)
+  payload) ensure_payload ;;   # pre-warm the 1 GiB cache
   setup)   do_setup ;;
   play)    do_play ;;
   all)     do_setup; do_play ;;

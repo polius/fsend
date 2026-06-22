@@ -14,8 +14,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.webp" width="820"
-    alt="fsend demo: the sender runs 'fsend report.pdf' and gets a share code; the receiver runs 'fsend <code>', accepts, and the file lands in ~/Downloads.">
+  <img src="docs/assets/demo.svg" width="820"
+    alt="fsend demo: the sender runs 'fsend drone-4k.mov' and gets a share code; the receiver runs 'fsend <code>', accepts, and the file lands in ~/Downloads.">
 </p>
 
 <p align="center"><em>One command to send, one to receive.</em></p>
