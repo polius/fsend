@@ -121,7 +121,7 @@ EOF
   # Two stacked panes top→bottom: sender, receiver. The divider between them is
   # hidden (blended into the bg) so the gap reads as whitespace. The director
   # sizes them after the recorder attaches (see "balance the layout").
-  tmux new-session  -d -s "$SESSION" -x 115 -y 31 "bash --rcfile '$ROOT/sender.rc' -i"
+  tmux new-session  -d -s "$SESSION" -x 100 -y 30 "bash --rcfile '$ROOT/sender.rc' -i"
   tmux split-window -v -t "$SESSION" "bash --rcfile '$ROOT/recver.rc' -i"
 
   tmux set -t "$SESSION" status off
