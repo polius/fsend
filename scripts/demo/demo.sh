@@ -121,7 +121,7 @@ EOF
   # Two stacked panes top→bottom: sender, receiver. The divider between them is
   # hidden (blended into the bg) so the gap reads as whitespace. The director
   # sizes them after the recorder attaches (see "balance the layout").
-  tmux new-session  -d -s "$SESSION" -x 100 -y 29 "bash --rcfile '$ROOT/sender.rc' -i"
+  tmux new-session  -d -s "$SESSION" -x 100 -y 28 "bash --rcfile '$ROOT/sender.rc' -i"
   tmux split-window -v -t "$SESSION" "bash --rcfile '$ROOT/recver.rc' -i"
 
   tmux set -t "$SESSION" status off
@@ -173,7 +173,7 @@ director() {
   # The sender pane gets a middle gap of blank rows below it; the receiver pane
   # takes the remainder (its trailing blanks are the bottom margin). The -1
   # absorbs the invisible divider row between the panes.
-  local sc=13 mid=3
+  local sc=13 mid=2
   tmux resize-pane -t "$P0" -y $(( sc + mid - 1 ))
   sleep 1.5 # let the panes register first
 
