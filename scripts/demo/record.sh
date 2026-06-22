@@ -13,9 +13,9 @@ set -euo pipefail
 OUT=docs/assets/demo.webp
 MP4=/tmp/fsend-demo/demo.mp4   # matches Output in demo.tape
 FRAMES=/tmp/fsend-demo/frames
-# Outer corner radius = tape Margin (12) + BorderRadius (20), so the coral
+# Outer corner radius = tape Margin (8) + BorderRadius (14), so the coral
 # frame's corners stay concentric with the inner window.
-RADIUS=32
+RADIUS=22
 FRAME_MS=40      # 25 fps
 END_HOLD_MS=5000 # the final frame is held this long before the loop restarts
 

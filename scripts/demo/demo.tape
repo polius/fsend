@@ -10,26 +10,30 @@
 # The actual choreography lives in demo.sh's "director"; this tape only sizes
 # the terminal, kicks off the scripted session, and records it.
 #
-# Geometry below is 2x; keep it a clean doubling of the 1x design
-# (FontSize 16, Width 1230, Height 780, Padding 24, Margin 6, Radius 10).
+# Geometry is sized to ~2x the README's display width (820px) — just enough to
+# stay crisp on retina without over-rendering. Animated-WebP playback is
+# decode-bound (cost scales with pixels per frame, not file size), so the old
+# ~2.9x render played slowly on weaker mobile CPUs; ~2x roughly halves the
+# per-frame pixels while staying sharp at every display size.
 #
-# Width fits the longest line fsend prints — the receiver's one-line "Saved …"
-# summary (~104 cols) — with margin to spare, so it never wraps. (cols =
-# (Width-160)/20, rows = (Height-320)/40 for this font/padding/margin:
-# ~115 x ~31.)
+# Apparent glyph size on the page is the display width (820) / columns, so it's
+# set by the column count, NOT this resolution. Width hugs fsend's longest line
+# — the receiver's one-line "Saved …" summary (97 cols, deterministic) — with
+# ~3 cols of margin so it never wraps and the card carries no dead space. (cols
+# = (Width-100)/15, rows = (Height-240)/30 for this font/padding/bar: ~100 x ~30.)
 
 Output "/tmp/fsend-demo/demo.mp4"
 
 Set FontFamily "JetBrains Mono"   # matches the fsend wordmark
-Set FontSize 32
-Set Width 2460
-Set Height 1560
-Set Padding 48
-Set Margin 12
+Set FontSize 24
+Set Width 1600
+Set Height 1100
+Set Padding 32
+Set Margin 8
 Set MarginFill "#E0805A"          # thin fsend-coral edge
-Set BorderRadius 20
+Set BorderRadius 14
 Set WindowBar Colorful
-Set WindowBarSize 80              # 2x default, so the traffic-light dots scale up
+Set WindowBarSize 72              # bigger mac header / traffic-light dots
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 0ms
 
