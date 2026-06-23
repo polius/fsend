@@ -28,7 +28,7 @@ fsend is a **command-line tool** that lets any two computers transfer files and 
 - **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the share code (PAKE); even the fallback relay never sees the file
 - **No ports to open** — works on any network, no router or firewall setup
 - **Send anything** — files, folders, multiple at once, stdin streams, or literal text
-- **Resumable** — connection drops? Rerun the same command and fsend picks up where it stopped
+- **Resumable** — a dropped transfer continues where it left off on the next send (with a fresh code), instead of starting over
 - **Skips what's already there** — re-send a folder and only the new or changed files transfer
 - **Password-protected** — gate any transfer with `--pass`; receiver supplies it to unlock
 - **Post-quantum** — X25519 + ML-KEM-768 (NIST); designed so future quantum computers can't decrypt today's transfers
@@ -109,6 +109,7 @@ fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
 | [Usage](docs/usage.md) | Every flag, env var, and exit code |
 | [Self-hosting](docs/self-hosting.md) | Run your own pairing server in three steps |
 | [Development](docs/development.md) | Build and test from source |
+| [Troubleshooting](docs/troubleshooting.md) | Common errors and what to do about them |
 
 ## Comparison
 

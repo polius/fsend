@@ -1,57 +1,55 @@
 # Running your own pairing server
 
-> **Do you need this?** Probably not. The `fsend` CLI is a local binary —
-> there's nothing to host to *use* fsend, and it already works out of the
-> box. This page is only about the **pairing server**: an optional,
-> self-hostable service that two peers use to find each other **across the
-> internet** — and that relays the transfer when a direct connection can't
-> be established. On the same local network it isn't used at all: peers
-> discover each other over the LAN (via mDNS) and the bytes go straight
-> across, even if the server is offline.
+> **Do you need this? Probably not.** The `fsend` CLI is just a local
+> binary — there's nothing to host to *use* fsend, and it works out of the
+> box. This page is only about the **pairing server**: an optional service
+> that helps two peers find each other **across the internet**, and relays
+> the transfer when a direct connection can't be made. On the same network
+> it isn't involved at all — peers discover each other over the LAN (mDNS)
+> and the bytes go straight across, even with the server offline.
 
-By default, fsend uses a free pairing server at `fsend.alzina.dev`,
-operated by the maintainer on a best-effort basis (no uptime guarantee).
-The server plays two roles:
+By default, fsend uses a free pairing server at `fsend.alzina.dev`, run by
+the maintainer on a best-effort basis (no uptime guarantee). It does two
+jobs:
 
-- **Pairing** *(always)* — both peers post a one-way slot derived from
-  the share code; the server tells each where the other is. It never
-  learns the share code or anything about your files.
-- **Relay** *(fallback only)* — when NAT topology blocks a direct
-  peer-to-peer connection, the server forwards the **encrypted** bytes
-  between the two sides. It can't decrypt them, but they do pass through
-  it.
+- **Pairing (always)** — both peers post a one-way slot derived from the
+  share code, and the server tells each where the other is. It never
+  learns the code or anything about your files.
+- **Relay (fallback only)** — when NAT topology blocks a direct
+  connection, it forwards the **encrypted** bytes between the two sides.
+  It can't decrypt them, but they do pass through it.
 
-You'd run your own when you want:
+Run your own when you want:
 
-- **Control** — set your own rate limits, require an access password,
-  tune any knob — instead of living with a shared instance's fixed policy.
-- **Isolation** — an org-internal or air-gapped deployment where even
-  relayed (encrypted) traffic never leaves infrastructure you control.
+- **Control** — set your own rate limits, require an access password, tune
+  any knob, instead of living with a shared instance's fixed policy.
+- **Isolation** — an org-internal or air-gapped deployment, where even
+  relayed (encrypted) traffic stays on infrastructure you control.
 - **Reliability** — uptime you manage yourself, rather than a free server
   with no guarantee.
 
-Clients then point at it with `fsend --connect host:443`. The same
-`fsend` binary doubles as the server, so there's nothing extra to build —
-this guide deploys it via Docker compose, behind Caddy for automatic TLS.
+Clients point at it with `fsend --connect host:443`. The same `fsend`
+binary is also the server, so there's nothing extra to build — this guide
+deploys it with Docker Compose, behind Caddy for automatic TLS.
 
 ## Before you start
 
-You need:
+You'll need:
 
 - A publicly reachable host (a public IP) with **Docker** and **Docker
-  compose v2**
-- A domain (or subdomain) you control, with an `A` record pointing it at
-  that host — e.g. `fs.example.com`
-- These inbound ports open:
-  - `80/tcp` — Let's Encrypt cert issuance
+  Compose v2**.
+- A domain or subdomain you control, with an `A` record pointing at that
+  host — e.g. `fs.example.com`.
+- Three inbound ports open:
+  - `80/tcp` — Let's Encrypt certificate issuance
   - `443/tcp` — HTTPS signaling
   - `443/udp` — UDP relay (file data)
 
 ## What you're deploying
 
 Two containers on one host. Caddy terminates TLS on TCP/443 and proxies
-HTTP signaling to fsend's `:8080`. UDP/443 flows directly to the fsend
-container — Caddy isn't in the data path.
+HTTP signaling to fsend's `:8080`; UDP/443 goes straight to the fsend
+container, so Caddy is never in the data path.
 
 ```
                 ┌───────────────── Your VM ──────────────────┐
@@ -68,8 +66,8 @@ container — Caddy isn't in the data path.
                 └────────────────────────────────────────────┘
 ```
 
-TCP/443 and UDP/443 share the port number but are different protocols,
-so both can bind simultaneously.
+TCP/443 and UDP/443 share a number but are different protocols, so both
+bind at once.
 
 ## Deploy
 
@@ -88,8 +86,8 @@ export FSEND_DOMAIN=fs.example.com   # ← your domain
 docker compose up -d
 ```
 
-Caddy requests a Let's Encrypt cert on first start and renews it
-indefinitely thereafter — there is no manual cert handling at any point.
+On first start, Caddy requests a Let's Encrypt certificate and renews it
+indefinitely after that — there's no manual cert handling, ever.
 
 ### 3. Verify
 
@@ -98,7 +96,7 @@ curl https://fs.example.com/v1/health
 # {"status":"ok",…}
 ```
 
-If you don't get an OK response, see [Troubleshooting](#troubleshooting).
+No OK response? See [Troubleshooting](#troubleshooting).
 
 ## Use your server from clients
 
@@ -109,17 +107,15 @@ the default:
 fsend --connect fs.example.com:443
 ```
 
-It's saved to the client's config, so every later `fsend` uses your
-server automatically — no need to repeat the flag. The file lives at
-`~/.config/fsend/config.json` (Linux),
-`~/Library/Application Support/fsend/config.json` (macOS), or
-`%LOCALAPPDATA%\fsend\config.json` (Windows). Revert to the public default
-with `fsend --connect default`.
+It's saved to the client's
+[config file](usage.md#choosing-a-server---connect), so every later
+`fsend` uses your server automatically — no need to repeat the flag.
+Switch back to the public default any time with `fsend --connect default`.
 
 ## Require a password (optional)
 
-By default anyone who knows the address can use the server. To restrict
-it, set `FSEND_SERVER_PASSWORD` in `docker-compose.yml` (it ships empty)
+By default, anyone who knows the address can use the server. To lock it
+down, set `FSEND_SERVER_PASSWORD` in `docker-compose.yml` (it ships empty)
 and restart:
 
 ```yaml
@@ -131,27 +127,27 @@ and restart:
 docker compose up -d
 ```
 
-Every endpoint except `/v1/health` now requires the password. Clients
+Now every endpoint except `/v1/health` requires the password, and clients
 append it to `--connect`, comma-separated:
 
 ```sh
 fsend --connect fs.example.com:443,your-secret
 ```
 
-Connecting without it (or with the wrong one) fails with `E028`.
+Connecting without it — or with the wrong one — fails with `E028`.
 
 ## Operations
 
 - **Logs.** `docker compose logs -f fsend` for the server,
-  `docker compose logs -f caddy` for TLS and the reverse proxy. Default
-  log level is `info` — lifecycle events only. No per-transfer lines,
-  no IPs, no share codes.
+  `docker compose logs -f caddy` for TLS and the proxy. The default log
+  level (`info`) records only lifecycle events — no per-transfer lines, no
+  IPs, no share codes.
 - **Update.** `docker compose pull && docker compose up -d`. The image
-  defaults to the floating `poliuscorp/fsend:latest` tag; pin a specific
-  version tag if you want immutable, reproducible upgrades.
+  tracks the floating `poliuscorp/fsend:latest` tag; pin a version tag if
+  you want immutable, reproducible upgrades.
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
-  within an hour. Cert state lives in the `caddy_data` Docker volume —
-  Caddy reissues automatically if you lose it.
+  within an hour; certificates live in the `caddy_data` volume, and Caddy
+  reissues them automatically if you lose it.
 - **Tuning.** Every knob is an environment variable — see
   [Configuration](#configuration).
 

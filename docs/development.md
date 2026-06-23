@@ -5,7 +5,7 @@ is the `fsend server` subcommand) from source.
 
 ## Prerequisites
 
-- **Go ≥ 1.25.11** (matches `go.mod`).
+- **Go ≥ 1.26** (matches `go.mod`).
 - Optional: **Docker** + **docker compose v2**, only for the reverse-proxy
   stack in [`deploy/compose/`](../deploy/compose/).
 
@@ -38,12 +38,12 @@ server on loopback — no shell wrapper needed.
 scripts/coverage.sh
 ```
 
-Runs unit and E2E tests with coverage and prints the merged total. The
-E2E suite builds `fsend` with `-cover -coverpkg=./...` when `go test`
-is invoked with `-cover`, so orchestration code exercised by the E2E
-harness (sender/receiver pairing, ICE, relay) shows up in the number
-instead of reading as 0% the way per-package profiling does. Current
-total hovers around 77%.
+Runs unit and E2E tests with coverage and prints the merged total. When
+invoked with `-cover`, the E2E suite builds `fsend` with
+`-cover -coverpkg=./...`, so the orchestration code it exercises —
+sender/receiver pairing, ICE, relay — counts toward the number instead of
+reading as 0% (which is how per-package profiling reports it). Run the
+script for the current total.
 
 ## LAN smoke test (no server needed)
 
@@ -77,7 +77,8 @@ FSEND_LOG_LEVEL=debug \
 Ports `18080`/`18443` are chosen to avoid the privileged-port requirement
 of `:443` (would need root) and the common port collision on `:8080`.
 
-Point a client at it (persists to the config file — see "Isolated config" below for the path):
+Point a client at it (this writes to your real config file; see
+[Isolated config](#isolated-config) below to use a throwaway one instead):
 
 ```sh
 /tmp/fsend --connect 127.0.0.1:18080
@@ -113,9 +114,8 @@ To experiment with `--connect` without overwriting your real config,
 point the client at a throwaway config root:
 
 ```sh
-XDG_CONFIG_HOME=/tmp/fsend-dev /tmp/fsend --connect http://127.0.0.1:18080
+XDG_CONFIG_HOME=/tmp/fsend-dev /tmp/fsend --connect 127.0.0.1:18080
 ```
 
-Config lives at `~/.config/fsend/config.json` (Linux),
-`~/Library/Application Support/fsend/config.json` (macOS), or
-`%LOCALAPPDATA%\fsend\config.json` (Windows).
+Config lives in the per-OS path listed in
+[Usage](usage.md#choosing-a-server---connect).

@@ -148,8 +148,9 @@ func runServer() error {
 	// Graceful shutdown: stop new relay allocations, then let in-flight HTTP
 	// (including 25s /wait long-polls) and in-flight relay transfers finish
 	// before tearing down. Both are bounded by shutdownGrace so a wedged
-	// session can't block shutdown forever; the container's stop_grace_period
-	// must exceed it (the compose file sets 35s).
+	// session can't block shutdown forever. For the drain to complete under a
+	// container runtime, set stop_grace_period above shutdownGrace; otherwise
+	// the default (Docker: 10s) cuts it short.
 	relaySrv.Drain()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer shutdownCancel()

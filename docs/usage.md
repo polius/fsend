@@ -23,6 +23,37 @@ means receive, anything else means send. If an arg is both a valid code
 and a real path, you'll be asked. Use `--send` / `--receive` to commit
 up front in scripts.
 
+## Your first transfer
+
+Two machines, one command each. **On the sender:**
+
+```console
+$ fsend report.pdf
+  Sending report.pdf  ·  1 file  ·  2.4 MB
+
+  On the other machine, run:
+
+      fsend abc-defg-jkm
+```
+
+Share that code (`abc-defg-jkm`) with the receiver any way you like —
+chat, email, out loud. **On the receiver**, run it; fsend shows who's
+sending and what, then asks before writing anything:
+
+```console
+$ fsend abc-defg-jkm
+  Incoming from mbp.local  ·  direct
+
+      report.pdf  ·  1 item  ·  2.4 MB
+
+  Save to ./? [Y/n] y
+  Saved report.pdf to ./
+```
+
+The file lands in the current directory (use `--out <dir>` to change
+that, or `--yes` to skip the prompt). That's the whole flow — everything
+below is detail.
+
 ## Sending
 
 ```text
@@ -61,9 +92,9 @@ sending, then confirms. Pass `--yes` to skip.
 | `--yes` | Auto-accept. |
 | `--out <dir>` | Receive into this directory (must already exist). Default: cwd. |
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
-| `--overwrite` | Replace existing files whose contents **differ**. Byte-identical files are always skipped silently regardless. Differing files without this flag are kept (your local edits are protected) and the receiver exits `E013`. |
-| `--dry-run` | Show what would transfer — `new` / `identical` / `differs` per path on stdout — and write nothing. |
-| `--checksum` | Decide whether a file is already present by comparing its **contents** (a BLAKE3 hash), not its size + modification time — like rsync's `-c`. Slower (reads the files that already exist), but unaffected by mismatched timestamps. By default a local file with the same size **and** mtime is assumed identical and skipped without reading it; use `--checksum` when a file may have changed in place without its size or timestamp changing. |
+| `--overwrite` | Replace existing files whose contents **differ**. Without it they're kept and the receiver exits `E013`. (Identical files are skipped either way.) |
+| `--dry-run` | Show what would transfer — `new` / `identical` / `differs` (and `conflict` / `resume` in edge cases) per path on stdout — and write nothing. |
+| `--checksum` | Decide what's already present by hashing **contents** (BLAKE3) instead of comparing size + mtime — like rsync's `-c`. See [below](#when-a-file-already-exists). |
 | `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
 
 ```sh
@@ -73,10 +104,41 @@ fsend --yes --out - abc-defg-jkm > dump.sql   # pipe-to-pipe with the sender's `
 FSEND_PASS=swordfish fsend --yes abc-defg-jkm
 ```
 
-Interrupted transfers leave a `.fsend-partial` sidecar. Codes are
-one-shot, so to resume the sender runs `fsend` again and the receiver
-uses the fresh code — the transfer picks up where it left off. If the
-source has changed since, the sidecar is discarded automatically.
+### When a file already exists
+
+Re-send a folder and fsend only transfers what's new or changed. How it
+decides:
+
+- **Default (fast):** fsend matches files by name, then treats one with
+  the same **size and modification time** as identical and skips it
+  without reading it.
+- **`--checksum` (thorough):** compares the file's **contents** (a BLAKE3
+  hash) instead. Slower — it reads the files already on disk — but it
+  catches a file that changed in place without its size or timestamp
+  changing.
+
+When a file *does* differ, fsend keeps your local copy by default
+(protecting your edits) and exits `E013`; pass `--overwrite` to replace
+it. Byte-identical files are always skipped silently. Use `--dry-run` to
+preview the per-path breakdown (`new` / `identical` / `differs`, plus
+`conflict` / `resume` in edge cases) before writing anything.
+
+### Resuming an interrupted transfer
+
+If a transfer is interrupted, fsend keeps what it already received in a
+`.fsend-partial` file and continues from there next time — only the
+missing bytes transfer.
+
+Share codes are **one-shot**, so resuming isn't "rerun with the same
+code." It's a fresh send with a new code:
+
+1. **Sender** runs the original command again. fsend issues a *new* code.
+2. **Share the new code** with the receiver (the old one no longer works).
+3. **Receiver** runs the new code **in the same directory** as before.
+   fsend finds the `.fsend-partial` file and picks up where it stopped.
+
+If the source file changed in the meantime, the partial is discarded and
+the file transfers from scratch — so you never resume onto stale data.
 
 ## Choosing a server (`--connect`)
 
@@ -103,7 +165,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | `--quiet` | Suppress non-error output. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
-| `--uninstall` | Remove the binary and the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |
+| `--uninstall` | Remove the binary and **recursively delete** the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |
 | `--help` / `-h` | Show inline help. |
 | `--version` / `-v` | Print version. |
 
@@ -112,15 +174,16 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | Variable | Equivalent flag | Purpose |
 |---|---|---|
 | `FSEND_PASS` | `--pass` | Supply the transfer password out-of-band. |
-| `FSEND_DEBUG` | `--debug` | `1` enables verbose stderr logging. |
-| `FSEND_NO_UPDATE_CHECK` | — | `1` disables the once-a-day check for a newer release. |
+| `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
+| `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
 
 Flags always win when both are set.
 
 After a successful transfer, fsend checks GitHub at most once a day for a
 newer release and, if one exists, prints a one-line hint to run
-`fsend --update`. The check is skipped when output is piped or `--quiet`
-is set, and can be turned off entirely with `FSEND_NO_UPDATE_CHECK=1`.
+`fsend --update`. The check is skipped when stderr isn't a terminal (so
+piped or scripted runs never trigger it) or `--quiet` is set, and can be
+turned off entirely with `FSEND_NO_UPDATE_CHECK=1`.
 
 ## `fsend server`
 
@@ -145,15 +208,16 @@ docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
 ```
 
 Internet-exposed deployments need a TLS-terminating reverse proxy in
-front of `:8080` — file data on UDP/443 is already end-to-end encrypted,
-but the HTTP pairing channel carries session slots and bearer tokens in
-plaintext. See [Self-hosting](self-hosting.md) for the ready-made
-Caddy + Docker stack.
+front of `:8080`. The file data on UDP/443 is already end-to-end
+encrypted, but the HTTP pairing channel carries session slots and bearer
+tokens in plaintext, so it has to run behind TLS. See
+[Self-hosting](self-hosting.md) for the ready-made Caddy + Docker stack.
 
 ## Exit codes
 
 Stable from v1.0.0. `0` means success; non-zero codes map to a specific
-failure.
+failure. For what to *do* about a given error, see
+[Troubleshooting](troubleshooting.md).
 
 | Code  | When it happens |
 |-------|-----------------|
@@ -171,7 +235,7 @@ failure.
 | `12`  | `E012` — path traversal rejected. |
 | `13`  | `E013` — one or more files differed and were kept (transfer otherwise completed); use `--overwrite` to replace them. |
 | `14`  | `E014` — could not reach the other side, even via the fallback relay. |
-| `15`  | `E015` — sender and receiver are on incompatible fsend versions. |
+| `15`  | `E015` — the two sides couldn't agree how to transfer (protocol mismatch). |
 | `17`  | `E017` — rate limited. |
 | `18`  | `E018` — default server retired. |
 | `19`  | `E019` — source file changed; incomplete download discarded, re-run. |
@@ -187,11 +251,14 @@ failure.
 | `30`  | `E030` — `fsend server` could not start (port in use or no permission to bind). |
 | `31`  | `E031` — transfer requires a password the receiver didn't have (`--pass` / `FSEND_PASS`). |
 | `32`  | `E032` — the other side cancelled the transfer. |
+| `33`  | `E033` — `fsend --update` could not complete. |
+| `34`  | `E034` — the other device is running an incompatible fsend version. |
+| `35`  | `E035` — `fsend --uninstall` could not remove the binary. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 
-`5` and `16` are intentionally absent: `E005` is unused, and `E016`
-(corrupt config) is a non-fatal warning that exits `0`.
+`5` is unused. `16` isn't in this list because `E016` (corrupt config) is
+a non-fatal warning that exits `0` — see the `0` row above.
 
 ## Share codes
 
