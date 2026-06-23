@@ -369,7 +369,7 @@ func senderQUICAccept(ctx context.Context, pc net.PacketConn, code string) (*qui
 		_ = pc.Close()
 		return nil, nil, nil, err
 	}
-	tr := &quic.Transport{Conn: pc}
+	tr := quicconn.NewTransport(pc)
 	ln, err := tr.Listen(tlsCfg, quicconn.QuicConfig())
 	if err != nil {
 		_ = tr.Close()

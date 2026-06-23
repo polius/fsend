@@ -391,7 +391,7 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 // attempt resume mid-file — the sender verifies the prefix, seeks past
 // it, and streams the remainder.
 func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string, pathInfo connpath.Info) error {
-	tr := &quic.Transport{Conn: pc}
+	tr := quicconn.NewTransport(pc)
 	defer func() { _ = tr.Close() }()
 
 	outDir, sink, err := resolveOutDir(f)
