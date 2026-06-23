@@ -3,133 +3,139 @@
 ## End-to-end encryption
 
 Files are end-to-end encrypted between sender and receiver. The pairing
-server cannot read filenames, file sizes, hashes, or contents — even
-when it's in the data path as a relay fallback.
+server never sees your filenames, sizes, hashes, or contents — not even
+when it's relaying the transfer as a fallback.
 
-The stack pairs an encryption layer with an independent
-peer-authentication layer:
+Two independent layers protect every transfer:
 
-1. **TLS 1.3 over QUIC** carries all file bytes — standard transport
-   security, terminated at the two peers (not at the server).
-2. **SPAKE2** (a balanced PAKE), run from the share code and bound to the
-   TLS handshake via the RFC 5705 channel-binding exporter, proves the
-   other end of that TLS connection is the peer holding the code.
+1. **TLS 1.3 over QUIC** encrypts all file bytes. It's standard transport
+   security, terminated at the two peers — never at the server.
+2. **SPAKE2** proves you're talking to the right peer. It runs from the
+   share code and confirms the other end of the TLS connection is the
+   peer who holds that code. (SPAKE2 is a balanced PAKE — a
+   password-authenticated key exchange, where two sides verify they share
+   a secret without ever sending it.)
 
-A network eavesdropper is stopped by TLS. An active MITM that
-terminates TLS itself (including a malicious pairing server or relay)
-ends up with a different channel binding on each side and is caught by
-the SPAKE2 confirmation before any file data flows. This holds even
-against the pairing server because it never learns the share code — it
-sees only an argon2id-stretched *slot* derived from it (see below) —
-so it cannot run the SPAKE2 handshake with either side.
+The two layers are tied together: SPAKE2 is bound to the TLS handshake
+through the RFC 5705 channel-binding exporter. That binding is what
+defeats a man-in-the-middle:
+
+- A **passive eavesdropper** is stopped by TLS alone.
+- An **active MITM** that terminates TLS itself — including a malicious
+  pairing server or relay — ends up with a different channel binding on
+  each side. The SPAKE2 confirmation catches the mismatch before any file
+  data flows.
+
+This holds even against the pairing server, because the server never
+learns the share code. It sees only an argon2id-stretched *slot* derived
+from the code (see [Share codes](#share-codes)), so it can't run the
+SPAKE2 handshake with either side.
 
 ## Post-quantum forward secrecy
 
 TLS 1.3's key exchange uses the **X25519 + ML-KEM-768 hybrid** (Go's
-standard since 1.24). Ciphertext captured today is not retroactively
-decryptable by a future large-scale quantum computer.
+standard since 1.24). Ciphertext captured today stays secret even against
+a future large-scale quantum computer.
 
 ## Per-session keys and integrity
 
 - **Fresh TLS identity per transfer.** Each session generates a new
   Ed25519 keypair and a self-signed certificate valid for one hour.
-  There's no cert to manage, rotate, or revoke — keys die with the
+  There's nothing to manage, rotate, or revoke — the keys die with the
   process.
-- **End-to-end integrity.** Every chunk carries a BLAKE3 hash; file
-  transfers also verify a BLAKE3 root over the full file before
-  completing. Corruption is detected by the receiver, not the relay.
+- **End-to-end integrity.** Every chunk carries a BLAKE3 hash, and each
+  file is checked against a BLAKE3 root over its full contents before
+  it's accepted. The receiver catches corruption, not the relay.
 
 ## What the pairing server can see
 
 It's a matchmaker, not a middleman. Its only job is to introduce two
-peers who can't otherwise find each other across NAT, then step aside —
-for the full mechanics see
-[How it works → Why a server?](architecture.md#why-a-server). What matters
-for the threat model is how little it observes even while doing that job:
+peers who can't otherwise find each other across NAT, then step aside
+(for the full mechanics, see
+[How it works → Why a server?](architecture.md#why-a-server)). Even while
+doing that job, it observes very little:
 
-- The two peers meet at a *slot* — a one-way argon2id stretch of the
-  share code that each computes locally — so the server pairs them
-  **without ever seeing the code itself**.
-- In the typical cross-network case the file flows peer-to-peer and the
-  server never sees a byte of it.
-- When NAT topology forces the fallback relay, it forwards
-  **already-encrypted** UDP datagrams — a mail carrier moving sealed
-  envelopes. It moves the parcel; it can't open it.
+- Peers meet at a *slot* — a one-way argon2id stretch of the share code
+  that each computes locally — so the server pairs them **without ever
+  seeing the code**.
+- In the common cross-network case, the file flows peer-to-peer and the
+  server never sees a byte.
+- When NAT topology forces the fallback relay, the server forwards
+  **already-encrypted** UDP datagrams. It's a mail carrier moving sealed
+  envelopes: it carries the parcel but can't open it.
 
 ### Visibility
 
-|                                                   | Server sees     |
-|---------------------------------------------------|-----------------|
-| File contents                                     | ✗ never         |
-| File names, sizes, hashes                         | ✗ never         |
-| Ciphertext (on the relay-fallback path)           | ✓ as opaque bytes — not decryptable, not even by the server's operator |
-| The share code                                    | ✗ never — only an argon2id-stretched slot derived from it; recovering the code from a slot is a memory-hard brute-force of the whole code space |
-| Your IP                                           | ✓ briefly, in memory only, for pairing — never written to disk |
+| | Server sees |
+|---|---|
+| File contents | ✗ never |
+| File names, sizes, hashes | ✗ never |
+| Ciphertext (relay-fallback path only) | ✓ as opaque bytes — not decryptable, even by the operator |
+| The share code | ✗ never — only a derived slot (see below) |
+| Your IP | ✓ briefly, in memory, for pairing — never written to disk |
 
 ### What it writes to disk
 
 Effectively nothing:
 
-- **No access log. No per-transfer log line.** The default log level
-  only emits lifecycle events — startup, shutdown, and errors.
-- **No IP addresses in logs** at the default level, and share codes
-  never reach the server at all. (`FSEND_LOG_LEVEL=debug` logs IPs and
-  session slots for troubleshooting — don't run a privacy-sensitive
-  server at debug level.)
-- **No database, no persistence layer.** Pairing state never touches
-  disk — it lives in RAM, evicts within an hour at most (ten minutes
-  once a transfer has paired), and is gone forever on restart.
+- **No access log, no per-transfer line.** The default log level emits
+  only lifecycle events — startup, shutdown, and errors.
+- **No IPs in the logs** at the default level, and share codes never
+  reach the server at all. (`FSEND_LOG_LEVEL=debug` logs IPs and session
+  slots for troubleshooting — don't run a privacy-sensitive server at
+  debug level.)
+- **No database, no persistence.** Pairing state lives only in RAM. It
+  evicts within an hour at most — ten minutes once a transfer has paired
+  — and is gone for good on restart.
 
-If you'd still rather not trust our public server,
-[self-host one](self-hosting.md) — it's a single binary with nothing to
+If you'd still rather not trust the public server,
+[self-host one](self-hosting.md): it's a single binary with nothing to
 back up.
 
 ## Share codes
 
-Codes look like `abc-defg-jkm` — three letter-groups (3-4-3) from the
-23-letter alphabet `abcdefghjkmnpqrstuvwxyz` (`i`, `l`, `o` are
-excluded for legibility). Codes are:
+A code looks like `abc-defg-jkm` — three letter-groups (3-4-3) drawn from
+a 23-letter alphabet (`i`, `l`, and `o` are left out for legibility).
+What makes a short code safe to use as the whole secret:
 
-- **Never sent to the pairing server** — both peers register and join
-  with a *slot*: a fixed-salt argon2id stretch of the code (64 MiB,
-  hex-encoded). The server matches the two peers that derived the same
-  slot. Recovering a code from a leaked slot means a memory-hard search
-  of the ~2^45 code space — ~2^44 argon2id evaluations at 64 MiB each
-  on average — which is what makes the SPAKE2 channel binding effective
-  *against the server itself*: not knowing the code, it cannot run the
-  handshake with either side.
-- **One-shot** — once claimed by a receiver, the same code can't be reused.
-- **Server-side TTL** — codes expire on the server after one hour if no
-  receiver pairs, or after ten minutes once a receiver has paired. Ctrl-C
-  on the sender invalidates the code immediately.
-- **Rate-limited** — the public pairing server caps new sessions at 30
-  per minute per source IP (IPv4 keyed on the full address, IPv6 on the
-  /64 prefix), making online brute-force against the ~45-bit code space
-  infeasible.
-- **Not the encryption key** — the code authenticates the SPAKE2 handshake;
-  the actual session key is derived from that handshake plus the TLS 1.3
-  channel binding, so the code itself never traverses the wire in the clear.
-- **System-generated** — fsend picks the code for each transfer; it's
-  not user-selectable. To require a password on top of the code, add
-  `--pass` when sending.
+- **The code never reaches the server.** Both peers register under a
+  *slot* instead — a fixed-salt argon2id stretch of the code (64 MiB of
+  memory, hex-encoded) — and the server just matches the two peers that
+  derived the same slot. Working backward from a leaked slot to the code
+  means a memory-hard brute-force of the entire ~2^45 code space: about
+  2^44 argon2id evaluations at 64 MiB each, on average. That's also why
+  the SPAKE2 binding holds against the server itself — not knowing the
+  code, it can't run the handshake with either side.
+- **One-shot.** Once a receiver claims a code, it can't be reused.
+- **Time-limited.** A code expires on the server after one hour if no one
+  receives, or ten minutes once a receiver has paired. Pressing Ctrl-C on
+  the sender invalidates it immediately.
+- **Rate-limited.** The public server caps new sessions at 30 per minute
+  per source IP (keyed on the full IPv4 address, or the /64 prefix for
+  IPv6), so online guessing against the ~45-bit space is infeasible.
+- **Not the encryption key.** File data is encrypted with the TLS 1.3
+  session key. The code only drives the SPAKE2 handshake that
+  authenticates the peer; it never feeds the encryption key and never
+  crosses the wire in the clear.
+- **Chosen for you.** fsend generates the code; it isn't user-selectable.
+  To add a second secret on top, send with `--pass`.
 
 ## Release integrity
 
-Release archives are published with a `checksums.txt` that is **signed in
-CI with keyless [cosign](https://docs.sigstore.dev/)** (Sigstore Fulcio +
-Rekor), bound to the release workflow's identity. The installer and
-`fsend --update` verify two independent things:
+Each release ships a `checksums.txt` that is **signed in CI with keyless
+[cosign](https://docs.sigstore.dev/)** (Sigstore Fulcio + Rekor), bound
+to the release workflow's identity. The installer and `fsend --update`
+then verify two separate things:
 
 - **Authenticity** — if `cosign` is installed, the signature on
   `checksums.txt` is verified against the release workflow's identity
   before any checksum is trusted. This catches a *tampered* release, not
-  just a corrupted download — a SHA-256 match alone only proves the
-  archive matches `checksums.txt`, and both come from the same host.
+  just a corrupted download: a SHA-256 match alone only proves the archive
+  matches `checksums.txt`, and both come from the same host.
 - **Integrity** — the downloaded archive's SHA-256 is checked against the
   (now-trusted) `checksums.txt`.
 
-cosign is optional so the one-line install keeps working on hosts without
-it; in that case only the checksum is verified and the installer says so.
-Set `FSEND_REQUIRE_SIGNATURE=1` to refuse to install unless the signature
-is verified.
-
+cosign is optional, so the one-line install still works on hosts without
+it — in that case only the checksum is verified, and the installer tells
+you so. Set `FSEND_REQUIRE_SIGNATURE=1` to refuse any install that isn't
+signature-verified.

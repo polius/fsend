@@ -23,30 +23,25 @@ no accounts, end-to-end encrypted, self-hostable. The differences are in
 
 ## TL;DR
 
-- **Direct peer-to-peer across the internet.** fsend hole-punches
-  through NATs (ICE) and sends bytes straight between the two machines at
-  their own bandwidth. **croc always relays across the internet.**
-  **magic-wormhole relays whenever both peers are behind ordinary NATs**
-  (no hole-punching). On the common home-to-café transfer, fsend is the
-  only one that *can* keep a third-party server out of the data path —
-  when hole-punching succeeds; it falls back to a relay when NAT topology
-  defeats it.
-- **Strongest cryptography.** fsend is the only one of the three with
-  **post-quantum** key exchange (X25519 + ML-KEM-768) and **two
-  independent** security layers (TLS 1.3 *and* SPAKE2 bound to the TLS
-  handshake). croc and magic-wormhole each have a single classical layer.
-- **Hardest codes to brute-force by default.** fsend rate-limits guesses
-  server-side and the code never reaches the server; its ~45 bits of
-  entropy match croc's. magic-wormhole's default is **16 bits** with no
-  rate limiting (its own threat model documents a 1-in-65536 guess
-  chance).
+- **Direct across the internet.** fsend hole-punches through NATs (ICE),
+  so bytes go straight between the two machines at their own bandwidth.
+  croc always relays; magic-wormhole relays whenever both peers sit behind
+  ordinary NATs. fsend falls back to a relay only when hole-punching
+  fails.
+- **Strongest cryptography.** fsend is the only one with post-quantum key
+  exchange (X25519 + ML-KEM-768) and two independent layers (TLS 1.3
+  *plus* SPAKE2 bound to it). The other two rest on a single classical
+  layer.
+- **Hardest codes to guess, by default.** fsend's codes carry ~45 bits
+  (matching croc), and the server rate-limits guesses. magic-wormhole
+  defaults to 16 bits with no rate limiting — its own threat model
+  documents a 1-in-65,536 guess chance.
 - **Works on a LAN with no internet.** fsend (mDNS) and croc (multicast)
-  both discover peers locally and transfer with no internet at all;
-  **magic-wormhole can't** — it must reach its central mailbox server to
-  pair, even on the same Wi-Fi.
-- **One self-contained static binary.** fsend and croc are single Go
-  binaries; magic-wormhole is a Python program needing Python ≥ 3.10 and
-  a dependency stack.
+  pair locally and transfer offline. magic-wormhole can't — it must reach
+  its mailbox server to pair, even on the same Wi-Fi.
+- **One static binary.** fsend and croc are single Go binaries;
+  magic-wormhole is a Python program needing Python ≥ 3.10 and a
+  dependency stack.
 
 ## At a glance
 
@@ -82,13 +77,13 @@ introduction is where the three tools fundamentally diverge.
 
 ### fsend — direct first, relay only as a true fallback
 
-The pairing server is a matchmaker: both peers register, swap NAT-
-traversal candidates through it (ICE), and as soon as one hole-punched
-path works, **bytes flow straight from sender to receiver** at whatever
-the two links support. The server never sees a file byte. Only when NAT
-topology defeats hole-punching (hard symmetric NAT, locked-down corporate
-networks) does the server fall back to forwarding encrypted UDP it can't
-decrypt.
+The pairing server is a matchmaker: both peers register, swap
+NAT-traversal candidates through it (ICE), and as soon as one
+hole-punched path works, **bytes flow straight from sender to receiver**
+at whatever the two links support. The server never sees a file byte. It
+falls back to forwarding encrypted UDP (which it can't decrypt) only when
+NAT topology defeats hole-punching — a hard symmetric NAT, or a
+locked-down corporate network.
 
 ```
    Sender ── intro ──►  Pairing server  ◄── intro ── Receiver
@@ -221,16 +216,18 @@ X25519 + ML-KEM-768 hybrid is not.
 | Online-guess rate limiting | **30/min per source IP** | None server-side | None (acknowledged in docs) |
 | Code reaches a server | **Never** — only an argon2id-stretched slot | The relay sees the room (SHA-256 of code prefix) | Words never; the (non-secret) nameplate does |
 
-fsend takes the strong-by-default stance: the code never reaches the
-server (both peers register under a 64-MiB argon2id-stretched *slot*
-derived from it), it carries ~45 bits, and the public server rate-limits
-new sessions — so online brute force is infeasible without the operator
-having to configure anything. magic-wormhole's own
+fsend is strong by default, with nothing to configure. The code carries
+~45 bits and never reaches the server (both peers register under a 64-MiB
+argon2id-stretched *slot* derived from it), and the public server
+rate-limits new sessions — so online brute force is infeasible.
+magic-wormhole's own
 [threat model](https://magic-wormhole.readthedocs.io/en/latest/attacks.html)
-spells out the cost of its 16-bit default: an attacker controlling the
-network or mailbox has a **1-in-65536** chance per attempt, with no rate
-limiting. The trade-off is flexibility — magic-wormhole (and croc) let
-you choose your own code phrase; fsend always picks it for you.
+is candid about the cost of its 16-bit default: an attacker on the
+network or mailbox gets a **1-in-65,536** chance per guess, with no rate
+limiting.
+
+The trade-off is flexibility: magic-wormhole and croc let you choose your
+own code phrase, while fsend always picks it for you.
 
 ## Features
 
@@ -249,7 +246,7 @@ you choose your own code phrase; fsend always picks it for you.
 | Password on top of the code | **✓ `--pass`** | code phrase doubles as secret | ✗ (the code is the secret) |
 | Exclude paths in a directory | **✓ `--exclude`** | **✓ `--exclude` (+ `--git`)** | ✗ |
 | Custom output dir / name | `--out` | `--out` | `--output-file` |
-| Compression | zstd (always) | DEFLATE (`--no-compress` to disable) | DEFLATE (folders only) |
+| Compression | zstd (automatic; skips chunks it can't shrink) | DEFLATE (`--no-compress` to disable) | DEFLATE (folders only) |
 | Bandwidth throttle | ✗ | **✓ `--throttleUpload`** | ✗ |
 | QR code for the code | ✗ | **✓ `--qrcode`** | **✓ (on by default)** |
 | SOCKS5 proxy | ✗ | **✓ `--socks5`** | — |
