@@ -156,6 +156,14 @@ func TestIsTransient_Classification(t *testing.T) {
 		{"quic_application_error_with_message_transient",
 			errors.New("Application error 0x100 (remote): peer left"), true},
 
+		// pion/ice STUN-demux false positive: a QUIC datagram's encrypted
+		// bytes 4..7 randomly matched the STUN magic cookie, so
+		// ice.Conn.Write rejected it. Never a real network fault; a re-dial
+		// with fresh connection IDs dodges it, so it must retry rather than
+		// surface as E099. This is the exact field-report string.
+		{"ice_stun_write_false_positive_transient",
+			errors.New("wire: writing chunk payload: failed to write STUN message to ICE connection"), true},
+
 		// Terminal cases — explicitly tested because a wrapping mistake
 		// here would silently turn user errors into 3-retry hangs.
 		{"hash_mismatch_terminal", fserrors.ErrHashMismatch, false},

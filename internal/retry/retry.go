@@ -186,10 +186,20 @@ func IsTransient(err error) bool {
 	// declined, ...) are surfaced via wire-level ErrorFrames BEFORE the
 	// QUIC stream tears down, so they're already caught by the terminal
 	// sentinel check above and never reach this fallback.
+	//
+	// "failed to write STUN message to ICE connection" is pion/ice's
+	// sentinel from its STUN/data demux guard: ice.Conn.Write refuses any
+	// app packet that stun.IsMessage flags (len>=20 && bytes[4:8]==magic
+	// cookie). A QUIC datagram whose encrypted bytes 4..7 randomly equal
+	// the cookie trips it — a false positive, never a real network fault.
+	// A retry re-dials with fresh connection IDs/keys so the colliding
+	// bytes can't recur (and the STUN-safe connID generator prevents it
+	// outright); always safe to retry. See internal/quicconn/connid.go.
 	if s := err.Error(); strings.Contains(s, "idle timeout") ||
 		strings.Contains(s, "connection reset by peer") ||
 		strings.Contains(s, "use of closed network connection") ||
-		strings.Contains(s, "Application error 0x") {
+		strings.Contains(s, "Application error 0x") ||
+		strings.Contains(s, "failed to write STUN message to ICE connection") {
 		return true
 	}
 
