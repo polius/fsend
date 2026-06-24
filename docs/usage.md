@@ -140,6 +140,67 @@ code." It's a fresh send with a new code:
 If the source file changed in the meantime, the partial is discarded and
 the file transfers from scratch — so you never resume onto stale data.
 
+## Scripting
+
+To drive fsend from a script you need the share code without the
+interactive display. `--quiet` does exactly that: on send it prints
+**only the bare code** to stdout (`abc-defg-jkm\n`) and routes everything
+else — progress, prompts, summaries — to stderr. The sender then blocks
+until a receiver connects, so capture the code from its stdout:
+
+```sh
+fsend file1.txt --quiet > code.txt    # writes the code, then waits for a receiver
+```
+
+On the receiving side, pair `--quiet` with `--yes` so the accept prompt
+never blocks, and pass any password via `FSEND_PASS`:
+
+```sh
+FSEND_PASS=swordfish fsend "$(cat code.txt)" --yes --quiet --out ~/incoming
+```
+
+## Chaining through a middle machine
+
+Sometimes the sender and the receiver can't reach each other, but a third
+machine can reach both — a jump box bridging two networks, or a laptop
+with one foot on each. Since `--out -` streams a received payload to
+stdout and a piped `fsend` sends whatever arrives on stdin, you can splice
+two transfers together on that middle machine and relay the data straight
+through it:
+
+```sh
+# Machine A (has the file) — prints code A:
+fsend file.bin
+
+# Machine B (can reach both A and C) — receives A and re-sends it; prints code B:
+fsend <codeA> --out - --yes | fsend
+
+# Machine C (the destination):
+fsend <codeB> --out - > file.bin
+```
+
+The bytes stream `A → B → C` through an ordinary pipe; machine B never
+writes them to disk. Each hop is paired and encrypted on its own.
+
+Good to know:
+
+- **One file or stream at a time.** The pipe carries raw bytes with no
+  names or folder structure. To relay a directory, wrap it in `tar` so it
+  rebuilds on the far side:
+  ```sh
+  # Machine A
+  tar c ./mydir | fsend
+  # Machine B (unchanged — relays the stream straight through)
+  fsend <codeA> --out - --yes | fsend
+  # Machine C
+  fsend <codeB> --out - | tar x
+  ```
+- **The filename doesn't travel.** Machine C receives an anonymous stream,
+  so redirect it to the name you want (`> file.bin` above). Drop `--out -`
+  and it's saved under an auto-generated name instead.
+- **The middle machine sees the data.** Machine B decrypts each hop to
+  re-send it, so only chain through a machine you trust.
+
 ## Choosing a server (`--connect`)
 
 The default pairing server is `fsend.alzina.dev` — best-effort, free,
@@ -162,7 +223,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | Flag | Purpose |
 |---|---|
 | `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
-| `--quiet` | Suppress non-error output. |
+| `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)). On receive, requires `--yes` (there's no prompt to answer otherwise). |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
 | `--uninstall` | Remove the binary and **recursively delete** the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |
