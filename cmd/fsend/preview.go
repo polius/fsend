@@ -63,14 +63,14 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 		if it.note != "" {
 			line += "   " + noteText(it.note)
 		}
-		fmt.Fprintln(w, line)
+		_, _ = fmt.Fprintln(w, line)
 	}
 	if more := len(items) - shown; more > 0 {
 		var rest uint64
 		for _, it := range items[shown:] {
 			rest += it.size
 		}
-		fmt.Fprintf(w, "%s%s\n", pad,
+		_, _ = fmt.Fprintf(w, "%s%s\n", pad,
 			uxlog.Dim(fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(int64(rest)))))
 	}
 }
