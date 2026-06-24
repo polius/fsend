@@ -220,9 +220,9 @@ func TestReceiverSizeClause(t *testing.T) {
 // print — a bidi override must not survive into the preview.
 func TestReceiverPreview_SanitizesNames(t *testing.T) {
 	items := receiverPreview([]transfer.SummaryEntry{
-		{RelativePath: "evil‮name.bin", Size: 10, Status: "new"},
+		{RelativePath: "evil\u202ename.bin", Size: 10, Status: "new"},
 	})
-	if strings.ContainsRune(items[0].name, '‮') {
+	if strings.ContainsRune(items[0].name, '\u202e') {
 		t.Errorf("bidi override survived sanitization: %q", items[0].name)
 	}
 }
