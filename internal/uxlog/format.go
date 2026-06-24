@@ -108,6 +108,17 @@ func Dim(s string) string {
 	return colorDim + s + colorReset
 }
 
+// Alert wraps s in yellow (the same family as the warning glyph) so an
+// attention-worthy inline tag — e.g. a "differs" status — stands out instead
+// of receding. Plain text when colour is off. The counterpart to Dim, which
+// de-emphasises reassuring tags like "up to date".
+func Alert(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return colorYellow + s + colorReset
+}
+
 // Bold wraps s in the ANSI bold escape, unconditionally. Unlike Dim and
 // Code it carries no colour gate of its own: it decorates --help, which
 // cobra writes to stdout, so the caller must gate on stdout's state via

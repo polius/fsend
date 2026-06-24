@@ -650,13 +650,13 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan
 // both paths in this helper keeps the two transfer entry points purely
 // declarative.
 func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathInfo connpath.Info, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
-	closeProg, progressFn, onResume, stats, onStreamingEOF := newSenderProgress(f, plan)
+	closeProg, progressFn, onResume, onSkip, stats, onStreamingEOF := newSenderProgress(f, plan)
 	defer closeProg()
 
 	// The receiver may sit at its accept prompt for a while; the spinner
 	// owns that window. The first event off the wire — a byte, a resume
-	// notice, a retry — stops it so the progress bar (or notice line)
-	// lands on a clean row. Stop is idempotent and nil-safe (--quiet).
+	// notice, a skip, a retry — stops it so the progress bar (or notice
+	// line) lands on a clean row. Stop is idempotent and nil-safe (--quiet).
 	spin := startWaitSpinner(f, "Waiting for them to accept")
 	defer spin.Stop()
 
@@ -675,6 +675,12 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	resume := func(fi uint32, offset, total uint64) {
 		spin.Stop()
 		onResume(fi, offset, total)
+	}
+	// An all-skipped transfer (receiver had everything) emits no bytes, so
+	// the skip is the only event that stops the accept spinner.
+	skip := func(fi uint32) {
+		spin.Stop()
+		onSkip(fi)
 	}
 	current := firstRes
 	opts := retry.Options{OnRetry: retryNoticeFor(f)}
@@ -720,20 +726,12 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 				Password:       f.passArg,
 				ProgressFn:     progress,
 				OnResume:       resume,
+				OnSkip:         skip,
 				OnStreamingEOF: onStreamingEOF,
 			})
 		})
 	if err != nil {
 		return err
-	}
-	// moved counts the bytes this run pushed on the wire; skipped is the
-	// resumed prefix the receiver already had. The summary shows the
-	// full size but bases the rate on moved alone. printSendSummary
-	// no-ops under --quiet, so the outer guard isn't needed.
-	moved, skipped := stats()
-	total := moved + skipped
-	if total == 0 {
-		total, moved = int64(plan.totalBytes), int64(plan.totalBytes)
 	}
 	// Flush the bar first so its terminal frame lands above the summary
 	// (the deferred call is then a no-op).
@@ -742,7 +740,13 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	if !firstByte.IsZero() {
 		elapsed = time.Since(firstByte)
 	}
-	printSendSummary(f, total, moved, elapsed, pathInfo)
+	// The summary shows the offered total (agreeing with the pre-transfer
+	// headline) with moved as the "(X sent)" clause, so any partial send —
+	// down to a full skip ("0 B sent") — reconciles instead of silently
+	// dropping to the sent bytes. The skipped-file count explains the gap and
+	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
+	s := stats()
+	printSendSummary(f, int64(plan.totalBytes), s.moved, s.skippedFiles, elapsed, pathInfo)
 	return nil
 }
 

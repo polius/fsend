@@ -221,6 +221,7 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 		}
 		fmt.Fprintf(os.Stderr, "  Sending %s%s  ·  %s\n",
 			name, uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))
+		renderPreview(os.Stderr, senderPreview(plan.sources), 6)
 	}
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  On the other machine, run:")
@@ -230,12 +231,41 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 	return uxlog.StartSpinner("Waiting for receiver")
 }
 
+// senderPreview projects the walked sources into preview rows, dropping
+// directory entries so the count matches the "N files" headline. Names are
+// the user's own local paths, so no display sanitization is needed.
+func senderPreview(sources []transfer.Source) []previewItem {
+	items := make([]previewItem, 0, len(sources))
+	for _, s := range sources {
+		if s.Entry.Type == wire.EntryDir {
+			continue
+		}
+		it := previewItem{name: s.Entry.RelativePath, size: s.Entry.Size}
+		if s.Entry.Type == wire.EntrySymlink {
+			it.link = s.Entry.SymlinkTarget
+		}
+		items = append(items, it)
+	}
+	return items
+}
+
+// senderStats reports a finished send's tallies. skippedFiles counts entries
+// the receiver already had (declined via DecisionSkip) — the signal that
+// distinguishes an "already up to date" no-op from a real transfer. The
+// summary's size is the offered total (plan.totalBytes); moved is what
+// actually crossed the wire, so a partial send reads "Y (X sent)".
+type senderStats struct {
+	moved        int64 // bytes pushed on the wire this run
+	skippedFiles int   // whole files (non-dir) the receiver declined as identical
+}
+
 // newSenderProgress builds the progress callbacks driving a single overall
-// bar. Returns close, progress, onResume, a stats getter (moved/skipped), and
-// onStreamingEOF (latches the bar total once a stream EOFs).
-func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), stats func() (int64, int64), onStreamingEOF func(uint32, uint64)) {
+// bar. Returns close, progress, onResume, onSkip, a stats getter, and
+// onStreamingEOF (latches the bar total once a stream EOFs). All callbacks
+// run on the single send-loop goroutine, so the counters need no locking.
+func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32), stats func() senderStats, onStreamingEOF func(uint32, uint64)) {
 	prev := make(map[uint32]uint64)
-	var moved, skipped int64
+	var s senderStats
 	var bar *uxlog.Progress
 	ensureBar := func() {
 		if bar == nil && !f.quiet {
@@ -248,13 +278,15 @@ func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn fun
 			d := b - prev[fi]
 			prev[fi] = b
 			bar.Add(int64(d))
-			moved += int64(d)
+			s.moved += int64(d)
 		},
 		func(fi uint32, offset, total uint64) {
 			if offset > prev[fi] {
+				// Reflect the resumed prefix in the bar so it shows true
+				// progress; the summary's total comes from the offered size,
+				// so no separate byte counter is needed here.
 				d := int64(offset - prev[fi])
 				prev[fi] = offset
-				skipped += d
 				ensureBar()
 				bar.Add(d)
 			}
@@ -262,7 +294,8 @@ func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn fun
 				uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
 			}
 		},
-		func() (int64, int64) { return moved, skipped },
+		func(uint32) { s.skippedFiles++ },
+		func() senderStats { return s },
 		func(_ uint32, finalBytes uint64) { bar.SetTotal(int64(finalBytes), true) }
 }
 
@@ -275,12 +308,22 @@ func resumeNotice(offset, total uint64) string {
 	return s
 }
 
-// printSendSummary renders the post-transfer success line.
-func printSendSummary(f *flags, total, moved int64, elapsed time.Duration, path connpath.Info) {
+// printSendSummary renders the post-transfer success line. skippedFiles is the
+// count of (non-dir) entries the receiver declined; 0 omits the clause.
+func printSendSummary(f *flags, total, moved int64, skippedFiles int, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
 	parts := summaryParts(total, moved, "sent", elapsed, path)
+	// The receiver may have declined files it already had. The sender can't
+	// tell an identical file from one the receiver kept a different version of
+	// (both arrive as DecisionSkip — see wire.DecisionAction), so it reports
+	// the neutral, always-true "skipped" count. That still reconciles with the
+	// receiver's precise "N up to date · M kept" breakdown by sum, and it's
+	// what explains a partial — or zero — "(X sent)" against the offered total.
+	if skippedFiles > 0 {
+		parts = append(parts, uxlog.CountNoun(skippedFiles, "file")+" skipped")
+	}
 	fmt.Fprintf(os.Stderr, "%s Sent  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
 }
