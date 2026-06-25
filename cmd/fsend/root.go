@@ -247,7 +247,7 @@ EXAMPLES
   Use a different server:
     fsend --connect relay.mycompany.com:443
 
-COMMON FLAGS
+SENDING
   --text "<string>"      Send a literal string instead of a file
                          (the receiver prints it — nothing is saved;
                          keep it with: fsend <code> > note.txt)
@@ -255,30 +255,34 @@ COMMON FLAGS
                          Bare --pass prompts interactively — sender side
                          suggests a fresh random default (press Enter to
                          accept). Env: FSEND_PASS.
+  --exclude <glob,…>     Skip entries matching these globs in a directory
+  --name <string>        Override the hostname shown to the peer
+
+RECEIVING
+  --yes                  Auto-accept incoming transfers (no prompt)
   --out <dir>            Receive into this directory (default: current)
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
-  --yes                  Auto-accept incoming transfers (no prompt)
   --overwrite            Replace existing files that differ (identical files
                          are always skipped)
   --dry-run              Show what would transfer (new/identical/differs),
                          write nothing
   --checksum             Decide identical files by content hash, not
                          size+mtime (like rsync -c)
-  --quiet                Suppress all non-error output
-  --name <string>        Override the hostname shown to the peer
-  --exclude <glob,…>     Skip entries matching these globs in a directory
-  --help                 Show this help
-  --version              Show version
 
-ADVANCED FLAGS
+GENERAL
+  --quiet                Suppress all non-error output
+  --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
+  --help, -h             Show this help
+  --version, -v          Show version
+
+ADVANCED
   --connect              Show current server
   --connect <host:port>  Set the server (persisted)
   --connect <host:port>,<password>
                          Set the server + shared password
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
-  --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
   --update               Update fsend to the latest release
   --uninstall            Remove the fsend binary and its config dir
 
