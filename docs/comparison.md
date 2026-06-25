@@ -243,7 +243,8 @@ own code phrase, while fsend always picks it for you.
 | Receiver confirmation prompt | ✓ (`--yes` to skip) | ✓ (`--yes`) | ✓ (`--accept-file`) |
 | Resume after interruption | **✓ (BLAKE3-verified)** | **✓ (chunk-based)** | ✗ (classic transit restarts) |
 | Skip unchanged files on re-send | **✓ (size+mtime; `--checksum`)** | **✓ (always hashes)** | ✗ |
-| Preview / manifest | **✓ `--preview` (sender), `--manifest` (receiver)** | ✗ | ✗ |
+| Preview what you'd send | **✓ `--preview`** — list every file + size as CSV, locally, without sending | ✗ | ✗ |
+| Record of what was received | **✓ `--manifest`** — CSV of each file with its outcome (new / identical / overwritten / kept / resumed) | ✗ | ✗ |
 | Password on top of the code | **✓ `--pass`** | code phrase doubles as secret | ✗ (the code is the secret) |
 | Exclude paths in a directory | **✓ `--exclude`** | **✓ `--exclude` (+ `--git`)** | ✗ |
 | Custom output dir / name | `--out` | `--out` | `--output-file` |
