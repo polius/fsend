@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -98,6 +102,64 @@ func TestSenderPreview_DropsDirectories(t *testing.T) {
 
 // --preview emits CSV: header, directories dropped, and a path containing a
 // comma is quoted (encoding/csv).
+// --preview's contract: list what would be sent to stdout and return —
+// never reaching code.Generate or the network. runSend stops right after
+// the local walk, so calling it offline must succeed and emit the CSV.
+func TestRunSend_PreviewWritesCSVWithoutPairing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.bin"), []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	out := captureStdout(t, func() {
+		err = runSend(&flags{preview: true}, []string{dir})
+	})
+	if err != nil {
+		t.Fatalf("runSend --preview: %v", err)
+	}
+	// Header plus the one file (the wrapping dir is structural, omitted).
+	if !strings.HasPrefix(out, "path,size\n") {
+		t.Errorf("missing CSV header:\n%s", out)
+	}
+	base := filepath.Base(dir)
+	if !strings.Contains(out, base+"/a.bin,10\n") {
+		t.Errorf("missing file row:\n%s", out)
+	}
+}
+
+// onManifest is the cmd-side writer behind --manifest: it must lay down a
+// header + one row per file (quoting commas), and surface a write failure as
+// manifestErr rather than crash the transfer.
+func TestOnManifest_WritesCSV(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.csv")
+	ui := &receiverUI{f: &flags{manifest: path}}
+	ui.onManifest([]transfer.ManifestEntry{
+		{RelativePath: "new.bin", Size: 10, Status: "new"},
+		{RelativePath: "with,comma.txt", Size: 3, Status: "identical"},
+	})
+	if ui.manifestErr != nil {
+		t.Fatalf("manifestErr = %v", ui.manifestErr)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "path,size,status\nnew.bin,10,new\n\"with,comma.txt\",3,identical\n"
+	if string(got) != want {
+		t.Errorf("manifest =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestOnManifest_WriteError(t *testing.T) {
+	// Parent directory doesn't exist → os.Create fails.
+	path := filepath.Join(t.TempDir(), "no-such-dir", "m.csv")
+	ui := &receiverUI{f: &flags{manifest: path}}
+	ui.onManifest([]transfer.ManifestEntry{{RelativePath: "a", Size: 1, Status: "new"}})
+	if !errors.Is(ui.manifestErr, fserrors.ErrWriteFailed) {
+		t.Errorf("manifestErr = %v, want wrapping ErrWriteFailed", ui.manifestErr)
+	}
+}
+
 func TestWriteSendPreview(t *testing.T) {
 	var b bytes.Buffer
 	srcs := []transfer.Source{

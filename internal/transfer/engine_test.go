@@ -436,3 +436,28 @@ func TestEngine_SummaryBreakdown(t *testing.T) {
 }
 
 func pad(i int) string { return fmt.Sprintf("%03d", i) }
+
+// manifestStatus is the single source of truth for the --manifest "status"
+// column, so pin every (disposition, decision) combination it can see.
+// TestEngine_Manifest only exercises new/identical end-to-end; the
+// overwritten/kept/resumed branches are unreachable without a prior
+// local copy and an overwrite choice, so cover them here directly.
+func TestManifestStatus(t *testing.T) {
+	for _, tc := range []struct {
+		disp disposition
+		act  wire.DecisionAction
+		want string
+	}{
+		{dispNew, wire.DecisionSend, "new"},
+		{dispDiffers, wire.DecisionSend, "overwritten"},
+		{dispConflict, wire.DecisionSend, "overwritten"},
+		{dispIdentical, wire.DecisionSkip, "identical"},
+		{dispDiffers, wire.DecisionSkip, "kept"},
+		{dispConflict, wire.DecisionSkip, "kept"},
+		{dispResume, wire.DecisionResume, "resumed"},
+	} {
+		if got := manifestStatus(tc.disp, tc.act); got != tc.want {
+			t.Errorf("manifestStatus(%v, %v) = %q, want %q", tc.disp, tc.act, got, tc.want)
+		}
+	}
+}
