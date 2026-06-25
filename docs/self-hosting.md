@@ -166,20 +166,24 @@ Connecting without it — or with the wrong one — fails with `E028`.
 All optional; defaults shown. Set them under the `fsend` service's
 `environment:` block in `docker-compose.yml`.
 
+Variables are grouped by subsystem: **general**, **pairing** (the TCP
+signaling/control plane), and **relay** (the UDP data plane, which also
+answers STUN).
+
 | Variable | Default | Notes |
 |---|---|---|
-| `FSEND_HTTP_ADDR` | `:8080` | TCP signaling listener. |
-| `FSEND_UDP_ADDR` | `:443` | UDP relay listener. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
-| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/v1/health` — see [Require a password](#require-a-password-optional). |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
-| `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |
-| `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit. |
-| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MB` | Per-session relay cap — wire bytes after compression. Tune to your bandwidth budget. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`100000000`). |
-| `FSEND_ENABLE_RELAY` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
+| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/v1/health` — see [Require a password](#require-a-password-optional). |
+| `FSEND_PAIRING_ADDR` | `:8080` | TCP signaling listener. |
+| `FSEND_PAIRING_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |
+| `FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit, per source IP. |
+| `FSEND_RELAY_ENABLED` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
+| `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
+| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `1GB` | Per-session relay cap — wire bytes after compression. Tune to your bandwidth budget. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |
 
 ### Pairing-only mode (no relay)
 
-Set `FSEND_ENABLE_RELAY=false` to run the server as a pure matchmaker: it
+Set `FSEND_RELAY_ENABLED=false` to run the server as a pure matchmaker: it
 answers STUN (so peers can still hole-punch directly across NATs) but never
 forwards a single byte of file data. Use this when you want to help peers
 find each other without paying for — or being liable for — relayed traffic.

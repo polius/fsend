@@ -100,7 +100,7 @@ func runServer() error {
 	})
 	udpPort, err := udpPortFromAddr(cfg.udpAddr)
 	if err != nil {
-		return fmt.Errorf("%w: FSEND_UDP_ADDR %q: %v", fserrors.ErrServerStartup, cfg.udpAddr, err)
+		return fmt.Errorf("%w: FSEND_RELAY_ADDR %q: %v", fserrors.ErrServerStartup, cfg.udpAddr, err)
 	}
 	s.WithRelay(relaySrv, udpPort)
 	relayCtx, relayCancel := context.WithCancel(ctx)
@@ -112,7 +112,7 @@ func runServer() error {
 	}()
 	logger.Info("relay UDP listener up", "addr", cfg.udpAddr, "udp_port", udpPort)
 	if !cfg.enableRelay {
-		logger.Info("relay forwarding disabled (FSEND_ENABLE_RELAY=false); STUN/hole-punching still active")
+		logger.Info("relay forwarding disabled (FSEND_RELAY_ENABLED=false); STUN/hole-punching still active")
 	}
 
 	httpSrv := &http.Server{
@@ -207,21 +207,21 @@ type serverRuntimeConfig struct {
 
 func loadServerConfig() (serverRuntimeConfig, error) {
 	cfg := serverRuntimeConfig{
-		httpAddr:       envOr("FSEND_HTTP_ADDR", ":8080"),
-		udpAddr:        envOr("FSEND_UDP_ADDR", ":443"),
+		httpAddr:       envOr("FSEND_PAIRING_ADDR", ":8080"),
+		udpAddr:        envOr("FSEND_RELAY_ADDR", ":443"),
 		serverPassword: os.Getenv("FSEND_SERVER_PASSWORD"),
 	}
 	var err error
-	if cfg.maxSessionsPerIP, err = envInt("FSEND_MAX_SESSIONS_PER_IP", 5); err != nil {
+	if cfg.maxSessionsPerIP, err = envInt("FSEND_PAIRING_MAX_SESSIONS_PER_IP", 5); err != nil {
 		return cfg, err
 	}
-	if cfg.maxNewSessionsPerMin, err = envInt("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", 30); err != nil {
+	if cfg.maxNewSessionsPerMin, err = envInt("FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN", 30); err != nil {
 		return cfg, err
 	}
-	if cfg.maxBytesPerSession, err = envBytes("FSEND_MAX_RELAY_BYTES_PER_SESSION", 100*1000*1000); err != nil {
+	if cfg.maxBytesPerSession, err = envBytes("FSEND_RELAY_MAX_BYTES_PER_SESSION", 1000*1000*1000); err != nil { // 1GB
 		return cfg, err
 	}
-	if cfg.enableRelay, err = envBool("FSEND_ENABLE_RELAY", true); err != nil {
+	if cfg.enableRelay, err = envBool("FSEND_RELAY_ENABLED", true); err != nil {
 		return cfg, err
 	}
 	switch strings.ToLower(os.Getenv("FSEND_LOG_LEVEL")) {
@@ -329,7 +329,7 @@ func envBytes(name string, def uint64) (uint64, error) {
 // HTTP address. Exits 0 on healthy, 1 on anything else. Designed for
 // Docker HEALTHCHECK.
 func healthCheck() error {
-	addr := envOr("FSEND_HTTP_ADDR", ":8080")
+	addr := envOr("FSEND_PAIRING_ADDR", ":8080")
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}
@@ -365,23 +365,32 @@ EXAMPLE
   See deploy/compose/docker-compose.yml for a Caddy + Let's Encrypt setup.
 
 CONFIGURATION (environment variables — all optional)
-  FSEND_HTTP_ADDR                       Default :8080
-  FSEND_UDP_ADDR                        Default :443
-  FSEND_LOG_LEVEL                       Default info
-  FSEND_MAX_SESSIONS_PER_IP             Default 5
-  FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN Default 30
-  FSEND_MAX_RELAY_BYTES_PER_SESSION     Default 100MB, counted in wire bytes
-                                        after compression (accepts B, KB, MB,
-                                        GB, TB, or a plain byte count, e.g.
-                                        "100MB", "500KB", "104857600")
-  FSEND_ENABLE_RELAY                    Default true. Set false for pairing +
-                                        STUN only: peers still hole-punch, but
-                                        the server carries no data (symmetric-NAT
-                                        transfers fail instead of relaying)
-  FSEND_SERVER_PASSWORD                 Optional shared secret. When set, every
-                                        endpoint except /v1/health requires the
-                                        X-Fsend-Auth header to match. Clients:
-                                        fsend --connect <host:port>,<password>
+
+  General:
+    FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
+    FSEND_SERVER_PASSWORD             Optional shared secret. When set, all
+                                      endpoints except /v1/health require the
+                                      X-Fsend-Auth header. Connect with
+                                      fsend --connect <host:port>,<password>.
+
+  Pairing (TCP signaling/control plane):
+    FSEND_PAIRING_ADDR                Default :8080 (TCP).
+    FSEND_PAIRING_MAX_SESSIONS_PER_IP Default 5 — concurrent sessions per
+                                      source IP.
+    FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN
+                                      Default 30 — new sessions per source
+                                      IP per minute.
+
+  Relay (UDP data plane — also answers STUN):
+    FSEND_RELAY_ENABLED               Default true. false = pairing + STUN
+                                      only: peers still hole-punch, but the
+                                      server carries no file data.
+    FSEND_RELAY_ADDR                  Default :443 (UDP). Also the STUN
+                                      endpoint, so it stays in use even
+                                      when forwarding is disabled.
+    FSEND_RELAY_MAX_BYTES_PER_SESSION Default 1GB — wire bytes after
+                                      compression. Accepts B, KB, MB, GB,
+                                      TB, or a plain byte count.
 
 LEARN MORE
   https://github.com/polius/fsend

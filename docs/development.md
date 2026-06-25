@@ -68,8 +68,8 @@ For internet transfers (one peer behind NAT), the client needs a pairing
 server. To exercise the full client↔server↔client path:
 
 ```sh
-FSEND_HTTP_ADDR=":18080" \
-FSEND_UDP_ADDR=":18443" \
+FSEND_PAIRING_ADDR=":18080" \
+FSEND_RELAY_ADDR=":18443" \
 FSEND_LOG_LEVEL=debug \
 /tmp/fsend server
 ```
@@ -93,17 +93,17 @@ Reset to the public default:
 Health check (the env var tells the probe where to look):
 
 ```sh
-FSEND_HTTP_ADDR=":18080" /tmp/fsend server --health-check
+FSEND_PAIRING_ADDR=":18080" /tmp/fsend server --health-check
 ```
 
 ### Common server env vars
 
 | Var | Default | Notes |
 |---|---|---|
-| `FSEND_HTTP_ADDR` | `:8080` | Signaling listener |
-| `FSEND_UDP_ADDR` | `:443` | Relay listener (UDP) |
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MB` | Binary default; the [compose stack](self-hosting.md) sets `1GB`. |
+| `FSEND_PAIRING_ADDR` | `:8080` | Signaling listener (TCP) |
+| `FSEND_RELAY_ADDR` | `:443` | Relay listener (UDP); also the STUN endpoint |
+| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `1GB` | Per-session relay cap (wire bytes, post-compression). |
 
 Full list: `/tmp/fsend server --help`. For deployment, ports, and all
 tunables, see [Self-hosting](self-hosting.md).

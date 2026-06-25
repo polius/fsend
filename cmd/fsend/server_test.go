@@ -147,12 +147,12 @@ func TestServerEnvBytes(t *testing.T) {
 func clearServerEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"FSEND_HTTP_ADDR",
-		"FSEND_UDP_ADDR",
+		"FSEND_PAIRING_ADDR",
+		"FSEND_RELAY_ADDR",
 		"FSEND_LOG_LEVEL",
-		"FSEND_MAX_SESSIONS_PER_IP",
-		"FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN",
-		"FSEND_MAX_RELAY_BYTES_PER_SESSION",
+		"FSEND_PAIRING_MAX_SESSIONS_PER_IP",
+		"FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN",
+		"FSEND_RELAY_MAX_BYTES_PER_SESSION",
 	} {
 		os.Unsetenv(k)
 	}
@@ -176,8 +176,8 @@ func TestServerLoadConfigDefaults(t *testing.T) {
 	if cfg.maxNewSessionsPerMin != 30 {
 		t.Errorf("maxNewSessionsPerMin: got %d, want 30", cfg.maxNewSessionsPerMin)
 	}
-	if cfg.maxBytesPerSession != 100*srvMB {
-		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 100*srvMB)
+	if cfg.maxBytesPerSession != 1000*srvMB { // 1GB
+		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 1000*srvMB)
 	}
 	if cfg.logLevel != slog.LevelInfo {
 		t.Errorf("logLevel: got %v, want info", cfg.logLevel)
@@ -186,11 +186,11 @@ func TestServerLoadConfigDefaults(t *testing.T) {
 
 func TestServerLoadConfigOverrides(t *testing.T) {
 	clearServerEnv(t)
-	t.Setenv("FSEND_HTTP_ADDR", ":19999")
-	t.Setenv("FSEND_UDP_ADDR", ":29999")
-	t.Setenv("FSEND_MAX_SESSIONS_PER_IP", "12")
-	t.Setenv("FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN", "120")
-	t.Setenv("FSEND_MAX_RELAY_BYTES_PER_SESSION", "250MB")
+	t.Setenv("FSEND_PAIRING_ADDR", ":19999")
+	t.Setenv("FSEND_RELAY_ADDR", ":29999")
+	t.Setenv("FSEND_PAIRING_MAX_SESSIONS_PER_IP", "12")
+	t.Setenv("FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN", "120")
+	t.Setenv("FSEND_RELAY_MAX_BYTES_PER_SESSION", "250MB")
 	cfg, err := loadServerConfig()
 	if err != nil {
 		t.Fatalf("loadServerConfig: %v", err)
@@ -215,9 +215,9 @@ func TestServerLoadConfigOverrides(t *testing.T) {
 func TestServerLoadConfigRejectsBadValues(t *testing.T) {
 	// A typo'd limit must stop the server, not silently run the default.
 	cases := map[string]string{
-		"FSEND_MAX_RELAY_BYTES_PER_SESSION":     "1GiB",
-		"FSEND_MAX_SESSIONS_PER_IP":             "many",
-		"FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN": "-1",
+		"FSEND_RELAY_MAX_BYTES_PER_SESSION":             "1GiB",
+		"FSEND_PAIRING_MAX_SESSIONS_PER_IP":             "many",
+		"FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN": "-1",
 	}
 	for k, v := range cases {
 		t.Run(k+"="+v, func(t *testing.T) {
@@ -261,7 +261,7 @@ func TestServerLoadConfigLogLevels(t *testing.T) {
 func TestServerHealthCheckUnreachable(t *testing.T) {
 	// Bind+close to take a known-free port, then probe it (nothing listens).
 	port := srvFreePortTCP(t)
-	t.Setenv("FSEND_HTTP_ADDR", fmt.Sprintf("127.0.0.1:%d", port))
+	t.Setenv("FSEND_PAIRING_ADDR", fmt.Sprintf("127.0.0.1:%d", port))
 	if err := healthCheck(); err == nil {
 		t.Fatal("expected error against closed port")
 	}
@@ -269,7 +269,7 @@ func TestServerHealthCheckUnreachable(t *testing.T) {
 
 func TestServerHealthCheckBadStatus(t *testing.T) {
 	addr := startStubHealth(t, http.StatusInternalServerError, nil)
-	t.Setenv("FSEND_HTTP_ADDR", addr)
+	t.Setenv("FSEND_PAIRING_ADDR", addr)
 	err := healthCheck()
 	if err == nil {
 		t.Fatal("expected error for 500 response")
@@ -278,7 +278,7 @@ func TestServerHealthCheckBadStatus(t *testing.T) {
 
 func TestServerHealthCheckOK(t *testing.T) {
 	addr := startStubHealth(t, http.StatusOK, []byte(`{"ok":true}`))
-	t.Setenv("FSEND_HTTP_ADDR", addr)
+	t.Setenv("FSEND_PAIRING_ADDR", addr)
 	if err := healthCheck(); err != nil {
 		t.Errorf("healthCheck: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestServerHealthCheckOK(t *testing.T) {
 
 // startStubHealth boots a minimal HTTP server that answers /v1/health with
 // the given status + body, and shuts it down when the test ends. Returns
-// the host:port the test should set as FSEND_HTTP_ADDR.
+// the host:port the test should set as FSEND_PAIRING_ADDR.
 func startStubHealth(t *testing.T, status int, body []byte) string {
 	t.Helper()
 	port := srvFreePortTCP(t)

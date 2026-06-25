@@ -17,17 +17,9 @@ services:
     restart: unless-stopped
     ports:
       - "443:443/udp"
-    environment:
-      # All env vars are optional.
-      FSEND_HTTP_ADDR: ":8080"
-      FSEND_UDP_ADDR: ":443"
-      FSEND_LOG_LEVEL: "info"
-      # Abuse limits — tune to your bandwidth budget.
-      FSEND_MAX_RELAY_BYTES_PER_SESSION: "1GB"
-      FSEND_MAX_SESSIONS_PER_IP: "5"
-      FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN: "30"
-      # Password to restrict server access (empty = open); clients use `fsend --connect <domain>,<password>`.
-      FSEND_SERVER_PASSWORD: ""
+    # See `fsend server --help` for all settings.
+    # environment:
+    #   FSEND_SERVER_PASSWORD: "change-me"   # restrict access (unset = open)
     healthcheck:
       test: ["CMD", "/fsend", "server", "--health-check"]
       interval: 30s
