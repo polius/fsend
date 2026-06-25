@@ -48,6 +48,33 @@ type Server struct {
 	// draining rejects new allocations during graceful shutdown so the drain
 	// can converge while in-flight sessions finish.
 	draining atomic.Bool
+
+	// Aggregate counters for /v1/metrics (cumulative since boot).
+	bytesForwarded   atomic.Uint64
+	peakSessionBytes atomic.Uint64 // most any single session has forwarded
+	capHits          atomic.Uint64
+}
+
+// Metrics is an aggregate snapshot of relay activity for /v1/metrics.
+type Metrics struct {
+	Forwarding          bool   `json:"forwarding"`
+	Healthy             bool   `json:"healthy"`
+	TransfersActive     int    `json:"transfers_active"`
+	BytesForwardedTotal uint64 `json:"bytes_forwarded_total"`
+	PeakSessionBytes    uint64 `json:"peak_session_bytes"`
+	CapHitsTotal        uint64 `json:"cap_hits_total"`
+}
+
+// Metrics returns the current aggregate snapshot.
+func (s *Server) Metrics() Metrics {
+	return Metrics{
+		Forwarding:          !s.cfg.DisableForwarding,
+		Healthy:             s.healthy.Load(),
+		TransfersActive:     s.ActiveAllocations(),
+		BytesForwardedTotal: s.bytesForwarded.Load(),
+		PeakSessionBytes:    s.peakSessionBytes.Load(),
+		CapHitsTotal:        s.capHits.Load(),
+	}
 }
 
 // activeWindow bounds how recently an allocation must have forwarded a
@@ -314,10 +341,18 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 	wireSize := uint64(len(datagram))
 	total := a.bytes.Add(wireSize)
 	if s.cfg.MaxBytesPerSession > 0 && total > s.cfg.MaxBytesPerSession {
+		s.capHits.Add(1)
 		s.evict(token, ReasonCapHit)
 		return
 	}
 
+	s.bytesForwarded.Add(wireSize)
+	for { // raise the global peak to this session's running total
+		cur := s.peakSessionBytes.Load()
+		if total <= cur || s.peakSessionBytes.CompareAndSwap(cur, total) {
+			break
+		}
+	}
 	if _, err := s.conn.WriteTo(datagram, dst); err != nil {
 		s.logger.Debug("relay: write failed", "err", err)
 	}

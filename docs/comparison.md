@@ -257,6 +257,7 @@ own code phrase, while fsend always picks it for you.
 | SSH-key transfer helper | ✗ | ✗ | **✓ `wormhole ssh`** |
 | Library / protocol ecosystem | ✗ (app only) | ✗ (app only) | **✓ (importable, Dilation)** |
 | Self-host the server / relay | ✓ | ✓ | ✓ |
+| Server health / metrics endpoint | **✓ `/v1/health` + aggregate `/v1/metrics`** (load, relay bytes, cap hits, rejections — no per-user data) | ✗ | (server is a separate project) |
 
 ## Privacy: what a server can observe
 
