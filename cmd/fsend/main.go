@@ -162,6 +162,7 @@ func renderError(err error, debug bool) int {
 	}
 	if known && (errors.Is(err, fserrors.ErrUsage) ||
 		errors.Is(err, fserrors.ErrSourceNotFound) ||
+		errors.Is(err, fserrors.ErrUnsendableSymlink) ||
 		errors.Is(err, fserrors.ErrRelayCapHit) ||
 		errors.Is(err, fserrors.ErrRelayIdleTimeout) ||
 		errors.Is(err, fserrors.ErrServerStartup) ||
@@ -208,6 +209,13 @@ func renderError(err error, debug bool) int {
 		case detail == "send" || detail == "receive":
 			fmt.Fprintf(os.Stderr, "  fsend has no %q subcommand — `fsend <file>` sends, `fsend <code>` receives.\n", detail)
 		}
+		if entry.Action != "" {
+			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
+		}
+	case detail != "" && errors.Is(err, fserrors.ErrUnsendableSymlink):
+		// Inline the offending link into the message — "[E036] Cannot send a
+		// symlink: broken link foo → ../gone (target does not exist)".
+		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, entry.Message, detail)
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}

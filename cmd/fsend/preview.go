@@ -19,13 +19,17 @@ const previewRows = 10
 //   - note is a status annotation ("up to date", "differs", "resume"); ""
 //     omits it. "differs" is the one that warrants attention, so it's the
 //     only one rendered in colour rather than dimmed.
-//   - link is a symlink target; non-empty marks the row a symlink, which has
-//     no byte size to show.
+//   - link is a *preserved* symlink target (from an older sender); non-empty
+//     renders "name → target" with "→" in the size column (no byte size).
+//   - from is a *followed* symlink's origin (a sender-side annotation); the row
+//     has a real size and renders "name (→ target)". link and from are mutually
+//     exclusive.
 type previewItem struct {
 	name string
 	size uint64
 	note string
 	link string
+	from string
 }
 
 // renderPreview writes a size-sorted, truncated file list to w, indented to
@@ -56,8 +60,11 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 	}
 	for _, it := range items[:shown] {
 		name := it.name
-		if it.link != "" {
+		switch {
+		case it.link != "": // preserved symlink: "name → target", "→" size cell
 			name += " → " + it.link
+		case it.from != "": // followed symlink: real size + "name (→ target)"
+			name += " (→ " + it.from + ")"
 		}
 		line := fmt.Sprintf("%s%*s   %s", pad, sizeWidth, sizeCell(it), name)
 		if it.note != "" {
