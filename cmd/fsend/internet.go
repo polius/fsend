@@ -126,6 +126,9 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	if allocErr != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)
 	}
+	if alloc.ForwardingDisabled {
+		return fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
+	}
 	relayConn, err := dialRelay(alloc)
 	if err != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)

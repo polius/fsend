@@ -69,6 +69,22 @@ func TestServerEnvInt(t *testing.T) {
 	}
 }
 
+func TestServerEnvBool(t *testing.T) {
+	const k = "FSEND_TEST_ENV_BOOL"
+	os.Unsetenv(k)
+	if got, err := envBool(k, true); err != nil || !got {
+		t.Errorf("unset: got %v, %v; want true", got, err)
+	}
+	t.Setenv(k, "false")
+	if got, err := envBool(k, true); err != nil || got {
+		t.Errorf("set false: got %v, %v; want false", got, err)
+	}
+	t.Setenv(k, "maybe")
+	if _, err := envBool(k, true); err == nil {
+		t.Error("typo: want error, got nil")
+	}
+}
+
 func TestServerEnvBytes(t *testing.T) {
 	const k = "FSEND_TEST_ENV_BYTES"
 	const def uint64 = 100

@@ -203,6 +203,95 @@ func TestServer_STUNBinding(t *testing.T) {
 	<-srvErr
 }
 
+// TestForwardingDisabled verifies stun-only mode: the relay still answers
+// STUN binding requests but never forwards data datagrams.
+func TestForwardingDisabled(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
+
+	srv := NewServer(serverConn, ServerConfig{DisableForwarding: true})
+	if srv.Forwarding() {
+		t.Fatal("Forwarding() should be false when DisableForwarding is set")
+	}
+	tok, err := srv.Allocate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Run(ctx) }()
+
+	clientA, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientA.Close()
+	clientB, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientB.Close()
+	connA := NewClient(clientA, relayAddr, tok)
+	connB := NewClient(clientB, relayAddr, tok)
+
+	// Both peers register, then A sends a payload that must NOT reach B.
+	if _, err := connA.WriteTo([]byte("hello"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connB.WriteTo([]byte("register"), nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := connA.WriteTo([]byte("real message"), nil); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1500)
+	_ = connB.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if n, _, err := connB.ReadFrom(buf); err == nil {
+		t.Fatalf("relay forwarded %q with forwarding disabled", buf[:n])
+	}
+
+	// STUN must still answer in stun-only mode.
+	stunClient, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stunClient.Close()
+	req, err := stun.Build(stun.TransactionID, stun.BindingRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stunClient.WriteTo(req.Raw, relayAddr); err != nil {
+		t.Fatal(err)
+	}
+	_ = stunClient.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := stunClient.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("no STUN response in stun-only mode: %v", err)
+	}
+	resp := &stun.Message{Raw: buf[:n]}
+	if err := resp.Decode(); err != nil {
+		t.Fatalf("decode STUN response: %v", err)
+	}
+	if resp.Type != stun.BindingSuccess {
+		t.Fatalf("STUN type: got %v, want BindingSuccess", resp.Type)
+	}
+
+	cancel()
+	_ = serverConn.Close()
+	<-srvErr
+}
+
+func TestForwardingEnabledByDefault(t *testing.T) {
+	if !NewServer(nil, ServerConfig{}).Forwarding() {
+		t.Fatal("a default relay should forward")
+	}
+}
+
 func TestAllowSTUNResponse_RateCap(t *testing.T) {
 	s := &Server{}
 	base := time.Unix(1700000000, 0)

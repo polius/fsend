@@ -81,6 +81,9 @@ const TombstoneTTL = 5 * time.Minute
 type ServerConfig struct {
 	MaxBytesPerSession uint64
 	Logger             *slog.Logger
+	// DisableForwarding makes the relay answer STUN but never carry data
+	// (pairing + hole-punching only). Negative so the zero value forwards.
+	DisableForwarding bool
 }
 
 // janitorInterval is how often the eviction loop sweeps idle
@@ -159,6 +162,12 @@ func (s *Server) ActiveAllocations() int {
 // signaling layer can include it in the relay-status response.
 func (s *Server) MaxBytesPerSession() uint64 {
 	return s.cfg.MaxBytesPerSession
+}
+
+// Forwarding reports whether the relay carries data, so the signaling
+// layer can tell clients to skip the relay fallback when it doesn't.
+func (s *Server) Forwarding() bool {
+	return !s.cfg.DisableForwarding
 }
 
 // Status returns the eviction reason for a token, or "" if the
@@ -257,6 +266,9 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 	if len(datagram) > 0 && datagram[0] != ProtocolVersion {
 		s.handleSTUN(datagram, src)
 		return
+	}
+	if s.cfg.DisableForwarding {
+		return // stun-only mode: STUN answered above, data never carried
 	}
 	ver, token, _, ok := Parse(datagram)
 	if !ok || ver != ProtocolVersion {
