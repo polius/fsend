@@ -78,6 +78,24 @@ fsend --text "the wifi password is hunter2"
 fsend ./secret.tar.gz --pass         # prompts with a random default
 ```
 
+### Symlinks
+
+fsend **follows** symlinks: it sends what the link points to, so the
+receiver gets a real file — not a link that dangles on their machine. A
+folder containing
+
+```text
+report.pdf
+latest -> report.pdf      # a symlink
+```
+
+arrives with `latest` as a **real copy** of `report.pdf` (both files land —
+the link's bytes are sent too). This works even when the target is outside
+the folder you're sending.
+
+A symlink whose target is missing or cyclic stops the send with `E036` —
+fix it, or skip it with `--exclude`.
+
 ## Receiving
 
 ```text
@@ -140,6 +158,42 @@ code." It's a fresh send with a new code:
 If the source file changed in the meantime, the partial is discarded and
 the file transfers from scratch — so you never resume onto stale data.
 
+## Scripting
+
+`--quiet` makes fsend scriptable: on send it prints **only the share code**
+to stdout (progress, prompts, and summaries go to stderr), then blocks
+until a receiver connects. Capture the code from stdout:
+
+```sh
+fsend file1.txt --quiet > code.txt    # prints the code, then waits
+```
+
+On receive, pair `--quiet` with `--yes` (nothing else can answer the
+prompt) and pass any password via `FSEND_PASS`:
+
+```sh
+FSEND_PASS=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
+```
+
+## Chaining through a middle machine
+
+If the sender and receiver can't reach each other but a third machine can
+reach both, splice two transfers on it: `--out -` streams a received
+payload to stdout, and a piped `fsend` sends stdin. The bytes flow
+`A → B → C` through the pipe — B never writes them to disk, and each hop
+is separately paired and encrypted:
+
+```sh
+fsend file.bin                          # A: prints code A
+fsend <codeA> --out - --yes | fsend     # B: relays A's stream; prints code B
+fsend <codeB> --out - > file.bin        # C: saves it
+```
+
+The pipe carries one raw stream — no names or folders — so redirect to the
+name you want on C, and for a directory wrap it in `tar` (`tar c ./dir | fsend`
+on A, `fsend <code> --out - | tar x` on C). Because B decrypts each hop to
+re-send it, only chain through a machine you trust.
+
 ## Choosing a server (`--connect`)
 
 The default pairing server is `fsend.alzina.dev` — best-effort, free,
@@ -162,7 +216,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | Flag | Purpose |
 |---|---|
 | `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
-| `--quiet` | Suppress non-error output. |
+| `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
 | `--uninstall` | Remove the binary and **recursively delete** the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |

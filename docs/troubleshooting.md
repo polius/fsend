@@ -108,6 +108,16 @@ malformed or malicious listing). Nothing was written outside the target.
 If you trust the sender, ask them to re-send; otherwise this is fsend
 protecting you.
 
+### Sending stopped on a symlink (`E036`, sender side)
+
+fsend follows symlinks to send their target's content, so a link it can't
+resolve halts the send before any code is generated. The message names the
+offending link — fix it, or skip it with `--exclude`:
+
+- **Broken** (the target doesn't exist) or **unreadable** (permissions).
+- **Cyclic** — a link that loops back into the folder (`a → b → a`, or a
+  link to a parent directory), which would otherwise recurse forever.
+
 ## Performance
 
 ### The transfer is slower than expected

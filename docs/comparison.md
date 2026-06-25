@@ -235,6 +235,7 @@ own code phrase, while fsend always picks it for you.
 |---|---|---|---|
 | Send files | ✓ | ✓ | ✓ |
 | Send folders | ✓ | ✓ (`--zip` to compress) | ✓ (zipped, deflated) |
+| Symlinks | **Followed to content** (broken/cyclic links → error) | Preserved as links | Followed to content (cyclic dirs silently skipped) |
 | Multiple files in one transfer | **✓** | **✓** | ✗ (one file/dir per code) |
 | Send from stdin | **✓ (binary)** | **✓** | ✗ (`--text -` only) |
 | Stream payload to stdout | **✓ `--out -`** | **✓ `--stdout`** | ✗ (text prints; files saved) |
