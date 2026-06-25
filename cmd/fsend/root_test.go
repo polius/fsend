@@ -219,8 +219,8 @@ func TestBoldHelpHeaders(t *testing.T) {
 		t.Setenv("NO_COLOR", "")
 		t.Setenv("FORCE_COLOR", "1")
 		got := boldHelpHeaders(helpTemplate)
-		for _, header := range []string{"USAGE", "EXAMPLES", "COMMON FLAGS",
-			"ADVANCED FLAGS", "LEARN MORE"} {
+		for _, header := range []string{"USAGE", "EXAMPLES", "SENDING",
+			"RECEIVING", "GENERAL", "ADVANCED", "LEARN MORE"} {
 			if !strings.Contains(got, "\x1b[1m"+header+"\x1b[0m") {
 				t.Errorf("header %q not bolded", header)
 			}
