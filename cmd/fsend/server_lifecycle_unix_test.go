@@ -34,8 +34,8 @@ func TestServerLifecycle(t *testing.T) {
 	udpPort := srvFreePortUDP(t)
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
 	udpAddr := fmt.Sprintf("127.0.0.1:%d", udpPort)
-	t.Setenv("FSEND_HTTP_ADDR", httpAddr)
-	t.Setenv("FSEND_UDP_ADDR", udpAddr)
+	t.Setenv("FSEND_PAIRING_ADDR", httpAddr)
+	t.Setenv("FSEND_RELAY_ADDR", udpAddr)
 	t.Setenv("FSEND_LOG_LEVEL", "error")
 
 	sink := make(chan os.Signal, 1)

@@ -85,7 +85,7 @@ func TestServer_Help(t *testing.T) {
 func TestServer_HealthCheck(t *testing.T) {
 	requireE2E(t)
 	cmd := exec.Command(h.fsendBin, "server", "--health-check")
-	cmd.Env = append(os.Environ(), "FSEND_HTTP_ADDR=:"+strconv.Itoa(h.httpPort))
+	cmd.Env = append(os.Environ(), "FSEND_PAIRING_ADDR=:"+strconv.Itoa(h.httpPort))
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("--health-check exit: %v", err)
 	}
@@ -113,12 +113,12 @@ func TestServer_PasswordGate(t *testing.T) {
 
 	cmd := exec.Command(h.fsendBin, "server")
 	cmd.Env = append(os.Environ(),
-		"FSEND_HTTP_ADDR=:"+strconv.Itoa(httpPort),
-		"FSEND_UDP_ADDR=:"+strconv.Itoa(udpPort),
+		"FSEND_PAIRING_ADDR=:"+strconv.Itoa(httpPort),
+		"FSEND_RELAY_ADDR=:"+strconv.Itoa(udpPort),
 		"FSEND_LOG_LEVEL=warn",
 		"FSEND_SERVER_PASSWORD=swordfish",
-		"FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN=10000",
-		"FSEND_MAX_SESSIONS_PER_IP=1000",
+		"FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN=10000",
+		"FSEND_PAIRING_MAX_SESSIONS_PER_IP=1000",
 	)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start guarded server: %v", err)

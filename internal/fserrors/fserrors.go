@@ -282,7 +282,7 @@ var catalog = map[error]Entry{
 		Action: "Wait a minute and try again, or switch servers:\n" +
 			"    fsend --connect <host:port>\n" +
 			"  Or self-host your own server (`fsend server`) and raise\n" +
-			"  FSEND_MAX_SESSIONS_PER_IP / FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN.",
+			"  FSEND_PAIRING_MAX_SESSIONS_PER_IP / FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN.",
 	},
 	ErrServerRetired: {
 		Code: "E018", Exit: 18,
@@ -333,7 +333,7 @@ var catalog = map[error]Entry{
 			"  Workarounds:\n" +
 			"    - Run again from a different network so fsend can connect you directly.\n" +
 			"    - Self-host your own server (`fsend server`) and raise\n" +
-			"      FSEND_MAX_RELAY_BYTES_PER_SESSION.",
+			"      FSEND_RELAY_MAX_BYTES_PER_SESSION.",
 	},
 	ErrUsage: {
 		Code: "E024", Exit: 24,
@@ -370,7 +370,7 @@ var catalog = map[error]Entry{
 		Code: "E030", Exit: 30,
 		Message: "The server could not start.",
 		Action: "Fix the setting named above, or check that the ports are free and you\n" +
-			"  have permission to bind them (FSEND_HTTP_ADDR, FSEND_UDP_ADDR).\n" +
+			"  have permission to bind them (FSEND_PAIRING_ADDR, FSEND_RELAY_ADDR).\n" +
 			"  Binding :443 may need elevated privileges.",
 	},
 	ErrPasswordRequired: {
