@@ -267,6 +267,8 @@ RECEIVING
   --out <dir>            Receive into this directory (default: current)
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
+  --pass <value>         Supply the sender's password up front, skipping the
+                         prompt (bare --pass prompts). Env: FSEND_PASS
   --overwrite            Replace existing files that differ (identical files
                          are always skipped)
   --checksum             Decide identical files by content hash, not
