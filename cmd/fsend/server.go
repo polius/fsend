@@ -212,10 +212,10 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		serverPassword: os.Getenv("FSEND_SERVER_PASSWORD"),
 	}
 	var err error
-	if cfg.maxSessionsPerIP, err = envInt("FSEND_PAIRING_MAX_SESSIONS_PER_IP", 5); err != nil {
+	if cfg.maxSessionsPerIP, err = envInt("FSEND_SERVER_MAX_SESSIONS_PER_IP", 5); err != nil {
 		return cfg, err
 	}
-	if cfg.maxNewSessionsPerMin, err = envInt("FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN", 30); err != nil {
+	if cfg.maxNewSessionsPerMin, err = envInt("FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN", 30); err != nil {
 		return cfg, err
 	}
 	if cfg.maxBytesPerSession, err = envBytes("FSEND_RELAY_MAX_BYTES_PER_SESSION", 1000*1000*1000); err != nil { // 1GB
@@ -366,20 +366,21 @@ EXAMPLE
 
 CONFIGURATION (environment variables — all optional)
 
-  General:
+  Server-wide:
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
     FSEND_SERVER_PASSWORD             Optional shared secret. When set, all
                                       endpoints except /v1/health require the
                                       X-Fsend-Auth header. Connect with
                                       fsend --connect <host:port>,<password>.
+    FSEND_SERVER_MAX_SESSIONS_PER_IP  Default 5 — how many sessions one IP
+                                      may have alive at once (concurrency
+                                      cap; gates relay access too).
+    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN
+                                      Default 30 — how many new sessions one
+                                      IP may create per minute (rate cap).
 
   Pairing (TCP signaling/control plane):
     FSEND_PAIRING_ADDR                Default :8080 (TCP).
-    FSEND_PAIRING_MAX_SESSIONS_PER_IP Default 5 — concurrent sessions per
-                                      source IP.
-    FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN
-                                      Default 30 — new sessions per source
-                                      IP per minute.
 
   Relay (UDP data plane — also answers STUN):
     FSEND_RELAY_ENABLED               Default true. false = pairing + STUN
