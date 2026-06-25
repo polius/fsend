@@ -486,6 +486,12 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 
 	// Single arg: code-vs-path auto-detect.
 	arg := f.posArgs[0]
+	// A code wrapped in whitespace (a redirected newline, a pasted space, a
+	// CRLF) is never a filename, so receive the trimmed form. --send forces
+	// send for a file genuinely named like a code.
+	if c, ok := wrappedCode(arg); ok {
+		return startReceive(f, c)
+	}
 	if code.IsCode(arg) {
 		// Code regex match. If a file with that name exists in CWD, prompt.
 		if _, err := os.Stat(arg); err == nil {
@@ -504,6 +510,25 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		}
 	}
 	return runSend(f, []string{arg})
+}
+
+// wrappedCode reports a share code surrounded by whitespace, returning it
+// trimmed (and lowercased — a chat-app copy that grabs a trailing space often
+// also capitalizes the first letter). A clean code returns false, leaving it to
+// the code-vs-path logic below; internal whitespace is untouched, so a
+// malformed code stays one.
+func wrappedCode(arg string) (string, bool) {
+	t := strings.TrimSpace(arg)
+	if t == arg {
+		return "", false
+	}
+	if code.IsCode(t) {
+		return t, true
+	}
+	if low := strings.ToLower(t); code.IsCode(low) {
+		return low, true
+	}
+	return "", false
 }
 
 // applyEnvFallbacks fills in flags from environment variables when the
