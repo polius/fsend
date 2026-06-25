@@ -200,6 +200,8 @@ func TestWrappedCode(t *testing.T) {
 		{" abc-defg-hjk", "abc-defg-hjk", true},    // leading space
 		{"abc-defg-hjk\r\n", "abc-defg-hjk", true}, // Windows CRLF
 		{"\nabc-defg-hjk\n", "abc-defg-hjk", true}, // surrounded
+		{"Abc-defg-hjk\n", "abc-defg-hjk", true},   // chat-app: capitalized + newline
+		{"ABC-DEFG-HJK ", "abc-defg-hjk", true},    // uppercase + space
 		{"abc - defg - hjk", "", false},            // internal spaces → still malformed
 		{"report.pdf ", "", false},                 // filename with a space → not a code
 	} {

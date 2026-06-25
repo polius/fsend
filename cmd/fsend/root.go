@@ -512,12 +512,23 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	return runSend(f, []string{arg})
 }
 
-// wrappedCode reports a share code surrounded by whitespace and returns it
-// trimmed. A clean code returns false, leaving it to the code-vs-path logic
-// below (internal whitespace is left alone, so a malformed code stays one).
+// wrappedCode reports a share code surrounded by whitespace, returning it
+// trimmed (and lowercased — a chat-app copy that grabs a trailing space often
+// also capitalizes the first letter). A clean code returns false, leaving it to
+// the code-vs-path logic below; internal whitespace is untouched, so a
+// malformed code stays one.
 func wrappedCode(arg string) (string, bool) {
 	t := strings.TrimSpace(arg)
-	return t, t != arg && code.IsCode(t)
+	if t == arg {
+		return "", false
+	}
+	if code.IsCode(t) {
+		return t, true
+	}
+	if low := strings.ToLower(t); code.IsCode(low) {
+		return low, true
+	}
+	return "", false
 }
 
 // applyEnvFallbacks fills in flags from environment variables when the
