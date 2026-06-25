@@ -118,6 +118,24 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			[]string{"--update", "--uninstall"},
 			"--update and --uninstall are mutually exclusive",
 		},
+		{
+			// --preview is send-side; rejected when the arg is a code.
+			"preview_on_receive",
+			[]string{"--preview", "abc-defg-jkm"},
+			"--preview is a send-side flag",
+		},
+		{
+			// --manifest is receive-side; rejected when sending.
+			"manifest_on_send",
+			[]string{"--manifest=m.csv", "file.txt"},
+			"--manifest is a receive-side flag",
+		},
+		{
+			// --manifest records files on disk; --out - writes none.
+			"manifest_with_stdout",
+			[]string{"--manifest=m.csv", "--out", "-", "abc-defg-jkm"},
+			"--manifest has no effect with --out -",
+		},
 	}
 	for _, c := range cases {
 		c := c

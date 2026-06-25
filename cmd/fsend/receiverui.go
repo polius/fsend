@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +44,7 @@ type receiverUI struct {
 	firstByte   time.Time
 	bytesHint   int64
 	diffBytes   int64 // bytes that move only if overwrite is approved
+	manifestErr error // a --manifest write failure, surfaced after the transfer
 
 	closeOnce sync.Once
 }
@@ -83,7 +86,6 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 		ClientVersion:  version.Version,
 		TargetDir:      ui.outDir,
 		Overwrite:      ui.f.overwrite,
-		DryRun:         ui.f.dryRun,
 		Checksum:       ui.f.checksum,
 		Accept:         ui.accept,
 		Password:       ui.f.passArg,
@@ -93,10 +95,12 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 		OnSkip:         ui.onSkip,
 		OnFileDone:     ui.onFileDone,
 		OnConflictKept: ui.onConflictKept,
-		OnClassified:   ui.onClassified,
 	}
 	if ui.sink {
 		o.Sink = os.Stdout
+	}
+	if ui.f.manifest != "" {
+		o.OnManifest = ui.onManifest
 	}
 	// Under --quiet or --yes the confirm stays nil: the engine then keeps
 	// differing files (skip) instead of blocking on a prompt nobody answers.
@@ -249,10 +253,24 @@ func (ui *receiverUI) onConflictKept(string) {
 	ui.mu.Unlock()
 }
 
-// onClassified prints the dry-run categorization to stdout (greppable).
-func (ui *receiverUI) onClassified(entries []transfer.ClassifiedEntry) {
+// onManifest writes the post-transfer record (path,size,status) as CSV to the
+// --manifest path. Fired only after a successful receive, so the file isn't
+// left describing a transfer that failed.
+func (ui *receiverUI) onManifest(entries []transfer.ManifestEntry) {
+	f, err := os.Create(ui.f.manifest)
+	if err != nil {
+		ui.manifestErr = fmt.Errorf("%w: --manifest %s: %v", fserrors.ErrWriteFailed, ui.f.manifest, err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	cw := csv.NewWriter(f)
+	_ = cw.Write([]string{"path", "size", "status"})
 	for _, e := range entries {
-		_, _ = fmt.Fprintf(os.Stdout, "%-9s %s\n", e.Category, e.RelativePath)
+		_ = cw.Write([]string{e.RelativePath, strconv.FormatUint(e.Size, 10), e.Status})
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		ui.manifestErr = fmt.Errorf("%w: --manifest %s: %v", fserrors.ErrWriteFailed, ui.f.manifest, err)
 	}
 }
 
@@ -294,14 +312,11 @@ func (ui *receiverUI) close() {
 	})
 }
 
-// finishReceive runs the post-transfer epilogue. A dry run printed its plan
-// already, so it just returns. When differing files were kept (no consent),
-// it returns E013 so scripts get a non-zero exit, after showing the summary.
+// finishReceive runs the post-transfer epilogue. When differing files were
+// kept (no consent) it returns E013 so scripts get a non-zero exit, after
+// showing the summary; a --manifest write failure surfaces the same way.
 func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	ui.close()
-	if f.dryRun {
-		return nil
-	}
 
 	ui.mu.Lock()
 	h := ui.hello
@@ -325,6 +340,12 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	}
 	total, moved := ui.bytes()
 	printRecvSummary(f, ui.headline(h, files), total, moved, kept, skippedSame, elapsed, ui.pathInfo)
+	// manifestErr is set by onManifest, which runs on this goroutine before we
+	// return, so no lock is needed. The transfer succeeded; the failure is only
+	// that --manifest couldn't be written.
+	if ui.manifestErr != nil {
+		return ui.manifestErr
+	}
 	if kept > 0 {
 		return fserrors.ErrTargetExists
 	}

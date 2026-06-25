@@ -367,38 +367,37 @@ func TestEngine_TypeConflictFileVsDir(t *testing.T) {
 	}
 }
 
-func TestEngine_DryRun(t *testing.T) {
+func TestEngine_Manifest(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(src, "new.txt"), []byte("new"))
 	writeFile(t, filepath.Join(src, "same.txt"), []byte("same"))
 	writeFile(t, filepath.Join(dst, "same.txt"), []byte("same"))
-	// Make mtime match for the identical one.
+	// Make mtime match so the identical one is skipped.
 	srcSt, _ := os.Stat(filepath.Join(src, "same.txt"))
 	_ = os.Chtimes(filepath.Join(dst, "same.txt"), srcSt.ModTime(), srcSt.ModTime())
 
-	var got []ClassifiedEntry
-	// Dry run declines the transfer, so the receiver succeeds (it did its
-	// job: report the plan) while the sender sees a decline.
-	_, re := fileTransfer(t, []string{filepath.Join(src, "new.txt"), filepath.Join(src, "same.txt")}, dst, func(o *RecvOptions) {
-		o.DryRun = true
-		o.OnClassified = func(e []ClassifiedEntry) { got = e }
+	var got []ManifestEntry
+	// A real receive — OnManifest fires after it completes, recording what
+	// fsend did with each file.
+	se, re := fileTransfer(t, []string{filepath.Join(src, "new.txt"), filepath.Join(src, "same.txt")}, dst, func(o *RecvOptions) {
+		o.OnManifest = func(e []ManifestEntry) { got = e }
 	})
-	if re != nil {
-		t.Fatalf("dry-run recv=%v", re)
+	if se != nil || re != nil {
+		t.Fatalf("transfer send=%v recv=%v", se, re)
 	}
-	cats := map[string]string{}
+	status := map[string]string{}
 	for _, e := range got {
-		cats[e.RelativePath] = e.Category
+		status[e.RelativePath] = e.Status
 	}
-	if cats["new.txt"] != "new" {
-		t.Errorf("new.txt category = %q", cats["new.txt"])
+	if status["new.txt"] != "new" {
+		t.Errorf("new.txt status = %q, want new", status["new.txt"])
 	}
-	if cats["same.txt"] != "identical" {
-		t.Errorf("same.txt category = %q", cats["same.txt"])
+	if status["same.txt"] != "identical" {
+		t.Errorf("same.txt status = %q, want identical", status["same.txt"])
 	}
-	// Dry run must not write anything new.
-	if _, err := os.Stat(filepath.Join(dst, "new.txt")); err == nil {
-		t.Error("dry run wrote a file")
+	// It's a real receive: the new file actually landed.
+	if _, err := os.Stat(filepath.Join(dst, "new.txt")); err != nil {
+		t.Errorf("new.txt should have been written: %v", err)
 	}
 }
 
@@ -437,3 +436,28 @@ func TestEngine_SummaryBreakdown(t *testing.T) {
 }
 
 func pad(i int) string { return fmt.Sprintf("%03d", i) }
+
+// manifestStatus is the single source of truth for the --manifest "status"
+// column, so pin every (disposition, decision) combination it can see.
+// TestEngine_Manifest only exercises new/identical end-to-end; the
+// overwritten/kept/resumed branches are unreachable without a prior
+// local copy and an overwrite choice, so cover them here directly.
+func TestManifestStatus(t *testing.T) {
+	for _, tc := range []struct {
+		disp disposition
+		act  wire.DecisionAction
+		want string
+	}{
+		{dispNew, wire.DecisionSend, "new"},
+		{dispDiffers, wire.DecisionSend, "overwritten"},
+		{dispConflict, wire.DecisionSend, "overwritten"},
+		{dispIdentical, wire.DecisionSkip, "identical"},
+		{dispDiffers, wire.DecisionSkip, "kept"},
+		{dispConflict, wire.DecisionSkip, "kept"},
+		{dispResume, wire.DecisionResume, "resumed"},
+	} {
+		if got := manifestStatus(tc.disp, tc.act); got != tc.want {
+			t.Errorf("manifestStatus(%v, %v) = %q, want %q", tc.disp, tc.act, got, tc.want)
+		}
+	}
+}

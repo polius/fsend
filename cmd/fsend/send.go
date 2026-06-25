@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -50,7 +52,7 @@ func runSend(f *flags, paths []string) error {
 	for _, rf := range []struct {
 		name string
 		set  bool
-	}{{"--out", f.outDir != ""}, {"--yes", f.yes}, {"--overwrite", f.overwrite}, {"--dry-run", f.dryRun}, {"--checksum", f.checksum}} {
+	}{{"--out", f.outDir != ""}, {"--yes", f.yes}, {"--overwrite", f.overwrite}, {"--checksum", f.checksum}, {"--manifest", f.manifest != ""}} {
 		if rf.set {
 			return fmt.Errorf("%w: %s is a receive-side flag and has no effect when sending", fserrors.ErrUsage, rf.name)
 		}
@@ -66,6 +68,14 @@ func runSend(f *flags, paths []string) error {
 	plan, err := collectPlan(f, paths)
 	if err != nil {
 		return err
+	}
+
+	// --preview lists what would be sent and stops — no code, no pairing.
+	if f.preview {
+		if plan.mode != wire.ModeFiles {
+			return fmt.Errorf("%w: --preview only applies to file or folder sends", fserrors.ErrUsage)
+		}
+		return writeSendPreview(os.Stdout, plan.sources)
 	}
 
 	c, err := code.Generate()
@@ -250,6 +260,22 @@ func senderPreview(sources []transfer.Source) []previewItem {
 		})
 	}
 	return items
+}
+
+// writeSendPreview writes a CSV (path,size) of the files that would be sent,
+// for --preview. Directories are structural and omitted so the rows match the
+// "N files" count; encoding/csv quotes any path containing a comma or quote.
+func writeSendPreview(w io.Writer, sources []transfer.Source) error {
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"path", "size"})
+	for _, s := range sources {
+		if s.Entry.Type == wire.EntryDir {
+			continue
+		}
+		_ = cw.Write([]string{s.Entry.RelativePath, strconv.FormatUint(s.Entry.Size, 10)})
+	}
+	cw.Flush()
+	return cw.Error()
 }
 
 // senderStats reports a finished send's tallies. skippedFiles counts entries
