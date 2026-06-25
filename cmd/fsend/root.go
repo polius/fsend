@@ -451,7 +451,9 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		if len(f.posArgs) != 1 {
 			return fmt.Errorf("%w: --receive requires exactly one positional argument (the code)", fserrors.ErrUsage)
 		}
-		return startReceive(f, f.posArgs[0])
+		// Tolerate surrounding whitespace (a redirected newline, a pasted
+		// space) on the explicitly-given code.
+		return startReceive(f, strings.TrimSpace(f.posArgs[0]))
 	}
 
 	// --text is unambiguously send mode. An explicitly empty value
@@ -486,6 +488,12 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 
 	// Single arg: code-vs-path auto-detect.
 	arg := f.posArgs[0]
+	// A code wrapped in whitespace (a redirected newline, a pasted space, a
+	// CRLF) is never a filename, so receive the trimmed form. --send forces
+	// send for a file genuinely named like a code.
+	if c, ok := wrappedCode(arg); ok {
+		return startReceive(f, c)
+	}
 	if code.IsCode(arg) {
 		// Code regex match. If a file with that name exists in CWD, prompt.
 		if _, err := os.Stat(arg); err == nil {
@@ -493,17 +501,23 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		}
 		return startReceive(f, arg)
 	}
-	// Codes copied through iMessage / WhatsApp / Slack often have the
-	// first letter auto-capitalized. If the lowercased form is a valid
-	// code AND there's no file with the original name, accept it as a
-	// receive — anything else (file exists, or lowercased still doesn't
-	// match the regex) falls through to send.
+	// Codes copied through iMessage / WhatsApp / Slack often have the first
+	// letter auto-capitalized. If the lowercased form is a valid code and no
+	// file by the original name exists, receive; otherwise fall through to send.
 	if lowered := strings.ToLower(arg); lowered != arg && code.IsCode(lowered) {
 		if _, err := os.Stat(arg); os.IsNotExist(err) {
 			return startReceive(f, lowered)
 		}
 	}
 	return runSend(f, []string{arg})
+}
+
+// wrappedCode reports a share code surrounded by whitespace and returns it
+// trimmed. A clean code returns false, leaving it to the code-vs-path logic
+// below (internal whitespace is left alone, so a malformed code stays one).
+func wrappedCode(arg string) (string, bool) {
+	t := strings.TrimSpace(arg)
+	return t, t != arg && code.IsCode(t)
 }
 
 // applyEnvFallbacks fills in flags from environment variables when the

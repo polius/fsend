@@ -186,6 +186,30 @@ func TestAskCodeOrPath(t *testing.T) {
 	})
 }
 
+// wrappedCode detects a share code surrounded by whitespace (redirected
+// newline, pasted space, CRLF) so it's received rather than mistaken for a
+// filename — while leaving clean codes, malformed codes, and filenames alone.
+func TestWrappedCode(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		ok       bool
+	}{
+		{"abc-defg-hjk", "", false},                // clean → handled by normal path
+		{"abc-defg-hjk\n", "abc-defg-hjk", true},   // redirected newline
+		{"abc-defg-hjk ", "abc-defg-hjk", true},    // trailing space
+		{" abc-defg-hjk", "abc-defg-hjk", true},    // leading space
+		{"abc-defg-hjk\r\n", "abc-defg-hjk", true}, // Windows CRLF
+		{"\nabc-defg-hjk\n", "abc-defg-hjk", true}, // surrounded
+		{"abc - defg - hjk", "", false},            // internal spaces → still malformed
+		{"report.pdf ", "", false},                 // filename with a space → not a code
+	} {
+		got, ok := wrappedCode(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("wrappedCode(%q) = (%q, %v), want (%q, %v)", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
 func TestBoldHelpHeaders(t *testing.T) {
 	t.Run("colored", func(t *testing.T) {
 		// FORCE_COLOR makes ColorFor true even though test stdout is
