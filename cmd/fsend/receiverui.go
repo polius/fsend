@@ -41,6 +41,7 @@ type receiverUI struct {
 	bar         *uxlog.Progress
 	firstByte   time.Time
 	bytesHint   int64
+	diffBytes   int64 // bytes that move only if overwrite is approved
 
 	closeOnce sync.Once
 }
@@ -111,6 +112,12 @@ func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummar
 	cp := h
 	ui.hello = &cp
 	ui.bytesHint = int64(summary.BytesToRecv)
+	ui.diffBytes = int64(summary.DifferingBytes)
+	// --overwrite pulls the differing files too, so size the bar for them
+	// upfront. The prompt path instead bumps the hint in confirmOverwrite.
+	if ui.f.overwrite {
+		ui.bytesHint += ui.diffBytes
+	}
 	ui.mu.Unlock()
 	return ui.promptAccept(h, summary)
 }
@@ -184,6 +191,12 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 		}
 		switch line {
 		case "y", "yes":
+			// These files weren't in the bar's initial total (they only move
+			// on consent); add them now, before the bar is created on first
+			// byte, so it doesn't read past 100%.
+			ui.mu.Lock()
+			ui.bytesHint += ui.diffBytes
+			ui.mu.Unlock()
 			return true
 		case "l", "list":
 			for _, c := range conflicts {

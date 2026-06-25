@@ -198,22 +198,74 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 	if name == "" {
 		name = "files"
 	}
-	_, _ = fmt.Fprintf(w, "      %s  ·  %s  ·  %s%s\n",
-		name, uxlog.CountNoun(summary.Total, "item"), uxlog.HumanBytes(int64(summary.BytesToRecv)), pwChip)
-
-	var parts []string
-	if summary.NewItems > 0 {
-		parts = append(parts, fmt.Sprintf("%d new", summary.NewItems))
+	// File count (not summary.Total) so it matches the sender and the rows
+	// below — Total includes directories, which neither shows. For a contents
+	// or multi-path send the peer's display name *is* the count (e.g.
+	// "2 files"), so don't print it twice.
+	fileCount := uxlog.CountNoun(len(summary.Files), "file")
+	lead := fileCount
+	if name != fileCount {
+		lead = name + "  ·  " + fileCount
 	}
-	if summary.Identical > 0 {
-		parts = append(parts, fmt.Sprintf("%d up to date", summary.Identical))
-	}
+	diff := ""
 	if summary.Differing > 0 {
-		parts = append(parts, fmt.Sprintf("%d differ", summary.Differing))
+		diff = fmt.Sprintf("  ·  %d differ", summary.Differing)
 	}
-	if len(parts) > 0 {
-		_, _ = fmt.Fprintln(w, "      "+uxlog.Dim(strings.Join(parts, "  ·  ")))
+	_, _ = fmt.Fprintf(w, "      %s  ·  %s%s%s\n",
+		lead, receiverSizeClause(summary), diff, pwChip)
+	renderPreview(w, receiverPreview(summary.Files), 8)
+}
+
+// receiverSizeClause renders the headline's size figure. The offered total
+// always agrees with the sender (both derive it from the same listing); when
+// the receiver will skip part of it, the clause reads "X of Y" so it also
+// agrees with the progress bar, which fills to X. When nothing transfers and
+// nothing conflicts it says so outright rather than printing a bare "0 B".
+func receiverSizeClause(s transfer.ClassifySummary) string {
+	offered := uxlog.HumanBytes(int64(s.OfferedBytes))
+	if s.BytesToRecv == 0 {
+		// Nothing auto-downloads. Distinguish "you already have it all" from
+		// "everything here conflicts" (the latter keeps the offered size, and
+		// the · N differ clause explains it).
+		if s.Differing == 0 && s.Identical > 0 {
+			return "already up to date"
+		}
+		return offered
 	}
+	net := uxlog.HumanBytes(int64(s.BytesToRecv))
+	if net == offered {
+		return offered // any skipping is negligible at display resolution
+	}
+	return net + " of " + offered
+}
+
+// receiverPreview projects the classified files into preview rows. Names and
+// symlink targets are peer-supplied, so each is sanitized like every other
+// untrusted string we print. The status annotates only the consent-relevant
+// or partial rows; fresh files — the common case — stay unmarked.
+func receiverPreview(files []transfer.SummaryEntry) []previewItem {
+	items := make([]previewItem, 0, len(files))
+	for _, f := range files {
+		note := ""
+		switch f.Status {
+		case "identical":
+			note = "up to date"
+		case "differs":
+			note = "differs"
+		case "resume":
+			note = "resume"
+		}
+		it := previewItem{
+			name: sanitizeForDisplay(f.RelativePath, 128),
+			size: f.Size,
+			note: note,
+		}
+		if f.Type == wire.EntrySymlink {
+			it.link = sanitizeForDisplay(f.SymlinkTarget, 128)
+		}
+		items = append(items, it)
+	}
+	return items
 }
 
 // saveTargetLabel renders the receive destination for the accept prompt.

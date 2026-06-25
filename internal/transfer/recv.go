@@ -216,7 +216,15 @@ func recvFilesToSink(ctx context.Context, s *Streams, hello *wire.SenderHello, e
 		declineTransfer(s, wire.ErrCodeDeclined, "multi-file transfer to stdout")
 		return fmt.Errorf("%w: cannot stream a multi-file transfer to stdout; receive it with --out <dir>", fserrors.ErrUsage)
 	}
-	summary := ClassifySummary{Total: 1, NewItems: 1, BytesToRecv: entries[0].Size}
+	summary := ClassifySummary{
+		Total: 1, NewItems: 1,
+		BytesToRecv:  entries[0].Size,
+		OfferedBytes: entries[0].Size,
+		Files: []SummaryEntry{{
+			RelativePath: entries[0].RelativePath, Size: entries[0].Size,
+			Status: "new", Type: entries[0].Type,
+		}},
+	}
 	if opts.Accept != nil && !opts.Accept(*hello, summary) {
 		declineTransfer(s, wire.ErrCodeDeclined, "receiver declined")
 		return fserrors.ErrReceiverDeclined

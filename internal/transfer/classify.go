@@ -45,6 +45,26 @@ type classifySummary struct {
 	Identical   int
 	Differing   int // dispDiffers + dispConflict
 	BytesToRecv uint64
+	// OfferedBytes is the size of the whole payload (every entry), matching
+	// the sender's total. The headline shows this so both sides agree on one
+	// number; BytesToRecv is what the progress bar fills to.
+	OfferedBytes uint64
+	// DifferingBytes is the size of the differing/conflicting entries — bytes
+	// that move only if the user consents to overwrite. The CLI adds these to
+	// the bar total on consent so it doesn't read past 100%.
+	DifferingBytes uint64
+	Files          []SummaryEntry // per-file rows for the pre-transfer preview
+}
+
+// SummaryEntry is one regular file (or symlink) the receiver is offered, with
+// the per-entry status the preview annotates rows with. Status uses the same
+// vocabulary as ClassifiedEntry.Category, plus "resume" for a partial on disk.
+type SummaryEntry struct {
+	RelativePath  string
+	Size          uint64
+	Status        string // "new" | "identical" | "differs" | "resume"
+	Type          wire.EntryType
+	SymlinkTarget string // EntrySymlink only
 }
 
 // Conflict describes one entry that disagrees with what's on disk, for the
@@ -203,6 +223,7 @@ func resumeCandidate(path string, total uint64) (uint64, [ImohashSize]byte, bool
 func summarize(plans []entryPlan) classifySummary {
 	s := classifySummary{Total: len(plans)}
 	for _, p := range plans {
+		s.OfferedBytes += p.entry.Size
 		switch p.disp {
 		case dispNew:
 			s.NewItems++
@@ -216,9 +237,36 @@ func summarize(plans []entryPlan) classifySummary {
 			}
 		case dispDiffers, dispConflict:
 			s.Differing++
+			s.DifferingBytes += p.entry.Size
+		}
+		// Directories aren't files the user thinks about; mirror CountFiles
+		// so the preview's row count matches the headline's file count.
+		if p.entry.Type != wire.EntryDir {
+			s.Files = append(s.Files, SummaryEntry{
+				RelativePath:  p.entry.RelativePath,
+				Size:          p.entry.Size,
+				Status:        dispStatus(p.disp),
+				Type:          p.entry.Type,
+				SymlinkTarget: p.entry.SymlinkTarget,
+			})
 		}
 	}
 	return s
+}
+
+// dispStatus maps a disposition to the preview's status vocabulary. Verify
+// (same-size, undecided) is treated as incoming until the content hash rules.
+func dispStatus(d disposition) string {
+	switch d {
+	case dispIdentical:
+		return "identical"
+	case dispDiffers, dispConflict:
+		return "differs"
+	case dispResume:
+		return "resume"
+	default:
+		return "new"
+	}
 }
 
 // conflicts extracts the consent-needing entries for the overwrite prompt.

@@ -122,7 +122,9 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 		src := &opts.Sources[i]
 		d, ok := decisions[src.Entry.Index]
 		if !ok || d.Action == wire.DecisionSkip {
-			if ok && opts.OnSkip != nil {
+			// Mirror the receiver (recv.go): directories aren't user-facing
+			// "files", so a skipped dir mustn't inflate the unchanged count.
+			if ok && opts.OnSkip != nil && src.Entry.Type != wire.EntryDir {
 				opts.OnSkip(src.Entry.Index)
 			}
 			continue

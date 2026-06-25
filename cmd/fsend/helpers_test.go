@@ -663,6 +663,17 @@ func filesHello() wire.SenderHello {
 	return wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "proj/"}
 }
 
+// oneFileSummary is a realistic single-file classification for prompt tests
+// that only care about chips/wording, not the file list (one file shows no
+// preview rows). Carries OfferedBytes/Files so the headline renders sanely.
+func oneFileSummary() transfer.ClassifySummary {
+	const size = 1024
+	return transfer.ClassifySummary{
+		Total: 1, NewItems: 1, BytesToRecv: size, OfferedBytes: size,
+		Files: []transfer.SummaryEntry{{RelativePath: "file.bin", Size: size, Status: "new", Type: wire.EntryFile}},
+	}
+}
+
 func TestPromptAccept_QuietRequiresYes(t *testing.T) {
 	h := filesHello()
 	sum := transfer.ClassifySummary{Total: 1, NewItems: 1, BytesToRecv: 1}
@@ -684,7 +695,7 @@ func TestPromptAccept_YesAccepts(t *testing.T) {
 	} {
 		got := captureStderr(t, func() {
 			ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
-			if !ui.promptAccept(h, transfer.ClassifySummary{Total: 1, NewItems: 1}) {
+			if !ui.promptAccept(h, oneFileSummary()) {
 				t.Errorf("--yes must accept hello %+v", h)
 			}
 		})
@@ -694,15 +705,30 @@ func TestPromptAccept_YesAccepts(t *testing.T) {
 	}
 }
 
-func TestPromptAccept_ShowsBreakdown(t *testing.T) {
+// The headline reconciles the offered total (agrees with the sender) with
+// what will actually transfer ("X of Y") and surfaces the conflict count,
+// which must survive even when the differing files are too small to appear in
+// the size-ranked preview rows.
+func TestPromptAccept_HeadlineReconcilesOfferedAndNet(t *testing.T) {
 	got := captureStderr(t, func() {
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
-		_ = ui.promptAccept(filesHello(), transfer.ClassifySummary{Total: 10, NewItems: 3, Identical: 6, Differing: 1})
+		_ = ui.promptAccept(filesHello(), transfer.ClassifySummary{
+			Total: 10, NewItems: 3, Identical: 6, Differing: 1,
+			OfferedBytes: 1_200_000_000, BytesToRecv: 307_000_000, DifferingBytes: 5,
+			Files: []transfer.SummaryEntry{
+				{RelativePath: "a.bin", Size: 900_000_000, Status: "new", Type: wire.EntryFile},
+				{RelativePath: "b.bin", Size: 307_000_000, Status: "new", Type: wire.EntryFile},
+			},
+		})
 	})
-	for _, want := range []string{"3 new", "6 up to date", "1 differ"} {
+	for _, want := range []string{"307 MB of 1.2 GB", "1 differ"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("breakdown missing %q:\n%s", want, got)
+			t.Errorf("headline missing %q:\n%s", want, got)
 		}
+	}
+	// The old stacked breakdown line must be gone.
+	if strings.Contains(got, "3 new") || strings.Contains(got, "6 up to date") {
+		t.Errorf("stacked breakdown line should be removed:\n%s", got)
 	}
 }
 
@@ -728,7 +754,7 @@ func TestPromptAccept_PasswordChipRendered(t *testing.T) {
 	got := captureStderr(t, func() {
 		h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "proj/", HasPassword: true}
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
-		_ = ui.promptAccept(h, transfer.ClassifySummary{Total: 1, NewItems: 1})
+		_ = ui.promptAccept(h, oneFileSummary())
 	})
 	if !strings.Contains(got, "password required") {
 		t.Errorf("expected password chip, got:\n%s", got)
@@ -779,7 +805,7 @@ func TestPromptAccept_PathChipShown(t *testing.T) {
 	for _, c := range cases {
 		got := captureStderr(t, func() {
 			ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, c.info)
-			_ = ui.promptAccept(filesHello(), transfer.ClassifySummary{Total: 1, NewItems: 1})
+			_ = ui.promptAccept(filesHello(), oneFileSummary())
 		})
 		if !strings.Contains(got, "Incoming from") || !strings.Contains(got, c.want) {
 			t.Errorf("prompt missing path chip %q:\n%s", c.want, got)
