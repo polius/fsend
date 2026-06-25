@@ -18,9 +18,11 @@ import (
 type Source struct {
 	Entry   wire.ListingEntry
 	AbsPath string // sender-local absolute path; "" for synthetic/stream
-	// LinkTarget is the original symlink target when this entry came from a
-	// followed symlink. Sender-side only (never sent on the wire — the entry
-	// travels as a plain file); used to annotate the preview as "name (→ target)".
+	// LinkTarget is where this entry actually lives when it came from a followed
+	// symlink — a direct link's own target, or the resolved source path for a
+	// file reached through a symlinked directory. Sender-side only (never sent
+	// on the wire — the entry travels as a plain file); annotates the preview as
+	// "name (→ target)".
 	LinkTarget string
 }
 
@@ -72,7 +74,7 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 				if err != nil {
 					return nil, fmt.Errorf("walk: lstat %s: %w", cAbs, err)
 				}
-				if err := addEntry(&out, seen, nil, cAbs, c.Name(), cst, m); err != nil {
+				if err := addEntry(&out, seen, nil, "", cAbs, c.Name(), cst, m); err != nil {
 					return nil, err
 				}
 			}
@@ -83,7 +85,7 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 			return nil, fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, raw, root)
 		}
 		roots[strings.ToLower(root)] = raw
-		if err := addEntry(&out, seen, nil, abs, root, st, m); err != nil {
+		if err := addEntry(&out, seen, nil, "", abs, root, st, m); err != nil {
 			return nil, err
 		}
 	}
@@ -98,8 +100,10 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 // the forward-slash path as seen inside the transfer. stack holds the FileInfo
 // of every directory currently on the recursion path, so a followed symlink
 // that points back into an ancestor is caught as a cycle instead of recursing
-// forever.
-func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, abs, rel string, st os.FileInfo, m excludeMatcher) error {
+// forever. srcPrefix is the real-source path of the parent directory when we're
+// inside a followed symlink (empty in the user's real tree); it lets every
+// symlink-derived file carry its true origin for the preview annotation.
+func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, srcPrefix, abs, rel string, st os.FileInfo, m excludeMatcher) error {
 	if m.match(rel) {
 		return nil
 	}
@@ -110,7 +114,7 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, abs, r
 
 	// Follow symlinks to their target. os.Stat resolves the whole chain (and
 	// reports ELOOP for a self-referential one); a missing or unreadable
-	// target is a hard stop. linkTarget is kept for the preview annotation.
+	// target is a hard stop. linkTarget is the raw target of a direct symlink.
 	linkTarget := ""
 	if st.Mode()&os.ModeSymlink != 0 {
 		target, _ := os.Readlink(abs)
@@ -120,6 +124,20 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, abs, r
 			return symlinkError(rel, target, err)
 		}
 		st = resolved
+	}
+
+	// src is where this entry actually lives, for the preview annotation: a
+	// direct symlink's own target, or — for a file reached through a followed
+	// symlinked directory — the parent's source path plus this base name. "" for
+	// a genuine entry in the user's tree (no annotation). It also becomes the
+	// srcPrefix passed to children, composing through nested symlinks.
+	src := linkTarget
+	if src == "" && srcPrefix != "" {
+		base := rel
+		if i := strings.LastIndex(rel, "/"); i >= 0 {
+			base = rel[i+1:]
+		}
+		src = srcPrefix + "/" + base
 	}
 
 	mode := st.Mode()
@@ -156,7 +174,7 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, abs, r
 			if err != nil {
 				return fmt.Errorf("walk: lstat %s: %w", cAbs, err)
 			}
-			if err := addEntry(out, seen, stack, cAbs, cRel, cst, m); err != nil {
+			if err := addEntry(out, seen, stack, src, cAbs, cRel, cst, m); err != nil {
 				return err
 			}
 		}
@@ -165,7 +183,7 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, abs, r
 	case mode.IsRegular():
 		e.Type = wire.EntryFile
 		e.Size = uint64(st.Size())
-		*out = append(*out, Source{Entry: e, AbsPath: abs, LinkTarget: linkTarget})
+		*out = append(*out, Source{Entry: e, AbsPath: abs, LinkTarget: src})
 		return nil
 
 	default:

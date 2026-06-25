@@ -89,8 +89,14 @@ func TestWalk_FollowsSymlinkToDir(t *testing.T) {
 	if d, ok := by[base+"/alias"]; !ok || d.Entry.Type != wire.EntryDir {
 		t.Errorf("alias should be a directory entry: %+v", d)
 	}
-	if f, ok := by[base+"/alias/inner.txt"]; !ok || f.Entry.Size != 3 {
-		t.Errorf("alias/inner.txt should be sent with the target's content: %+v", f)
+	f, ok := by[base+"/alias/inner.txt"]
+	if !ok || f.Entry.Size != 3 {
+		t.Fatalf("alias/inner.txt should be sent with the target's content: %+v", f)
+	}
+	// A file reached through a followed dir-symlink carries its real source so
+	// the preview can annotate it "(→ real/inner.txt)".
+	if f.LinkTarget != "real/inner.txt" {
+		t.Errorf("alias/inner.txt LinkTarget = %q, want %q", f.LinkTarget, "real/inner.txt")
 	}
 }
 
