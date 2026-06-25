@@ -75,16 +75,40 @@ func TestSenderPreview_DropsDirectories(t *testing.T) {
 	sources := []transfer.Source{
 		{Entry: wire.ListingEntry{RelativePath: "proj", Type: wire.EntryDir}},
 		{Entry: wire.ListingEntry{RelativePath: "proj/a.bin", Size: 10, Type: wire.EntryFile}},
-		{Entry: wire.ListingEntry{RelativePath: "proj/link", Type: wire.EntrySymlink}},
+		// A followed symlink travels as a regular file with LinkTarget set.
+		{Entry: wire.ListingEntry{RelativePath: "proj/latest", Size: 10, Type: wire.EntryFile}, LinkTarget: "a.bin"},
 	}
 	items := senderPreview(sources)
 	if len(items) != 2 {
 		t.Fatalf("want 2 non-dir items, got %d: %+v", len(items), items)
 	}
-	for _, it := range items {
-		if it.name == "proj" {
+	var latest *previewItem
+	for i := range items {
+		if items[i].name == "proj" {
 			t.Errorf("directory should be dropped: %+v", items)
 		}
+		if items[i].name == "proj/latest" {
+			latest = &items[i]
+		}
+	}
+	if latest == nil || latest.from != "a.bin" {
+		t.Errorf("followed symlink should carry its origin in `from`: %+v", latest)
+	}
+}
+
+// A followed symlink renders with a real size and a "(→ target)" annotation —
+// distinct from a preserved symlink's "→ name → target".
+func TestRenderPreview_FollowedSymlinkRow(t *testing.T) {
+	got := render([]previewItem{
+		{name: "big.bin", size: 1000},
+		{name: "latest", size: 1000, from: "big.bin"},
+	})
+	if !strings.Contains(got, "latest (→ big.bin)") {
+		t.Errorf("followed symlink should render 'name (→ target)':\n%s", got)
+	}
+	// It has a real byte size, not the "→" size cell used for preserved links.
+	if strings.Contains(got, "→   latest") {
+		t.Errorf("followed symlink must show a byte size, not the '→' cell:\n%s", got)
 	}
 }
 

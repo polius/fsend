@@ -119,6 +119,11 @@ var (
 	// privileged install dir needing sudo). A non-zero exit so scripts can
 	// tell a failed uninstall from a clean one.
 	ErrUninstallFailed = errors.New("uninstall failed")
+	// E036 — a symlink in the send set can't be followed to real content:
+	// its target is missing, unreadable, or the link cycles. fsend sends the
+	// pointed-to content, so an unresolvable link is a hard stop (with the
+	// path, so the user can fix or --exclude it).
+	ErrUnsendableSymlink = errors.New("unsendable symlink")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -401,6 +406,11 @@ var catalog = map[error]Entry{
 		Message: "fsend was not fully uninstalled.",
 		Action: "Remove the binary by hand (the path is printed above), " +
 			"possibly with sudo.",
+	},
+	ErrUnsendableSymlink: {
+		Code: "E036", Exit: 36,
+		Message: "Cannot send a symlink",
+		Action:  "Fix the link, or skip it with --exclude.",
 	},
 }
 

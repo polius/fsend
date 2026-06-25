@@ -240,11 +240,14 @@ func senderPreview(sources []transfer.Source) []previewItem {
 		if s.Entry.Type == wire.EntryDir {
 			continue
 		}
-		it := previewItem{name: s.Entry.RelativePath, size: s.Entry.Size}
-		if s.Entry.Type == wire.EntrySymlink {
-			it.link = s.Entry.SymlinkTarget
-		}
-		items = append(items, it)
+		// Followed symlinks travel as regular files; annotate the row with the
+		// origin link so the user sees it was a symlink — and so a size that
+		// repeats (link + its target both in the set) reads as intentional.
+		items = append(items, previewItem{
+			name: s.Entry.RelativePath,
+			size: s.Entry.Size,
+			from: s.LinkTarget,
+		})
 	}
 	return items
 }

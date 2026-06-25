@@ -331,6 +331,25 @@ func TestRenderError_MapsCancelledToUserCancelled(t *testing.T) {
 	}
 }
 
+// An unsendable symlink renders as a dedicated E036 with the offending path
+// inlined and the --exclude hint, and exits 36.
+func TestRenderError_UnsendableSymlink(t *testing.T) {
+	err := fmt.Errorf("%w: broken link proj/dangling → ../gone (target does not exist)", fserrors.ErrUnsendableSymlink)
+	var code int
+	got := captureStderr(t, func() { code = renderError(err, false) })
+	for _, want := range []string{
+		"[E036] Cannot send a symlink: broken link proj/dangling → ../gone (target does not exist)",
+		"Fix the link, or skip it with --exclude.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if code != 36 {
+		t.Errorf("exit code = %d, want 36", code)
+	}
+}
+
 // captureStderr redirects os.Stderr to a pipe for the duration of fn,
 // then returns whatever was written. Used by tests of helpers that
 // print to stderr (printPath, printCurrentServer, retryNoticeFor, ...).

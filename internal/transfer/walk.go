@@ -1,7 +1,9 @@
 package transfer
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,11 +18,18 @@ import (
 type Source struct {
 	Entry   wire.ListingEntry
 	AbsPath string // sender-local absolute path; "" for synthetic/stream
+	// LinkTarget is the original symlink target when this entry came from a
+	// followed symlink. Sender-side only (never sent on the wire — the entry
+	// travels as a plain file); used to annotate the preview as "name (→ target)".
+	LinkTarget string
 }
 
-// Walk expands CLI arguments into an ordered Source list — files, directories
-// (recursively), and symlinks — using stat only. No file contents are read;
-// the BLAKE3 root is computed inline at send time.
+// Walk expands CLI arguments into an ordered Source list — files and
+// directories (recursively). Symlinks are followed to their target content:
+// fsend is a send tool, so the recipient receives the pointed-to file/dir, not
+// a dangling link. A symlink whose target is missing, unreadable, or cyclic is
+// a hard error (ErrUnsendableSymlink). No file contents are read here; the
+// BLAKE3 root is computed inline at send time.
 //
 // RelativePath is rooted at each argument's base name, so `~/proj/foo` lands
 // as `foo/...`. Duplicate roots and case-only collisions (the receiver may be
@@ -63,7 +72,7 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 				if err != nil {
 					return nil, fmt.Errorf("walk: lstat %s: %w", cAbs, err)
 				}
-				if err := addEntry(&out, seen, cAbs, c.Name(), cst, m); err != nil {
+				if err := addEntry(&out, seen, nil, cAbs, c.Name(), cst, m); err != nil {
 					return nil, err
 				}
 			}
@@ -74,7 +83,7 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 			return nil, fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, raw, root)
 		}
 		roots[strings.ToLower(root)] = raw
-		if err := addEntry(&out, seen, abs, root, st, m); err != nil {
+		if err := addEntry(&out, seen, nil, abs, root, st, m); err != nil {
 			return nil, err
 		}
 	}
@@ -86,8 +95,11 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 }
 
 // addEntry appends one filesystem entry and recurses into directories. rel is
-// the forward-slash path as seen inside the transfer.
-func addEntry(out *[]Source, seen map[string]string, abs, rel string, st os.FileInfo, m excludeMatcher) error {
+// the forward-slash path as seen inside the transfer. stack holds the FileInfo
+// of every directory currently on the recursion path, so a followed symlink
+// that points back into an ancestor is caught as a cycle instead of recursing
+// forever.
+func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, abs, rel string, st os.FileInfo, m excludeMatcher) error {
 	if m.match(rel) {
 		return nil
 	}
@@ -95,6 +107,20 @@ func addEntry(out *[]Source, seen map[string]string, abs, rel string, st os.File
 		return fmt.Errorf("%w: %s and %s collide on a case-insensitive filesystem — rename one", fserrors.ErrUsage, prev, rel)
 	}
 	seen[strings.ToLower(rel)] = rel
+
+	// Follow symlinks to their target. os.Stat resolves the whole chain (and
+	// reports ELOOP for a self-referential one); a missing or unreadable
+	// target is a hard stop. linkTarget is kept for the preview annotation.
+	linkTarget := ""
+	if st.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(abs)
+		linkTarget = target
+		resolved, err := os.Stat(abs)
+		if err != nil {
+			return symlinkError(rel, target, err)
+		}
+		st = resolved
+	}
 
 	mode := st.Mode()
 	e := wire.ListingEntry{
@@ -104,17 +130,17 @@ func addEntry(out *[]Source, seen map[string]string, abs, rel string, st os.File
 	}
 
 	switch {
-	case mode&os.ModeSymlink != 0:
-		target, err := os.Readlink(abs)
-		if err != nil {
-			return fmt.Errorf("walk: readlink %s: %w", abs, err)
+	case mode.IsDir():
+		// Cycle guard: only meaningful when we got here through a symlink (a
+		// real directory tree can't contain itself). Compare this directory's
+		// identity against every ancestor on the stack.
+		if linkTarget != "" {
+			for _, anc := range stack {
+				if os.SameFile(st, anc) {
+					return fmt.Errorf("%w: %s → %s loops back into the transfer", fserrors.ErrUnsendableSymlink, rel, linkTarget)
+				}
+			}
 		}
-		e.Type = wire.EntrySymlink
-		e.SymlinkTarget = target
-		*out = append(*out, Source{Entry: e, AbsPath: abs})
-		return nil
-
-	case st.IsDir():
 		e.Type = wire.EntryDir
 		*out = append(*out, Source{Entry: e, AbsPath: abs})
 		children, err := os.ReadDir(abs)
@@ -122,6 +148,7 @@ func addEntry(out *[]Source, seen map[string]string, abs, rel string, st os.File
 			return fmt.Errorf("walk: readdir %s: %w", abs, err)
 		}
 		sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
+		stack = append(stack, st)
 		for _, c := range children {
 			cAbs := filepath.Join(abs, c.Name())
 			cRel := rel + "/" + c.Name()
@@ -129,22 +156,41 @@ func addEntry(out *[]Source, seen map[string]string, abs, rel string, st os.File
 			if err != nil {
 				return fmt.Errorf("walk: lstat %s: %w", cAbs, err)
 			}
-			if err := addEntry(out, seen, cAbs, cRel, cst, m); err != nil {
+			if err := addEntry(out, seen, stack, cAbs, cRel, cst, m); err != nil {
 				return err
 			}
 		}
 		return nil
 
-	default:
-		// Skip non-regular files (fifo/device/socket): reading one blocks
-		// or can't be copied. Mirrors the receiver's handling.
-		if !mode.IsRegular() {
-			return nil
-		}
+	case mode.IsRegular():
 		e.Type = wire.EntryFile
 		e.Size = uint64(st.Size())
-		*out = append(*out, Source{Entry: e, AbsPath: abs})
+		*out = append(*out, Source{Entry: e, AbsPath: abs, LinkTarget: linkTarget})
 		return nil
+
+	default:
+		// fifo/device/socket can't be copied. A plain one is skipped silently
+		// (as before); one a symlink explicitly resolves to is surfaced rather
+		// than silently dropping a target the user pointed at.
+		if linkTarget != "" {
+			return fmt.Errorf("%w: %s → %s is not a regular file", fserrors.ErrUnsendableSymlink, rel, linkTarget)
+		}
+		return nil
+	}
+}
+
+// symlinkError classifies a failure to resolve a symlink's target into a
+// user-facing ErrUnsendableSymlink with the offending path and cause.
+func symlinkError(rel, target string, err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("%w: broken link %s → %s (target does not exist)", fserrors.ErrUnsendableSymlink, rel, target)
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("%w: cannot read target of %s → %s (permission denied)", fserrors.ErrUnsendableSymlink, rel, target)
+	default:
+		// Includes ELOOP from a self-referential chain (a → b → a); the OS
+		// message ("too many levels of symbolic links") makes the cause clear.
+		return fmt.Errorf("%w: cannot resolve %s → %s: %v", fserrors.ErrUnsendableSymlink, rel, target, err)
 	}
 }
 
