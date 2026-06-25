@@ -151,6 +151,75 @@ Connecting without it — or with the wrong one — fails with `E028`.
 - **Tuning.** Every knob is an environment variable — see
   [Configuration](#configuration).
 
+## Metrics
+
+`GET /v1/metrics` returns a small JSON snapshot for monitoring:
+
+```json
+{
+  "version": "1.8.0",
+  "uptime_seconds": 84213,
+  "sessions_active": 3,
+  "sessions_created_total": 1284,
+  "rejected_total": { "rate_limit": 12, "ip_cap": 3, "unauthorized": 0 },
+  "relay": {
+    "forwarding": true,
+    "healthy": true,
+    "transfers_active": 1,
+    "bytes_forwarded_total": 5839201023,
+    "peak_session_bytes": 940000000,
+    "cap_hits_total": 4
+  }
+}
+```
+
+Every value is an **aggregate count or gauge** — there is no per-IP,
+per-session, or per-code data, so it can't leak anything the server doesn't
+store. That's deliberate: the endpoint is public on an open server precisely
+so anyone can verify the server holds nothing sensitive.
+
+| Field | What it tells you |
+|---|---|
+| `version` | Build currently running. |
+| `uptime_seconds` | Seconds since the process started — spot restarts. |
+| `sessions_active` | Pairing sessions live right now — current load. |
+| `sessions_created_total` | Sessions created since boot — total usage. |
+| `rejected_total.rate_limit` | Requests refused by the new-session rate cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN`) — bursts or brute-force. |
+| `rejected_total.ip_cap` | Requests refused by the concurrency cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP`). |
+| `rejected_total.unauthorized` | Wrong/missing `FSEND_SERVER_PASSWORD` — brute-force or misconfigured clients (always `0` on an open server). |
+| `relay.forwarding` | Whether the relay carries data (`false` in pairing + STUN-only mode). |
+| `relay.healthy` | Relay read loop alive — mirrors `/v1/health`'s 503 signal. |
+| `relay.transfers_active` | Relay transfers moving bytes right now. |
+| `relay.bytes_forwarded_total` | Cumulative bytes relayed — what the relay is costing you. |
+| `relay.peak_session_bytes` | Largest single session so far; compare to your byte cap to see headroom. |
+| `relay.cap_hits_total` | Transfers cut off for hitting the byte cap — raise the cap if this climbs. |
+
+The `relay` block is omitted when the server runs without a relay.
+
+**Access.** `/v1/metrics` inherits the server's own openness, like every
+endpoint except `/v1/health`:
+
+- **Open server (no `FSEND_SERVER_PASSWORD`)** — public, no credentials:
+
+  ```sh
+  curl https://fs.example.com/v1/metrics
+  ```
+
+- **Password-protected server** — pass the password in the `X-Fsend-Auth`
+  header (the same one clients use):
+
+  ```sh
+  curl -H "X-Fsend-Auth: your-secret" https://fs.example.com/v1/metrics
+  ```
+
+  Without it you get `401`. Note a **web browser can't open this URL**
+  directly — it can't set the header — so use `curl`, or configure your
+  monitoring scraper to send `X-Fsend-Auth` (Prometheus: a static header
+  under the scrape job).
+
+So a public server is transparently inspectable by anyone, and a locked-down
+one keeps its metrics to whoever holds the password.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

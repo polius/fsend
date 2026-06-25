@@ -492,6 +492,9 @@ func (f *fakeRelay) Status(t relay.Token) string    { return f.reason }
 func (f *fakeRelay) MaxBytesPerSession() uint64     { return f.maxBytes }
 func (f *fakeRelay) Healthy() bool                  { return !f.dead }
 func (f *fakeRelay) Forwarding() bool               { return !f.noForward }
+func (f *fakeRelay) Metrics() relay.Metrics {
+	return relay.Metrics{Forwarding: !f.noForward, Healthy: !f.dead}
+}
 
 // /v1/health must flip to 503/degraded once the relay read loop has died,
 // so an orchestrator restarts the container instead of trusting a zombie.

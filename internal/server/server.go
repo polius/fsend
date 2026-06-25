@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -113,6 +114,17 @@ type Server struct {
 	// the configured UDP port. No operator config needed for stock setups.
 	relayAllocator RelayAllocator
 	relayUDPPort   int
+
+	met serverMetrics
+}
+
+// serverMetrics holds aggregate counters for /v1/metrics (cumulative
+// since boot). sessions_active is read from the live map at scrape time.
+type serverMetrics struct {
+	sessionsCreated atomic.Uint64
+	rejRate         atomic.Uint64 // rate-limit rejections
+	rejIPCap        atomic.Uint64 // concurrent-cap rejections
+	rejAuth         atomic.Uint64 // wrong/missing server password
 }
 
 // RelayAllocator is the minimal interface internal/relay.Server exposes
@@ -123,6 +135,7 @@ type RelayAllocator interface {
 	Status(relay.Token) string
 	MaxBytesPerSession() uint64
 	Forwarding() bool
+	Metrics() relay.Metrics
 }
 
 // WithRelay wires a relay allocator into the signaling layer.
@@ -200,6 +213,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/relay/allocate", s.allocateRelay)
 	m.HandleFunc("GET /v1/relay/status", s.relayStatus)
 	m.HandleFunc("GET /v1/health", s.health)
+	m.HandleFunc("GET /v1/metrics", s.metrics)
 	if s.cfg.ServerPassword == "" {
 		return m
 	}
@@ -218,6 +232,7 @@ func (s *Server) withServerAuth(inner http.Handler) http.Handler {
 		}
 		got := r.Header.Get(AuthHeader)
 		if got == "" || subtle.ConstantTimeCompare(want, []byte(got)) != 1 {
+			s.met.rejAuth.Add(1)
 			w.Header().Set("WWW-Authenticate", `X-Fsend-Auth realm="fsend"`)
 			writeJSONError(w, http.StatusUnauthorized, "server password required")
 			return
@@ -435,11 +450,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	if !s.allowNewSession(rateKey, time.Now()) {
 		s.mu.Unlock()
+		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
 		return
 	}
 	if s.ipCounts[rateKey] >= s.cfg.MaxSessionsPerIP {
 		s.mu.Unlock()
+		s.met.rejIPCap.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "too many concurrent sessions for this IP")
 		return
 	}
@@ -472,6 +489,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	s.byID[sid] = sess
 	s.ipCounts[rateKey]++
 	s.mu.Unlock()
+	s.met.sessionsCreated.Add(1)
 	s.cfg.Logger.Debug("session created", "slot", slot, "ip", clientIP)
 
 	writeJSON(w, http.StatusOK, CreateSessionResponse{
@@ -497,6 +515,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	// slot at line rate.
 	if !s.allowNewSession(rateKey, time.Now()) {
 		s.mu.Unlock()
+		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
 		return
 	}
@@ -513,6 +532,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.ipCounts[rateKey] >= s.cfg.MaxSessionsPerIP {
 		s.mu.Unlock()
+		s.met.rejIPCap.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "too many concurrent sessions for this IP")
 		return
 	}
@@ -547,6 +567,7 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	// 30/min budget — see TestWaitRateLimit_PollCadenceStaysUnderBudget.
 	if !s.allowNewSession(rateLimitKey(clientIP(r)), time.Now()) {
 		s.mu.Unlock()
+		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
 		return
 	}

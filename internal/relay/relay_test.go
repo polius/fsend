@@ -292,6 +292,99 @@ func TestForwardingEnabledByDefault(t *testing.T) {
 	}
 }
 
+// TestMetricsCounters checks that a forwarded datagram bumps bytes_forwarded
+// and peak_session_bytes, and that exceeding the cap bumps cap_hits.
+func TestMetricsCounters(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
+	srv := NewServer(serverConn, ServerConfig{MaxBytesPerSession: 10 * 1024 * 1024})
+	tok, err := srv.Allocate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Run(ctx) }()
+
+	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer clientA.Close()
+	clientB, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer clientB.Close()
+	connA := NewClient(clientA, relayAddr, tok)
+	connB := NewClient(clientB, relayAddr, tok)
+
+	_, _ = connA.WriteTo([]byte("hello"), nil)
+	_, _ = connB.WriteTo([]byte("register"), nil)
+	time.Sleep(50 * time.Millisecond)
+	_, _ = connA.WriteTo([]byte("a real payload"), nil)
+	buf := make([]byte, 1500)
+	_ = connB.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := connB.ReadFrom(buf); err != nil {
+		t.Fatalf("B did not receive the forwarded payload: %v", err)
+	}
+
+	m := srv.Metrics()
+	if m.BytesForwardedTotal == 0 {
+		t.Error("bytes_forwarded_total should be > 0 after a forward")
+	}
+	if m.PeakSessionBytes == 0 {
+		t.Error("peak_session_bytes should be > 0 after a forward")
+	}
+	if m.CapHitsTotal != 0 {
+		t.Errorf("cap_hits_total = %d, want 0", m.CapHitsTotal)
+	}
+	if !m.Forwarding {
+		t.Error("forwarding should be true")
+	}
+
+	cancel()
+	_ = serverConn.Close()
+	<-srvErr
+}
+
+func TestMetricsCapHit(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
+	srv := NewServer(serverConn, ServerConfig{MaxBytesPerSession: 1}) // any forwarded datagram exceeds it
+	tok, _ := srv.Allocate()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Run(ctx) }()
+
+	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer clientA.Close()
+	clientB, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer clientB.Close()
+	connA := NewClient(clientA, relayAddr, tok)
+	connB := NewClient(clientB, relayAddr, tok)
+
+	_, _ = connA.WriteTo([]byte("x"), nil) // registers A as peerA
+	_, _ = connB.WriteTo([]byte("y"), nil) // registers B; first forwarded datagram trips the 1-byte cap
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.Metrics().CapHitsTotal > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := srv.Metrics().CapHitsTotal; got != 1 {
+		t.Errorf("cap_hits_total = %d, want 1", got)
+	}
+
+	cancel()
+	_ = serverConn.Close()
+	<-srvErr
+}
+
 func TestAllowSTUNResponse_RateCap(t *testing.T) {
 	s := &Server{}
 	base := time.Unix(1700000000, 0)
