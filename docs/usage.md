@@ -78,6 +78,24 @@ fsend --text "the wifi password is hunter2"
 fsend ./secret.tar.gz --pass         # prompts with a random default
 ```
 
+### Symlinks
+
+fsend **follows** symlinks: it sends what the link points to, so the
+receiver gets a real file — not a link that dangles on their machine. A
+folder containing
+
+```text
+report.pdf
+latest -> report.pdf      # a symlink
+```
+
+arrives with `latest` as a **real copy** of `report.pdf` (both files land —
+the link's bytes are sent too). This works even when the target is outside
+the folder you're sending.
+
+A symlink whose target is missing or cyclic stops the send with `E036` —
+fix it, or skip it with `--exclude`.
+
 ## Receiving
 
 ```text
