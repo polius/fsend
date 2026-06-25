@@ -451,9 +451,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		if len(f.posArgs) != 1 {
 			return fmt.Errorf("%w: --receive requires exactly one positional argument (the code)", fserrors.ErrUsage)
 		}
-		// Tolerate surrounding whitespace (a redirected newline, a pasted
-		// space) on the explicitly-given code.
-		return startReceive(f, strings.TrimSpace(f.posArgs[0]))
+		return startReceive(f, f.posArgs[0])
 	}
 
 	// --text is unambiguously send mode. An explicitly empty value
@@ -501,9 +499,11 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		}
 		return startReceive(f, arg)
 	}
-	// Codes copied through iMessage / WhatsApp / Slack often have the first
-	// letter auto-capitalized. If the lowercased form is a valid code and no
-	// file by the original name exists, receive; otherwise fall through to send.
+	// Codes copied through iMessage / WhatsApp / Slack often have the
+	// first letter auto-capitalized. If the lowercased form is a valid
+	// code AND there's no file with the original name, accept it as a
+	// receive — anything else (file exists, or lowercased still doesn't
+	// match the regex) falls through to send.
 	if lowered := strings.ToLower(arg); lowered != arg && code.IsCode(lowered) {
 		if _, err := os.Stat(arg); os.IsNotExist(err) {
 			return startReceive(f, lowered)
