@@ -122,6 +122,7 @@ type RelayAllocator interface {
 	Allocate() (relay.Token, error)
 	Status(relay.Token) string
 	MaxBytesPerSession() uint64
+	Forwarding() bool
 }
 
 // WithRelay wires a relay allocator into the signaling layer.
@@ -316,9 +317,10 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 	relayTok := sess.relayToken
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, RelayAllocateResponse{
-		RelayAddr:    s.relayAddrFor(r),
-		SessionToken: relayTok.String(),
-		TTLSeconds:   600,
+		RelayAddr:          s.relayAddrFor(r),
+		SessionToken:       relayTok.String(),
+		TTLSeconds:         600,
+		ForwardingDisabled: !s.relayAllocator.Forwarding(),
 	})
 }
 

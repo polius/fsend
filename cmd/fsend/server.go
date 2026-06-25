@@ -96,6 +96,7 @@ func runServer() error {
 	relaySrv := relay.NewServer(udpListener, relay.ServerConfig{
 		MaxBytesPerSession: cfg.maxBytesPerSession,
 		Logger:             logger,
+		DisableForwarding:  !cfg.enableRelay,
 	})
 	udpPort, err := udpPortFromAddr(cfg.udpAddr)
 	if err != nil {
@@ -110,6 +111,9 @@ func runServer() error {
 		}
 	}()
 	logger.Info("relay UDP listener up", "addr", cfg.udpAddr, "udp_port", udpPort)
+	if !cfg.enableRelay {
+		logger.Info("relay forwarding disabled (FSEND_ENABLE_RELAY=false); STUN/hole-punching still active")
+	}
 
 	httpSrv := &http.Server{
 		Addr:              cfg.httpAddr,
@@ -198,6 +202,7 @@ type serverRuntimeConfig struct {
 	maxNewSessionsPerMin int
 	maxBytesPerSession   uint64
 	serverPassword       string
+	enableRelay          bool
 }
 
 func loadServerConfig() (serverRuntimeConfig, error) {
@@ -214,6 +219,9 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		return cfg, err
 	}
 	if cfg.maxBytesPerSession, err = envBytes("FSEND_MAX_RELAY_BYTES_PER_SESSION", 100*1000*1000); err != nil {
+		return cfg, err
+	}
+	if cfg.enableRelay, err = envBool("FSEND_ENABLE_RELAY", true); err != nil {
 		return cfg, err
 	}
 	switch strings.ToLower(os.Getenv("FSEND_LOG_LEVEL")) {
@@ -249,6 +257,21 @@ func udpPortFromAddr(addr string) (int, error) {
 		return 0, fmt.Errorf("port out of range")
 	}
 	return p, nil
+}
+
+// envBool reads a boolean (strconv.ParseBool: 1/t/true, 0/f/false…) from
+// name. Unset/blank → def; anything unparseable is an error rather than a
+// silent default, so a typo'd toggle fails loudly instead of misbehaving.
+func envBool(name string, def bool) (bool, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q: not a boolean (use true/false)", name, v)
+	}
+	return b, nil
 }
 
 func envInt(name string, def int) (int, error) {
@@ -351,6 +374,10 @@ CONFIGURATION (environment variables — all optional)
                                         after compression (accepts B, KB, MB,
                                         GB, TB, or a plain byte count, e.g.
                                         "100MB", "500KB", "104857600")
+  FSEND_ENABLE_RELAY                    Default true. Set false for pairing +
+                                        STUN only: peers still hole-punch, but
+                                        the server carries no data (symmetric-NAT
+                                        transfers fail instead of relaying)
   FSEND_SERVER_PASSWORD                 Optional shared secret. When set, every
                                         endpoint except /v1/health requires the
                                         X-Fsend-Auth header to match. Clients:

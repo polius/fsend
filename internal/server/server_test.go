@@ -480,16 +480,18 @@ func TestServerPassword_OpenByDefault(t *testing.T) {
 // fakeRelay implements RelayAllocator with fixed responses, so the
 // relay-status handler can be exercised without standing up a UDP relay.
 type fakeRelay struct {
-	tok      relay.Token
-	reason   string
-	maxBytes uint64
-	dead     bool
+	tok       relay.Token
+	reason    string
+	maxBytes  uint64
+	dead      bool
+	noForward bool
 }
 
 func (f *fakeRelay) Allocate() (relay.Token, error) { return f.tok, nil }
 func (f *fakeRelay) Status(t relay.Token) string    { return f.reason }
 func (f *fakeRelay) MaxBytesPerSession() uint64     { return f.maxBytes }
 func (f *fakeRelay) Healthy() bool                  { return !f.dead }
+func (f *fakeRelay) Forwarding() bool               { return !f.noForward }
 
 // /v1/health must flip to 503/degraded once the relay read loop has died,
 // so an orchestrator restarts the container instead of trusting a zombie.
@@ -583,6 +585,56 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 			}
 			if body.LimitBytes != c.wantBytes {
 				t.Errorf("limit_bytes = %d, want %d", body.LimitBytes, c.wantBytes)
+			}
+		})
+	}
+}
+
+// TestRelayAllocate_ForwardingDisabledFlag checks the allocate response
+// mirrors the relay's forwarding mode: the flag is set only in stun-only
+// mode, and RelayAddr is always populated (it's the STUN server).
+func TestRelayAllocate_ForwardingDisabledFlag(t *testing.T) {
+	cases := []struct {
+		name      string
+		noForward bool
+		want      bool
+	}{
+		{name: "forwarding", noForward: false, want: false},
+		{name: "stun_only", noForward: true, want: true},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			s := New(Config{
+				ServerVersion:        "0.0.0-test",
+				UnpairedTTL:          2 * time.Second,
+				PairedTTL:            5 * time.Second,
+				MaxSessionsPerIP:     10,
+				MaxNewSessionsPerMin: 100,
+			})
+			s.WithRelay(&fakeRelay{tok: relay.Token{1, 2, 3, 4}, noForward: c.noForward}, 9999)
+			ts := httptest.NewServer(s.Handler())
+			defer ts.Close()
+
+			cr := createSession(t, ts.URL, testSlot)
+			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/relay/allocate",
+				bytes.NewReader(mustJSON(t, RelayAllocateRequest{SessionID: cr.SessionID})))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+cr.RoleToken)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			var body RelayAllocateResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.ForwardingDisabled != c.want {
+				t.Errorf("forwarding_disabled = %v, want %v", body.ForwardingDisabled, c.want)
+			}
+			if body.RelayAddr == "" {
+				t.Error("relay_addr must be set even in stun-only mode (it's the STUN server)")
 			}
 		})
 	}

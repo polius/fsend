@@ -82,10 +82,16 @@ type RelayAllocateRequest struct {
 }
 
 // RelayAllocateResponse is the body returned on relay allocation.
+//
+// ForwardingDisabled is set when the server does pairing + STUN only and
+// won't carry data. RelayAddr is still returned (it's the STUN server);
+// the client uses it for srflx gathering but skips the relay fallback.
+// omitempty so older servers round-trip as false (forwarding capable).
 type RelayAllocateResponse struct {
-	RelayAddr    string `json:"relay_addr"`
-	SessionToken string `json:"session_token"` // Crockford-base32 encoded 16 bytes
-	TTLSeconds   int    `json:"ttl_seconds"`
+	RelayAddr          string `json:"relay_addr"`
+	SessionToken       string `json:"session_token"` // Crockford-base32 encoded 16 bytes
+	TTLSeconds         int    `json:"ttl_seconds"`
+	ForwardingDisabled bool   `json:"forwarding_disabled,omitempty"`
 }
 
 // HealthResponse is the body of GET /v1/health.

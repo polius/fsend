@@ -337,6 +337,9 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if allocErr != nil {
 		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)
 	}
+	if alloc.ForwardingDisabled {
+		return nil, connpath.Info{}, fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
+	}
 	rc, err := dialRelay(alloc)
 	if err != nil {
 		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
@@ -351,6 +354,9 @@ func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID,
 	alloc, err := client.AllocateRelay(ctx, sessionID, roleToken)
 	if err != nil {
 		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
+	}
+	if alloc.ForwardingDisabled {
+		return nil, connpath.Info{}, fmt.Errorf("%w: this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 	}
 	rc, err := dialRelay(alloc)
 	if err != nil {

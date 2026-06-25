@@ -174,4 +174,18 @@ All optional; defaults shown. Set them under the `fsend` service's
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_MAX_SESSIONS_PER_IP` | `5` | Concurrent sessions per client IP. |
 | `FSEND_MAX_NEW_SESSIONS_PER_IP_PER_MIN` | `30` | New-session rate limit. |
-| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `1GB` | Per-session relay cap — wire bytes after compression. Tune to your bandwidth budget. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1073741824`). |
+| `FSEND_MAX_RELAY_BYTES_PER_SESSION` | `100MB` | Per-session relay cap — wire bytes after compression. Tune to your bandwidth budget. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`100000000`). |
+| `FSEND_ENABLE_RELAY` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
+
+### Pairing-only mode (no relay)
+
+Set `FSEND_ENABLE_RELAY=false` to run the server as a pure matchmaker: it
+answers STUN (so peers can still hole-punch directly across NATs) but never
+forwards a single byte of file data. Use this when you want to help peers
+find each other without paying for — or being liable for — relayed traffic.
+
+The trade-off: when hole-punching fails (typically symmetric NAT on both
+ends), there is no fallback. Those transfers fail with a clear
+"relay forwarding disabled" error instead of relaying. Same-LAN and
+direct-internet transfers are unaffected. The UDP listener still binds (STUN
+needs it); only forwarding is off.
