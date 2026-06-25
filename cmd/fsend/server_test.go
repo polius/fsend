@@ -150,8 +150,8 @@ func clearServerEnv(t *testing.T) {
 		"FSEND_PAIRING_ADDR",
 		"FSEND_RELAY_ADDR",
 		"FSEND_LOG_LEVEL",
-		"FSEND_PAIRING_MAX_SESSIONS_PER_IP",
-		"FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN",
 		"FSEND_RELAY_MAX_BYTES_PER_SESSION",
 	} {
 		os.Unsetenv(k)
@@ -188,8 +188,8 @@ func TestServerLoadConfigOverrides(t *testing.T) {
 	clearServerEnv(t)
 	t.Setenv("FSEND_PAIRING_ADDR", ":19999")
 	t.Setenv("FSEND_RELAY_ADDR", ":29999")
-	t.Setenv("FSEND_PAIRING_MAX_SESSIONS_PER_IP", "12")
-	t.Setenv("FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN", "120")
+	t.Setenv("FSEND_SERVER_MAX_SESSIONS_PER_IP", "12")
+	t.Setenv("FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN", "120")
 	t.Setenv("FSEND_RELAY_MAX_BYTES_PER_SESSION", "250MB")
 	cfg, err := loadServerConfig()
 	if err != nil {
@@ -215,9 +215,9 @@ func TestServerLoadConfigOverrides(t *testing.T) {
 func TestServerLoadConfigRejectsBadValues(t *testing.T) {
 	// A typo'd limit must stop the server, not silently run the default.
 	cases := map[string]string{
-		"FSEND_RELAY_MAX_BYTES_PER_SESSION":             "1GiB",
-		"FSEND_PAIRING_MAX_SESSIONS_PER_IP":             "many",
-		"FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN": "-1",
+		"FSEND_RELAY_MAX_BYTES_PER_SESSION":        "1GiB",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP":         "many",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN": "-1",
 	}
 	for k, v := range cases {
 		t.Run(k+"="+v, func(t *testing.T) {

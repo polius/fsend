@@ -282,7 +282,7 @@ var catalog = map[error]Entry{
 		Action: "Wait a minute and try again, or switch servers:\n" +
 			"    fsend --connect <host:port>\n" +
 			"  Or self-host your own server (`fsend server`) and raise\n" +
-			"  FSEND_PAIRING_MAX_SESSIONS_PER_IP / FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN.",
+			"  FSEND_SERVER_MAX_SESSIONS_PER_IP / FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN.",
 	},
 	ErrServerRetired: {
 		Code: "E018", Exit: 18,

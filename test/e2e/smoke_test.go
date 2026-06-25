@@ -117,8 +117,8 @@ func TestServer_PasswordGate(t *testing.T) {
 		"FSEND_RELAY_ADDR=:"+strconv.Itoa(udpPort),
 		"FSEND_LOG_LEVEL=warn",
 		"FSEND_SERVER_PASSWORD=swordfish",
-		"FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN=10000",
-		"FSEND_PAIRING_MAX_SESSIONS_PER_IP=1000",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN=10000",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP=1000",
 	)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start guarded server: %v", err)

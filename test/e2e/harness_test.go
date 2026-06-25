@@ -115,8 +115,8 @@ func startHarness() (*harness, error) {
 		// the production default of 30/min would throttle the harness
 		// itself. Production sender/receiver come from distinct IPs
 		// and each get their own bucket.
-		"FSEND_PAIRING_MAX_NEW_SESSIONS_PER_IP_PER_MIN=10000",
-		"FSEND_PAIRING_MAX_SESSIONS_PER_IP=1000",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN=10000",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP=1000",
 	)
 	hh.serverCmd.Stdout = &hh.serverOutput
 	hh.serverCmd.Stderr = &hh.serverOutput
