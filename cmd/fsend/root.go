@@ -250,17 +250,17 @@ EXAMPLES
     fsend --connect relay.mycompany.com:443
 
 SENDING
-  --text "<string>"      Send a literal string instead of a file
-                         (the receiver prints it — nothing is saved;
-                         keep it with: fsend <code> > note.txt)
   --pass <password>      Require the receiver to enter a password.
                          Bare --pass prompts interactively — sender side
                          suggests a fresh random default (press Enter to
                          accept). Env: FSEND_PASS.
   --exclude <glob,…>     Skip entries matching these globs in a directory
-  --name <string>        Override the hostname shown to the peer
+  --text "<string>"      Send a literal string instead of a file
+                         (the receiver prints it — nothing is saved;
+                         keep it with: fsend <code> > note.txt)
   --preview              List what would be sent (CSV: path,size) and exit —
                          no code, no transfer (pipe-friendly: --preview > out.csv)
+  --name <string>        Override the hostname shown to the peer
 
 RECEIVING
   --yes                  Auto-accept incoming transfers (no prompt)
