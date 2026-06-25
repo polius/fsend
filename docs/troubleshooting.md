@@ -89,7 +89,8 @@ contents**, so fsend kept your local copy and didn't overwrite it. The
 rest of the transfer completed.
 
 - To replace differing files, receive again with `--overwrite`.
-- To see what would change first, use `--dry-run`.
+- The accept prompt shows the breakdown (new / up to date / differ) before
+  you confirm; `--manifest <file>` records the exact per-file outcome.
 - Byte-identical files are always skipped silently — this only fires on
   real differences.
 

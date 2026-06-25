@@ -39,6 +39,10 @@ func runReceive(f *flags, c string) error {
 	if f.outDir == "-" && f.overwrite {
 		return fmt.Errorf("%w: --overwrite has no effect with --out -", fserrors.ErrUsage)
 	}
+	// --manifest records files written to disk; there are none with --out -.
+	if f.outDir == "-" && f.manifest != "" {
+		return fmt.Errorf("%w: --manifest has no effect with --out -", fserrors.ErrUsage)
+	}
 	// Validate --out before any network work: a missing directory would
 	// otherwise only fail at write time, after the sender's one-shot code
 	// has been consumed.

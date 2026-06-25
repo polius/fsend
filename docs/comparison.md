@@ -243,7 +243,7 @@ own code phrase, while fsend always picks it for you.
 | Receiver confirmation prompt | ✓ (`--yes` to skip) | ✓ (`--yes`) | ✓ (`--accept-file`) |
 | Resume after interruption | **✓ (BLAKE3-verified)** | **✓ (chunk-based)** | ✗ (classic transit restarts) |
 | Skip unchanged files on re-send | **✓ (size+mtime; `--checksum`)** | **✓ (always hashes)** | ✗ |
-| Dry-run preview | **✓ `--dry-run`** | ✗ | ✗ |
+| Preview / manifest | **✓ `--preview` (sender), `--manifest` (receiver)** | ✗ | ✗ |
 | Password on top of the code | **✓ `--pass`** | code phrase doubles as secret | ✗ (the code is the secret) |
 | Exclude paths in a directory | **✓ `--exclude`** | **✓ `--exclude` (+ `--git`)** | ✗ |
 | Custom output dir / name | `--out` | `--out` | `--output-file` |
@@ -311,8 +311,9 @@ it; or Python is already your path of least resistance.
   lengthen anything;
 - you want **defense-in-depth** (SPAKE2 *over* TLS 1.3) and
   **post-quantum** forward secrecy — neither of the others has either;
-- you want **resume**, a separate **`--pass`** secret, **`--dry-run`**,
-  **multi-file** transfers, or **binary stdin/stdout** streaming;
+- you want **resume**, a separate **`--pass`** secret, a **`--preview`**
+  of what you'd send, **multi-file** transfers, or **binary stdin/stdout**
+  streaming;
 - you'd rather deploy **one static binary** than a Python environment.
 
 ---

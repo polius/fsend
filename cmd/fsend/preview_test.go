@@ -96,6 +96,24 @@ func TestSenderPreview_DropsDirectories(t *testing.T) {
 	}
 }
 
+// --preview emits CSV: header, directories dropped, and a path containing a
+// comma is quoted (encoding/csv).
+func TestWriteSendPreview(t *testing.T) {
+	var b bytes.Buffer
+	srcs := []transfer.Source{
+		{Entry: wire.ListingEntry{RelativePath: "proj", Type: wire.EntryDir}},
+		{Entry: wire.ListingEntry{RelativePath: "proj/a.bin", Size: 10, Type: wire.EntryFile}},
+		{Entry: wire.ListingEntry{RelativePath: "proj/with,comma.txt", Size: 3, Type: wire.EntryFile}},
+	}
+	if err := writeSendPreview(&b, srcs); err != nil {
+		t.Fatal(err)
+	}
+	want := "path,size\nproj/a.bin,10\n\"proj/with,comma.txt\",3\n"
+	if got := b.String(); got != want {
+		t.Errorf("CSV =\n%q\nwant\n%q", got, want)
+	}
+}
+
 // A followed symlink renders with a real size and a "(→ target)" annotation —
 // distinct from a preserved symlink's "→ name → target".
 func TestRenderPreview_FollowedSymlinkRow(t *testing.T) {

@@ -28,13 +28,14 @@ type flags struct {
 	passArg  string // shared with receive-side: sender requires, receiver supplies
 	hostname string
 	excludes []string // glob patterns; applied when bundling a directory archive
+	preview  bool     // list what would be sent (CSV), then exit — no transfer
 
 	// Receive-side
 	yes       bool
 	outDir    string
 	overwrite bool
-	dryRun    bool
 	checksum  bool
+	manifest  string // write a CSV record of the received files to this path
 
 	// Server selection — connectArgsRaw is the raw slice cobra hands
 	// back; "no flag" vs "empty flag" is distinguished via Flags().Changed.
@@ -115,8 +116,9 @@ Examples:
 	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers")
 	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files that differ on receive")
-	c.Flags().BoolVar(&f.dryRun, "dry-run", false, "show what would transfer (new/identical/differs), write nothing")
 	c.Flags().BoolVar(&f.checksum, "checksum", false, "decide identical files by content hash, not size+mtime (like rsync -c)")
+	c.Flags().BoolVar(&f.preview, "preview", false, "list what would be sent (CSV: path,size) and exit; no transfer")
+	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status) of the received files to this path")
 	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress non-error output")
 	c.Flags().StringVar(&f.hostname, "name", "", "override the hostname shown to the peer")
 	c.Flags().StringSliceVar(&f.excludes, "exclude", nil,
@@ -257,6 +259,8 @@ SENDING
                          accept). Env: FSEND_PASS.
   --exclude <glob,…>     Skip entries matching these globs in a directory
   --name <string>        Override the hostname shown to the peer
+  --preview              List what would be sent (CSV: path,size) and exit —
+                         no code, no transfer (pipe-friendly: --preview > out.csv)
 
 RECEIVING
   --yes                  Auto-accept incoming transfers (no prompt)
@@ -265,10 +269,10 @@ RECEIVING
                          stream — pipe-friendly: fsend <code> --out - | …)
   --overwrite            Replace existing files that differ (identical files
                          are always skipped)
-  --dry-run              Show what would transfer (new/identical/differs),
-                         write nothing
   --checksum             Decide identical files by content hash, not
                          size+mtime (like rsync -c)
+  --manifest <file>      Write a CSV record (path,size,status) of the
+                         received files to <file>
 
 GENERAL
   --quiet                Suppress all non-error output
@@ -559,6 +563,9 @@ func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
 func startReceive(f *flags, c string) error {
 	if len(f.excludes) > 0 {
 		return errExcludeMisuse()
+	}
+	if f.preview {
+		return fmt.Errorf("%w: --preview is a send-side flag and has no effect when receiving", fserrors.ErrUsage)
 	}
 	return runReceive(f, c)
 }

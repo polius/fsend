@@ -69,6 +69,7 @@ without a positional argument.
 | `--pass <password>` | Require the receiver to supply this password. Bare `--pass` prompts interactively with a random default. Also `FSEND_PASS`. |
 | `--exclude <glob,…>` | Skip entries when bundling a directory. |
 | `--name <hostname>` | Override the hostname shown to the peer. |
+| `--preview` | List what would be sent as CSV (`path,size`) and exit — no code, no transfer. Redirect with `> files.csv` to inspect. |
 
 ```sh
 fsend report.pdf
@@ -111,7 +112,7 @@ sending, then confirms. Pass `--yes` to skip.
 | `--out <dir>` | Receive into this directory (must already exist). Default: cwd. |
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files whose contents **differ**. Without it they're kept and the receiver exits `E013`. (Identical files are skipped either way.) |
-| `--dry-run` | Show what would transfer — `new` / `identical` / `differs` (and `conflict` / `resume` in edge cases) per path on stdout — and write nothing. |
+| `--manifest <file>` | After receiving, write a CSV record (`path,size,status`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `kept` / `resumed`). |
 | `--checksum` | Decide what's already present by hashing **contents** (BLAKE3) instead of comparing size + mtime — like rsync's `-c`. See [below](#when-a-file-already-exists). |
 | `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
 
@@ -137,9 +138,9 @@ decides:
 
 When a file *does* differ, fsend keeps your local copy by default
 (protecting your edits) and exits `E013`; pass `--overwrite` to replace
-it. Byte-identical files are always skipped silently. Use `--dry-run` to
-preview the per-path breakdown (`new` / `identical` / `differs`, plus
-`conflict` / `resume` in edge cases) before writing anything.
+it. Byte-identical files are always skipped silently. The accept prompt shows
+this breakdown (`N new · M up to date · K differ`) before you confirm, and
+`--manifest <file>` records the exact per-file outcome after a receive.
 
 ### Resuming an interrupted transfer
 

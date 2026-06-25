@@ -25,7 +25,6 @@ type RecvOptions struct {
 	ClientVersion string
 	TargetDir     string // where files are written
 	Overwrite     bool
-	DryRun        bool
 	Checksum      bool // verify same-size files by content hash, not mtime
 
 	// Accept is shown the HELLO and (ModeFiles) the classification breakdown.
@@ -46,9 +45,9 @@ type RecvOptions struct {
 	// OnConflictKept fires once per differing/conflicting entry left
 	// untouched (no consent). The CLI uses it to set a non-zero exit code.
 	OnConflictKept func(rel string)
-	// OnClassified, when set and DryRun is true, receives the full
-	// categorization; the transfer is then declined.
-	OnClassified func(entries []ClassifiedEntry)
+	// OnManifest, when set, receives one row per file after a successful
+	// receive — its path, size, and what fsend did with it — backing --manifest.
+	OnManifest func(entries []ManifestEntry)
 
 	// Sink, when non-nil, streams a ModeStream payload here instead of
 	// writing under TargetDir.
@@ -58,10 +57,12 @@ type RecvOptions struct {
 // ClassifySummary is the breakdown surfaced to the accept prompt.
 type ClassifySummary = classifySummary
 
-// ClassifiedEntry is one dry-run categorization row.
-type ClassifiedEntry struct {
+// ManifestEntry is one row of the post-transfer --manifest record: a file and
+// what fsend did with it.
+type ManifestEntry struct {
 	RelativePath string
-	Category     string // new | identical | differs | conflict
+	Size         uint64
+	Status       string // new | identical | overwritten | kept | resumed
 }
 
 // Recv executes the full receiver-side protocol over the supplied streams.
@@ -130,14 +131,6 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 		}
 	}
 
-	if opts.DryRun {
-		if opts.OnClassified != nil {
-			opts.OnClassified(classifiedEntries(plans))
-		}
-		declineTransfer(s, wire.ErrCodeCancelled, "dry run")
-		return nil
-	}
-
 	summary := summarize(plans)
 	if opts.Accept != nil && !opts.Accept(*hello, summary) {
 		declineTransfer(s, wire.ErrCodeDeclined, "receiver declined")
@@ -185,7 +178,13 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 	if err := receiveData(ctx, s, byIndex, decisions, plans, expected, opts); err != nil {
 		return err
 	}
-	return finishRecv(s)
+	if err := finishRecv(s); err != nil {
+		return err
+	}
+	if opts.OnManifest != nil {
+		opts.OnManifest(manifestEntries(plans, decisions))
+	}
+	return nil
 }
 
 // finishRecv reads the sender's TRANSFER_COMPLETE, acks it, and waits for the
@@ -715,25 +714,38 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 
 // --- helpers ---
 
-func classifiedEntries(plans []entryPlan) []ClassifiedEntry {
-	out := make([]ClassifiedEntry, len(plans))
-	for i, p := range plans {
-		out[i] = ClassifiedEntry{RelativePath: p.entry.RelativePath, Category: categoryName(p.disp)}
+// manifestEntries pairs each non-directory entry with what fsend did to it,
+// for the --manifest record. Directories are structural, not user files.
+func manifestEntries(plans []entryPlan, decisions []wire.Decision) []ManifestEntry {
+	out := make([]ManifestEntry, 0, len(plans))
+	for i := range plans {
+		if plans[i].entry.Type == wire.EntryDir {
+			continue
+		}
+		out = append(out, ManifestEntry{
+			RelativePath: plans[i].entry.RelativePath,
+			Size:         plans[i].entry.Size,
+			Status:       manifestStatus(plans[i].disp, decisions[i].Action),
+		})
 	}
 	return out
 }
 
-func categoryName(d disposition) string {
-	switch d {
-	case dispIdentical:
-		return "identical"
-	case dispDiffers:
-		return "differs"
-	case dispConflict:
-		return "conflict"
-	case dispResume:
-		return "resume"
-	default:
+// manifestStatus names the outcome from the disposition and the decision the
+// receiver sent (which already folded in the overwrite choice).
+func manifestStatus(d disposition, a wire.DecisionAction) string {
+	switch a {
+	case wire.DecisionResume:
+		return "resumed"
+	case wire.DecisionSkip:
+		if d == dispIdentical {
+			return "identical"
+		}
+		return "kept" // differs/conflict left untouched (no consent)
+	default: // DecisionSend
+		if d == dispDiffers || d == dispConflict {
+			return "overwritten"
+		}
 		return "new"
 	}
 }

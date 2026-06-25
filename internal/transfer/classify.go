@@ -57,8 +57,7 @@ type classifySummary struct {
 }
 
 // SummaryEntry is one regular file (or symlink) the receiver is offered, with
-// the per-entry status the preview annotates rows with. Status uses the same
-// vocabulary as ClassifiedEntry.Category, plus "resume" for a partial on disk.
+// the per-entry status the preview annotates rows with.
 type SummaryEntry struct {
 	RelativePath  string
 	Size          uint64
