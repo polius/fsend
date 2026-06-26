@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -255,6 +256,63 @@ func TestServerLoadConfigLogLevels(t *testing.T) {
 				t.Errorf("FSEND_LOG_LEVEL=%q: got %v, want %v", input, cfg.logLevel, want)
 			}
 		})
+	}
+}
+
+func defaultServerConfig() serverRuntimeConfig {
+	return serverRuntimeConfig{
+		httpAddr:             defaultPairingAddr,
+		udpAddr:              defaultRelayAddr,
+		logLevel:             slog.LevelInfo,
+		maxSessionsPerIP:     defaultMaxSessionsPerIP,
+		maxNewSessionsPerMin: defaultMaxNewSessionsPerMin,
+		maxBytesPerSession:   defaultMaxBytesPerSession,
+		enableRelay:          defaultRelayEnabled,
+	}
+}
+
+func TestFormatServerConfig_AllDefaults(t *testing.T) {
+	out := formatServerConfig(defaultServerConfig())
+	if strings.Contains(out, "* FSEND") {
+		t.Errorf("all-default config must mark nothing customized:\n%s", out)
+	}
+	if !strings.Contains(out, "0 of 8 customized") {
+		t.Errorf("want '0 of 8 customized':\n%s", out)
+	}
+	if !strings.Contains(out, "(not set)") {
+		t.Errorf("password must read '(not set)' when empty:\n%s", out)
+	}
+}
+
+func TestFormatServerConfig_Overrides(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.serverPassword = "hunter2-do-not-leak"
+	cfg.maxSessionsPerIP = 0 // unlimited
+	cfg.enableRelay = false
+
+	out := formatServerConfig(cfg)
+
+	// The password value must never appear — only that one is set.
+	if strings.Contains(out, "hunter2-do-not-leak") {
+		t.Fatalf("password value leaked into output:\n%s", out)
+	}
+	if !strings.Contains(out, "(set)") {
+		t.Errorf("password must read '(set)':\n%s", out)
+	}
+	if !strings.Contains(out, "0 (unlimited)") {
+		t.Errorf("a 0 cap must render as unlimited:\n%s", out)
+	}
+	if !strings.Contains(out, "3 of 8 customized") {
+		t.Errorf("want '3 of 8 customized':\n%s", out)
+	}
+	for _, name := range []string{"FSEND_SERVER_PASSWORD", envMaxSessionsPerIP, envRelayEnabled} {
+		if !strings.Contains(out, "* "+name) {
+			t.Errorf("expected '* %s' marker line:\n%s", name, out)
+		}
+	}
+	// An unchanged setting must stay unmarked.
+	if strings.Contains(out, "* "+envPairingAddr) {
+		t.Errorf("unchanged %s must not be marked:\n%s", envPairingAddr, out)
 	}
 }
 

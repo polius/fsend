@@ -239,6 +239,23 @@ one keeps its metrics to whoever holds the password.
 All optional; defaults shown. Set them under the `fsend` service's
 `environment:` block in `docker-compose.yml`.
 
+On startup the server prints its effective configuration, marking with a
+`*` every setting you changed from its default — a quick way to confirm
+your overrides were picked up (the password value is never printed, only
+whether one is set):
+
+```
+fsend server configuration (2 of 8 customized; * = changed from default):
+  * FSEND_SERVER_PASSWORD                      (set)
+  * FSEND_SERVER_MAX_SESSIONS_PER_IP           0 (unlimited)
+    FSEND_LOG_LEVEL                            info
+    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN   30
+    FSEND_PAIRING_ADDR                         :8080
+    FSEND_RELAY_ENABLED                        true
+    FSEND_RELAY_ADDR                           :443
+    FSEND_RELAY_MAX_BYTES_PER_SESSION          1 GB
+```
+
 Variables are grouped into **server-wide** controls (apply to the whole
 server, relay included), the **pairing** listener (TCP signaling/control
 plane), and **relay** settings (the UDP data plane, which also answers
