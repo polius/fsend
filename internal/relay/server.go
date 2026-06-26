@@ -50,30 +50,33 @@ type Server struct {
 	draining atomic.Bool
 
 	// Aggregate counters for /v1/metrics (cumulative since boot).
-	bytesForwarded   atomic.Uint64
-	peakSessionBytes atomic.Uint64 // most any single session has forwarded
-	capHits          atomic.Uint64
+	bytesForwarded    atomic.Uint64
+	peakTransferBytes atomic.Uint64 // most any single transfer has forwarded
+	transfersCapped   atomic.Uint64 // transfers cut off for exceeding the byte cap
+	transfersTotal    atomic.Uint64 // relay allocations handed out; vs paired sessions = relay-fallback rate
 }
 
 // Metrics is an aggregate snapshot of relay activity for /v1/metrics.
 type Metrics struct {
-	Forwarding          bool   `json:"forwarding"`
-	Healthy             bool   `json:"healthy"`
-	TransfersActive     int    `json:"transfers_active"`
-	BytesForwardedTotal uint64 `json:"bytes_forwarded_total"`
-	PeakSessionBytes    uint64 `json:"peak_session_bytes"`
-	CapHitsTotal        uint64 `json:"cap_hits_total"`
+	Forwarding           bool   `json:"forwarding"`
+	Healthy              bool   `json:"healthy"`
+	TransfersActive      int    `json:"transfers_active"`
+	TransfersTotal       uint64 `json:"transfers_total"`
+	TransfersCappedTotal uint64 `json:"transfers_capped_total"`
+	BytesForwardedTotal  uint64 `json:"bytes_forwarded_total"`
+	PeakTransferBytes    uint64 `json:"peak_transfer_bytes"`
 }
 
 // Metrics returns the current aggregate snapshot.
 func (s *Server) Metrics() Metrics {
 	return Metrics{
-		Forwarding:          !s.cfg.DisableForwarding,
-		Healthy:             s.healthy.Load(),
-		TransfersActive:     s.ActiveAllocations(),
-		BytesForwardedTotal: s.bytesForwarded.Load(),
-		PeakSessionBytes:    s.peakSessionBytes.Load(),
-		CapHitsTotal:        s.capHits.Load(),
+		Forwarding:           !s.cfg.DisableForwarding,
+		Healthy:              s.healthy.Load(),
+		TransfersActive:      s.ActiveAllocations(),
+		TransfersTotal:       s.transfersTotal.Load(),
+		TransfersCappedTotal: s.transfersCapped.Load(),
+		BytesForwardedTotal:  s.bytesForwarded.Load(),
+		PeakTransferBytes:    s.peakTransferBytes.Load(),
 	}
 }
 
@@ -106,6 +109,9 @@ const TombstoneTTL = 5 * time.Minute
 
 // ServerConfig holds the per-session tuning.
 type ServerConfig struct {
+	// MaxBytesPerSession caps wire bytes a single session may forward.
+	// 0 means unlimited. The unset default (1 GB) is applied by the env
+	// layer in cmd/fsend, so a bare ServerConfig{} here is uncapped.
 	MaxBytesPerSession uint64
 	Logger             *slog.Logger
 	// DisableForwarding makes the relay answer STUN but never carry data
@@ -123,11 +129,10 @@ const janitorInterval = 30 * time.Second
 // raising or lowering it doesn't affect well-behaved sessions.
 const sessionIdleTimeout = 60 * time.Second
 
-// Default fills in zero values.
+// Default fills in zero values. MaxBytesPerSession is deliberately not
+// defaulted here — 0 means unlimited; the env layer supplies the 1 GB
+// default for an unset var.
 func (c *ServerConfig) Default() {
-	if c.MaxBytesPerSession == 0 {
-		c.MaxBytesPerSession = 1000 * 1000 * 1000 // 1 GB (decimal, matches displayed units)
-	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
@@ -235,6 +240,7 @@ func (s *Server) Allocate() (Token, error) {
 	}
 	s.allocs[t] = a
 	s.mu.Unlock()
+	s.transfersTotal.Add(1)
 	return t, nil
 }
 
@@ -341,15 +347,15 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 	wireSize := uint64(len(datagram))
 	total := a.bytes.Add(wireSize)
 	if s.cfg.MaxBytesPerSession > 0 && total > s.cfg.MaxBytesPerSession {
-		s.capHits.Add(1)
+		s.transfersCapped.Add(1)
 		s.evict(token, ReasonCapHit)
 		return
 	}
 
 	s.bytesForwarded.Add(wireSize)
-	for { // raise the global peak to this session's running total
-		cur := s.peakSessionBytes.Load()
-		if total <= cur || s.peakSessionBytes.CompareAndSwap(cur, total) {
+	for { // raise the global peak to this transfer's running total
+		cur := s.peakTransferBytes.Load()
+		if total <= cur || s.peakTransferBytes.CompareAndSwap(cur, total) {
 			break
 		}
 	}

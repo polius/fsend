@@ -29,8 +29,8 @@ type Config struct {
 	AbandonedTTL         time.Duration // default 5m
 	PairedTTL            time.Duration // default 600s
 	LongPollTimeout      time.Duration // default 25s
-	MaxSessionsPerIP     int           // default 5
-	MaxNewSessionsPerMin int           // default 30
+	MaxSessionsPerIP     int           // 0 = unlimited; unset default 5 applied by env layer
+	MaxNewSessionsPerMin int           // 0 = unlimited; unset default 30 applied by env layer
 	Logger               *slog.Logger
 
 	// ServerPassword, when non-empty, gates every endpoint except
@@ -63,12 +63,9 @@ func (c *Config) Default() {
 	if c.LongPollTimeout == 0 {
 		c.LongPollTimeout = 25 * time.Second
 	}
-	if c.MaxSessionsPerIP == 0 {
-		c.MaxSessionsPerIP = 5
-	}
-	if c.MaxNewSessionsPerMin == 0 {
-		c.MaxNewSessionsPerMin = 30
-	}
+	// MaxSessionsPerIP / MaxNewSessionsPerMin are not defaulted here: 0
+	// means unlimited, and the env layer supplies the unset defaults
+	// (5 / 30). Mapping 0→default here would make "unlimited" unreachable.
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
@@ -122,8 +119,9 @@ type Server struct {
 // since boot). sessions_active is read from the live map at scrape time.
 type serverMetrics struct {
 	sessionsCreated atomic.Uint64
+	sessionsPaired  atomic.Uint64 // sessions a receiver successfully joined
 	rejRate         atomic.Uint64 // rate-limit rejections
-	rejIPCap        atomic.Uint64 // concurrent-cap rejections
+	rejConcurrency  atomic.Uint64 // concurrency-cap rejections
 	rejAuth         atomic.Uint64 // wrong/missing server password
 }
 
@@ -454,9 +452,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
 		return
 	}
-	if s.ipCounts[rateKey] >= s.cfg.MaxSessionsPerIP {
+	if s.cfg.MaxSessionsPerIP > 0 && s.ipCounts[rateKey] >= s.cfg.MaxSessionsPerIP {
 		s.mu.Unlock()
-		s.met.rejIPCap.Add(1)
+		s.met.rejConcurrency.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "too many concurrent sessions for this IP")
 		return
 	}
@@ -530,9 +528,9 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "session already paired")
 		return
 	}
-	if s.ipCounts[rateKey] >= s.cfg.MaxSessionsPerIP {
+	if s.cfg.MaxSessionsPerIP > 0 && s.ipCounts[rateKey] >= s.cfg.MaxSessionsPerIP {
 		s.mu.Unlock()
-		s.met.rejIPCap.Add(1)
+		s.met.rejConcurrency.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "too many concurrent sessions for this IP")
 		return
 	}
@@ -543,6 +541,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	sess.State = "paired"
 	sess.PairedAt = time.Now()
 	s.ipCounts[rateKey]++
+	s.met.sessionsPaired.Add(1)
 	close(sess.waiters)
 	resp := JoinSessionResponse{
 		SessionID:          sess.ID,
@@ -731,6 +730,9 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 // allowNewSession must be called with s.mu held. key is the
 // rateLimitKey-collapsed identity (raw v4, /64 for v6).
 func (s *Server) allowNewSession(key string, now time.Time) bool {
+	if s.cfg.MaxNewSessionsPerMin <= 0 {
+		return true // unlimited
+	}
 	b := s.ipBucket[key]
 	if b == nil {
 		b = &rateBucket{}

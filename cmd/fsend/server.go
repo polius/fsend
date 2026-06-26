@@ -374,10 +374,12 @@ CONFIGURATION (environment variables — all optional)
                                       fsend --connect <host:port>,<password>.
     FSEND_SERVER_MAX_SESSIONS_PER_IP  Default 5 — how many sessions one IP
                                       may have alive at once (concurrency
-                                      cap; gates relay access too).
+                                      cap; gates relay access too). 0 =
+                                      unlimited.
     FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN
                                       Default 30 — how many new sessions one
                                       IP may create per minute (rate cap).
+                                      0 = unlimited.
 
   Pairing (TCP signaling/control plane):
     FSEND_PAIRING_ADDR                Default :8080 (TCP).
@@ -391,7 +393,8 @@ CONFIGURATION (environment variables — all optional)
                                       when forwarding is disabled.
     FSEND_RELAY_MAX_BYTES_PER_SESSION Default 1GB — wire bytes after
                                       compression. Accepts B, KB, MB, GB,
-                                      TB, or a plain byte count.
+                                      TB, or a plain byte count. 0 =
+                                      unlimited.
 
 LEARN MORE
   https://github.com/polius/fsend
