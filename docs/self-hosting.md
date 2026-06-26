@@ -161,14 +161,16 @@ Connecting without it — or with the wrong one — fails with `E028`.
   "uptime_seconds": 84213,
   "sessions_active": 3,
   "sessions_created_total": 1284,
-  "rejected_total": { "rate_limit": 12, "ip_cap": 3, "unauthorized": 0 },
+  "sessions_paired_total": 901,
+  "sessions_rejected_total": { "rate_limit": 12, "concurrency_limit": 3, "unauthorized": 0 },
   "relay": {
     "forwarding": true,
     "healthy": true,
     "transfers_active": 1,
+    "transfers_total": 412,
+    "transfers_capped_total": 4,
     "bytes_forwarded_total": 5839201023,
-    "peak_session_bytes": 940000000,
-    "cap_hits_total": 4
+    "peak_transfer_bytes": 940000000
   }
 }
 ```
@@ -183,16 +185,18 @@ so anyone can verify the server holds nothing sensitive.
 | `version` | Build currently running. |
 | `uptime_seconds` | Seconds since the process started — spot restarts. |
 | `sessions_active` | Pairing sessions live right now — current load. |
-| `sessions_created_total` | Sessions created since boot — total usage. |
-| `rejected_total.rate_limit` | Requests refused by the new-session rate cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN`) — bursts or brute-force. |
-| `rejected_total.ip_cap` | Requests refused by the concurrency cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP`). |
-| `rejected_total.unauthorized` | Wrong/missing `FSEND_SERVER_PASSWORD` — brute-force or misconfigured clients (always `0` on an open server). |
+| `sessions_created_total` | Sessions a sender opened since boot — total usage. |
+| `sessions_paired_total` | Sessions a receiver successfully joined. Compared to `sessions_created_total`, the gap is senders who never found a receiver (abandoned codes). |
+| `sessions_rejected_total.rate_limit` | Sessions refused by the per-IP rate cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN`) — bursts or brute-force. |
+| `sessions_rejected_total.concurrency_limit` | Sessions refused by the per-IP concurrency cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP`). |
+| `sessions_rejected_total.unauthorized` | Wrong/missing `FSEND_SERVER_PASSWORD` — brute-force or misconfigured clients (always `0` on an open server). |
 | `relay.forwarding` | Whether the relay carries data (`false` in pairing + STUN-only mode). |
 | `relay.healthy` | Relay read loop alive — mirrors `/v1/health`'s 503 signal. |
 | `relay.transfers_active` | Relay transfers moving bytes right now. |
+| `relay.transfers_total` | Relay transfers since boot. Divide by `sessions_paired_total` for your relay-fallback rate; the rest connected directly (P2P). A climbing ratio means hole-punching is failing more often. |
+| `relay.transfers_capped_total` | Transfers cut off for hitting the byte cap — raise the cap if this climbs. |
 | `relay.bytes_forwarded_total` | Cumulative bytes relayed — what the relay is costing you. |
-| `relay.peak_session_bytes` | Largest single session so far; compare to your byte cap to see headroom. |
-| `relay.cap_hits_total` | Transfers cut off for hitting the byte cap — raise the cap if this climbs. |
+| `relay.peak_transfer_bytes` | Largest single transfer so far; compare to your byte cap to see headroom. |
 
 The `relay` block is omitted when the server runs without a relay.
 
@@ -244,12 +248,12 @@ STUN).
 |---|---|---|
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/v1/health` — see [Require a password](#require-a-password-optional). |
-| `FSEND_SERVER_MAX_SESSIONS_PER_IP` | `5` | **Concurrency cap** — how many sessions one source IP may have **alive at once**. A session gates relay allocation too, so this caps relay access as well. |
-| `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN` | `30` | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. |
+| `FSEND_SERVER_MAX_SESSIONS_PER_IP` | `5` | **Concurrency cap** — how many sessions one source IP may have **alive at once**. A session gates relay allocation too, so this caps relay access as well. `0` = unlimited (removes a DoS protection — only on a trusted/gated server). |
+| `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN` | `30` | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. `0` = unlimited (removes a DoS protection — only on a trusted/gated server). |
 | `FSEND_PAIRING_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_RELAY_ENABLED` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
 | `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
-| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `1GB` | Per-session relay cap — wire bytes after compression. Tune to your bandwidth budget. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |
+| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `1GB` | Per-session relay cap — wire bytes after compression. Tune to your bandwidth budget. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). `0` = unlimited. |
 
 ### Pairing-only mode (no relay)
 

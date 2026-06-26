@@ -47,7 +47,8 @@ func TestMetrics_Shape(t *testing.T) {
 
 	top := map[string]bool{
 		"version": true, "uptime_seconds": true, "sessions_active": true,
-		"sessions_created_total": true, "rejected_total": true, "relay": true,
+		"sessions_created_total": true, "sessions_paired_total": true,
+		"sessions_rejected_total": true, "relay": true,
 	}
 	for k := range raw {
 		if !top[k] {
@@ -59,10 +60,11 @@ func TestMetrics_Shape(t *testing.T) {
 			t.Errorf("missing field %q", k)
 		}
 	}
-	assertKeys(t, raw["rejected_total"], "rejected_total", "rate_limit", "ip_cap", "unauthorized")
+	assertKeys(t, raw["sessions_rejected_total"], "sessions_rejected_total",
+		"rate_limit", "concurrency_limit", "unauthorized")
 	assertKeys(t, raw["relay"], "relay",
-		"forwarding", "healthy", "transfers_active",
-		"bytes_forwarded_total", "peak_session_bytes", "cap_hits_total")
+		"forwarding", "healthy", "transfers_active", "transfers_total",
+		"transfers_capped_total", "bytes_forwarded_total", "peak_transfer_bytes")
 }
 
 func assertKeys(t *testing.T, v any, name string, want ...string) {
@@ -103,8 +105,8 @@ func TestMetrics_Counters(t *testing.T) {
 	if m.SessionsActive != 1 {
 		t.Errorf("sessions_active = %d, want 1", m.SessionsActive)
 	}
-	if m.RejectedTotal.RateLimit != 1 {
-		t.Errorf("rejected_total.rate_limit = %d, want 1", m.RejectedTotal.RateLimit)
+	if m.SessionsRejectedTotal.RateLimit != 1 {
+		t.Errorf("sessions_rejected_total.rate_limit = %d, want 1", m.SessionsRejectedTotal.RateLimit)
 	}
 }
 
@@ -142,8 +144,8 @@ func TestMetrics_GatedByPassword(t *testing.T) {
 	if err := json.NewDecoder(resp2.Body).Decode(&m); err != nil {
 		t.Fatal(err)
 	}
-	if m.RejectedTotal.Unauthorized != 1 {
-		t.Errorf("rejected_total.unauthorized = %d, want 1", m.RejectedTotal.Unauthorized)
+	if m.SessionsRejectedTotal.Unauthorized != 1 {
+		t.Errorf("sessions_rejected_total.unauthorized = %d, want 1", m.SessionsRejectedTotal.Unauthorized)
 	}
 }
 

@@ -234,8 +234,8 @@ func TestWait_UnknownSlotIsRateLimited(t *testing.T) {
 // behind one NAT stay comfortably under. Simulated against the bucket
 // directly so the test covers a full hour without sleeping.
 func TestWaitRateLimit_PollCadenceStaysUnderBudget(t *testing.T) {
-	s := New(Config{}) // prod defaults: 30 new sessions/min, 25s long-poll
-	const senders = 5  // MaxSessionsPerIP default — worst legitimate case
+	s := New(Config{MaxNewSessionsPerMin: 30}) // prod default: 30 new sessions/min, 25s long-poll
+	const senders = 5                          // MaxSessionsPerIP default — worst legitimate case
 	now := time.Now()
 
 	s.mu.Lock()
@@ -792,6 +792,45 @@ func TestRateLimit_V6BypassClosed(t *testing.T) {
 	}
 	if throttled != 15 {
 		t.Errorf("throttled = %d, want 15", throttled)
+	}
+}
+
+// TestSessionCaps_ZeroMeansUnlimited locks in the operator escape hatch:
+// 0 disables the per-IP concurrency and per-minute rate caps entirely.
+// A regression here (e.g. Default() re-mapping 0→5) would silently
+// re-impose a limit the operator explicitly removed — or, worse, turn 0
+// into "block everything" via the >= comparison.
+func TestSessionCaps_ZeroMeansUnlimited(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          time.Hour,
+		PairedTTL:            time.Hour,
+		LongPollTimeout:      500 * time.Millisecond,
+		MaxSessionsPerIP:     0, // unlimited concurrency
+		MaxNewSessionsPerMin: 0, // unlimited rate
+	})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	// 20 sessions from one IP would clamp to 5 (or 429 on rate) under the
+	// defaults; with both caps at 0 every create must succeed.
+	const n = 20
+	for i := 0; i < n; i++ {
+		body := mustJSON(t, CreateSessionRequest{Slot: fmt.Sprintf("%032x", i+1)})
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/session", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Real-IP", "203.0.113.7")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("create #%d: status %d, want 200 (caps disabled)", i+1, resp.StatusCode)
+		}
 	}
 }
 

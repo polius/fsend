@@ -12,19 +12,22 @@ import (
 // it can't leak what the server doesn't store. Relay is omitted when no
 // relay is wired.
 type MetricsResponse struct {
-	Version              string         `json:"version"`
-	UptimeSeconds        int64          `json:"uptime_seconds"`
-	SessionsActive       int            `json:"sessions_active"`
-	SessionsCreatedTotal uint64         `json:"sessions_created_total"`
-	RejectedTotal        RejectedCounts `json:"rejected_total"`
-	Relay                *relay.Metrics `json:"relay,omitempty"`
+	Version               string         `json:"version"`
+	UptimeSeconds         int64          `json:"uptime_seconds"`
+	SessionsActive        int            `json:"sessions_active"`
+	SessionsCreatedTotal  uint64         `json:"sessions_created_total"`
+	SessionsPairedTotal   uint64         `json:"sessions_paired_total"`
+	SessionsRejectedTotal RejectedCounts `json:"sessions_rejected_total"`
+	Relay                 *relay.Metrics `json:"relay,omitempty"`
 }
 
-// RejectedCounts breaks down turned-away requests by reason.
+// RejectedCounts breaks down turned-away sessions by reason. RateLimit and
+// ConcurrencyLimit are both per-IP caps — named by what they cap (inflow
+// rate vs standing count), not by "IP", since both key on the source IP.
 type RejectedCounts struct {
-	RateLimit    uint64 `json:"rate_limit"`
-	IPCap        uint64 `json:"ip_cap"`
-	Unauthorized uint64 `json:"unauthorized"`
+	RateLimit        uint64 `json:"rate_limit"`
+	ConcurrencyLimit uint64 `json:"concurrency_limit"`
+	Unauthorized     uint64 `json:"unauthorized"`
 }
 
 func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
@@ -37,10 +40,11 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 		UptimeSeconds:        int64(time.Since(s.started).Seconds()),
 		SessionsActive:       active,
 		SessionsCreatedTotal: s.met.sessionsCreated.Load(),
-		RejectedTotal: RejectedCounts{
-			RateLimit:    s.met.rejRate.Load(),
-			IPCap:        s.met.rejIPCap.Load(),
-			Unauthorized: s.met.rejAuth.Load(),
+		SessionsPairedTotal:  s.met.sessionsPaired.Load(),
+		SessionsRejectedTotal: RejectedCounts{
+			RateLimit:        s.met.rejRate.Load(),
+			ConcurrencyLimit: s.met.rejConcurrency.Load(),
+			Unauthorized:     s.met.rejAuth.Load(),
 		},
 	}
 	if s.relayAllocator != nil {
