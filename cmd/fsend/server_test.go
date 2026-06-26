@@ -171,14 +171,15 @@ func TestServerLoadConfigDefaults(t *testing.T) {
 	if cfg.udpAddr != ":443" {
 		t.Errorf("udpAddr: got %q, want :443", cfg.udpAddr)
 	}
-	if cfg.maxSessionsPerIP != 5 {
-		t.Errorf("maxSessionsPerIP: got %d, want 5", cfg.maxSessionsPerIP)
+	// The three caps default to 0 = unlimited when unset.
+	if cfg.maxSessionsPerIP != 0 {
+		t.Errorf("maxSessionsPerIP: got %d, want 0 (unlimited)", cfg.maxSessionsPerIP)
 	}
-	if cfg.maxNewSessionsPerMin != 30 {
-		t.Errorf("maxNewSessionsPerMin: got %d, want 30", cfg.maxNewSessionsPerMin)
+	if cfg.maxNewSessionsPerMin != 0 {
+		t.Errorf("maxNewSessionsPerMin: got %d, want 0 (unlimited)", cfg.maxNewSessionsPerMin)
 	}
-	if cfg.maxBytesPerSession != 1000*srvMB { // 1GB
-		t.Errorf("maxBytesPerSession: got %d, want %d", cfg.maxBytesPerSession, 1000*srvMB)
+	if cfg.maxBytesPerSession != 0 {
+		t.Errorf("maxBytesPerSession: got %d, want 0 (unlimited)", cfg.maxBytesPerSession)
 	}
 	if cfg.logLevel != slog.LevelInfo {
 		t.Errorf("logLevel: got %v, want info", cfg.logLevel)
@@ -282,12 +283,16 @@ func TestFormatServerConfig_AllDefaults(t *testing.T) {
 	if !strings.Contains(out, "(not set)") {
 		t.Errorf("password must read '(not set)' when empty:\n%s", out)
 	}
+	// The three caps default to 0 and must render as "0 (unlimited)".
+	if n := strings.Count(out, "0 (unlimited)"); n != 3 {
+		t.Errorf("want 3 '0 (unlimited)' lines (the default caps), got %d:\n%s", n, out)
+	}
 }
 
 func TestFormatServerConfig_Overrides(t *testing.T) {
 	cfg := defaultServerConfig()
 	cfg.serverPassword = "hunter2-do-not-leak"
-	cfg.maxSessionsPerIP = 0 // unlimited
+	cfg.maxSessionsPerIP = 10 // a finite cap differs from the unlimited default
 	cfg.enableRelay = false
 
 	out := formatServerConfig(cfg)
@@ -299,8 +304,12 @@ func TestFormatServerConfig_Overrides(t *testing.T) {
 	if !strings.Contains(out, "(set)") {
 		t.Errorf("password must read '(set)':\n%s", out)
 	}
+	// A finite cap shows the number; the still-default caps stay unlimited.
+	if !strings.Contains(out, "10\n") {
+		t.Errorf("finite cap must render as its number:\n%s", out)
+	}
 	if !strings.Contains(out, "0 (unlimited)") {
-		t.Errorf("a 0 cap must render as unlimited:\n%s", out)
+		t.Errorf("default caps must still render as '0 (unlimited)':\n%s", out)
 	}
 	if !strings.Contains(out, "3 of 8 customized") {
 		t.Errorf("want '3 of 8 customized':\n%s", out)
