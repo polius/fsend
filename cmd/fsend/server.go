@@ -210,11 +210,14 @@ const (
 	envRelayEnabled         = "FSEND_RELAY_ENABLED"
 	envLogLevel             = "FSEND_LOG_LEVEL"
 
-	defaultPairingAddr          = ":8080"
-	defaultRelayAddr            = ":443"
-	defaultMaxSessionsPerIP     = 5
-	defaultMaxNewSessionsPerMin = 30
-	defaultMaxBytesPerSession   = 1000 * 1000 * 1000 // 1 GB (decimal, matches displayed units)
+	defaultPairingAddr = ":8080"
+	defaultRelayAddr   = ":443"
+	// The three caps default to 0 = unlimited: an unconfigured server
+	// imposes no per-IP session limits and no relay byte cap. Operators
+	// opt into protection by setting a positive value.
+	defaultMaxSessionsPerIP     = 0
+	defaultMaxNewSessionsPerMin = 0
+	defaultMaxBytesPerSession   = 0
 	defaultRelayEnabled         = true
 )
 
@@ -313,7 +316,7 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 	return b.String()
 }
 
-// capCount renders a session cap, spelling out the 0 = unlimited case.
+// capCount renders a session cap, showing 0 as "0 (unlimited)".
 func capCount(n int) string {
 	if n == 0 {
 		return "0 (unlimited)"
@@ -321,10 +324,10 @@ func capCount(n int) string {
 	return strconv.Itoa(n)
 }
 
-// capBytes renders the per-session byte cap, spelling out 0 = unlimited.
+// capBytes renders the per-session byte cap, showing 0 as "0 (unlimited)".
 func capBytes(n uint64) string {
 	if n == 0 {
-		return "unlimited"
+		return "0 (unlimited)"
 	}
 	return uxlog.HumanBytes(int64(n))
 }
@@ -479,14 +482,14 @@ CONFIGURATION (environment variables — all optional)
                                       endpoints except /v1/health require the
                                       X-Fsend-Auth header. Connect with
                                       fsend --connect <host:port>,<password>.
-    FSEND_SERVER_MAX_SESSIONS_PER_IP  Default 5 — how many sessions one IP
-                                      may have alive at once (concurrency
-                                      cap; gates relay access too). 0 =
-                                      unlimited.
+    FSEND_SERVER_MAX_SESSIONS_PER_IP  How many sessions one IP may have
+                                      alive at once (concurrency cap; gates
+                                      relay access too). Default 0 =
+                                      unlimited; set a positive value to cap.
     FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN
-                                      Default 30 — how many new sessions one
-                                      IP may create per minute (rate cap).
-                                      0 = unlimited.
+                                      How many new sessions one IP may create
+                                      per minute (rate cap). Default 0 =
+                                      unlimited; set a positive value to cap.
 
   Pairing (TCP signaling/control plane):
     FSEND_PAIRING_ADDR                Default :8080 (TCP).
@@ -498,10 +501,10 @@ CONFIGURATION (environment variables — all optional)
     FSEND_RELAY_ADDR                  Default :443 (UDP). Also the STUN
                                       endpoint, so it stays in use even
                                       when forwarding is disabled.
-    FSEND_RELAY_MAX_BYTES_PER_SESSION Default 1GB — wire bytes after
+    FSEND_RELAY_MAX_BYTES_PER_SESSION Per-session wire bytes after
                                       compression. Accepts B, KB, MB, GB,
-                                      TB, or a plain byte count. 0 =
-                                      unlimited.
+                                      TB, or a plain byte count. Default 0 =
+                                      unlimited; set a value to cap.
 
 LEARN MORE
   https://github.com/polius/fsend
