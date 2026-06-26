@@ -20,6 +20,7 @@ import (
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 )
 
@@ -75,6 +76,10 @@ func runServer() error {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.logLevel}))
 	slog.SetDefault(logger)
+
+	// Print the effective config before the structured logs so an operator
+	// can confirm their FSEND_* overrides took effect.
+	_, _ = fmt.Fprint(os.Stdout, formatServerConfig(cfg))
 
 	s := server.New(server.Config{
 		ServerVersion:        version.Version,
@@ -193,6 +198,26 @@ func drainRelay(ctx context.Context, r *relay.Server, logger *slog.Logger) {
 	}
 }
 
+// Server env-var names and their built-in defaults. Shared by the config
+// loader and the startup summary so the two can't drift on a rename or a
+// changed default.
+const (
+	envPairingAddr          = "FSEND_PAIRING_ADDR"
+	envRelayAddr            = "FSEND_RELAY_ADDR"
+	envMaxSessionsPerIP     = "FSEND_SERVER_MAX_SESSIONS_PER_IP"
+	envMaxNewSessionsPerMin = "FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN"
+	envMaxBytesPerSession   = "FSEND_RELAY_MAX_BYTES_PER_SESSION"
+	envRelayEnabled         = "FSEND_RELAY_ENABLED"
+	envLogLevel             = "FSEND_LOG_LEVEL"
+
+	defaultPairingAddr          = ":8080"
+	defaultRelayAddr            = ":443"
+	defaultMaxSessionsPerIP     = 5
+	defaultMaxNewSessionsPerMin = 30
+	defaultMaxBytesPerSession   = 1000 * 1000 * 1000 // 1 GB (decimal, matches displayed units)
+	defaultRelayEnabled         = true
+)
+
 // serverRuntimeConfig is the parsed environment for `fsend server`.
 type serverRuntimeConfig struct {
 	httpAddr             string
@@ -207,24 +232,24 @@ type serverRuntimeConfig struct {
 
 func loadServerConfig() (serverRuntimeConfig, error) {
 	cfg := serverRuntimeConfig{
-		httpAddr:       envOr("FSEND_PAIRING_ADDR", ":8080"),
-		udpAddr:        envOr("FSEND_RELAY_ADDR", ":443"),
+		httpAddr:       envOr(envPairingAddr, defaultPairingAddr),
+		udpAddr:        envOr(envRelayAddr, defaultRelayAddr),
 		serverPassword: os.Getenv("FSEND_SERVER_PASSWORD"),
 	}
 	var err error
-	if cfg.maxSessionsPerIP, err = envInt("FSEND_SERVER_MAX_SESSIONS_PER_IP", 5); err != nil {
+	if cfg.maxSessionsPerIP, err = envInt(envMaxSessionsPerIP, defaultMaxSessionsPerIP); err != nil {
 		return cfg, err
 	}
-	if cfg.maxNewSessionsPerMin, err = envInt("FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN", 30); err != nil {
+	if cfg.maxNewSessionsPerMin, err = envInt(envMaxNewSessionsPerMin, defaultMaxNewSessionsPerMin); err != nil {
 		return cfg, err
 	}
-	if cfg.maxBytesPerSession, err = envBytes("FSEND_RELAY_MAX_BYTES_PER_SESSION", 1000*1000*1000); err != nil { // 1GB
+	if cfg.maxBytesPerSession, err = envBytes(envMaxBytesPerSession, defaultMaxBytesPerSession); err != nil {
 		return cfg, err
 	}
-	if cfg.enableRelay, err = envBool("FSEND_RELAY_ENABLED", true); err != nil {
+	if cfg.enableRelay, err = envBool(envRelayEnabled, defaultRelayEnabled); err != nil {
 		return cfg, err
 	}
-	switch strings.ToLower(os.Getenv("FSEND_LOG_LEVEL")) {
+	switch strings.ToLower(os.Getenv(envLogLevel)) {
 	case "debug":
 		cfg.logLevel = slog.LevelDebug
 	case "warn":
@@ -235,6 +260,88 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		cfg.logLevel = slog.LevelInfo
 	}
 	return cfg, nil
+}
+
+// formatServerConfig renders the effective server configuration as a
+// human-readable block, flagging each setting whose value differs from its
+// built-in default with a leading "*". Printed once at startup so an
+// operator can confirm at a glance that their FSEND_* overrides were
+// picked up. The password is never printed — only whether one is set.
+func formatServerConfig(cfg serverRuntimeConfig) string {
+	type setting struct {
+		name     string
+		value    string
+		modified bool
+	}
+	password := "(not set)"
+	if cfg.serverPassword != "" {
+		password = "(set)"
+	}
+	settings := []setting{
+		{envLogLevel, logLevelName(cfg.logLevel), cfg.logLevel != slog.LevelInfo},
+		// Env-var name inlined (not a shared const) so gosec G101 doesn't
+		// mistake a password-named identifier for a hardcoded credential.
+		{"FSEND_SERVER_PASSWORD", password, cfg.serverPassword != ""},
+		{envMaxSessionsPerIP, capCount(cfg.maxSessionsPerIP), cfg.maxSessionsPerIP != defaultMaxSessionsPerIP},
+		{envMaxNewSessionsPerMin, capCount(cfg.maxNewSessionsPerMin), cfg.maxNewSessionsPerMin != defaultMaxNewSessionsPerMin},
+		{envPairingAddr, cfg.httpAddr, cfg.httpAddr != defaultPairingAddr},
+		{envRelayEnabled, strconv.FormatBool(cfg.enableRelay), !cfg.enableRelay},
+		{envRelayAddr, cfg.udpAddr, cfg.udpAddr != defaultRelayAddr},
+		{envMaxBytesPerSession, capBytes(cfg.maxBytesPerSession), cfg.maxBytesPerSession != defaultMaxBytesPerSession},
+	}
+
+	width, modified := 0, 0
+	for _, s := range settings {
+		if len(s.name) > width {
+			width = len(s.name)
+		}
+		if s.modified {
+			modified++
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "fsend server configuration (%d of %d customized; * = changed from default):\n",
+		modified, len(settings))
+	for _, s := range settings {
+		mark := " "
+		if s.modified {
+			mark = "*"
+		}
+		fmt.Fprintf(&b, "  %s %-*s  %s\n", mark, width, s.name, s.value)
+	}
+	return b.String()
+}
+
+// capCount renders a session cap, spelling out the 0 = unlimited case.
+func capCount(n int) string {
+	if n == 0 {
+		return "0 (unlimited)"
+	}
+	return strconv.Itoa(n)
+}
+
+// capBytes renders the per-session byte cap, spelling out 0 = unlimited.
+func capBytes(n uint64) string {
+	if n == 0 {
+		return "unlimited"
+	}
+	return uxlog.HumanBytes(int64(n))
+}
+
+// logLevelName maps the parsed level back to the lowercase form operators
+// set in FSEND_LOG_LEVEL (slog's own String() is uppercase).
+func logLevelName(l slog.Level) string {
+	switch l {
+	case slog.LevelDebug:
+		return "debug"
+	case slog.LevelWarn:
+		return "warn"
+	case slog.LevelError:
+		return "error"
+	default:
+		return "info"
+	}
 }
 
 func envOr(name, def string) string {
@@ -329,7 +436,7 @@ func envBytes(name string, def uint64) (uint64, error) {
 // HTTP address. Exits 0 on healthy, 1 on anything else. Designed for
 // Docker HEALTHCHECK.
 func healthCheck() error {
-	addr := envOr("FSEND_PAIRING_ADDR", ":8080")
+	addr := envOr(envPairingAddr, defaultPairingAddr)
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}
