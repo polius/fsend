@@ -37,6 +37,13 @@ type CreateSessionResponse struct {
 	TTLSeconds       int      `json:"ttl_seconds"`
 	ServerVersion    string   `json:"server_version"`
 	RoleToken        string   `json:"role_token"`
+	// RelayAddr is the server-wide STUN/relay address, so the client can
+	// gather srflx candidates without allocating a slot. Empty if no relay.
+	RelayAddr string `json:"relay_addr,omitempty"`
+	// RelayForwardingDisabled: relay answers STUN but won't carry data, so a
+	// client whose ICE fails fails fast instead of a doomed alloc. omitempty:
+	// absent/false both mean "try the relay" (matches old servers).
+	RelayForwardingDisabled bool `json:"relay_forwarding_disabled,omitempty"`
 }
 
 // JoinSessionRequest is the body of POST /v1/session/<slot>/join.
@@ -52,6 +59,9 @@ type JoinSessionResponse struct {
 	PeerIceCredentials IceCreds `json:"peer_ice_credentials"`
 	YourIceCredentials IceCreds `json:"your_ice_credentials"`
 	RoleToken          string   `json:"role_token"`
+	// RelayAddr / RelayForwardingDisabled: see CreateSessionResponse.
+	RelayAddr               string `json:"relay_addr,omitempty"`
+	RelayForwardingDisabled bool   `json:"relay_forwarding_disabled,omitempty"`
 }
 
 // WaitRequest is the body of POST /v1/session/<slot>/wait. It carries no

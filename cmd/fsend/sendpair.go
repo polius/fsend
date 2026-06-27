@@ -297,14 +297,12 @@ func waitForReceiver(ctx context.Context, client *signaling.Client, code string)
 // to a relay PacketConn. The pathInfo reflects the choice for UX
 // rendering.
 //
-// The relay is allocated *before* ICE runs: its UDP address doubles as
-// the STUN server for srflx gathering — without that, two NATed peers
-// only exchange private addresses and ICE is doomed to time out. The
-// allocation is idempotent and idle-evicted server-side, so it costs
-// nothing when ICE wins. If allocation fails (e.g. relay not enabled),
-// ICE still runs with host candidates only, and its failure surfaces
-// the allocation error — the same outcome the old post-ICE allocation
-// produced.
+// ICE gathers srflx candidates against the STUN address the server put in
+// the create response (the relay socket also answers STUN). The relay slot
+// itself is allocated only on ICE failure, when we actually need to relay —
+// so a direct connection never reserves one. Old servers that don't
+// advertise the address fall back to allocating up front for STUN (see
+// stunAddrForICE).
 //
 // The debug --mode flag short-circuits the ladder:
 //   - modeDirect: only ICE; surface the ICE error if it fails (no relay fallback).
@@ -313,11 +311,9 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if f != nil && f.mode == modeRelay {
 		return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 	}
-	alloc, allocErr := client.AllocateRelay(ctx, created.SessionID, created.RoleToken)
-	stunAddr := ""
-	if allocErr == nil {
-		stunAddr = alloc.RelayAddr
-	}
+	// The STUN address rides on the create response, so ICE runs without a
+	// relay allocation. We allocate only if ICE fails and we must relay.
+	stunAddr := stunAddrForICE(ctx, client, created.RelayAddr, created.SessionID, created.RoleToken)
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, created.RoleToken, iceconn.Options{
 		LocalUfrag:  created.IceCredentials.Ufrag,
 		LocalPwd:    created.IceCredentials.Pwd,
@@ -334,17 +330,23 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if f != nil && f.mode == modeDirect {
 		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=direct: %v", fserrors.ErrConnectFailed, iceErr)
 	}
-	if allocErr != nil {
-		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)
-	}
-	if alloc.ForwardingDisabled {
+	if created.RelayForwardingDisabled {
 		return nil, connpath.Info{}, fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 	}
-	rc, err := dialRelay(alloc)
-	if err != nil {
-		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
+	return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
+}
+
+// stunAddrForICE returns the STUN address for srflx gathering: the one the
+// server advertised, else (old servers that don't) an allocation's address.
+// On error ICE runs host-only, as when no relay exists.
+func stunAddrForICE(ctx context.Context, client *signaling.Client, advertised, sessionID, roleToken string) string {
+	if advertised != "" {
+		return advertised
 	}
-	return rc, connpath.FromRelay(alloc.RelayAddr), nil
+	if alloc, err := client.AllocateRelay(ctx, sessionID, roleToken); err == nil {
+		return alloc.RelayAddr
+	}
+	return ""
 }
 
 // allocAndDialRelay performs the relay allocation + dial steps. Shared

@@ -93,14 +93,8 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 		return err
 	}
 
-	// Allocate the relay before ICE: its UDP address is the STUN server
-	// for srflx gathering. Mirrors establishInternetDataPath — see the
-	// rationale there.
-	alloc, allocErr := client.AllocateRelay(ctx, joined.SessionID, joined.RoleToken)
-	stunAddr := ""
-	if allocErr == nil {
-		stunAddr = alloc.RelayAddr
-	}
+	// STUN address rides on the join response; no relay allocation up front.
+	stunAddr := stunAddrForICE(ctx, client, joined.RelayAddr, joined.SessionID, joined.RoleToken)
 
 	// --- Try ICE direct path ---
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, joined.SessionID, joined.RoleToken, iceconn.Options{
@@ -122,7 +116,11 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
 	}
 
-	// --- Fall back to relay ---
+	// --- Fall back to relay: allocate now that we know we need it ---
+	if joined.RelayForwardingDisabled {
+		return fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
+	}
+	alloc, allocErr := client.AllocateRelay(ctx, joined.SessionID, joined.RoleToken)
 	if allocErr != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)
 	}
