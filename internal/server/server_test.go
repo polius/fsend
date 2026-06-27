@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -133,6 +134,36 @@ func TestJoin_HappyPath(t *testing.T) {
 	if join.SessionID != create.SessionID {
 		t.Errorf("session id mismatch: %q vs %q", join.SessionID, create.SessionID)
 	}
+}
+
+// TestCreateAndJoin_AdvertiseRelayAddr locks in the deferred-allocation
+// contract: create/join carry the STUN/relay address so the client can
+// gather srflx candidates without allocating a slot. Empty when no relay.
+func TestCreateAndJoin_AdvertiseRelayAddr(t *testing.T) {
+	t.Run("with relay", func(t *testing.T) {
+		s := New(Config{ServerVersion: "0.0.0-test", UnpairedTTL: 2 * time.Second, PairedTTL: 5 * time.Second, MaxSessionsPerIP: 10, MaxNewSessionsPerMin: 100})
+		s.WithRelay(&fakeRelay{tok: relay.Token{1}}, 9999)
+		ts := httptest.NewServer(s.Handler())
+		defer ts.Close()
+
+		create := createSession(t, ts.URL, testSlot)
+		if !strings.HasSuffix(create.RelayAddr, ":9999") {
+			t.Errorf("create relay_addr = %q, want host:9999", create.RelayAddr)
+		}
+		joinResp := postJSON(t, ts.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
+		defer joinResp.Body.Close()
+		var join JoinSessionResponse
+		_ = json.NewDecoder(joinResp.Body).Decode(&join)
+		if !strings.HasSuffix(join.RelayAddr, ":9999") {
+			t.Errorf("join relay_addr = %q, want host:9999", join.RelayAddr)
+		}
+	})
+	t.Run("no relay", func(t *testing.T) {
+		srv := newTestServer(t)
+		if got := createSession(t, srv.URL, testSlot).RelayAddr; got != "" {
+			t.Errorf("relay_addr = %q, want empty when no relay wired", got)
+		}
+	})
 }
 
 func TestJoin_NotFound(t *testing.T) {

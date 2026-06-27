@@ -156,6 +156,15 @@ func (s *Server) relayAddrFor(r *http.Request) string {
 	return net.JoinHostPort(host, strconv.Itoa(s.relayUDPPort))
 }
 
+// stunAddrFor returns the STUN/relay address to advertise, or "" when no
+// relay is wired (nothing to offer for srflx gathering).
+func (s *Server) stunAddrFor(r *http.Request) string {
+	if s.relayAllocator == nil {
+		return ""
+	}
+	return s.relayAddrFor(r)
+}
+
 // New constructs a Server with defaults filled in.
 func New(cfg Config) *Server {
 	cfg.Default()
@@ -497,6 +506,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		TTLSeconds:       int(s.cfg.UnpairedTTL.Seconds()),
 		ServerVersion:    s.cfg.ServerVersion,
 		RoleToken:        senderTok,
+		RelayAddr:        s.stunAddrFor(r),
 	})
 }
 
@@ -550,6 +560,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		PeerIceCredentials: sess.SenderICE,
 		YourIceCredentials: sess.ReceiverICE,
 		RoleToken:          sess.ReceiverToken,
+		RelayAddr:          s.stunAddrFor(r),
 	}
 	s.mu.Unlock()
 	s.cfg.Logger.Debug("session paired", "slot", slot, "ip", clientIP)
