@@ -193,7 +193,7 @@ so anyone can verify the server holds nothing sensitive.
 | `relay.forwarding` | Whether the relay carries data (`false` in pairing + STUN-only mode). |
 | `relay.healthy` | Relay read loop alive — mirrors `/v1/health`'s 503 signal. |
 | `relay.transfers_active` | Relay transfers moving bytes right now. |
-| `relay.transfers_total` | Relay transfers since boot. Divide by `sessions_paired_total` for your relay-fallback rate; the rest connected directly (P2P). A climbing ratio means hole-punching is failing more often. |
+| `relay.transfers_total` | Relay transfers that actually forwarded data since boot (a slot allocated for STUN but never used doesn't count). Divide by `sessions_paired_total` for your relay-fallback rate; the rest connected directly (P2P). A climbing ratio means hole-punching is failing more often. |
 | `relay.transfers_capped_total` | Transfers cut off for hitting the byte cap — raise the cap if this climbs. |
 | `relay.bytes_forwarded_total` | Cumulative bytes relayed — what the relay is costing you. |
 | `relay.peak_transfer_bytes` | Largest single transfer so far; compare to your byte cap to see headroom. |

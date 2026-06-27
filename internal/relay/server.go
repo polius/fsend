@@ -53,7 +53,7 @@ type Server struct {
 	bytesForwarded    atomic.Uint64
 	peakTransferBytes atomic.Uint64 // most any single transfer has forwarded
 	transfersCapped   atomic.Uint64 // transfers cut off for exceeding the byte cap
-	transfersTotal    atomic.Uint64 // relay allocations handed out; vs paired sessions = relay-fallback rate
+	transfersTotal    atomic.Uint64 // transfers that forwarded ≥1 byte; vs paired sessions = relay-fallback rate
 }
 
 // Metrics is an aggregate snapshot of relay activity for /v1/metrics.
@@ -147,6 +147,9 @@ type allocation struct {
 	bytes        atomic.Uint64
 	lastActivity atomic.Int64 // unix nanos
 	createdAt    time.Time
+	// dataCounted: true once this allocation forwards its first byte, so
+	// transfersTotal counts it exactly once.
+	dataCounted atomic.Bool
 }
 
 // NewServer constructs a Server bound to the given net.PacketConn.
@@ -240,7 +243,8 @@ func (s *Server) Allocate() (Token, error) {
 	}
 	s.allocs[t] = a
 	s.mu.Unlock()
-	s.transfersTotal.Add(1)
+	// transfersTotal is bumped on first forwarded byte (see handle), not here:
+	// every pairing allocates a slot for STUN, so allocations aren't relay use.
 	return t, nil
 }
 
@@ -353,6 +357,9 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 	}
 
 	s.bytesForwarded.Add(wireSize)
+	if a.dataCounted.CompareAndSwap(false, true) {
+		s.transfersTotal.Add(1) // first byte forwarded = this allocation is a real transfer
+	}
 	for { // raise the global peak to this transfer's running total
 		cur := s.peakTransferBytes.Load()
 		if total <= cur || s.peakTransferBytes.CompareAndSwap(cur, total) {
