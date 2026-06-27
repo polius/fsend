@@ -334,11 +334,52 @@ func TestMetricsCounters(t *testing.T) {
 	if m.PeakTransferBytes == 0 {
 		t.Error("peak_transfer_bytes should be > 0 after a forward")
 	}
+	if m.TransfersTotal != 1 {
+		t.Errorf("transfers_total = %d, want 1 after one transfer forwarded data", m.TransfersTotal)
+	}
 	if m.TransfersCappedTotal != 0 {
 		t.Errorf("transfers_capped_total = %d, want 0", m.TransfersCappedTotal)
 	}
 	if !m.Forwarding {
 		t.Error("forwarding should be true")
+	}
+
+	cancel()
+	_ = serverConn.Close()
+	<-srvErr
+}
+
+// TestMetricsTransfersTotal_OnlyCountsForwarded locks in the metric's
+// meaning: a slot allocated for STUN but that never forwards a byte (direct
+// path won, or only one peer showed up) must not inflate transfers_total.
+func TestMetricsTransfersTotal_OnlyCountsForwarded(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
+	srv := NewServer(serverConn, ServerConfig{})
+	tok, err := srv.Allocate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.Metrics().TransfersTotal; got != 0 {
+		t.Fatalf("transfers_total = %d after allocate alone, want 0", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Run(ctx) }()
+
+	// Only peerA ever sends: it registers but nothing is forwarded.
+	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer clientA.Close()
+	connA := NewClient(clientA, relayAddr, tok)
+	_, _ = connA.WriteTo([]byte("hello"), nil)
+	time.Sleep(100 * time.Millisecond)
+
+	if got := srv.Metrics().TransfersTotal; got != 0 {
+		t.Errorf("transfers_total = %d with no data forwarded, want 0", got)
 	}
 
 	cancel()
