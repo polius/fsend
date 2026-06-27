@@ -330,6 +330,9 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if f != nil && f.mode == modeDirect {
 		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=direct: %v", fserrors.ErrConnectFailed, iceErr)
 	}
+	if created.RelayForwardingDisabled {
+		return nil, connpath.Info{}, fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
+	}
 	return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 }
 

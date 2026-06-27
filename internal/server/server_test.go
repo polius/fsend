@@ -150,12 +150,29 @@ func TestCreateAndJoin_AdvertiseRelayAddr(t *testing.T) {
 		if !strings.HasSuffix(create.RelayAddr, ":9999") {
 			t.Errorf("create relay_addr = %q, want host:9999", create.RelayAddr)
 		}
+		if create.RelayForwardingDisabled {
+			t.Error("relay_forwarding_disabled should be false when forwarding is on")
+		}
 		joinResp := postJSON(t, ts.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
 		defer joinResp.Body.Close()
 		var join JoinSessionResponse
 		_ = json.NewDecoder(joinResp.Body).Decode(&join)
 		if !strings.HasSuffix(join.RelayAddr, ":9999") {
 			t.Errorf("join relay_addr = %q, want host:9999", join.RelayAddr)
+		}
+	})
+	t.Run("relay forwarding disabled", func(t *testing.T) {
+		s := New(Config{ServerVersion: "0.0.0-test", UnpairedTTL: 2 * time.Second, PairedTTL: 5 * time.Second, MaxSessionsPerIP: 10, MaxNewSessionsPerMin: 100})
+		s.WithRelay(&fakeRelay{tok: relay.Token{1}, noForward: true}, 9999)
+		ts := httptest.NewServer(s.Handler())
+		defer ts.Close()
+
+		create := createSession(t, ts.URL, testSlot)
+		if create.RelayAddr == "" {
+			t.Error("relay_addr must still be set in STUN-only mode (it's the STUN server)")
+		}
+		if !create.RelayForwardingDisabled {
+			t.Error("relay_forwarding_disabled should be true in STUN-only mode")
 		}
 	})
 	t.Run("no relay", func(t *testing.T) {

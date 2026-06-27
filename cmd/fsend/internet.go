@@ -117,6 +117,9 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}
 
 	// --- Fall back to relay: allocate now that we know we need it ---
+	if joined.RelayForwardingDisabled {
+		return fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
+	}
 	alloc, allocErr := client.AllocateRelay(ctx, joined.SessionID, joined.RoleToken)
 	if allocErr != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)

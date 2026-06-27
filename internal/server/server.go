@@ -165,6 +165,12 @@ func (s *Server) stunAddrFor(r *http.Request) string {
 	return s.relayAddrFor(r)
 }
 
+// relayForwardingDisabled reports whether a relay is wired but STUN-only, so
+// clients whose ICE fails can fail fast instead of attempting a doomed alloc.
+func (s *Server) relayForwardingDisabled() bool {
+	return s.relayAllocator != nil && !s.relayAllocator.Forwarding()
+}
+
 // New constructs a Server with defaults filled in.
 func New(cfg Config) *Server {
 	cfg.Default()
@@ -500,13 +506,14 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Logger.Debug("session created", "slot", slot, "ip", clientIP)
 
 	writeJSON(w, http.StatusOK, CreateSessionResponse{
-		SessionID:        sid,
-		YourObservedAddr: r.RemoteAddr,
-		IceCredentials:   sess.SenderICE,
-		TTLSeconds:       int(s.cfg.UnpairedTTL.Seconds()),
-		ServerVersion:    s.cfg.ServerVersion,
-		RoleToken:        senderTok,
-		RelayAddr:        s.stunAddrFor(r),
+		SessionID:               sid,
+		YourObservedAddr:        r.RemoteAddr,
+		IceCredentials:          sess.SenderICE,
+		TTLSeconds:              int(s.cfg.UnpairedTTL.Seconds()),
+		ServerVersion:           s.cfg.ServerVersion,
+		RoleToken:               senderTok,
+		RelayAddr:               s.stunAddrFor(r),
+		RelayForwardingDisabled: s.relayForwardingDisabled(),
 	})
 }
 
@@ -554,13 +561,14 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	s.met.sessionsPaired.Add(1)
 	close(sess.waiters)
 	resp := JoinSessionResponse{
-		SessionID:          sess.ID,
-		YourObservedAddr:   r.RemoteAddr,
-		PeerObservedAddr:   sess.SenderAddr,
-		PeerIceCredentials: sess.SenderICE,
-		YourIceCredentials: sess.ReceiverICE,
-		RoleToken:          sess.ReceiverToken,
-		RelayAddr:          s.stunAddrFor(r),
+		SessionID:               sess.ID,
+		YourObservedAddr:        r.RemoteAddr,
+		PeerObservedAddr:        sess.SenderAddr,
+		PeerIceCredentials:      sess.SenderICE,
+		YourIceCredentials:      sess.ReceiverICE,
+		RoleToken:               sess.ReceiverToken,
+		RelayAddr:               s.stunAddrFor(r),
+		RelayForwardingDisabled: s.relayForwardingDisabled(),
 	}
 	s.mu.Unlock()
 	s.cfg.Logger.Debug("session paired", "slot", slot, "ip", clientIP)
