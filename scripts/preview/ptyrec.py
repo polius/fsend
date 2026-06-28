@@ -6,12 +6,12 @@
 # cast as input. This forces the master PTY window size so tmux renders both
 # panes fully, then streams output to a v2 cast. Run from the repo root.
 #
-#   python3 scripts/demo/ptyrec.py out.cast
+#   python3 scripts/preview/ptyrec.py out.cast
 import os, pty, sys, time, json, fcntl, termios, struct, select, codecs
 
 COLS, ROWS = 100, 28
 OUT = sys.argv[1] if len(sys.argv) > 1 else "demo.cast"
-CMD = ["bash", "-lc", "scripts/demo/demo.sh play"]
+CMD = ["bash", "-lc", "scripts/preview/demo.sh play"]
 
 os.environ["TERM"] = "xterm-256color"
 pid, fd = pty.fork()

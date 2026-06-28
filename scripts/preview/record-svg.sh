@@ -27,7 +27,7 @@ CAST="$(mktemp -t fsend-demo-cast.XXXXXX)"
 trap 'rm -f "$CAST"; tmux kill-session -t "$SESSION" 2>/dev/null || true' EXIT
 
 # Build the binary, start the loopback server, lay out the tmux session.
-scripts/demo/demo.sh setup
+scripts/preview/demo.sh setup
 
 # Auto-stop: once the receiver shows "Saved", let it settle then kill the
 # session so the recorder's `tmux attach` returns and recording ends. Hard cap
@@ -43,7 +43,7 @@ scripts/demo/demo.sh setup
 ) &
 
 # Record the director-driven session, then render + frame the SVG.
-python3 scripts/demo/ptyrec.py "$CAST"
-python3 scripts/demo/svg-postprocess.py "$CAST" "$OUT"
+python3 scripts/preview/ptyrec.py "$CAST"
+python3 scripts/preview/svg-postprocess.py "$CAST" "$OUT"
 
 echo "wrote $OUT ($(du -h "$OUT" | cut -f1))"
