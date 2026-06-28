@@ -47,7 +47,7 @@ curl -fsSL https://getfsend.alzina.dev | sh
 **Windows** — run this in PowerShell:
 
 ```powershell
-irm https://getfsend.alzina.dev/install.ps1 | iex
+irm https://getfsend.alzina.dev/windows | iex
 ```
 
 Both installers verify the release's SHA-256 checksum before installing.
@@ -101,11 +101,20 @@ fsend --yes abc-defg-jkm              # skip the confirmation prompt
 fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
 ```
 
+## How it works
+
+<p align="center">
+  <a href="https://getfsend.alzina.dev/video.mp4">
+    <img src="docs/assets/video-poster.png"
+      alt="Watch the fsend video — a 90-second walkthrough of how it works">
+  </a>
+</p>
+
 ## Documentation
 
 | | |
 |---|---|
-| [How it works](docs/architecture.md) | Three transfer modes, raced concurrently — and why |
+| [Architecture](docs/architecture.md) | Three transfer modes, raced concurrently — and why |
 | [Security](docs/security.md) | Threat model — what the server can and cannot see |
 | [Usage](docs/usage.md) | Every flag, env var, and exit code |
 | [Self-hosting](docs/self-hosting.md) | Run your own pairing server in three steps |

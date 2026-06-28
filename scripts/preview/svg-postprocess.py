@@ -17,7 +17,7 @@
 # version that changes its format fails loudly here instead of silently shipping
 # a broken demo. Tuning knobs are the constants below.
 #
-#   python3 scripts/demo/svg-postprocess.py <in.cast> <out.svg>
+#   python3 scripts/preview/svg-postprocess.py <in.cast> <out.svg>
 import os, re, io, sys, html, base64, glob, subprocess
 from fontTools import subset
 

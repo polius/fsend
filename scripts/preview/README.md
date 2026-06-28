@@ -31,11 +31,11 @@ pip install fonttools brotli             # subset + embed JetBrains Mono (woff2)
 brew install --cask font-jetbrains-mono  # the embedded terminal font
 
 # 2. regenerate docs/assets/demo.svg  (the README asset)
-scripts/demo/record-svg.sh
+scripts/preview/record-svg.sh
 
 # 3. (optional) regenerate the raster exports from that SVG
 pip install websocket-client             # drives headless Chrome over CDP
-python3 scripts/demo/render-video.py     # -> docs/assets/demo.{mp4,gif}
+python3 scripts/preview/render-video.py     # -> docs/assets/demo.{mp4,gif}
 ```
 
 `record-svg.sh` is the single entry point for the SVG: it builds fsend, records
@@ -210,7 +210,7 @@ script is built to avoid both:
 Watch the choreography live in your own terminal (no file produced):
 
 ```bash
-scripts/demo/demo.sh
+scripts/preview/demo.sh
 ```
 
 `Ctrl-b d` to detach, or just close the terminal — the throwaway server and tmux

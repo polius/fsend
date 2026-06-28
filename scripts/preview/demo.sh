@@ -7,9 +7,9 @@
 # share code out of the sender pane, and pastes it into the receiver.
 #
 # Usage:
-#   scripts/demo/demo.sh          # set up + play in one terminal (manual preview)
-#   scripts/demo/demo.sh setup    # build, start server, build the tmux session
-#   scripts/demo/demo.sh play     # attach + run the director (used by record-svg.sh)
+#   scripts/preview/demo.sh          # set up + play in one terminal (manual preview)
+#   scripts/preview/demo.sh setup    # build, start server, build the tmux session
+#   scripts/preview/demo.sh play     # attach + run the director (used by record-svg.sh)
 #
 # Nothing here touches your real fsend config or home dir.
 set -euo pipefail

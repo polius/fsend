@@ -11,7 +11,7 @@ scale supersamples the small terminal text so it stays crisp after encoding.
 
 Output is an H.264 mp4 (small, the format to share) and an optimized gif.
 
-Usage: scripts/demo/render-video.py [docs/assets/demo.svg]
+Usage: scripts/preview/render-video.py [docs/assets/demo.svg]
 Outputs alongside the SVG: demo.mp4 (yuv420p, even dims) and demo.gif.
 Requires: Google Chrome, ffmpeg, and the `websocket-client` python package.
 """
