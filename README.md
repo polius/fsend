@@ -44,13 +44,19 @@ fsend is a **command-line tool** that lets any two computers transfer files and 
 curl -fsSL https://getfsend.alzina.dev | sh
 ```
 
+**macOS** — if you prefer [Homebrew](https://brew.sh):
+
+```bash
+brew install polius/tap/fsend
+```
+
 **Windows** — run this in PowerShell:
 
 ```powershell
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
-Both installers verify the release's SHA-256 checksum before installing.
+All three verify the release's SHA-256 checksum before installing.
 
 <details>
 <summary>Other install methods</summary>
