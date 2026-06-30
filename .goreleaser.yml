@@ -64,6 +64,34 @@ archives:
       - LICENSE
       - README.md
 
+homebrew_casks:
+  # Publishes a cask to github.com/polius/homebrew-tap so macOS users can:
+  #   brew install polius/tap/fsend   (Intel + Apple Silicon)
+  - name: fsend
+    ids:
+      - fsend
+    repository:
+      owner: polius
+      name: homebrew-tap
+      branch: main
+      token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
+    directory: Casks
+    homepage: 'https://github.com/polius/fsend'
+    description: 'Peer-to-peer, end-to-end encrypted file transfer'
+    # Binaries aren't Apple-notarized, so Homebrew quarantines them and Gatekeeper
+    # blocks the first run. Strip the quarantine attr on install.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/fsend"]
+          end
+    skip_upload: auto
+    commit_author:
+      name: goreleaser-bot
+      email: goreleaser-bot@users.noreply.github.com
+    commit_msg_template: 'brew: fsend {{ .Tag }}'
+
 checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
