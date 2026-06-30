@@ -565,13 +565,14 @@ def sc_cta(d, ctx):
         if seg(bt, 0.5, 0.9) > 0:
             lines.append(("→ listening on :443", GREEN))
         th = mini_term(d, x0, ty, cw, lines, a1)
-        # Docker image, documented (not run inline)
+        # Docker image, documented (not run inline) — heading + ref stacked,
+        # mirroring the self-host guide block below.
         da = seg(bt, 1.0, 1.6)
         if da > 0:
-            df = F_MED(30); lab = "Docker image:  "; ref = "poliuscorp/fsend"
-            lw = tw(d, lab, df); sx = W//2 - (lw + tw(d, ref, df)) / 2
-            tc(d, (sx, ty + th + 96), lab, df, fade(DIM, da), anchor="lm")
-            tc(d, (sx + lw, ty + th + 96), ref, df, fade(ACCENT_L, da), anchor="lm")
+            tc(d, (W//2, ty + th + 74), "Docker image",
+               F_SEMI(29), fade(TEXT, da), anchor="mm")
+            tc(d, (W//2, ty + th + 116), "poliuscorp/fsend",
+               F_MED(26), fade(ACCENT_L, da), anchor="mm")
         # the self-hosting guide — a labeled link, not a bare URL
         la = seg(bt, 1.4, 2.0)
         if la > 0:
@@ -593,14 +594,19 @@ def install_row(d, cy, os_label, cmd, a, w=1300):
     tc(d, (dx+30, cy), cmd, F_SEMI(29), fade(ACCENT_L, a), anchor="lm")
 
 def sc_outro(d, ctx):
-    # wordmark + cross-platform install, then the closing line lands (synced to VO).
+    # wordmark + "How to install" heading + three install rows, then the closing
+    # line lands (synced to VO).
     t, beat, bt = ctx["ts"], ctx["beat"], ctx["beat_t"]
-    wordmark(d, W//2, 362, 150, seg(t, 0.2, 0.9), cursor_blink_t=None)
-    install_row(d, 556, "Linux · macOS · FreeBSD",
+    wordmark(d, W//2, 310, 150, seg(t, 0.2, 0.9), cursor_blink_t=None)
+    tc(d, (W//2, 455), "How to install", F_SEMI(34),
+       fade(DIM, seg(t, 0.4, 1.0)), anchor="mm")
+    install_row(d, 547, "Linux · macOS · FreeBSD",
                 "curl -fsSL https://getfsend.alzina.dev | sh", seg(t, 0.6, 1.2))
-    install_row(d, 652, "Windows",
-                "irm https://getfsend.alzina.dev/windows | iex", seg(t, 0.8, 1.4))
-    tc(d, (W//2, 744), "github.com/polius/fsend", F_MED(26),
+    install_row(d, 635, "macOS (Homebrew)",
+                "brew install polius/tap/fsend", seg(t, 0.7, 1.3))
+    install_row(d, 723, "Windows",
+                "irm https://getfsend.alzina.dev/windows | iex", seg(t, 0.9, 1.5))
+    tc(d, (W//2, 958), "github.com/polius/fsend", F_MED(26),
        fade(DIM, seg(t, 1.1, 1.7)), anchor="mm")
     # the closing line, on screen, timed to the spoken "What you send stays…"
     # closing punch — three pills, each popping in as its word is spoken.
@@ -614,7 +620,7 @@ def sc_outro(d, ctx):
         x0 = W//2 - (sum(ws) + gap * (len(words) - 1)) / 2
         for w, pw, fr in zip(words, ws, fracs):
             at = fr * dur
-            pill(d, w, x0 + pw/2, 854, ease_out(seg(bt, at, at + 0.2)), fs=34)
+            pill(d, w, x0 + pw/2, 843, ease_out(seg(bt, at, at + 0.2)), fs=34)
             x0 += pw + gap
 
 DRAW = {"brand": sc_brand,
