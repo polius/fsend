@@ -109,11 +109,12 @@ type RelayAllocateResponse struct {
 	BudgetExhausted    bool   `json:"budget_exhausted,omitempty"`
 }
 
-// HealthResponse is the body of GET /v1/health.
+// HealthResponse is the body of GET /health. Deliberately minimal: a
+// pure liveness signal (plus the 200/503 status code) with no version or
+// uptime, so an unauthenticated caller learns nothing about the build.
+// Version and uptime live on the gated /metrics for operators who need them.
 type HealthResponse struct {
-	Status        string `json:"status"`
-	Version       string `json:"version"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
+	Status string `json:"status"`
 }
 
 // RelayStatusResponse is the body of GET /v1/relay/status.

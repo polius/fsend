@@ -7,7 +7,7 @@ import (
 	"github.com/polius/fsend/internal/relay"
 )
 
-// MetricsResponse is the body of GET /v1/metrics. Everything is an
+// MetricsResponse is the body of GET /metrics. Everything is an
 // aggregate count or gauge — no per-IP, per-session, or per-code data, so
 // it can't leak what the server doesn't store. Relay is omitted when no
 // relay is wired.

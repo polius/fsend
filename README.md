@@ -11,7 +11,7 @@
   <a href="https://github.com/polius/fsend/actions/workflows/checks.yml"><img src="https://github.com/polius/fsend/actions/workflows/checks.yml/badge.svg" alt="checks"></a>
   <a href="https://github.com/polius/fsend/releases"><img src="https://img.shields.io/github/v/release/polius/fsend" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-  <a href="https://fsend.alzina.dev/v1/metrics"><img src="https://img.shields.io/website?url=https%3A%2F%2Ffsend.alzina.dev%2Fv1%2Fhealth&up_message=up&down_message=down&label=public%20server" alt="Public server status"></a>
+  <a href="https://fsend.alzina.dev/metrics"><img src="https://img.shields.io/website?url=https%3A%2F%2Ffsend.alzina.dev%2Fhealth&up_message=up&down_message=down&label=public%20server" alt="Public server status"></a>
 </p>
 
 <p align="center">

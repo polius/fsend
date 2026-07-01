@@ -21,7 +21,7 @@ What to try:
 
 - Check your internet connection.
 - If you run your own server, confirm it's up:
-  `curl https://your-server/v1/health`.
+  `curl https://your-server/health`.
 - Point at a different server with `fsend --connect <host>:443`, or back
   to the default with `fsend --connect default`.
 
