@@ -545,10 +545,10 @@ func (f *fakeRelay) Allocate() (relay.Token, error) {
 	}
 	return f.tok, f.allocErr
 }
-func (f *fakeRelay) Status(t relay.Token) string    { return f.reason }
-func (f *fakeRelay) MaxBytesPerSession() uint64     { return f.maxBytes }
-func (f *fakeRelay) Healthy() bool                  { return !f.dead }
-func (f *fakeRelay) Forwarding() bool               { return !f.noForward }
+func (f *fakeRelay) Status(t relay.Token) string { return f.reason }
+func (f *fakeRelay) MaxBytesPerSession() uint64  { return f.maxBytes }
+func (f *fakeRelay) Healthy() bool               { return !f.dead }
+func (f *fakeRelay) Forwarding() bool            { return !f.noForward }
 func (f *fakeRelay) Metrics() relay.Metrics {
 	return relay.Metrics{Forwarding: !f.noForward, Healthy: !f.dead}
 }
