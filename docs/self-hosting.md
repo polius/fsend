@@ -197,7 +197,7 @@ so anyone can verify the server holds nothing sensitive.
 | `relay.transfers_capped_total` | Transfers cut off for hitting the per-session byte cap — raise the cap if this climbs. |
 | `relay.bytes_forwarded_total` | Cumulative bytes relayed since boot — what the relay is costing you. |
 | `relay.peak_transfer_bytes` | Largest single transfer so far; compare to your byte cap to see headroom. |
-| `relay.budget_bytes_today` | Bytes forwarded so far in the current UTC day. Approaching your configured `FSEND_RELAY_MAX_BYTES_PER_DAY` is your early warning; reaching it means the breaker has tripped and transfers are being refused until 00:00 UTC. |
+| `relay.budget_bytes_today` | Wire bytes forwarded so far in the current UTC day (both directions, same count as the budget). Approaching your configured `FSEND_RELAY_MAX_BYTES_PER_DAY` is your early warning; reaching it means the breaker has tripped and transfers are being refused until 00:00 UTC. |
 
 The `relay` block is omitted when the server runs without a relay.
 
@@ -273,7 +273,7 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 | `FSEND_RELAY_ENABLED` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
 | `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
 | `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap — wire bytes after compression. Defaults to unlimited; set a value to bound per-transfer bandwidth. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |
-| `FSEND_RELAY_MAX_BYTES_PER_DAY` | `0` (unlimited) | **Egress budget** — wire bytes the relay forwards **per UTC day** across all sessions. The Denial-of-Wallet ceiling: once spent, the relay stops forwarding and refuses new transfers until 00:00 UTC. Bounds a distributed abuser that the per-IP caps can't. Same units as above. Defaults to unlimited; **set a value to bound your bandwidth bill**. |
+| `FSEND_RELAY_MAX_BYTES_PER_DAY` | `0` (unlimited) | **Egress budget** — wire bytes the relay forwards **per UTC day** across all sessions. The Denial-of-Wallet ceiling: once spent, the relay stops forwarding and refuses new transfers until 00:00 UTC. Bounds a distributed abuser that the per-IP caps can't. Same units as above. Defaults to unlimited; **set a value to bound your bandwidth bill**. **What's counted:** every datagram the relay forwards, once, in **both directions** (payload one way, ACKs/control the other) — i.e. outbound bytes, matching how egress is billed. Not counted: STUN (separate path), and same-network/direct transfers (never touch the relay). Note the relay physically receives *and* sends each byte, so if your host also bills **inbound** traffic, real cost ≈ 2× the budget. |
 
 ### Pairing-only mode (no relay)
 
