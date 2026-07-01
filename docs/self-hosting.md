@@ -247,29 +247,29 @@ whether one is set):
 
 ```
 fsend server configuration (2 of 9 customized; * = changed from default):
-  * FSEND_SERVER_PASSWORD                         (set)
-  * FSEND_SERVER_MAX_SESSIONS_PER_IP              10
-    FSEND_LOG_LEVEL                               info
-    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE   0 (unlimited)
-    FSEND_SERVER_ADDR                             :8080
-    FSEND_RELAY_ENABLED                           true
-    FSEND_RELAY_ADDR                              :443
-    FSEND_RELAY_MAX_BYTES_PER_SESSION             0 (unlimited)
-    FSEND_RELAY_MAX_BYTES_PER_DAY                 0 (unlimited)
+    FSEND_LOG_LEVEL                              info
+  * FSEND_SERVER_PASSWORD                        (set)
+    FSEND_SERVER_ADDR                            :8080
+  * FSEND_SERVER_MAX_SESSIONS_PER_IP             10
+    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE  0 (unlimited)
+    FSEND_RELAY_ENABLED                          true
+    FSEND_RELAY_ADDR                             :443
+    FSEND_RELAY_MAX_BYTES_PER_SESSION            0 (unlimited)
+    FSEND_RELAY_MAX_BYTES_PER_DAY                0 (unlimited)
 ```
 
-Variables are grouped into **server-wide** controls (apply to the whole
-server, relay included), the **pairing** listener (TCP signaling/control
-plane), and **relay** settings (the UDP data plane, which also answers
-STUN).
+Variables fall into three groups: **server-wide** controls (logging and
+auth, which apply to every endpoint), the **pairing / control plane** (its
+TCP listener and per-IP session limits), and the **relay / data plane**
+(the UDP listener — which also answers STUN — and its byte limits).
 
 | Variable | Default | Notes |
 |---|---|---|
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/v1/health` — see [Require a password](#require-a-password-optional). |
+| `FSEND_SERVER_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP` | `0` (unlimited) | **Concurrency cap** — how many sessions one source IP may have **alive at once**. A session gates relay allocation too, so this caps relay access as well. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` | `0` (unlimited) | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
-| `FSEND_SERVER_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_RELAY_ENABLED` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
 | `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
 | `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap — wire bytes after compression. Defaults to unlimited; set a value to bound per-transfer bandwidth. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |

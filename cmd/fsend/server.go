@@ -288,13 +288,16 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		password = "(set)"
 	}
 	settings := []setting{
+		// Grouped: server-wide (log, password), then the pairing control
+		// plane (its listener + session limits), then the relay data plane
+		// (its listener + byte limits). Matches the docs table order.
 		{envLogLevel, logLevelName(cfg.logLevel), cfg.logLevel != slog.LevelInfo},
 		// Env-var name inlined (not a shared const) so gosec G101 doesn't
 		// mistake a password-named identifier for a hardcoded credential.
 		{"FSEND_SERVER_PASSWORD", password, cfg.serverPassword != ""},
+		{envServerAddr, cfg.httpAddr, cfg.httpAddr != defaultServerAddr},
 		{envMaxSessionsPerIP, capCount(cfg.maxSessionsPerIP), cfg.maxSessionsPerIP != defaultMaxSessionsPerIP},
 		{envMaxNewSessionsPerMin, capCount(cfg.maxNewSessionsPerMin), cfg.maxNewSessionsPerMin != defaultMaxNewSessionsPerMin},
-		{envServerAddr, cfg.httpAddr, cfg.httpAddr != defaultServerAddr},
 		{envRelayEnabled, strconv.FormatBool(cfg.enableRelay), !cfg.enableRelay},
 		{envRelayAddr, cfg.udpAddr, cfg.udpAddr != defaultRelayAddr},
 		{envMaxBytesPerSession, capBytes(cfg.maxBytesPerSession), cfg.maxBytesPerSession != defaultMaxBytesPerSession},
@@ -490,6 +493,9 @@ CONFIGURATION (environment variables — all optional)
                                       endpoints except /v1/health require the
                                       X-Fsend-Auth header. Connect with
                                       fsend --connect <host:port>,<password>.
+
+  Pairing (TCP signaling/control plane):
+    FSEND_SERVER_ADDR                 Default :8080 (TCP).
     FSEND_SERVER_MAX_SESSIONS_PER_IP  How many sessions one IP may have
                                       alive at once (concurrency cap; gates
                                       relay access too). Default 0 =
@@ -498,9 +504,6 @@ CONFIGURATION (environment variables — all optional)
                                       How many new sessions one IP may create
                                       per minute (rate cap). Default 0 =
                                       unlimited; set a positive value to cap.
-
-  Pairing (TCP signaling/control plane):
-    FSEND_SERVER_ADDR                 Default :8080 (TCP).
 
   Relay (UDP data plane — also answers STUN):
     FSEND_RELAY_ENABLED               Default true. false = pairing + STUN
