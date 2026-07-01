@@ -516,13 +516,12 @@ CONFIGURATION (environment variables — all optional)
                                       compression. Accepts B, KB, MB, GB,
                                       TB, or a plain byte count. Default 0 =
                                       unlimited; set a value to cap.
-    FSEND_RELAY_MAX_BYTES_PER_DAY     Server-wide wire bytes forwarded per
-                                      UTC day — the egress/cost ceiling.
-                                      Counts every forwarded datagram once,
-                                      both directions (= outbound bytes).
-                                      Same units. Default 0 = unlimited; once
-                                      hit, the relay stops forwarding until
-                                      00:00 UTC.
+    FSEND_RELAY_MAX_BYTES_PER_DAY     Server-wide outbound bytes forwarded
+                                      per UTC day — the egress/cost ceiling.
+                                      Each byte counts once (a 1 MB relayed
+                                      file ≈ 1 MB). Same units. Default 0 =
+                                      unlimited; once hit, the relay stops
+                                      forwarding until 00:00 UTC.
 
 LEARN MORE
   https://github.com/polius/fsend
