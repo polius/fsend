@@ -528,15 +528,23 @@ func TestServerPassword_OpenByDefault(t *testing.T) {
 // fakeRelay implements RelayAllocator with fixed responses, so the
 // relay-status handler can be exercised without standing up a UDP relay.
 type fakeRelay struct {
-	tok       relay.Token
-	reason    string
-	maxBytes  uint64
-	dead      bool
-	noForward bool
-	allocErr  error
+	tok         relay.Token
+	reason      string
+	maxBytes    uint64
+	dead        bool
+	noForward   bool
+	allocErr    error
+	allocCalls  int // number of Allocate() invocations
+	budgetAfter int // if >0, Allocate reports the budget spent once allocCalls exceeds it
 }
 
-func (f *fakeRelay) Allocate() (relay.Token, error) { return f.tok, f.allocErr }
+func (f *fakeRelay) Allocate() (relay.Token, error) {
+	f.allocCalls++
+	if f.budgetAfter > 0 && f.allocCalls > f.budgetAfter {
+		return relay.Token{}, relay.ErrBudgetExhausted
+	}
+	return f.tok, f.allocErr
+}
 func (f *fakeRelay) Status(t relay.Token) string    { return f.reason }
 func (f *fakeRelay) MaxBytesPerSession() uint64     { return f.maxBytes }
 func (f *fakeRelay) Healthy() bool                  { return !f.dead }
@@ -678,6 +686,73 @@ func TestRelayAllocate_BudgetExhausted(t *testing.T) {
 	if !body.BudgetExhausted {
 		t.Errorf("budget_exhausted = false, want true")
 	}
+}
+
+// TestRelayAllocate_BothPeersReuseToken locks in the lazy-once contract:
+// the relay token is minted on the first peer's allocate and reused for the
+// second, so the second peer never re-invokes Allocate. That's why a budget
+// spent between the two calls can't refuse the second peer — it gets the
+// cached token and converges via the in-flight breaker instead. The fake is
+// rigged to report the budget spent on any *second* Allocate; that must
+// never fire, proving the reuse.
+func TestRelayAllocate_BothPeersReuseToken(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          2 * time.Second,
+		PairedTTL:            5 * time.Second,
+		MaxSessionsPerIP:     10,
+		MaxNewSessionsPerMin: 100,
+	})
+	fr := &fakeRelay{tok: relay.Token{9, 9, 9}, budgetAfter: 1}
+	s.WithRelay(fr, 9999)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	cr := createSession(t, ts.URL, testSlot)
+	jresp := postJSON(t, ts.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
+	var jr JoinSessionResponse
+	if err := json.NewDecoder(jresp.Body).Decode(&jr); err != nil {
+		t.Fatal(err)
+	}
+	jresp.Body.Close()
+
+	sStatus, sBody := postRelayAllocate(t, ts.URL, cr.SessionID, cr.RoleToken)
+	rStatus, rBody := postRelayAllocate(t, ts.URL, jr.SessionID, jr.RoleToken)
+
+	if sStatus != 200 || rStatus != 200 {
+		t.Fatalf("allocate status: sender=%d receiver=%d, want 200/200", sStatus, rStatus)
+	}
+	if sBody.SessionToken == "" {
+		t.Fatal("sender got an empty relay token")
+	}
+	if rBody.SessionToken != sBody.SessionToken {
+		t.Errorf("token mismatch: sender=%q receiver=%q (both peers must share one token)",
+			sBody.SessionToken, rBody.SessionToken)
+	}
+	if rBody.BudgetExhausted {
+		t.Error("second peer got budget_exhausted; it must reuse the cached token, not re-allocate")
+	}
+	if fr.allocCalls != 1 {
+		t.Errorf("Allocate called %d times, want 1 (second peer must reuse the cached token)", fr.allocCalls)
+	}
+}
+
+// postRelayAllocate POSTs /v1/relay/allocate as one session peer and returns
+// the status and decoded body.
+func postRelayAllocate(t *testing.T, baseURL, sessionID, roleToken string) (int, RelayAllocateResponse) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/relay/allocate",
+		bytes.NewReader(mustJSON(t, RelayAllocateRequest{SessionID: sessionID})))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+roleToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body RelayAllocateResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	return resp.StatusCode, body
 }
 
 // TestRelayAllocate_ForwardingDisabledFlag checks the allocate response
