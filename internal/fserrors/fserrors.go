@@ -72,6 +72,10 @@ var (
 	// was torn down. Tells the user *why* the transfer stopped, instead
 	// of "connection interrupted, retrying" forever.
 	ErrRelayCapHit = errors.New("relay byte cap reached")
+	// E037 — the relay's server-wide daily byte budget is spent, so it
+	// stopped forwarding until the next UTC day. Distinct from E023: the
+	// limit is global, not per-session, and time-based rather than size.
+	ErrRelayBudgetExhausted = errors.New("relay daily budget exhausted")
 	// E024 — any CLI usage error (bad flag, bad arg shape, conflicting
 	// modes). Routine; never asks the user to file a bug.
 	ErrUsage = errors.New("usage error")
@@ -184,6 +188,13 @@ func (e Entry) Render() string {
 //
 // Placeholders like {addr}, {code}, {path} are filled in by the caller via
 // fmt.Sprintf when known; we use plain text so unknown contexts still render.
+
+// selfHostHint closes every server-limit error: the limits are the operator's
+// choice, so the surest fix is running your own server. Kept identical across
+// the rate-limit entries so the guidance never drifts.
+const selfHostHint = "\n  Or run your own fsend server, where you set the limits:\n" +
+	"    https://github.com/polius/fsend/blob/main/docs/self-hosting.md"
+
 var catalog = map[error]Entry{
 	ErrServerUnreachable: {
 		Code: "E001", Exit: 1,
@@ -280,9 +291,8 @@ var catalog = map[error]Entry{
 		Code: "E017", Exit: 17,
 		Message: "Too many attempts from your network — rate limit hit on the server.",
 		Action: "Wait a minute and try again, or switch servers:\n" +
-			"    fsend --connect <host:port>\n" +
-			"  Or self-host your own server (`fsend server`) and raise\n" +
-			"  FSEND_SERVER_MAX_SESSIONS_PER_IP / FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN.",
+			"    fsend --connect <host:port>" +
+			selfHostHint,
 	},
 	ErrServerRetired: {
 		Code: "E018", Exit: 18,
@@ -330,10 +340,17 @@ var catalog = map[error]Entry{
 		Message: "The server's transfer-size limit was reached. Transfer aborted.",
 		Action: "Only fallback transfers routed through the server count against this\n" +
 			"  limit; same-network and direct internet transfers are uncapped.\n" +
-			"  Workarounds:\n" +
-			"    - Run again from a different network so fsend can connect you directly.\n" +
-			"    - Self-host your own server (`fsend server`) and raise\n" +
-			"      FSEND_RELAY_MAX_BYTES_PER_SESSION.",
+			"  Run again from a different network so fsend can connect you directly." +
+			selfHostHint,
+	},
+	ErrRelayBudgetExhausted: {
+		Code: "E037", Exit: 37,
+		Message: "The server hit its daily transfer budget. Transfer aborted.",
+		Action: "Only fallback transfers routed through the server count against this\n" +
+			"  budget; same-network and direct internet transfers don't.\n" +
+			"  Run again from a different network so fsend can connect you directly,\n" +
+			"  or try again after 00:00 UTC, when the budget resets." +
+			selfHostHint,
 	},
 	ErrUsage: {
 		Code: "E024", Exit: 24,
@@ -370,7 +387,7 @@ var catalog = map[error]Entry{
 		Code: "E030", Exit: 30,
 		Message: "The server could not start.",
 		Action: "Fix the setting named above, or check that the ports are free and you\n" +
-			"  have permission to bind them (FSEND_PAIRING_ADDR, FSEND_RELAY_ADDR).\n" +
+			"  have permission to bind them (FSEND_SERVER_ADDR, FSEND_RELAY_ADDR).\n" +
 			"  Binding :443 may need elevated privileges.",
 	},
 	ErrPasswordRequired: {

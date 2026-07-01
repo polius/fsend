@@ -187,16 +187,19 @@ so anyone can verify the server holds nothing sensitive.
 | `sessions_active` | Pairing sessions live right now — current load. |
 | `sessions_created_total` | Sessions a sender opened since boot — total usage. |
 | `sessions_paired_total` | Sessions a receiver successfully joined. Compared to `sessions_created_total`, the gap is senders who never found a receiver (abandoned codes). |
-| `sessions_rejected_total.rate_limit` | Sessions refused by the per-IP rate cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN`) — bursts or brute-force. |
+| `sessions_rejected_total.rate_limit` | Sessions refused by the per-IP rate cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE`) — bursts or brute-force. |
 | `sessions_rejected_total.concurrency_limit` | Sessions refused by the per-IP concurrency cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP`). |
 | `sessions_rejected_total.unauthorized` | Wrong/missing `FSEND_SERVER_PASSWORD` — brute-force or misconfigured clients (always `0` on an open server). |
 | `relay.forwarding` | Whether the relay carries data (`false` in pairing + STUN-only mode). |
 | `relay.healthy` | Relay read loop alive — mirrors `/v1/health`'s 503 signal. |
 | `relay.transfers_active` | Relay transfers moving bytes right now. |
 | `relay.transfers_total` | Relay transfers that actually forwarded data since boot. Divide by `sessions_paired_total` for your relay-fallback rate; the rest connected directly (P2P). A climbing ratio means hole-punching is failing more often. |
-| `relay.transfers_capped_total` | Transfers cut off for hitting the byte cap — raise the cap if this climbs. |
-| `relay.bytes_forwarded_total` | Cumulative bytes relayed — what the relay is costing you. |
+| `relay.transfers_capped_total` | Transfers cut off for hitting the per-session byte cap — raise the cap if this climbs. |
+| `relay.transfers_budget_capped_total` | Transfers cut off because the daily budget was spent — the circuit breaker tripped. Climbing here means legit transfers are being denied; raise `FSEND_RELAY_MAX_BYTES_PER_DAY`. |
+| `relay.bytes_forwarded_total` | Cumulative bytes relayed since boot — what the relay is costing you. |
 | `relay.peak_transfer_bytes` | Largest single transfer so far; compare to your byte cap to see headroom. |
+| `relay.budget_max_bytes_per_day` | The configured daily budget (`0` = unlimited). |
+| `relay.budget_bytes_today` | Bytes forwarded so far in the current UTC day — watch it approach the budget to alert before the breaker trips. |
 
 The `relay` block is omitted when the server runs without a relay.
 
@@ -245,15 +248,16 @@ your overrides were picked up (the password value is never printed, only
 whether one is set):
 
 ```
-fsend server configuration (2 of 8 customized; * = changed from default):
-  * FSEND_SERVER_PASSWORD                      (set)
-  * FSEND_SERVER_MAX_SESSIONS_PER_IP           10
-    FSEND_LOG_LEVEL                            info
-    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN   0 (unlimited)
-    FSEND_PAIRING_ADDR                         :8080
-    FSEND_RELAY_ENABLED                        true
-    FSEND_RELAY_ADDR                           :443
-    FSEND_RELAY_MAX_BYTES_PER_SESSION          0 (unlimited)
+fsend server configuration (2 of 9 customized; * = changed from default):
+  * FSEND_SERVER_PASSWORD                         (set)
+  * FSEND_SERVER_MAX_SESSIONS_PER_IP              10
+    FSEND_LOG_LEVEL                               info
+    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE   0 (unlimited)
+    FSEND_SERVER_ADDR                             :8080
+    FSEND_RELAY_ENABLED                           true
+    FSEND_RELAY_ADDR                              :443
+    FSEND_RELAY_MAX_BYTES_PER_SESSION             0 (unlimited)
+    FSEND_RELAY_MAX_BYTES_PER_DAY                 0 (unlimited)
 ```
 
 Variables are grouped into **server-wide** controls (apply to the whole
@@ -266,11 +270,12 @@ STUN).
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/v1/health` — see [Require a password](#require-a-password-optional). |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP` | `0` (unlimited) | **Concurrency cap** — how many sessions one source IP may have **alive at once**. A session gates relay allocation too, so this caps relay access as well. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
-| `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN` | `0` (unlimited) | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
-| `FSEND_PAIRING_ADDR` | `:8080` | TCP signaling listener. |
+| `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` | `0` (unlimited) | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
+| `FSEND_SERVER_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_RELAY_ENABLED` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
 | `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
 | `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap — wire bytes after compression. Defaults to unlimited; set a value to bound per-transfer bandwidth. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |
+| `FSEND_RELAY_MAX_BYTES_PER_DAY` | `0` (unlimited) | **Egress budget** — wire bytes the relay forwards **per UTC day** across all sessions. The Denial-of-Wallet ceiling: once spent, the relay stops forwarding and refuses new transfers until 00:00 UTC. Bounds a distributed abuser that the per-IP caps can't. Same units as above. Defaults to unlimited; **set a value to bound your bandwidth bill**. |
 
 ### Pairing-only mode (no relay)
 

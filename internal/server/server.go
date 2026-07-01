@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -336,6 +337,13 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 		t, err := s.relayAllocator.Allocate()
 		if err != nil {
 			s.mu.Unlock()
+			// Budget spent: answer 200 with a flag (like ForwardingDisabled)
+			// so the client fails fast with a specific reason rather than
+			// treating an opaque 5xx as a generic connectivity failure.
+			if errors.Is(err, relay.ErrBudgetExhausted) {
+				writeJSON(w, http.StatusOK, RelayAllocateResponse{BudgetExhausted: true})
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, "alloc failed")
 			return
 		}

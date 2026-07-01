@@ -176,6 +176,12 @@ func TestClassifyRelayDrop_MapsReasons(t *testing.T) {
 			wantErr: fserrors.ErrRelayIdleTimeout,
 		},
 		{
+			name:    "daily_budget_is_bare_sentinel",
+			body:    `{"state":"evicted","reason":"daily_budget"}`,
+			runErr:  errors.New("connection reset"),
+			wantErr: fserrors.ErrRelayBudgetExhausted,
+		},
+		{
 			name:     "active_keeps_run_err",
 			body:     `{"state":"active"}`,
 			runErr:   errors.New("idle timeout"),

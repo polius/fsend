@@ -533,9 +533,10 @@ type fakeRelay struct {
 	maxBytes  uint64
 	dead      bool
 	noForward bool
+	allocErr  error
 }
 
-func (f *fakeRelay) Allocate() (relay.Token, error) { return f.tok, nil }
+func (f *fakeRelay) Allocate() (relay.Token, error) { return f.tok, f.allocErr }
 func (f *fakeRelay) Status(t relay.Token) string    { return f.reason }
 func (f *fakeRelay) MaxBytesPerSession() uint64     { return f.maxBytes }
 func (f *fakeRelay) Healthy() bool                  { return !f.dead }
@@ -638,6 +639,44 @@ func TestRelayStatus_IncludesConfiguredLimits(t *testing.T) {
 				t.Errorf("limit_bytes = %d, want %d", body.LimitBytes, c.wantBytes)
 			}
 		})
+	}
+}
+
+// TestRelayAllocate_BudgetExhausted checks a spent daily budget surfaces as
+// a 200 with the budget_exhausted flag (mirroring forwarding_disabled), so
+// the client fails fast with a specific reason instead of reading an opaque
+// 5xx as a generic connectivity failure.
+func TestRelayAllocate_BudgetExhausted(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          2 * time.Second,
+		PairedTTL:            5 * time.Second,
+		MaxSessionsPerIP:     10,
+		MaxNewSessionsPerMin: 100,
+	})
+	s.WithRelay(&fakeRelay{tok: relay.Token{1, 2, 3, 4}, allocErr: relay.ErrBudgetExhausted}, 9999)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	cr := createSession(t, ts.URL, testSlot)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/relay/allocate",
+		bytes.NewReader(mustJSON(t, RelayAllocateRequest{SessionID: cr.SessionID})))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cr.RoleToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body RelayAllocateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.BudgetExhausted {
+		t.Errorf("budget_exhausted = false, want true")
 	}
 }
 

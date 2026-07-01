@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -424,6 +425,62 @@ func TestMetricsCapHit(t *testing.T) {
 	cancel()
 	_ = serverConn.Close()
 	<-srvErr
+}
+
+// TestMetricsBudgetHit checks the daily budget trips the circuit breaker:
+// once the day's bytes are spent the transfer is evicted with the
+// daily_budget reason and transfers_budget_capped_total counts it.
+func TestMetricsBudgetHit(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
+	srv := NewServer(serverConn, ServerConfig{MaxBytesPerDay: 1}) // any forwarded datagram exceeds it
+	tok, _ := srv.Allocate()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Run(ctx) }()
+
+	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer clientA.Close()
+	clientB, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer clientB.Close()
+	connA := NewClient(clientA, relayAddr, tok)
+	connB := NewClient(clientB, relayAddr, tok)
+
+	_, _ = connA.WriteTo([]byte("x"), nil) // registers A as peerA
+	_, _ = connB.WriteTo([]byte("y"), nil) // first forwarded datagram trips the 1-byte budget
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.Metrics().TransfersBudgetCappedTotal > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := srv.Metrics().TransfersBudgetCappedTotal; got != 1 {
+		t.Errorf("transfers_budget_capped_total = %d, want 1", got)
+	}
+	if got := srv.Status(tok); got != ReasonBudgetHit {
+		t.Errorf("Status = %q, want %q", got, ReasonBudgetHit)
+	}
+
+	cancel()
+	_ = serverConn.Close()
+	<-srvErr
+}
+
+// TestAllocate_BudgetExhausted checks a new allocation is refused with the
+// sentinel once the day's budget is spent, so the signaling layer can flag
+// the response and clients fail fast rather than dialing a dead slot.
+func TestAllocate_BudgetExhausted(t *testing.T) {
+	srv := NewServer(nil, ServerConfig{MaxBytesPerDay: 10})
+	srv.budget.charge(time.Now(), 10) // spend it
+	if _, err := srv.Allocate(); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("Allocate err = %v, want ErrBudgetExhausted", err)
+	}
 }
 
 // TestMaxBytes_ZeroMeansUnlimited locks in the operator escape hatch: a

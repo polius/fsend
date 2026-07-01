@@ -68,7 +68,7 @@ For internet transfers (one peer behind NAT), the client needs a pairing
 server. To exercise the full client↔server↔client path:
 
 ```sh
-FSEND_PAIRING_ADDR=":18080" \
+FSEND_SERVER_ADDR=":18080" \
 FSEND_RELAY_ADDR=":18443" \
 FSEND_LOG_LEVEL=debug \
 /tmp/fsend server
@@ -93,7 +93,7 @@ Reset to the public default:
 Health check (the env var tells the probe where to look):
 
 ```sh
-FSEND_PAIRING_ADDR=":18080" /tmp/fsend server --health-check
+FSEND_SERVER_ADDR=":18080" /tmp/fsend server --health-check
 ```
 
 ### Common server env vars
@@ -101,7 +101,7 @@ FSEND_PAIRING_ADDR=":18080" /tmp/fsend server --health-check
 | Var | Default | Notes |
 |---|---|---|
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `FSEND_PAIRING_ADDR` | `:8080` | Signaling listener (TCP) |
+| `FSEND_SERVER_ADDR` | `:8080` | Signaling listener (TCP) |
 | `FSEND_RELAY_ADDR` | `:443` | Relay listener (UDP); also the STUN endpoint |
 | `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `1GB` | Per-session relay cap (wire bytes, post-compression). |
 
