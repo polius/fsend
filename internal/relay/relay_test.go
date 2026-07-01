@@ -427,10 +427,10 @@ func TestMetricsCapHit(t *testing.T) {
 	<-srvErr
 }
 
-// TestMetricsBudgetHit checks the daily budget trips the circuit breaker:
+// TestBudgetHitEvicts checks the daily budget trips the circuit breaker:
 // once the day's bytes are spent the transfer is evicted with the
-// daily_budget reason and transfers_budget_capped_total counts it.
-func TestMetricsBudgetHit(t *testing.T) {
+// daily_budget reason.
+func TestBudgetHitEvicts(t *testing.T) {
 	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
@@ -455,13 +455,10 @@ func TestMetricsBudgetHit(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if srv.Metrics().TransfersBudgetCappedTotal > 0 {
+		if srv.Status(tok) == ReasonBudgetHit {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	if got := srv.Metrics().TransfersBudgetCappedTotal; got != 1 {
-		t.Errorf("transfers_budget_capped_total = %d, want 1", got)
 	}
 	if got := srv.Status(tok); got != ReasonBudgetHit {
 		t.Errorf("Status = %q, want %q", got, ReasonBudgetHit)

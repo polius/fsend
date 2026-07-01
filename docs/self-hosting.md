@@ -195,11 +195,10 @@ so anyone can verify the server holds nothing sensitive.
 | `relay.transfers_active` | Relay transfers moving bytes right now. |
 | `relay.transfers_total` | Relay transfers that actually forwarded data since boot. Divide by `sessions_paired_total` for your relay-fallback rate; the rest connected directly (P2P). A climbing ratio means hole-punching is failing more often. |
 | `relay.transfers_capped_total` | Transfers cut off for hitting the per-session byte cap — raise the cap if this climbs. |
-| `relay.transfers_budget_capped_total` | Transfers cut off because the daily budget was spent — the circuit breaker tripped. Climbing here means legit transfers are being denied; raise `FSEND_RELAY_MAX_BYTES_PER_DAY`. |
 | `relay.bytes_forwarded_total` | Cumulative bytes relayed since boot — what the relay is costing you. |
 | `relay.peak_transfer_bytes` | Largest single transfer so far; compare to your byte cap to see headroom. |
 | `relay.budget_max_bytes_per_day` | The configured daily budget (`0` = unlimited). |
-| `relay.budget_bytes_today` | Bytes forwarded so far in the current UTC day — watch it approach the budget to alert before the breaker trips. |
+| `relay.budget_bytes_today` | Bytes forwarded so far in the current UTC day. Approaching `budget_max_bytes_per_day` is your early warning; reaching it means the breaker has tripped and transfers are being refused until 00:00 UTC. |
 
 The `relay` block is omitted when the server runs without a relay.
 

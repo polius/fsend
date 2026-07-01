@@ -54,40 +54,37 @@ type Server struct {
 	budget dayBudget
 
 	// Aggregate counters for /v1/metrics (cumulative since boot).
-	bytesForwarded        atomic.Uint64
-	peakTransferBytes     atomic.Uint64 // most any single transfer has forwarded
-	transfersCapped       atomic.Uint64 // transfers cut off for exceeding the per-session byte cap
-	transfersBudgetCapped atomic.Uint64 // transfers cut off because the daily budget was spent
-	transfersTotal        atomic.Uint64 // transfers that forwarded ≥1 byte; vs paired sessions = relay-fallback rate
+	bytesForwarded    atomic.Uint64
+	peakTransferBytes atomic.Uint64 // most any single transfer has forwarded
+	transfersCapped   atomic.Uint64 // transfers cut off for exceeding the per-session byte cap
+	transfersTotal    atomic.Uint64 // transfers that forwarded ≥1 byte; vs paired sessions = relay-fallback rate
 }
 
 // Metrics is an aggregate snapshot of relay activity for /v1/metrics.
 type Metrics struct {
-	Forwarding                 bool   `json:"forwarding"`
-	Healthy                    bool   `json:"healthy"`
-	TransfersActive            int    `json:"transfers_active"`
-	TransfersTotal             uint64 `json:"transfers_total"`
-	TransfersCappedTotal       uint64 `json:"transfers_capped_total"`
-	TransfersBudgetCappedTotal uint64 `json:"transfers_budget_capped_total"`
-	BytesForwardedTotal        uint64 `json:"bytes_forwarded_total"`
-	PeakTransferBytes          uint64 `json:"peak_transfer_bytes"`
-	BudgetMaxBytesPerDay       uint64 `json:"budget_max_bytes_per_day"` // 0 = unlimited
-	BudgetBytesToday           uint64 `json:"budget_bytes_today"`
+	Forwarding           bool   `json:"forwarding"`
+	Healthy              bool   `json:"healthy"`
+	TransfersActive      int    `json:"transfers_active"`
+	TransfersTotal       uint64 `json:"transfers_total"`
+	TransfersCappedTotal uint64 `json:"transfers_capped_total"`
+	BytesForwardedTotal  uint64 `json:"bytes_forwarded_total"`
+	PeakTransferBytes    uint64 `json:"peak_transfer_bytes"`
+	BudgetMaxBytesPerDay uint64 `json:"budget_max_bytes_per_day"` // 0 = unlimited
+	BudgetBytesToday     uint64 `json:"budget_bytes_today"`
 }
 
 // Metrics returns the current aggregate snapshot.
 func (s *Server) Metrics() Metrics {
 	return Metrics{
-		Forwarding:                 !s.cfg.DisableForwarding,
-		Healthy:                    s.healthy.Load(),
-		TransfersActive:            s.ActiveAllocations(),
-		TransfersTotal:             s.transfersTotal.Load(),
-		TransfersCappedTotal:       s.transfersCapped.Load(),
-		TransfersBudgetCappedTotal: s.transfersBudgetCapped.Load(),
-		BytesForwardedTotal:        s.bytesForwarded.Load(),
-		PeakTransferBytes:          s.peakTransferBytes.Load(),
-		BudgetMaxBytesPerDay:       s.cfg.MaxBytesPerDay,
-		BudgetBytesToday:           s.budget.usedToday(time.Now()),
+		Forwarding:           !s.cfg.DisableForwarding,
+		Healthy:              s.healthy.Load(),
+		TransfersActive:      s.ActiveAllocations(),
+		TransfersTotal:       s.transfersTotal.Load(),
+		TransfersCappedTotal: s.transfersCapped.Load(),
+		BytesForwardedTotal:  s.bytesForwarded.Load(),
+		PeakTransferBytes:    s.peakTransferBytes.Load(),
+		BudgetMaxBytesPerDay: s.cfg.MaxBytesPerDay,
+		BudgetBytesToday:     s.budget.usedToday(time.Now()),
 	}
 }
 
@@ -381,7 +378,6 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 	// Daily budget (Denial-of-Wallet circuit breaker): once the day's bytes
 	// are spent, evict and drop until the UTC-midnight rollover.
 	if s.budget.charge(now, wireSize) {
-		s.transfersBudgetCapped.Add(1)
 		s.evict(token, ReasonBudgetHit)
 		return
 	}
