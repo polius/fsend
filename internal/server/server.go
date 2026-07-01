@@ -332,7 +332,10 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	// One token per session: both peers must end up with the same value
 	// so the relay's source-addr de-mux pairs them. Allocate lazily on
-	// first call; subsequent calls reuse.
+	// first call; subsequent calls reuse. So only the first caller sees a
+	// budget-exhausted refusal here; if the budget is spent between the two
+	// calls, the second peer gets the cached token and instead converges on
+	// the same reason via the in-flight breaker (handle → status probe).
 	if !sess.relayTokenSet {
 		t, err := s.relayAllocator.Allocate()
 		if err != nil {

@@ -193,7 +193,9 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 		// A spent daily budget is terminal and self-explanatory. Surface it
 		// as-is (not the generic errPairedGone), and leave the session for the
 		// receiver to reach the relay and learn the same reason — it's the
-		// budget, not the pairing, that failed. The session expires via TTL.
+		// budget, not the pairing, that failed. The session (and its per-IP
+		// count) is reclaimed at PairedTTL rather than now; fine since the
+		// budget is already the degraded state and the message says to wait.
 		if errors.Is(err, fserrors.ErrRelayBudgetExhausted) {
 			return nil, err
 		}

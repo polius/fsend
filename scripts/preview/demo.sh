@@ -69,7 +69,7 @@ do_setup() {
   ensure_payload
   ln -f "$PAYLOAD" "$HOME_DIR/$FILE"
 
-  FSEND_PAIRING_ADDR="$HTTP_ADDR" FSEND_RELAY_ADDR="$UDP_ADDR" FSEND_LOG_LEVEL=error \
+  FSEND_SERVER_ADDR="$HTTP_ADDR" FSEND_RELAY_ADDR="$UDP_ADDR" FSEND_LOG_LEVEL=error \
     "$bin" server >"$ROOT/server.log" 2>&1 &
   echo $! > "$ROOT/server.pid"
   disown
