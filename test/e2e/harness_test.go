@@ -106,7 +106,7 @@ func startHarness() (*harness, error) {
 
 	hh.serverCmd = exec.Command(hh.fsendBin, "server")
 	hh.serverCmd.Env = append(os.Environ(),
-		"FSEND_PAIRING_ADDR=:"+strconv.Itoa(hh.httpPort),
+		"FSEND_SERVER_ADDR=:"+strconv.Itoa(hh.httpPort),
 		"FSEND_RELAY_ADDR=:"+strconv.Itoa(hh.udpPort),
 		"FSEND_LOG_LEVEL=warn",
 		// Both peers in this harness come from 127.0.0.1, so a single
@@ -115,7 +115,7 @@ func startHarness() (*harness, error) {
 		// the production default of 30/min would throttle the harness
 		// itself. Production sender/receiver come from distinct IPs
 		// and each get their own bucket.
-		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN=10000",
+		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE=10000",
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP=1000",
 	)
 	hh.serverCmd.Stdout = &hh.serverOutput

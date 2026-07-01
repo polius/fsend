@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -331,11 +332,21 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	// One token per session: both peers must end up with the same value
 	// so the relay's source-addr de-mux pairs them. Allocate lazily on
-	// first call; subsequent calls reuse.
+	// first call; subsequent calls reuse. So only the first caller sees a
+	// budget-exhausted refusal here; if the budget is spent between the two
+	// calls, the second peer gets the cached token and instead converges on
+	// the same reason via the in-flight breaker (handle → status probe).
 	if !sess.relayTokenSet {
 		t, err := s.relayAllocator.Allocate()
 		if err != nil {
 			s.mu.Unlock()
+			// Budget spent: answer 200 with a flag (like ForwardingDisabled)
+			// so the client fails fast with a specific reason rather than
+			// treating an opaque 5xx as a generic connectivity failure.
+			if errors.Is(err, relay.ErrBudgetExhausted) {
+				writeJSON(w, http.StatusOK, RelayAllocateResponse{BudgetExhausted: true})
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, "alloc failed")
 			return
 		}

@@ -97,11 +97,16 @@ type RelayAllocateRequest struct {
 // won't carry data. RelayAddr is still returned (it's the STUN server);
 // the client uses it for srflx gathering but skips the relay fallback.
 // omitempty so older servers round-trip as false (forwarding capable).
+//
+// BudgetExhausted is set when the relay's daily byte budget is already
+// spent. Like ForwardingDisabled it lets the client fail fast with a
+// specific reason instead of dialing a slot that can't forward.
 type RelayAllocateResponse struct {
 	RelayAddr          string `json:"relay_addr"`
 	SessionToken       string `json:"session_token"` // Crockford-base32 encoded 16 bytes
 	TTLSeconds         int    `json:"ttl_seconds"`
 	ForwardingDisabled bool   `json:"forwarding_disabled,omitempty"`
+	BudgetExhausted    bool   `json:"budget_exhausted,omitempty"`
 }
 
 // HealthResponse is the body of GET /v1/health.

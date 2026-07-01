@@ -124,6 +124,9 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	if allocErr != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)
 	}
+	if alloc.BudgetExhausted {
+		return fserrors.ErrRelayBudgetExhausted
+	}
 	if alloc.ForwardingDisabled {
 		return fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 	}
@@ -159,6 +162,8 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID,
 				fserrors.ErrRelayCapHit, uxlog.HumanBytes(int64(status.LimitBytes)))
 		}
 		return fserrors.ErrRelayCapHit
+	case relay.ReasonBudgetHit:
+		return fserrors.ErrRelayBudgetExhausted
 	case relay.ReasonIdle:
 		return fserrors.ErrRelayIdleTimeout
 	}

@@ -100,6 +100,7 @@ func runServer() error {
 	defer func() { _ = udpListener.Close() }()
 	relaySrv := relay.NewServer(udpListener, relay.ServerConfig{
 		MaxBytesPerSession: cfg.maxBytesPerSession,
+		MaxBytesPerDay:     cfg.maxBytesPerDay,
 		Logger:             logger,
 		DisableForwarding:  !cfg.enableRelay,
 	})
@@ -202,22 +203,24 @@ func drainRelay(ctx context.Context, r *relay.Server, logger *slog.Logger) {
 // loader and the startup summary so the two can't drift on a rename or a
 // changed default.
 const (
-	envPairingAddr          = "FSEND_PAIRING_ADDR"
+	envServerAddr           = "FSEND_SERVER_ADDR"
 	envRelayAddr            = "FSEND_RELAY_ADDR"
 	envMaxSessionsPerIP     = "FSEND_SERVER_MAX_SESSIONS_PER_IP"
-	envMaxNewSessionsPerMin = "FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN"
+	envMaxNewSessionsPerMin = "FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE"
 	envMaxBytesPerSession   = "FSEND_RELAY_MAX_BYTES_PER_SESSION"
+	envMaxBytesPerDay       = "FSEND_RELAY_MAX_BYTES_PER_DAY"
 	envRelayEnabled         = "FSEND_RELAY_ENABLED"
 	envLogLevel             = "FSEND_LOG_LEVEL"
 
-	defaultPairingAddr = ":8080"
-	defaultRelayAddr   = ":443"
-	// The three caps default to 0 = unlimited: an unconfigured server
-	// imposes no per-IP session limits and no relay byte cap. Operators
-	// opt into protection by setting a positive value.
+	defaultServerAddr = ":8080"
+	defaultRelayAddr  = ":443"
+	// The caps default to 0 = unlimited: an unconfigured server imposes no
+	// per-IP session limits and no relay byte caps. Operators opt into
+	// protection by setting a positive value.
 	defaultMaxSessionsPerIP     = 0
 	defaultMaxNewSessionsPerMin = 0
 	defaultMaxBytesPerSession   = 0
+	defaultMaxBytesPerDay       = 0
 	defaultRelayEnabled         = true
 )
 
@@ -229,13 +232,14 @@ type serverRuntimeConfig struct {
 	maxSessionsPerIP     int
 	maxNewSessionsPerMin int
 	maxBytesPerSession   uint64
+	maxBytesPerDay       uint64
 	serverPassword       string
 	enableRelay          bool
 }
 
 func loadServerConfig() (serverRuntimeConfig, error) {
 	cfg := serverRuntimeConfig{
-		httpAddr:       envOr(envPairingAddr, defaultPairingAddr),
+		httpAddr:       envOr(envServerAddr, defaultServerAddr),
 		udpAddr:        envOr(envRelayAddr, defaultRelayAddr),
 		serverPassword: os.Getenv("FSEND_SERVER_PASSWORD"),
 	}
@@ -247,6 +251,9 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		return cfg, err
 	}
 	if cfg.maxBytesPerSession, err = envBytes(envMaxBytesPerSession, defaultMaxBytesPerSession); err != nil {
+		return cfg, err
+	}
+	if cfg.maxBytesPerDay, err = envBytes(envMaxBytesPerDay, defaultMaxBytesPerDay); err != nil {
 		return cfg, err
 	}
 	if cfg.enableRelay, err = envBool(envRelayEnabled, defaultRelayEnabled); err != nil {
@@ -281,16 +288,20 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		password = "(set)"
 	}
 	settings := []setting{
+		// Grouped: server-wide (log, password), then the pairing control
+		// plane (its listener + session limits), then the relay data plane
+		// (its listener + byte limits). Matches the docs table order.
 		{envLogLevel, logLevelName(cfg.logLevel), cfg.logLevel != slog.LevelInfo},
 		// Env-var name inlined (not a shared const) so gosec G101 doesn't
 		// mistake a password-named identifier for a hardcoded credential.
 		{"FSEND_SERVER_PASSWORD", password, cfg.serverPassword != ""},
+		{envServerAddr, cfg.httpAddr, cfg.httpAddr != defaultServerAddr},
 		{envMaxSessionsPerIP, capCount(cfg.maxSessionsPerIP), cfg.maxSessionsPerIP != defaultMaxSessionsPerIP},
 		{envMaxNewSessionsPerMin, capCount(cfg.maxNewSessionsPerMin), cfg.maxNewSessionsPerMin != defaultMaxNewSessionsPerMin},
-		{envPairingAddr, cfg.httpAddr, cfg.httpAddr != defaultPairingAddr},
 		{envRelayEnabled, strconv.FormatBool(cfg.enableRelay), !cfg.enableRelay},
 		{envRelayAddr, cfg.udpAddr, cfg.udpAddr != defaultRelayAddr},
 		{envMaxBytesPerSession, capBytes(cfg.maxBytesPerSession), cfg.maxBytesPerSession != defaultMaxBytesPerSession},
+		{envMaxBytesPerDay, capBytes(cfg.maxBytesPerDay), cfg.maxBytesPerDay != defaultMaxBytesPerDay},
 	}
 
 	width, modified := 0, 0
@@ -439,7 +450,7 @@ func envBytes(name string, def uint64) (uint64, error) {
 // HTTP address. Exits 0 on healthy, 1 on anything else. Designed for
 // Docker HEALTHCHECK.
 func healthCheck() error {
-	addr := envOr(envPairingAddr, defaultPairingAddr)
+	addr := envOr(envServerAddr, defaultServerAddr)
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}
@@ -482,17 +493,17 @@ CONFIGURATION (environment variables — all optional)
                                       endpoints except /v1/health require the
                                       X-Fsend-Auth header. Connect with
                                       fsend --connect <host:port>,<password>.
+
+  Pairing (TCP signaling/control plane):
+    FSEND_SERVER_ADDR                 Default :8080 (TCP).
     FSEND_SERVER_MAX_SESSIONS_PER_IP  How many sessions one IP may have
                                       alive at once (concurrency cap; gates
                                       relay access too). Default 0 =
                                       unlimited; set a positive value to cap.
-    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MIN
+    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE
                                       How many new sessions one IP may create
                                       per minute (rate cap). Default 0 =
                                       unlimited; set a positive value to cap.
-
-  Pairing (TCP signaling/control plane):
-    FSEND_PAIRING_ADDR                Default :8080 (TCP).
 
   Relay (UDP data plane — also answers STUN):
     FSEND_RELAY_ENABLED               Default true. false = pairing + STUN
@@ -505,6 +516,12 @@ CONFIGURATION (environment variables — all optional)
                                       compression. Accepts B, KB, MB, GB,
                                       TB, or a plain byte count. Default 0 =
                                       unlimited; set a value to cap.
+    FSEND_RELAY_MAX_BYTES_PER_DAY     Server-wide outbound bytes forwarded
+                                      per UTC day — the egress/cost ceiling.
+                                      Each byte counts once (a 1 MB relayed
+                                      file ≈ 1 MB). Same units. Default 0 =
+                                      unlimited; once hit, the relay stops
+                                      forwarding until 00:00 UTC.
 
 LEARN MORE
   https://github.com/polius/fsend

@@ -49,10 +49,14 @@ type Server struct {
 	// can converge while in-flight sessions finish.
 	draining atomic.Bool
 
+	// budget is the global per-UTC-day byte ceiling (Denial-of-Wallet
+	// circuit breaker). Zero limit = unlimited.
+	budget dayBudget
+
 	// Aggregate counters for /v1/metrics (cumulative since boot).
 	bytesForwarded    atomic.Uint64
 	peakTransferBytes atomic.Uint64 // most any single transfer has forwarded
-	transfersCapped   atomic.Uint64 // transfers cut off for exceeding the byte cap
+	transfersCapped   atomic.Uint64 // transfers cut off for exceeding the per-session byte cap
 	transfersTotal    atomic.Uint64 // transfers that forwarded ≥1 byte; vs paired sessions = relay-fallback rate
 }
 
@@ -65,6 +69,8 @@ type Metrics struct {
 	TransfersCappedTotal uint64 `json:"transfers_capped_total"`
 	BytesForwardedTotal  uint64 `json:"bytes_forwarded_total"`
 	PeakTransferBytes    uint64 `json:"peak_transfer_bytes"`
+	// Live usage only; the configured limit is not exposed on purpose.
+	BudgetBytesToday uint64 `json:"budget_bytes_today"`
 }
 
 // Metrics returns the current aggregate snapshot.
@@ -77,6 +83,7 @@ func (s *Server) Metrics() Metrics {
 		TransfersCappedTotal: s.transfersCapped.Load(),
 		BytesForwardedTotal:  s.bytesForwarded.Load(),
 		PeakTransferBytes:    s.peakTransferBytes.Load(),
+		BudgetBytesToday:     s.budget.usedToday(time.Now()),
 	}
 }
 
@@ -113,7 +120,10 @@ type ServerConfig struct {
 	// 0 means unlimited. The unset default (1 GB) is applied by the env
 	// layer in cmd/fsend, so a bare ServerConfig{} here is uncapped.
 	MaxBytesPerSession uint64
-	Logger             *slog.Logger
+	// MaxBytesPerDay caps wire bytes the relay forwards per UTC day across
+	// all sessions — the Denial-of-Wallet ceiling. 0 means unlimited.
+	MaxBytesPerDay uint64
+	Logger         *slog.Logger
 	// DisableForwarding makes the relay answer STUN but never carry data
 	// (pairing + hole-punching only). Negative so the zero value forwards.
 	DisableForwarding bool
@@ -164,6 +174,7 @@ func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 		allocs:    make(map[Token]*allocation),
 		tombstone: make(map[Token]tombstoneEntry),
 	}
+	s.budget.limit = cfg.MaxBytesPerDay
 	s.healthy.Store(true) // assume up until Run proves otherwise
 	return s
 }
@@ -228,6 +239,12 @@ func (s *Server) Status(t Token) string {
 func (s *Server) Allocate() (Token, error) {
 	if s.draining.Load() {
 		return Token{}, errors.New("relay: server is draining")
+	}
+	// Refuse up front when the day's budget is already spent, so both peers
+	// fail fast with a clear reason. (A budget that trips mid-transfer is
+	// handled in handle, via the same eviction path as the per-session cap.)
+	if s.budget.exhausted(time.Now()) {
+		return Token{}, ErrBudgetExhausted
 	}
 	var t Token
 	if _, err := rand.Read(t[:]); err != nil {
@@ -319,7 +336,8 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 		return // unknown token = silently drop (likely stale)
 	}
 
-	a.lastActivity.Store(time.Now().UnixNano())
+	now := time.Now()
+	a.lastActivity.Store(now.UnixNano())
 
 	// Determine forward direction.
 	var dst *net.UDPAddr
@@ -353,6 +371,13 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 	if s.cfg.MaxBytesPerSession > 0 && total > s.cfg.MaxBytesPerSession {
 		s.transfersCapped.Add(1)
 		s.evict(token, ReasonCapHit)
+		return
+	}
+
+	// Daily budget (Denial-of-Wallet circuit breaker): once the day's bytes
+	// are spent, evict and drop until the UTC-midnight rollover.
+	if s.budget.charge(now, wireSize) {
+		s.evict(token, ReasonBudgetHit)
 		return
 	}
 
@@ -475,9 +500,15 @@ func (s *Server) sweep(now time.Time) {
 
 // Eviction reasons surfaced through Status().
 const (
-	ReasonCapHit = "cap_hit"
-	ReasonIdle   = "idle"
+	ReasonCapHit    = "cap_hit"
+	ReasonBudgetHit = "daily_budget"
+	ReasonIdle      = "idle"
 )
+
+// ErrBudgetExhausted is returned by Allocate when the daily byte budget is
+// already spent, so the signaling layer can flag the response and clients
+// can fail fast with a specific reason.
+var ErrBudgetExhausted = errors.New("relay: daily byte budget exhausted")
 
 // udpEqual reports whether two UDPAddrs refer to the same endpoint.
 func udpEqual(a, b *net.UDPAddr) bool {

@@ -190,6 +190,15 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 	// Establish the underlying data path: ICE-direct first, relay fallback.
 	pc, pathInfo, err := establishInternetDataPath(ctx, f, client, created, waitResp)
 	if err != nil {
+		// A spent daily budget is terminal and self-explanatory. Surface it
+		// as-is (not the generic errPairedGone), and leave the session for the
+		// receiver to reach the relay and learn the same reason — it's the
+		// budget, not the pairing, that failed. The session (and its per-IP
+		// count) is reclaimed at PairedTTL rather than now; fine since the
+		// budget is already the degraded state and the message says to wait.
+		if errors.Is(err, fserrors.ErrRelayBudgetExhausted) {
+			return nil, err
+		}
 		deleteSession()
 		if ctx.Err() == nil {
 			err = fmt.Errorf("%w: %v", errPairedGone, err)
@@ -356,6 +365,9 @@ func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID,
 	alloc, err := client.AllocateRelay(ctx, sessionID, roleToken)
 	if err != nil {
 		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
+	}
+	if alloc.BudgetExhausted {
+		return nil, connpath.Info{}, fserrors.ErrRelayBudgetExhausted
 	}
 	if alloc.ForwardingDisabled {
 		return nil, connpath.Info{}, fmt.Errorf("%w: this server has relay forwarding disabled", fserrors.ErrConnectFailed)
