@@ -65,7 +65,7 @@ func TestMetrics_Shape(t *testing.T) {
 	assertKeys(t, raw["relay"], "relay",
 		"forwarding", "healthy", "transfers_active", "transfers_total",
 		"transfers_capped_total", "bytes_forwarded_total", "peak_transfer_bytes",
-		"budget_max_bytes_per_day", "budget_bytes_today")
+		"budget_bytes_today")
 }
 
 func assertKeys(t *testing.T, v any, name string, want ...string) {

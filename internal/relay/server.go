@@ -69,8 +69,8 @@ type Metrics struct {
 	TransfersCappedTotal uint64 `json:"transfers_capped_total"`
 	BytesForwardedTotal  uint64 `json:"bytes_forwarded_total"`
 	PeakTransferBytes    uint64 `json:"peak_transfer_bytes"`
-	BudgetMaxBytesPerDay uint64 `json:"budget_max_bytes_per_day"` // 0 = unlimited
-	BudgetBytesToday     uint64 `json:"budget_bytes_today"`
+	// Live usage only; the configured limit is not exposed on purpose.
+	BudgetBytesToday uint64 `json:"budget_bytes_today"`
 }
 
 // Metrics returns the current aggregate snapshot.
@@ -83,7 +83,6 @@ func (s *Server) Metrics() Metrics {
 		TransfersCappedTotal: s.transfersCapped.Load(),
 		BytesForwardedTotal:  s.bytesForwarded.Load(),
 		PeakTransferBytes:    s.peakTransferBytes.Load(),
-		BudgetMaxBytesPerDay: s.cfg.MaxBytesPerDay,
 		BudgetBytesToday:     s.budget.usedToday(time.Now()),
 	}
 }
