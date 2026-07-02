@@ -361,6 +361,11 @@ func printSendSummary(f *flags, total, moved int64, skippedFiles int, elapsed ti
 // summaries. moved below total adds a "(X sent)" clause and bases the rate on
 // moved alone.
 func summaryParts(total, moved int64, verb string, elapsed time.Duration, path connpath.Info) []string {
+	// A stream's total is unknown up front (0); by summary time the moved
+	// count is the size — "Sent · 0 B" for a 15 MB pipe would be a lie.
+	if moved > total {
+		total = moved
+	}
 	size := uxlog.HumanBytes(total)
 	if moved < total {
 		size += " (" + uxlog.HumanBytes(moved) + " " + verb + ")"

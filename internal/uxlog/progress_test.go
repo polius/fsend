@@ -3,7 +3,9 @@ package uxlog
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 // silenceStderr redirects os.Stderr to /dev/null for the duration of the
@@ -122,5 +124,29 @@ func TestProgress_PlainModePartialSilent(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Fatalf("partial plain progress should be silent, got %q", out)
+	}
+}
+
+// An unknown-total (stdin) stream must show throughput once past
+// HumanRate's noise floor — a bare byte counter is all a long pipe would
+// otherwise ever display.
+func TestProgress_PlainModeUnknownTotalShowsRate(t *testing.T) {
+	var buf bytes.Buffer
+	p := &plainProgress{w: &buf, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second)}
+	p.add(5 * 1000 * 1000) // 5 MB over ~2s → ~2.5 MB/s
+	out := buf.String()
+	if !strings.Contains(out, "5 MB") {
+		t.Errorf("missing byte counter: %q", out)
+	}
+	if !strings.Contains(out, "/s") {
+		t.Errorf("unknown-total line missing rate: %q", out)
+	}
+
+	// Below the noise floor: counter only, no misleading rate.
+	buf.Reset()
+	p2 := &plainProgress{w: &buf, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second)}
+	p2.add(10 * 1000)
+	if out := buf.String(); strings.Contains(out, "/s") {
+		t.Errorf("sub-floor stream must not show a rate: %q", out)
 	}
 }
