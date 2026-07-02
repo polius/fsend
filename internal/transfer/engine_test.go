@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -312,6 +313,9 @@ func TestEngine_SkipIdenticalOnResend(t *testing.T) {
 // untouched, so the file still classifies identical — but the new mode must
 // still land on the receiver's copy instead of being silently lost.
 func TestEngine_PermissionChangePropagatesOnIdenticalResend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits; the exec bit is meaningless there")
+	}
 	src, dst := t.TempDir(), t.TempDir()
 	sp := filepath.Join(src, "deploy.sh")
 	writeFile(t, sp, []byte("#!/bin/sh\necho hi\n"))
