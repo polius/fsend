@@ -233,12 +233,16 @@ func recvFilesToSink(ctx context.Context, s *Streams, hello *wire.SenderHello, e
 	if err := sendDecisions(s.Control, []wire.Decision{{Index: 0, Action: wire.DecisionSend}}); err != nil {
 		return fmt.Errorf("recv: decisions: %w", err)
 	}
-	if err := streamPayload(ctx, s, opts.Sink, func(n uint64) {
-		if opts.ProgressFn != nil {
-			opts.ProgressFn(0, n)
+	// A zero-byte file carries no data phase (the sender skips it), so waiting
+	// on streamPayload would hang until the idle timeout. Nothing to write.
+	if entries[0].Size > 0 {
+		if err := streamPayload(ctx, s, opts.Sink, func(n uint64) {
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(0, n)
+			}
+		}); err != nil {
+			return err
 		}
-	}); err != nil {
-		return err
 	}
 	return finishRecv(s)
 }
