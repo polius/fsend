@@ -113,6 +113,30 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			"--update and --uninstall are mutually exclusive",
 		},
 		{
+			// Regression: `fsend report.pdf --update` ran the updater and
+			// silently dropped the file the user asked to send.
+			"update_with_positional",
+			[]string{"report.pdf", "--update"},
+			"--update cannot be combined with positional arguments",
+		},
+		{
+			"update_with_yes",
+			[]string{"--update", "--yes"},
+			"--update cannot be combined with --yes",
+		},
+		{
+			// Worst case of the same hole: `--uninstall --yes` in a mangled
+			// script deleted the binary when a transfer was intended.
+			"uninstall_with_positional",
+			[]string{"somefile", "--uninstall"},
+			"--uninstall cannot be combined with positional arguments",
+		},
+		{
+			"uninstall_with_out",
+			[]string{"--uninstall", "--out=/tmp"},
+			"--uninstall cannot be combined with --out",
+		},
+		{
 			// --preview is send-side; rejected when the arg is a code.
 			"preview_on_receive",
 			[]string{"--preview", "abc-defg-jkm"},
@@ -149,6 +173,18 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 				t.Errorf("got %q, want substring %q", err.Error(), c.wantSub)
 			}
 		})
+	}
+}
+
+// --uninstall --yes is documented (skip the confirmation), so the guard
+// must exempt it — unlike --update, where --yes answers nothing.
+func TestMaintenanceGuard_AllowsYesForUninstall(t *testing.T) {
+	cmd := rootCmd()
+	if err := cmd.ParseFlags([]string{"--uninstall", "--yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenanceGuard(cmd, &flags{}, "--uninstall", true); err != nil {
+		t.Fatalf("--uninstall --yes must be allowed, got %v", err)
 	}
 }
 
