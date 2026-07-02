@@ -109,6 +109,9 @@ func TestLoad_CorruptedJSON(t *testing.T) {
 }
 
 func TestLoad_PermissionDenied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("0o000 does not make a file unreadable on Windows")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("root reads through file modes")
 	}
