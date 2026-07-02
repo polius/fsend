@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -93,6 +94,22 @@ func Announce(code string, ip net.IP) (*mdns.Conn, error) {
 		return nil, fmt.Errorf("landisc: mdns server: %w", err)
 	}
 	return conn, nil
+}
+
+// StopAnnounce closes an announcement conn, but never blocks past
+// watchdogGrace: pion/mdns's Close has been observed to wedge forever. Past
+// the grace we abandon it, leaking the goroutine until process exit — the
+// same tradeoff Query makes.
+func StopAnnounce(conn io.Closer) {
+	if conn == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() { _ = conn.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(watchdogGrace):
+	}
 }
 
 // QueryResult bundles the discovered peer's address + port.

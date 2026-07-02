@@ -97,7 +97,9 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 		return nil, fmt.Errorf("%w: mDNS announce: %v", fserrors.ErrLANListenerFailed, err)
 	}
 	var stopMDNSOnce sync.Once
-	stopMDNS := func() { stopMDNSOnce.Do(func() { _ = mdnsConn.Close() }) }
+	// Bounded: a synchronous Close could wedge, hanging pairOverLAN and the
+	// coordinator draining lanCh. See landisc.StopAnnounce.
+	stopMDNS := func() { stopMDNSOnce.Do(func() { landisc.StopAnnounce(mdnsConn) }) }
 
 	// Keep accepting until the real receiver completes the handshake or the
 	// pairing window closes. A malicious LAN host can reach the deterministic
