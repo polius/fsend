@@ -3,6 +3,7 @@ package transfer
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/polius/fsend/internal/fserrors"
@@ -56,6 +57,12 @@ func (m excludeMatcher) match(rel string) bool {
 // letters, UNC paths, and empties — even when not running on Windows, since
 // the bytes still arrive over the wire.
 func SanitizeRelativePath(p string) (string, error) {
+	return sanitizeRelativePath(p, runtime.GOOS)
+}
+
+// sanitizeRelativePath is SanitizeRelativePath with the receiver OS injected,
+// so the Windows-only hazard gate can be exercised from tests on any host.
+func sanitizeRelativePath(p, goos string) (string, error) {
 	if p == "" {
 		return "", fmt.Errorf("empty path")
 	}
@@ -78,9 +85,55 @@ func SanitizeRelativePath(p string) (string, error) {
 		if part == ".." {
 			return "", fmt.Errorf("path traversal rejected: %q", p)
 		}
+		// Windows-only: ':' , reserved names, and trailing dots/spaces are
+		// legal in Unix filenames (e.g. aux.c), so gate on the receiver OS to
+		// avoid breaking Unix→Unix transfers.
+		if goos == "windows" {
+			if reason := windowsPathHazard(part); reason != "" {
+				return "", fmt.Errorf("windows-unsafe path (%s) rejected: %q", reason, p)
+			}
+		}
 	}
 	if filepath.VolumeName(clean) != "" {
 		return "", fmt.Errorf("volume name rejected: %q", p)
 	}
 	return clean, nil
+}
+
+// windowsPathHazard reports why a path component is unsafe to create on
+// Windows, or "" if it's fine. Each hazard makes the file that lands differ
+// from the name the receiver consented to (none is a traversal).
+func windowsPathHazard(component string) string {
+	if strings.ContainsRune(component, ':') {
+		// "notes:secret" writes the alternate data stream "secret" on "notes".
+		return "alternate data stream ':'"
+	}
+	if isReservedWindowsName(component) {
+		// CON/NUL/COM1 resolve to devices, not files.
+		return "reserved device name"
+	}
+	if n := len(component); n > 0 && (component[n-1] == '.' || component[n-1] == ' ') {
+		// Windows strips a trailing dot/space, so "report." collides with "report".
+		return "trailing dot or space"
+	}
+	return ""
+}
+
+// isReservedWindowsName reports whether a component maps to a Windows reserved
+// device (CON, PRN, AUX, NUL, COM1-9, LPT1-9), case-insensitively and ignoring
+// any extension ("NUL.txt" is still the NUL device).
+func isReservedWindowsName(component string) bool {
+	stem := component
+	if i := strings.IndexByte(stem, '.'); i >= 0 {
+		stem = stem[:i]
+	}
+	up := strings.ToUpper(stem)
+	switch up {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(up) == 4 && (strings.HasPrefix(up, "COM") || strings.HasPrefix(up, "LPT")) {
+		return up[3] >= '1' && up[3] <= '9'
+	}
+	return false
 }

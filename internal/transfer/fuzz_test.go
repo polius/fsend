@@ -16,6 +16,7 @@ func FuzzSanitizeRelativePath(f *testing.F) {
 		"../escape", "a/../../escape", "/abs", `\abs`,
 		`C:\windows`, `c:/windows`, `\\unc\share`, "//unc/share",
 		"föö/bär", "a\x00b", "....//", "..",
+		"notes:secret", "CON", "nul.txt", "COM1", "a/aux.c/b", "report.", "report ",
 	} {
 		f.Add(s)
 	}
