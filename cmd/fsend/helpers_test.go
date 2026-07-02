@@ -840,6 +840,41 @@ func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
 	}
 }
 
+// A text payload with no trailing newline must not let the stderr summary
+// butt against it when both streams share a sink (2>&1, CI logs) — the line
+// break goes to stderr, keeping the piped stdout bytes exact.
+func TestPrintTextPayload_BreaksLineForPipedStdout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "payload")
+	if err := os.WriteFile(path, []byte("no-newline"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout string
+	stderr := captureStderr(t, func() {
+		stdout = captureStdout(t, func() {
+			if err := printTextPayload([]string{path}); err != nil {
+				t.Errorf("printTextPayload: %v", err)
+			}
+		})
+	})
+	if stdout != "no-newline" {
+		t.Errorf("piped stdout must carry the exact bytes, got %q", stdout)
+	}
+	if stderr != "\n" {
+		t.Errorf("expected a line break on stderr, got %q", stderr)
+	}
+
+	// A newline-terminated payload needs no break.
+	if err := os.WriteFile(path, []byte("clean\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr = captureStderr(t, func() {
+		_ = captureStdout(t, func() { _ = printTextPayload([]string{path}) })
+	})
+	if stderr != "" {
+		t.Errorf("newline-terminated payload must not emit a break, got %q", stderr)
+	}
+}
+
 func TestSummaryParts_ResumeShowsMovedAndHonestRate(t *testing.T) {
 	// 200 MB total, 50 MB moved in 1s → size annotated with the moved
 	// clause and the rate computed from moved, not total.
