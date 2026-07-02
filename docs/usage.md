@@ -109,7 +109,7 @@ sending, then confirms. Pass `--yes` to skip.
 | Flag | Purpose |
 |---|---|
 | `--yes` | Auto-accept. |
-| `--out <dir>` | Receive into this directory (must already exist). Default: cwd. |
+| `--out <dir>` | Receive into this directory (created if missing, like `mkdir -p`). Default: cwd. |
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files whose contents **differ**. Without it they're kept and the receiver exits `E013`. (Identical files are skipped either way.) |
 | `--manifest <file>` | After receiving, write a CSV record (`path,size,status`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `kept` / `resumed`). |
