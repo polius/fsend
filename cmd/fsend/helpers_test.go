@@ -790,6 +790,32 @@ func TestDifferVerb(t *testing.T) {
 	}
 	if got := differVerb(2); got != "differ" {
 		t.Errorf("differVerb(2) = %q", got)
+// --yes answers the accept prompt only — differing files are still kept. The
+// accept line must say so upfront instead of leaving a surprise E013 exit.
+func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
+	differ := transfer.ClassifySummary{
+		Total: 2, Identical: 1, Differing: 1,
+		OfferedBytes: 2048, DifferingBytes: 1024,
+		Files: []transfer.SummaryEntry{
+			{RelativePath: "a.bin", Size: 1024, Status: "identical", Type: wire.EntryFile},
+			{RelativePath: "b.bin", Size: 1024, Status: "differs", Type: wire.EntryFile},
+		},
+	}
+	got := captureStderr(t, func() {
+		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
+		_ = ui.promptAccept(filesHello(), differ)
+	})
+	if want := "Keeping 1 differing file that would be overwritten — pass --overwrite to replace"; !strings.Contains(got, want) {
+		t.Errorf("--yes accept missing kept-differs warning %q:\n%s", want, got)
+	}
+
+	// With --overwrite the differing file transfers; no warning.
+	got = captureStderr(t, func() {
+		ui := newReceiverUI(context.Background(), &flags{yes: true, overwrite: true}, "/tmp", false, mustLANInfo())
+		_ = ui.promptAccept(filesHello(), differ)
+	})
+	if strings.Contains(got, "Keeping") {
+		t.Errorf("--yes --overwrite must not warn:\n%s", got)
 	}
 }
 
