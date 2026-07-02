@@ -80,8 +80,8 @@ func readPasswordHiddenCtx(ctx context.Context, prompt string) (string, error) {
 	}
 }
 
-// resolvePassword expands the bare --pass sentinel into a concrete
-// password. No-op when --pass wasn't given bare.
+// resolvePassword expands the bare --password sentinel into a concrete
+// password. No-op when --password wasn't given bare.
 //
 // Sender side: shows a freshly-generated 16-char suggestion the user can
 // accept with <enter> (or override by typing one). The suggestion is
@@ -100,13 +100,13 @@ func resolvePassword(ctx context.Context, f *flags, sender bool) error {
 	if f.passArg != passPromptSentinel {
 		return nil
 	}
-	// Bare --pass needs a TTY: the sender prompt echoes a suggestion the
+	// Bare --password needs a TTY: the sender prompt echoes a suggestion the
 	// user accepts with Enter; the receiver prompt reads no-echo. Either
 	// way, doing it on a piped stdin reads the file's first line as the
-	// password and breaks the transfer. FSEND_PASS is the documented
+	// password and breaks the transfer. FSEND_PASSWORD is the documented
 	// non-interactive path.
 	if !stdinIsTTY() {
-		return fmt.Errorf("%w: bare --pass needs a terminal; use --pass=<value> or FSEND_PASS", fserrors.ErrUsage)
+		return fmt.Errorf("%w: bare --password needs a terminal; use --password=<value> or FSEND_PASSWORD", fserrors.ErrUsage)
 	}
 	if sender {
 		pw, err := promptPasswordWithSuggestionCtx(ctx)

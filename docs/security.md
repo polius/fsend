@@ -118,7 +118,7 @@ What makes a short code safe to use as the whole secret:
   authenticates the peer; it never feeds the encryption key and never
   crosses the wire in the clear.
 - **Chosen for you.** fsend generates the code; it isn't user-selectable.
-  To add a second secret on top, send with `--pass`.
+  To add a second secret on top, send with `--password`.
 
 ## Release integrity
 

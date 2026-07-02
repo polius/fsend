@@ -57,7 +57,7 @@ func runReceive(f *flags, c string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// Bare --pass: hidden no-echo prompt. We're not the password's
+	// Bare --password: hidden no-echo prompt. We're not the password's
 	// author — we have to type what the sender configured — so there's
 	// no point offering a random default here.
 	if err := resolvePassword(ctx, f, false); err != nil {
@@ -158,13 +158,13 @@ func runReceive(f *flags, c string) error {
 }
 
 // receiverPasswordPrompt returns a callback that reads a password from
-// stdin when the sender requires --pass but the receiver didn't supply
-// one via --pass / FSEND_PASS. Returns nil under --quiet so the transfer
+// stdin when the sender requires --password but the receiver didn't supply
+// one via --password / FSEND_PASSWORD. Returns nil under --quiet so the transfer
 // engine immediately fails with ErrWrongPassword instead of blocking on
 // a prompt that nobody will see.
 //
 // Input is read with no echo when stdin is a TTY (golang.org/x/term).
-// Non-interactive callers should pass --pass or FSEND_PASS so the
+// Non-interactive callers should pass --password or FSEND_PASSWORD so the
 // prompt never fires.
 //
 // Timing: the progress bar is constructed lazily on first byte (see

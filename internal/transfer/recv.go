@@ -823,7 +823,7 @@ func mapPeerError(ef wire.ErrorFrame) error {
 	}
 }
 
-// receiverPasswordHandshake answers the sender's --pass challenge.
+// receiverPasswordHandshake answers the sender's --password challenge.
 func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
 	var ch wire.PasswordChallenge
 	ft, err := wire.ReadControl(s.Control, &ch)

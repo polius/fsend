@@ -519,7 +519,7 @@ func TestDispatch_ForceReceive(t *testing.T) {
 }
 
 // TestPassword_NoBarCollisionOnPrompt drives the receiver's full
-// interactive flow when the sender used --pass and pins two related
+// interactive flow when the sender used --password and pins two related
 // UX properties:
 //
 //  1. Prompt ordering: the password prompt comes first, then the
@@ -542,7 +542,7 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	// Receiver stdin order matches the new prompt order: the password line
 	// first, then "Y" for the save confirmation.
 	r := h.runPair(t,
-		[]string{"--pass=swordfish", srcFile},
+		[]string{"--password=swordfish", srcFile},
 		dst,
 		nil, // no extra receiver flags — exercise the full interactive path
 		"swordfish\nY\n",

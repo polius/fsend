@@ -441,18 +441,18 @@ func TestDebugRequested(t *testing.T) {
 // root.go applyEnvFallbacks
 // ---------------------------------------------------------------------------
 
-func TestApplyEnvFallbacks_FSEND_PASS(t *testing.T) {
-	saved, had := os.LookupEnv("FSEND_PASS")
+func TestApplyEnvFallbacks_FSEND_PASSWORD(t *testing.T) {
+	saved, had := os.LookupEnv("FSEND_PASSWORD")
 	t.Cleanup(func() {
 		if had {
-			_ = os.Setenv("FSEND_PASS", saved)
+			_ = os.Setenv("FSEND_PASSWORD", saved)
 		} else {
-			_ = os.Unsetenv("FSEND_PASS")
+			_ = os.Unsetenv("FSEND_PASSWORD")
 		}
 	})
 
 	c := rootCmd()
-	_ = os.Setenv("FSEND_PASS", "from-env")
+	_ = os.Setenv("FSEND_PASSWORD", "from-env")
 	f := &flags{}
 	applyEnvFallbacks(f, c)
 	if f.passArg != "from-env" {
@@ -460,9 +460,9 @@ func TestApplyEnvFallbacks_FSEND_PASS(t *testing.T) {
 	}
 
 	// When the flag is already "changed", env is ignored — sender's
-	// explicit --pass must win.
+	// explicit --password must win.
 	c2 := rootCmd()
-	if err := c2.Flags().Set("pass", "from-flag"); err != nil {
+	if err := c2.Flags().Set("password", "from-flag"); err != nil {
 		t.Fatal(err)
 	}
 	f2 := &flags{passArg: "from-flag"}

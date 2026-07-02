@@ -114,7 +114,7 @@ const (
 	// receiver's disk.
 	ErrCodeWriteFailed ErrorCode = 13
 	// ErrCodePasswordRequired — sender demanded a password but the
-	// receiver had none to offer (--quiet with no --pass / FSEND_PASS).
+	// receiver had none to offer (--quiet with no --password / FSEND_PASSWORD).
 	// Distinct from ErrCodeWrongPassword: no attempt was ever made.
 	ErrCodePasswordRequired ErrorCode = 14
 	// ErrCodeCancelled — the peer cancelled deliberately (Ctrl-C).

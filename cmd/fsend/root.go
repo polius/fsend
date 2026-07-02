@@ -105,12 +105,12 @@ Examples:
 
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
-	c.Flags().StringVar(&f.passArg, "pass", "",
-		"password gate. Bare --pass prompts (sender: suggests a random default); inline: --pass=SECRET. Env: FSEND_PASS")
-	// Bare --pass (no value) collapses to this sentinel; the dispatch
+	c.Flags().StringVar(&f.passArg, "password", "",
+		"password gate. Bare --password prompts (sender: suggests a random default); inline: --password=SECRET. Env: FSEND_PASSWORD")
+	// Bare --password (no value) collapses to this sentinel; the dispatch
 	// layer treats it as "ask interactively, with input hidden." We
 	// blank DefValue so cobra's --help doesn't print the sentinel.
-	passFlag := c.Flags().Lookup("pass")
+	passFlag := c.Flags().Lookup("password")
 	passFlag.NoOptDefVal = passPromptSentinel
 	passFlag.DefValue = ""
 	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers")
@@ -129,7 +129,7 @@ Examples:
 	c.Flags().BoolVar(&f.forceReceive, "receive", false, "force receive mode (skip auto-detect)")
 
 	// Server selection. Bare --connect (no value) means "show current
-	// server" — same NoOptDefVal trick as --pass. The dispatcher
+	// server" — same NoOptDefVal trick as --password. The dispatcher
 	// recognises the sentinel and treats it as "no args".
 	c.Flags().StringSliceVar(&f.connectArgsRaw, "connect", nil, "set the server: <host[:port]>[,<password>] | 'default'")
 	connectFlag := c.Flags().Lookup("connect")
@@ -245,15 +245,15 @@ EXAMPLES
   Send a whole folder:
     fsend ./myproject
   Send with extra password protection:
-    fsend report.pdf --pass="shared-secret"
+    fsend report.pdf --password="shared-secret"
   Use a different server:
     fsend --connect relay.mycompany.com:443
 
 SENDING
-  --pass[=<password>]    Require the receiver to enter a password.
-                         Bare --pass prompts interactively — sender side
+  --password[=<password>]    Require the receiver to enter a password.
+                         Bare --password prompts interactively — sender side
                          suggests a fresh random default (press Enter to
-                         accept). Inline: --pass=SECRET. Env: FSEND_PASS.
+                         accept). Inline: --password=SECRET. Env: FSEND_PASSWORD.
   --exclude <glob,…>     Skip entries matching these globs in a directory
   --text "<string>"      Send a literal string instead of a file
                          (the receiver prints it — nothing is saved;
@@ -267,8 +267,8 @@ RECEIVING
   --out <dir>            Receive into this directory (default: current)
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
-  --pass[=<value>]       Supply the sender's password up front as --pass=VALUE,
-                         skipping the prompt (bare --pass prompts). Env: FSEND_PASS
+  --password[=<value>]       Supply the sender's password up front as --password=VALUE,
+                         skipping the prompt (bare --password prompts). Env: FSEND_PASSWORD
   --overwrite            Replace existing files that differ (identical files
                          are always skipped)
   --checksum             Decide identical files by content hash, not
@@ -331,10 +331,10 @@ func isHelpHeader(line string) bool {
 }
 
 // passPromptSentinel is the value cobra hands us when the user passes
-// bare --pass with no argument. The dispatch layer translates this into
+// bare --password with no argument. The dispatch layer translates this into
 // an interactive no-echo prompt before any send/receive work begins.
 //
-// Note: a user who explicitly passes --pass=":prompt:" gets the same
+// Note: a user who explicitly passes --password=":prompt:" gets the same
 // hidden prompt — surprising-but-fine, since they typed the literal
 // sentinel themselves.
 const passPromptSentinel = ":prompt:"
@@ -354,7 +354,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "pass", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "uninstall"} {
+		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "uninstall"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}
@@ -403,38 +403,38 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		}
 	}
 
-	// `--pass=` (explicitly empty): the user asked for a password gate but
+	// `--password=` (explicitly empty): the user asked for a password gate but
 	// supplied none — proceeding would run the transfer unprotected.
-	if cmd.Flags().Changed("pass") && f.passArg == "" {
-		return fmt.Errorf("%w: --pass requires a non-empty password (bare --pass prompts interactively)",
+	if cmd.Flags().Changed("password") && f.passArg == "" {
+		return fmt.Errorf("%w: --password requires a non-empty password (bare --password prompts interactively)",
 			fserrors.ErrUsage)
 	}
 
-	// An inline password now rides the flag as `--pass=secret`, so a bare
-	// --pass followed by a non-file, non-code word is very likely a misplaced
-	// inline password (`fsend --pass secret file`). Point at the = form rather
+	// An inline password now rides the flag as `--password=secret`, so a bare
+	// --password followed by a non-file, non-code word is very likely a misplaced
+	// inline password (`fsend --password secret file`). Point at the = form rather
 	// than failing later with a bare "no such file".
-	if cmd.Flags().Changed("pass") && f.passArg == passPromptSentinel &&
+	if cmd.Flags().Changed("password") && f.passArg == passPromptSentinel &&
 		!cmd.Flags().Changed("text") && !f.forceReceive {
 		for _, a := range f.posArgs {
 			if a == "-" || code.IsCode(a) || code.LooksLikeCode(a) {
 				continue
 			}
 			if _, err := os.Stat(a); os.IsNotExist(err) {
-				return fmt.Errorf("%w: %q is not a file; if it's the password, use --pass=%s (bare --pass prompts)",
+				return fmt.Errorf("%w: %q is not a file; if it's the password, use --password=%s (bare --password prompts)",
 					fserrors.ErrUsage, a, a)
 			}
 		}
 	}
 
-	// Env-var fallback for the password (FSEND_PASS). Passing a secret via
+	// Env-var fallback for the password (FSEND_PASSWORD). Passing a secret via
 	// flag leaks it through /proc/<pid>/cmdline and `ps -ef`; the env var
 	// lets users keep it out of argv. We only consult it when the flag
 	// wasn't explicitly given, so scripts that set both keep the flag's
 	// value (matching every other CLI's override convention).
 	applyEnvFallbacks(f, cmd)
 
-	// Bare --pass (no value) is resolved inside runSend / runReceive so
+	// Bare --password (no value) is resolved inside runSend / runReceive so
 	// each role can show the right prompt: the sender gets a random
 	// 16-char suggestion, the receiver gets a hidden no-echo prompt.
 
@@ -543,15 +543,15 @@ func wrappedCode(arg string) (string, bool) {
 // user did not pass the corresponding flag. Used for secrets we'd
 // rather not see on argv.
 //
-// Bare --pass (collapsed to passPromptSentinel) counts as "the user said
+// Bare --password (collapsed to passPromptSentinel) counts as "the user said
 // they want a password, but didn't supply one" — so we still consult
-// FSEND_PASS. Doing it the other way around (env wins only when the
-// flag is absent entirely) silently ignored FSEND_PASS for users who
-// typed `--pass` to opt in.
+// FSEND_PASSWORD. Doing it the other way around (env wins only when the
+// flag is absent entirely) silently ignored FSEND_PASSWORD for users who
+// typed `--password` to opt in.
 func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
 	bare := f.passArg == passPromptSentinel
-	if !cmd.Flags().Changed("pass") || bare {
-		if v := os.Getenv("FSEND_PASS"); v != "" {
+	if !cmd.Flags().Changed("password") || bare {
+		if v := os.Getenv("FSEND_PASSWORD"); v != "" {
 			f.passArg = v
 		}
 	}

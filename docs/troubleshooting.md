@@ -73,11 +73,11 @@ stopped.
 
 | Code | Situation | Fix |
 |---|---|---|
-| `E021` | Wrong **transfer** password | Re-enter the sender's `--pass` value, or set `FSEND_PASS`. |
-| `E031` | The transfer needs a password you didn't supply | The sender used `--pass`; receive with `--pass` (or `FSEND_PASS`). |
+| `E021` | Wrong **transfer** password | Re-enter the sender's `--password` value, or set `FSEND_PASSWORD`. |
+| `E031` | The transfer needs a password you didn't supply | The sender used `--password`; receive with `--password` (or `FSEND_PASSWORD`). |
 | `E028` | The **server** needs a password | Connect with `fsend --connect host:443,<password>`. See [Self-hosting](self-hosting.md#require-a-password-optional). |
 
-Note the two are different: `--pass` protects a *transfer*; the server
+Note the two are different: `--password` protects a *transfer*; the server
 password gates a *self-hosted server*.
 
 ## Files
