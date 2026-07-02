@@ -56,28 +56,3 @@ func pathIsUnder(child, parent string) bool {
 	}
 	return !filepath.IsAbs(rel)
 }
-
-// symlinkEscapes reports whether placing a symlink at <targetDir>/<relPath>
-// pointing at <linkTarget> would resolve outside targetDir. Used by Recv
-// to reject hostile peer-supplied symlinks before any subsequent file
-// write can traverse through them.
-//
-// Two rejection paths:
-//   - linkTarget is absolute → always rejected (no useful absolute symlink
-//     could land safely inside a receiver's TargetDir).
-//   - linkTarget is relative → resolved from the symlink's parent dir,
-//     then checked against targetDir lexically. A relative symlink that
-//     stays inside the tree (e.g. "../sister" within a nested dir) is
-//     accepted.
-func symlinkEscapes(targetDir, relPath, linkTarget string) bool {
-	if filepath.IsAbs(linkTarget) {
-		return true
-	}
-	absTarget, err := filepath.Abs(targetDir)
-	if err != nil {
-		return true // can't verify → safest to reject
-	}
-	symlinkDir := filepath.Join(absTarget, filepath.Dir(relPath))
-	resolved := filepath.Clean(filepath.Join(symlinkDir, linkTarget))
-	return !pathIsUnder(resolved, absTarget)
-}

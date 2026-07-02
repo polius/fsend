@@ -82,6 +82,13 @@ type Conflict struct {
 func classify(entries []wire.ListingEntry, targetDir string, checksum bool) ([]entryPlan, error) {
 	plans := make([]entryPlan, 0, len(entries))
 	for _, e := range entries {
+		// Reject peer symlinks: the honest sender dereferences them and never
+		// emits one (walk.go), so a symlink on the wire is a malicious sender
+		// planting a link that a later write traverses to escape targetDir —
+		// which the lexical path checks here can't see through.
+		if e.Type == wire.EntrySymlink {
+			return nil, fmt.Errorf("%w: peer sent a symlink (%q); fsend does not accept symlink entries", fserrors.ErrPathTraversal, e.RelativePath)
+		}
 		rel, err := SanitizeRelativePath(e.RelativePath)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
