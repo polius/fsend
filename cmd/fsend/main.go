@@ -38,57 +38,9 @@ func main() {
 	//   fsend --connect host:port [password]  → set custom
 	os.Args = normalizeConnectArgs(os.Args)
 
-	// Same trick for --pass: NoOptDefVal would otherwise force
-	// `--pass=value` syntax and silently consume the natural
-	// `--pass value` form's value as a positional. Re-glue here so
-	// `fsend --pass swordfish report.pdf` does what users expect.
-	os.Args = normalizePassArgs(os.Args)
-
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(renderError(err, debugRequested()))
 	}
-}
-
-// normalizePassArgs rewrites `--pass VALUE` to `--pass=VALUE` so the
-// value rides with the flag instead of falling through as a positional.
-// Without this rewrite, NoOptDefVal makes pflag swallow the bare flag
-// (firing the prompt sentinel) and read VALUE as the next positional —
-// which is what makes `fsend --pass swordfish report.pdf` mistakenly
-// prompt for a password and try to send "swordfish" alongside the file.
-//
-// Bare-flag spellings (--pass at end-of-args, or followed by another
-// flag) are left untouched so the prompt sentinel still fires.
-func normalizePassArgs(args []string) []string {
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		// Everything after the `--` end-of-flags marker is a positional,
-		// even if it spells a flag — copy the rest verbatim so a file
-		// literally named "--pass" survives `fsend -- --pass file`.
-		if a == "--" {
-			out = append(out, args[i:]...)
-			break
-		}
-		if a != "--pass" {
-			out = append(out, a)
-			continue
-		}
-		// Bare `--pass` at end → keep so NoOptDefVal fires (prompt).
-		if i+1 >= len(args) {
-			out = append(out, a)
-			continue
-		}
-		next := args[i+1]
-		// Next token is another flag → bare form intended.
-		if len(next) > 0 && next[0] == '-' {
-			out = append(out, a)
-			continue
-		}
-		// Consume the next positional as the password value.
-		out = append(out, a+"="+next)
-		i++
-	}
-	return out
 }
 
 // normalizeConnectArgs rewrites `--connect VALUE` to `--connect=VALUE` so

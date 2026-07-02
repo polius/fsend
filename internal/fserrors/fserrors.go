@@ -393,10 +393,10 @@ var catalog = map[error]Entry{
 	ErrPasswordRequired: {
 		Code: "E031", Exit: 31,
 		Message:       "This transfer requires a password.",
-		Action:        "Rerun with --pass <password> (or set FSEND_PASS).",
+		Action:        "Rerun with --pass=<password> (or set FSEND_PASS).",
 		SenderMessage: "The receiver couldn't supply the password.",
 		SenderAction: "Run fsend again to issue a fresh code, and ask them to rerun with\n" +
-			"  --pass <password> (or FSEND_PASS).",
+			"  --pass=<password> (or FSEND_PASS).",
 	},
 	ErrPeerCancelled: {
 		Code: "E032", Exit: 32,

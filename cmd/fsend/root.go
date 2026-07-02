@@ -106,7 +106,7 @@ Examples:
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
 	c.Flags().StringVar(&f.passArg, "pass", "",
-		"password gate. Bare --pass prompts (sender: suggests a random default). Env: FSEND_PASS")
+		"password gate. Bare --pass prompts (sender: suggests a random default); inline: --pass=SECRET. Env: FSEND_PASS")
 	// Bare --pass (no value) collapses to this sentinel; the dispatch
 	// layer treats it as "ask interactively, with input hidden." We
 	// blank DefValue so cobra's --help doesn't print the sentinel.
@@ -245,15 +245,15 @@ EXAMPLES
   Send a whole folder:
     fsend ./myproject
   Send with extra password protection:
-    fsend report.pdf --pass "shared-secret"
+    fsend report.pdf --pass="shared-secret"
   Use a different server:
     fsend --connect relay.mycompany.com:443
 
 SENDING
-  --pass <password>      Require the receiver to enter a password.
+  --pass[=<password>]    Require the receiver to enter a password.
                          Bare --pass prompts interactively — sender side
                          suggests a fresh random default (press Enter to
-                         accept). Env: FSEND_PASS.
+                         accept). Inline: --pass=SECRET. Env: FSEND_PASS.
   --exclude <glob,…>     Skip entries matching these globs in a directory
   --text "<string>"      Send a literal string instead of a file
                          (the receiver prints it — nothing is saved;
@@ -267,8 +267,8 @@ RECEIVING
   --out <dir>            Receive into this directory (default: current)
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
-  --pass <value>         Supply the sender's password up front, skipping the
-                         prompt (bare --pass prompts). Env: FSEND_PASS
+  --pass[=<value>]       Supply the sender's password up front as --pass=VALUE,
+                         skipping the prompt (bare --pass prompts). Env: FSEND_PASS
   --overwrite            Replace existing files that differ (identical files
                          are always skipped)
   --checksum             Decide identical files by content hash, not
@@ -410,22 +410,20 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 			fserrors.ErrUsage)
 	}
 
-	// `fsend --pass file.pdf`: the value rides with the flag, so the file
-	// is consumed as the password — and with piped stdin that silently
-	// opens a session sending the wrong content. If the flag's value
-	// names an existing file and nothing is left to send, it was almost
-	// certainly a misplaced path.
-	if cmd.Flags().Changed("pass") && f.passArg != "" && f.passArg != passPromptSentinel &&
-		len(f.posArgs) == 0 && !cmd.Flags().Changed("text") {
-		if st, err := os.Stat(f.passArg); err == nil && !st.IsDir() {
-			return fmt.Errorf("%w: --pass consumed %q as the password; to send that file: fsend %s --pass",
-				fserrors.ErrUsage, f.passArg, f.passArg)
-		}
-		// Same trap with a (possibly mistyped) receive code as the value:
-		// with piped stdin it would silently stream stdin, code-as-password.
-		if code.IsCode(f.passArg) || code.LooksLikeCode(f.passArg) {
-			return fmt.Errorf("%w: --pass consumed %q as the password; to receive with a password: fsend %s --pass",
-				fserrors.ErrUsage, f.passArg, f.passArg)
+	// An inline password now rides the flag as `--pass=secret`, so a bare
+	// --pass followed by a non-file, non-code word is very likely a misplaced
+	// inline password (`fsend --pass secret file`). Point at the = form rather
+	// than failing later with a bare "no such file".
+	if cmd.Flags().Changed("pass") && f.passArg == passPromptSentinel &&
+		!cmd.Flags().Changed("text") && !f.forceReceive {
+		for _, a := range f.posArgs {
+			if a == "-" || code.IsCode(a) || code.LooksLikeCode(a) {
+				continue
+			}
+			if _, err := os.Stat(a); os.IsNotExist(err) {
+				return fmt.Errorf("%w: %q is not a file; if it's the password, use --pass=%s (bare --pass prompts)",
+					fserrors.ErrUsage, a, a)
+			}
 		}
 	}
 

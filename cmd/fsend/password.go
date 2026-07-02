@@ -106,7 +106,7 @@ func resolvePassword(ctx context.Context, f *flags, sender bool) error {
 	// password and breaks the transfer. FSEND_PASS is the documented
 	// non-interactive path.
 	if !stdinIsTTY() {
-		return fmt.Errorf("%w: bare --pass needs a terminal; use --pass <value> or FSEND_PASS", fserrors.ErrUsage)
+		return fmt.Errorf("%w: bare --pass needs a terminal; use --pass=<value> or FSEND_PASS", fserrors.ErrUsage)
 	}
 	if sender {
 		pw, err := promptPasswordWithSuggestionCtx(ctx)

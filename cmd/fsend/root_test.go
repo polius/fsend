@@ -82,19 +82,11 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			"--pass requires a non-empty password",
 		},
 		{
-			// Regression: a code-shaped --pass value with piped stdin
-			// silently opened a send session, code-as-password. (Space
-			// form `--pass <code>` is unaffected: NoOptDefVal keeps the
-			// code positional.)
-			"pass_code_value",
-			[]string{"--pass=abc-defg-jkm"},
-			"to receive with a password: fsend abc-defg-jkm --pass",
-		},
-		{
-			// LooksLikeCode near-miss (digit 1 for letter) gets the same hint.
-			"pass_mistyped_code_value",
-			[]string{"--pass=abc-defg-jk1"},
-			"to receive with a password: fsend abc-defg-jk1 --pass",
+			// A bare --pass followed by a non-file, non-code word is very
+			// likely a misplaced inline password — point at the = form.
+			"pass_bare_then_nonfile",
+			[]string{"--pass", "secret", "report.pdf"},
+			"if it's the password, use --pass=secret",
 		},
 		{
 			// Same trap on --connect: the code would be persisted as the
