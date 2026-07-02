@@ -309,6 +309,7 @@ failure. For what to *do* about a given error, see
 | `33`  | `E033` — `fsend --update` could not complete. |
 | `34`  | `E034` — the other device is running an incompatible fsend version. |
 | `35`  | `E035` — `fsend --uninstall` could not remove the binary. |
+| `38`  | `E038` — files received, but the `--manifest` record could not be written. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 

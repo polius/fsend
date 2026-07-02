@@ -128,6 +128,11 @@ var (
 	// pointed-to content, so an unresolvable link is a hard stop (with the
 	// path, so the user can fix or --exclude it).
 	ErrUnsendableSymlink = errors.New("unsendable symlink")
+	// E038 — the transfer succeeded but the --manifest record could not be
+	// written. Distinct from E009 (a failed *file* write): the data landed,
+	// only the sidecar CSV is missing, so the fix is the manifest path —
+	// not --out.
+	ErrManifestWriteFailed = errors.New("manifest write failed")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -428,6 +433,11 @@ var catalog = map[error]Entry{
 		Code: "E036", Exit: 36,
 		Message: "Cannot send a symlink",
 		Action:  "Fix the link, or skip it with --exclude.",
+	},
+	ErrManifestWriteFailed: {
+		Code: "E038", Exit: 38,
+		Message: "Files received, but the --manifest record could not be written.",
+		Action:  "Check that the --manifest path is writable.",
 	},
 }
 

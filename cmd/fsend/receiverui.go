@@ -273,7 +273,7 @@ func (ui *receiverUI) onConflictKept(string) {
 func (ui *receiverUI) onManifest(entries []transfer.ManifestEntry) {
 	f, err := os.Create(ui.f.manifest)
 	if err != nil {
-		ui.manifestErr = fmt.Errorf("%w: --manifest %s: %v", fserrors.ErrWriteFailed, ui.f.manifest, err)
+		ui.manifestErr = fmt.Errorf("%w: %v", fserrors.ErrManifestWriteFailed, err)
 		return
 	}
 	defer func() { _ = f.Close() }()
@@ -284,7 +284,7 @@ func (ui *receiverUI) onManifest(entries []transfer.ManifestEntry) {
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {
-		ui.manifestErr = fmt.Errorf("%w: --manifest %s: %v", fserrors.ErrWriteFailed, ui.f.manifest, err)
+		ui.manifestErr = fmt.Errorf("%w: %s: %v", fserrors.ErrManifestWriteFailed, ui.f.manifest, err)
 	}
 }
 
