@@ -170,13 +170,17 @@ func runReceive(f *flags, c string) error {
 // Timing: the progress bar is constructed lazily on first byte (see
 // newReceiverProgress), so this prompt fires before any bar exists —
 // no risk of mpb rendering on top of the password input line.
-func receiverPasswordPrompt(ctx context.Context, f *flags) func() (string, error) {
+func receiverPasswordPrompt(ctx context.Context, f *flags) func(attempt int) (string, error) {
 	if f.quiet {
 		return nil
 	}
-	return func() (string, error) {
+	return func(attempt int) (string, error) {
 		fmt.Fprintln(os.Stderr)
-		return readPasswordHiddenCtx(ctx, "  Password required by sender: ")
+		if attempt > 1 {
+			return readPasswordHiddenCtx(ctx,
+				fmt.Sprintf("  Wrong password — try again (%d/%d): ", attempt, transfer.PasswordAttempts))
+		}
+		return readPasswordHiddenCtx(ctx, "  Password for this transfer: ")
 	}
 }
 

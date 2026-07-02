@@ -405,42 +405,61 @@ func peerError(body []byte) error {
 	return mapPeerError(ef)
 }
 
+// PasswordAttempts is how many password tries the sender allows per session
+// before aborting the transfer. A typo at the receiver's no-echo prompt
+// shouldn't burn the one-shot code.
+const PasswordAttempts = 3
+
 // senderPasswordHandshake runs the challenge/response that gates --password.
+// Each mismatch below the attempt cap answers with a WrongPassword error and
+// a fresh challenge; the final mismatch closes the stream as before.
 func senderPasswordHandshake(s *Streams, password string) error {
-	var nonce [32]byte
-	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
-		return fmt.Errorf("send: password nonce: %w", err)
-	}
-	if err := wire.WriteControl(s.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
-		return fmt.Errorf("send: password challenge: %w", err)
-	}
-	ft, body, err := wire.ReadControlRaw(s.Control)
-	if err != nil {
-		return fmt.Errorf("send: read password response: %w", err)
-	}
-	if ft == wire.TypeError {
-		return peerError(body)
-	}
-	if ft != wire.TypePasswordResponse {
-		return fmt.Errorf("%w: expected PASSWORD_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
-	}
-	var resp wire.PasswordResponse
-	if err := wire.Decode(body, &resp); err != nil {
-		return fmt.Errorf("send: decode password response: %w", err)
-	}
-	expected := hmacPassword(password, nonce[:])
-	if subtle.ConstantTimeCompare(expected, resp.HMAC[:]) != 1 {
+	for attempt := 1; ; attempt++ {
+		var nonce [32]byte
+		if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+			return fmt.Errorf("send: password nonce: %w", err)
+		}
+		if err := wire.WriteControl(s.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
+			// A receiver that can't retry (fixed password, old fsend) hangs
+			// up after its mismatch; the honest error is still the password.
+			if attempt > 1 {
+				return fserrors.ErrWrongPassword
+			}
+			return fmt.Errorf("send: password challenge: %w", err)
+		}
+		ft, body, err := wire.ReadControlRaw(s.Control)
+		if err != nil {
+			if attempt > 1 {
+				return fserrors.ErrWrongPassword
+			}
+			return fmt.Errorf("send: read password response: %w", err)
+		}
+		if ft == wire.TypeError {
+			return peerError(body)
+		}
+		if ft != wire.TypePasswordResponse {
+			return fmt.Errorf("%w: expected PASSWORD_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
+		}
+		var resp wire.PasswordResponse
+		if err := wire.Decode(body, &resp); err != nil {
+			return fmt.Errorf("send: decode password response: %w", err)
+		}
+		expected := hmacPassword(password, nonce[:])
+		if subtle.ConstantTimeCompare(expected, resp.HMAC[:]) == 1 {
+			if err := wire.WriteControl(s.Control, wire.TypePasswordVerified, nil); err != nil {
+				return fmt.Errorf("send: password verified: %w", err)
+			}
+			return nil
+		}
 		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
 			Code: wire.ErrCodeWrongPassword, Message: "wrong password",
 		})
-		_ = s.Control.Close()
-		_, _ = io.Copy(io.Discard, s.Control)
-		return fserrors.ErrWrongPassword
+		if attempt == PasswordAttempts {
+			_ = s.Control.Close()
+			_, _ = io.Copy(io.Discard, s.Control)
+			return fserrors.ErrWrongPassword
+		}
 	}
-	if err := wire.WriteControl(s.Control, wire.TypePasswordVerified, nil); err != nil {
-		return fmt.Errorf("send: password verified: %w", err)
-	}
-	return nil
 }
 
 // hmacPassword is the shared response tag; argon2id stretches the password
