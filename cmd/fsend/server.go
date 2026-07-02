@@ -50,7 +50,14 @@ func serverCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if healthCheckFlag {
 				// Used as a Docker HEALTHCHECK probe — see deploy/compose/.
-				return healthCheck()
+				// An unreachable server is the routine result a probe exists
+				// to detect, not an fsend bug: one line, exit 1 as documented
+				// — never the E099 "file an issue" catchall (exit 99).
+				if err := healthCheck(); err != nil {
+					fmt.Fprintln(os.Stderr, uxlog.Cross(), err)
+					os.Exit(1)
+				}
+				return nil
 			}
 			return runServer()
 		},
@@ -447,8 +454,8 @@ func envBytes(name string, def uint64) (uint64, error) {
 }
 
 // healthCheck pings the local server's /v1/health on the configured
-// HTTP address. Exits 0 on healthy, 1 on anything else. Designed for
-// Docker HEALTHCHECK.
+// HTTP address. Returns an error when unhealthy; the caller reports it
+// and exits 1 (the Docker HEALTHCHECK contract).
 func healthCheck() error {
 	addr := envOr(envServerAddr, defaultServerAddr)
 	if strings.HasPrefix(addr, ":") {
