@@ -47,6 +47,7 @@ type plainProgress struct {
 	complete bool
 	closed   bool
 	lastLine time.Time
+	start    time.Time
 }
 
 // plainInterval throttles plain-mode lines. One line per second keeps
@@ -66,7 +67,14 @@ func (p *plainProgress) add(n int64) {
 			p.current*100/p.total, HumanBytes(p.current), HumanBytes(p.total))
 		return
 	}
-	_, _ = fmt.Fprintf(p.w, "  %s\n", HumanBytes(p.current))
+	// Unknown total (stdin streams): a bare byte counter is all a long
+	// pipe would ever show — add throughput once it clears HumanRate's
+	// noise floor.
+	line := HumanBytes(p.current)
+	if r := HumanRate(p.current, time.Since(p.start)); r != "" {
+		line += "  ·  " + r
+	}
+	_, _ = fmt.Fprintf(p.w, "  %s\n", line)
 }
 
 func (p *plainProgress) setTotal(total int64, complete bool) {
@@ -144,7 +152,7 @@ func New(totalBytes int64) *Progress {
 	width, _, sizeErr := term.GetSize(int(os.Stderr.Fd()))
 	if !renderTTY(os.Stderr) || sizeErr != nil || width <= 0 {
 		return &Progress{plain: &plainProgress{
-			w: os.Stderr, total: totalBytes, lastLine: time.Now(),
+			w: os.Stderr, total: totalBytes, lastLine: time.Now(), start: time.Now(),
 		}}
 	}
 	p := &Progress{}
@@ -164,7 +172,11 @@ func New(totalBytes int64) *Progress {
 	// summary line will use for "(<rate>)".
 	start := time.Now()
 	hasTotal := totalBytes > 0
-	showRate := totalBytes >= rateThreshold
+	// Rate needs no total — a multi-GB stdin stream is exactly where the
+	// user wants throughput. HumanRate's own noise floor keeps it hidden
+	// until ~1 MB has moved, covering the small-stream case; ETA stays
+	// total-gated inside its decorator.
+	showRate := !hasTotal || totalBytes >= rateThreshold
 
 	// Percentage on the left. The completed bar is removed (see
 	// BarRemoveOnComplete below), so no terminal-state swap is needed.

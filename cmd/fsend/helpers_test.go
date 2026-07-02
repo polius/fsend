@@ -872,3 +872,15 @@ func TestResolveOutDir(t *testing.T) {
 		}
 	})
 }
+
+// A stream's total is 0 until EOF; the summary must report the moved
+// bytes as the size, not "0 B".
+func TestSummaryParts_UnknownTotalUsesMoved(t *testing.T) {
+	parts := strings.Join(summaryParts(0, 15_000_000, "sent", 3*time.Second, mustLANInfo()), "  ·  ")
+	if !strings.Contains(parts, "15 MB") || strings.Contains(parts, "0 B") {
+		t.Errorf("stream summary should carry the moved size: %s", parts)
+	}
+	if strings.Contains(parts, "(") {
+		t.Errorf("no resume clause expected for a stream: %s", parts)
+	}
+}
