@@ -54,6 +54,48 @@ func TestEngine_ResumePartialMismatch(t *testing.T) {
 	}
 }
 
+// A stale partial next to an existing, differing target must not let resume
+// rename over the user's file without consent. Without --overwrite the file
+// is kept (conflict); with it, the fresh content lands.
+func TestEngine_ResumeDoesNotClobberExistingTarget(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	data := randBytes(3 * wire.MaxChunkSize)
+	writeFile(t, filepath.Join(src, "report.pdf"), data)
+
+	// A leftover partial from a crashed transfer...
+	writeFile(t, filepath.Join(dst, "report.pdf"+partialSuffix), data[:2*wire.MaxChunkSize])
+	// ...and the user's own, unrelated file at the same name.
+	userFile := []byte("MY OWN FILE")
+	writeFile(t, filepath.Join(dst, "report.pdf"), userFile)
+
+	// No overwrite: the user's file is kept and the conflict is signalled
+	// (the engine skips it; the E013 exit is the CLI layer's job).
+	var kept []string
+	_, re := fileTransfer(t, []string{filepath.Join(src, "report.pdf")}, dst, func(o *RecvOptions) {
+		o.OnConflictKept = func(rel string) { kept = append(kept, rel) }
+	})
+	if re != nil {
+		t.Fatalf("recv = %v, want nil (conflict kept, not an error)", re)
+	}
+	if len(kept) != 1 {
+		t.Fatalf("expected 1 kept conflict, got %v", kept)
+	}
+	if got := mustRead(t, filepath.Join(dst, "report.pdf")); !bytes.Equal(got, userFile) {
+		t.Fatalf("user's file was clobbered: %q", got)
+	}
+
+	// With overwrite: the transferred content lands (fresh, not resumed junk).
+	_, re = fileTransfer(t, []string{filepath.Join(src, "report.pdf")}, dst, func(o *RecvOptions) {
+		o.Overwrite = true
+	})
+	if re != nil {
+		t.Fatalf("overwrite recv = %v", re)
+	}
+	if got := mustRead(t, filepath.Join(dst, "report.pdf")); !bytes.Equal(got, data) {
+		t.Fatal("overwrite did not land the sent content")
+	}
+}
+
 func TestEngine_StreamToSink(t *testing.T) {
 	data := randBytes(3*wire.MaxChunkSize + 123)
 	var sink bytes.Buffer
