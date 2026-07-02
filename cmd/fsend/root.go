@@ -345,6 +345,25 @@ const passPromptSentinel = ":prompt:"
 // user.
 const connectShowSentinel = ":show:"
 
+// maintenanceGuard rejects transfer flags and positionals alongside a
+// maintenance flag (--update / --uninstall): anything else on the command
+// line would silently not run. allowYes exempts --yes, which --uninstall
+// documents as skipping its confirmation prompt.
+func maintenanceGuard(cmd *cobra.Command, f *flags, name string, allowYes bool) error {
+	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "checksum", "manifest", "preview"} {
+		if conflict == "yes" && allowYes {
+			continue
+		}
+		if cmd.Flags().Changed(conflict) {
+			return fmt.Errorf("%w: %s cannot be combined with --%s", fserrors.ErrUsage, name, conflict)
+		}
+	}
+	if len(f.posArgs) > 0 {
+		return fmt.Errorf("%w: %s cannot be combined with positional arguments (got %q)", fserrors.ErrUsage, name, f.posArgs[0])
+	}
+	return nil
+}
+
 // dispatch implements the CLI dispatch rules documented on the main.go
 // package comment.
 func dispatch(cmd *cobra.Command, f *flags) error {
@@ -377,14 +396,23 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	}
 
 	// --update / --uninstall are maintenance commands; never combine
-	// with transfer or with each other.
+	// with transfer flags, positionals, or each other. Same rationale as
+	// --connect above: `fsend report.pdf --update` would otherwise run
+	// the updater and silently drop the file the user asked to send.
 	if f.update && f.uninstall {
 		return fmt.Errorf("%w: --update and --uninstall are mutually exclusive", fserrors.ErrUsage)
 	}
 	if f.update {
+		if err := maintenanceGuard(cmd, f, "--update", false); err != nil {
+			return err
+		}
 		return runUpdate()
 	}
 	if f.uninstall {
+		// --yes stays allowed: it skips the uninstall confirmation.
+		if err := maintenanceGuard(cmd, f, "--uninstall", true); err != nil {
+			return err
+		}
 		return runUninstall(f)
 	}
 
