@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polius/fsend/internal/wire"
 )
@@ -108,6 +109,36 @@ func TestEngine_StreamToSink(t *testing.T) {
 	}
 	if !bytes.Equal(sink.Bytes(), data) {
 		t.Fatal("sink content mismatch")
+	}
+}
+
+// A zero-byte file to a sink (--out -) must complete promptly: the sender
+// skips the data phase for empty files, so the receiver must not block waiting
+// for a chunk that never comes (it used to hang until the idle timeout).
+func TestEngine_EmptyFileToSink(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "empty.bin"), nil)
+	sources, err := Walk([]string{filepath.Join(src, "empty.bin")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sink bytes.Buffer
+	done := make(chan [2]error, 1)
+	go func() {
+		se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources},
+			RecvOptions{TargetDir: t.TempDir(), Sink: &sink})
+		done <- [2]error{se, re}
+	}()
+	select {
+	case errs := <-done:
+		if errs[0] != nil || errs[1] != nil {
+			t.Fatalf("send=%v recv=%v", errs[0], errs[1])
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("empty file to sink hung (regression: deadlock waiting for a data chunk)")
+	}
+	if sink.Len() != 0 {
+		t.Errorf("empty file should yield no bytes, got %d", sink.Len())
 	}
 }
 
