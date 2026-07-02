@@ -108,6 +108,24 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			"--connect cannot be combined with --update",
 		},
 		{
+			// Regression: --checksum/--manifest/--preview were missing from
+			// the conflict list, so --connect persisted the server (a durable
+			// global mutation) while silently dropping them.
+			"connect_with_checksum",
+			[]string{"--connect=host:443", "--checksum"},
+			"--connect cannot be combined with --checksum",
+		},
+		{
+			"connect_with_manifest",
+			[]string{"--connect=host:443", "--manifest=m.csv"},
+			"--connect cannot be combined with --manifest",
+		},
+		{
+			"connect_with_preview",
+			[]string{"--connect=host:443", "--preview"},
+			"--connect cannot be combined with --preview",
+		},
+		{
 			"update_with_uninstall",
 			[]string{"--update", "--uninstall"},
 			"--update and --uninstall are mutually exclusive",
