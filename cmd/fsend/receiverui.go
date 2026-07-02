@@ -186,7 +186,8 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	const preview = 5
 	for {
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "  %s differ from your local copies:\n", uxlog.CountNoun(len(conflicts), "file"))
+		fmt.Fprintf(os.Stderr, "  %s %s from your local copies:\n",
+			uxlog.CountNoun(len(conflicts), "file"), differVerb(len(conflicts)))
 		shown := min(len(conflicts), preview)
 		for _, c := range conflicts[:shown] {
 			fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
@@ -345,7 +346,14 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		return nil
 	}
 	total, moved := ui.bytes()
-	printRecvSummary(f, ui.headline(h, files), total, moved, kept, skippedSame, elapsed, ui.pathInfo)
+	headline := ui.headline(h, files)
+	// With kept-back files the peer-supplied display name ("2 files") would
+	// overcount what actually landed — say how many of the offer were written.
+	if kept > 0 && !ui.sink {
+		headline = fmt.Sprintf("Saved %d of %s to %s",
+			len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), displayPath(ui.outDir))
+	}
+	printRecvSummary(f, headline, total, moved, kept, skippedSame, elapsed, ui.pathInfo)
 	// manifestErr is set by onManifest, which runs on this goroutine before we
 	// return, so no lock is needed. The transfer succeeded; the failure is only
 	// that --manifest couldn't be written.
@@ -398,10 +406,15 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	return "Saved " + name + " to " + dest
 }
 
-// printRecvSummary renders the post-transfer success line.
+// printRecvSummary renders the post-transfer outcome line. Kept-back files
+// make it a partial success: warn glyph, matching the E013 exit that follows.
 func printRecvSummary(f *flags, headline string, total, moved int64, kept, skippedSame int, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
+	}
+	glyph := uxlog.Check()
+	if kept > 0 {
+		glyph = uxlog.Warn()
 	}
 	if headline == "" {
 		headline = "Received"
@@ -422,6 +435,6 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	if kept > 0 {
 		parts = append(parts, fmt.Sprintf("%s kept (use --overwrite)", uxlog.CountNoun(kept, "file")))
 	}
-	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", uxlog.Check(), headline, strings.Join(parts, "  ·  "))
+	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
 }

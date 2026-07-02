@@ -219,11 +219,20 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 	}
 	diff := ""
 	if summary.Differing > 0 {
-		diff = fmt.Sprintf("  ·  %d differ", summary.Differing)
+		diff = fmt.Sprintf("  ·  %d %s", summary.Differing, differVerb(summary.Differing))
 	}
 	_, _ = fmt.Fprintf(w, "      %s  ·  %s%s%s\n",
 		lead, receiverSizeClause(summary), diff, pwChip)
 	renderPreview(w, receiverPreview(summary.Files), 8)
+}
+
+// differVerb conjugates the "N differ(s)" clauses used by the incoming
+// header and the overwrite prompt.
+func differVerb(n int) string {
+	if n == 1 {
+		return "differs"
+	}
+	return "differ"
 }
 
 // receiverSizeClause renders the headline's size figure. The offered total

@@ -368,6 +368,14 @@ func TestReceive_DifferingFileKept_ReceiverSeesE013(t *testing.T) {
 		t.Errorf("receiver exit = %d, want 13 (E013, conflict kept)\nstderr:\n%s",
 			r.receiverExitCode, r.receiverErr)
 	}
+	// The summary must agree with the exit code: warn glyph and a headline
+	// counting what was written, not a green "Saved 1 file" for a kept file.
+	if !strings.Contains(r.receiverErr, "Saved 0 of 1 file") {
+		t.Errorf("summary should say nothing was written:\nstderr:\n%s", r.receiverErr)
+	}
+	if strings.Contains(r.receiverErr, "[OK] Saved") {
+		t.Errorf("kept conflict must not render a success summary:\nstderr:\n%s", r.receiverErr)
+	}
 	if r.senderExitCode != 0 {
 		t.Errorf("sender exit = %d, want 0 (transfer completes; file skipped)\nstderr:\n%s",
 			r.senderExitCode, r.senderErr)
