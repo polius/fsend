@@ -385,8 +385,15 @@ func printTextPayload(files []string) error {
 	if _, err := os.Stdout.Write(b); err != nil {
 		return err
 	}
-	if len(b) > 0 && b[len(b)-1] != '\n' && term.IsTerminal(int(os.Stdout.Fd())) {
-		fmt.Println()
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		if term.IsTerminal(int(os.Stdout.Fd())) {
+			fmt.Println()
+		} else {
+			// stdout is piped, so its bytes must stay exact — but when
+			// stderr shares the sink (2>&1, CI logs) the summary line would
+			// butt against the payload. Break the line on stderr instead.
+			fmt.Fprintln(os.Stderr)
+		}
 	}
 	return nil
 }
