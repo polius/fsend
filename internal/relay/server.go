@@ -117,8 +117,8 @@ const TombstoneTTL = 5 * time.Minute
 // ServerConfig holds the per-session tuning.
 type ServerConfig struct {
 	// MaxBytesPerSession caps wire bytes a single session may forward.
-	// 0 means unlimited. The unset default (1 GB) is applied by the env
-	// layer in cmd/fsend, so a bare ServerConfig{} here is uncapped.
+	// 0 means unlimited — the default; the cap is opt-in via the env
+	// layer in cmd/fsend (FSEND_RELAY_MAX_BYTES_PER_SESSION).
 	MaxBytesPerSession uint64
 	// MaxBytesPerDay caps wire bytes the relay forwards per UTC day across
 	// all sessions — the Denial-of-Wallet ceiling. 0 means unlimited.
@@ -140,8 +140,8 @@ const janitorInterval = 30 * time.Second
 const sessionIdleTimeout = 60 * time.Second
 
 // Default fills in zero values. MaxBytesPerSession is deliberately not
-// defaulted here — 0 means unlimited; the env layer supplies the 1 GB
-// default for an unset var.
+// defaulted here — 0 means unlimited, which is also what the env layer
+// passes for an unset var; the cap is opt-in.
 func (c *ServerConfig) Default() {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
