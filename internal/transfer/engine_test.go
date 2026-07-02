@@ -495,3 +495,75 @@ func TestEngine_SenderReadFailureReachesReceiver(t *testing.T) {
 		t.Fatalf("receiver error must be terminal (no retry), got transient: %v", re)
 	}
 }
+
+// passwordTransfer runs a password-gated single-file transfer with the given
+// receiver password options.
+func passwordTransfer(t *testing.T, senderPass string, mutate func(*RecvOptions)) (dst string, sendErr, recvErr error) {
+	t.Helper()
+	src := t.TempDir()
+	dst = t.TempDir()
+	writeFile(t, filepath.Join(src, "gated.txt"), []byte("payload"))
+	sources, err := Walk([]string{filepath.Join(src, "gated.txt")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recvOpts := RecvOptions{TargetDir: dst}
+	mutate(&recvOpts)
+	sendErr, recvErr = runTransfer(t,
+		SendOptions{Mode: wire.ModeFiles, Sources: sources, Password: senderPass}, recvOpts)
+	return dst, sendErr, recvErr
+}
+
+// A typo at the prompt gets fresh challenges: two wrong tries then the right
+// one completes the transfer on the same session, without burning the code.
+func TestEngine_PasswordRetriesWithinCap(t *testing.T) {
+	tries := []string{"wrong1", "wrong2", "right"}
+	var attempts []int
+	dst, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
+		o.PromptPass = func(attempt int) (string, error) {
+			attempts = append(attempts, attempt)
+			return tries[attempt-1], nil
+		}
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	want := []int{1, 2, 3}
+	if len(attempts) != 3 || attempts[0] != want[0] || attempts[1] != want[1] || attempts[2] != want[2] {
+		t.Errorf("prompt attempts = %v, want %v", attempts, want)
+	}
+	if got := mustRead(t, filepath.Join(dst, "gated.txt")); string(got) != "payload" {
+		t.Errorf("file content = %q", got)
+	}
+}
+
+// PasswordAttempts wrong tries abort with ErrWrongPassword on both sides.
+func TestEngine_PasswordExhaustedAborts(t *testing.T) {
+	prompts := 0
+	dst, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
+		o.PromptPass = func(attempt int) (string, error) {
+			prompts++
+			return "wrong", nil
+		}
+	})
+	if !errors.Is(se, fserrors.ErrWrongPassword) || !errors.Is(re, fserrors.ErrWrongPassword) {
+		t.Fatalf("send=%v recv=%v, want ErrWrongPassword on both", se, re)
+	}
+	if prompts != PasswordAttempts {
+		t.Errorf("prompted %d times, want %d", prompts, PasswordAttempts)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "gated.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("no file must land on a failed password gate")
+	}
+}
+
+// A fixed password (--password / FSEND_PASSWORD) can't change between tries,
+// so a mismatch aborts after one attempt on both sides.
+func TestEngine_PasswordFixedWrongSingleAttempt(t *testing.T) {
+	_, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
+		o.Password = "wrong"
+	})
+	if !errors.Is(se, fserrors.ErrWrongPassword) || !errors.Is(re, fserrors.ErrWrongPassword) {
+		t.Fatalf("send=%v recv=%v, want ErrWrongPassword on both", se, re)
+	}
+}

@@ -34,8 +34,11 @@ type RecvOptions struct {
 	// Overwrite is false and there is a terminal to ask.
 	ConfirmOverwrite func(conflicts []Conflict) bool
 
-	Password   string
-	PromptPass func() (string, error)
+	Password string
+	// PromptPass asks the user for the sender's password. attempt starts at
+	// 1 and grows when the sender rejects a try (up to PasswordAttempts),
+	// so the prompt can say "wrong password — try again".
+	PromptPass func(attempt int) (string, error)
 
 	ProgressFn func(index uint32, bytesWritten uint64)
 	OnResume   func(index uint32, offset, total uint64)
@@ -848,47 +851,61 @@ func mapPeerError(ef wire.ErrorFrame) error {
 	}
 }
 
-// receiverPasswordHandshake answers the sender's --password challenge.
+// receiverPasswordHandshake answers the sender's --password challenge. On a
+// mismatch the sender issues a fresh challenge (up to PasswordAttempts), so
+// an interactively-prompted receiver can retry a typo without burning the
+// one-shot code. A fixed password (--password / FSEND_PASSWORD) gets one
+// try — resending the same value can't succeed.
 func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
-	var ch wire.PasswordChallenge
-	ft, err := wire.ReadControl(s.Control, &ch)
-	if err != nil {
-		return fmt.Errorf("recv: read password challenge: %w", err)
-	}
-	if ft != wire.TypePasswordChallenge {
-		return fmt.Errorf("%w: expected PASSWORD_CHALLENGE, got %v", fserrors.ErrProtocolError, ft)
-	}
-	password := opts.Password
-	if password == "" {
-		if opts.PromptPass == nil {
-			declineTransfer(s, wire.ErrCodePasswordRequired, "receiver has no password to offer")
-			return fserrors.ErrPasswordRequired
-		}
-		password, err = opts.PromptPass()
+	for attempt := 1; ; attempt++ {
+		var ch wire.PasswordChallenge
+		ft, err := wire.ReadControl(s.Control, &ch)
 		if err != nil {
-			return fmt.Errorf("recv: read password: %w", err)
+			// An old sender closes the stream after one mismatch instead of
+			// re-challenging; the honest error is still the password.
+			if attempt > 1 {
+				return fserrors.ErrWrongPassword
+			}
+			return fmt.Errorf("recv: read password challenge: %w", err)
 		}
-	}
-	mac := hmacPassword(password, ch.Nonce[:])
-	var resp wire.PasswordResponse
-	copy(resp.HMAC[:], mac)
-	if err := wire.WriteControl(s.Control, wire.TypePasswordResponse, &resp); err != nil {
-		return fmt.Errorf("recv: write password response: %w", err)
-	}
-	var ef wire.ErrorFrame
-	ft, err = wire.ReadControl(s.Control, &ef)
-	if err != nil {
-		return fmt.Errorf("recv: read password verdict: %w", err)
-	}
-	switch ft {
-	case wire.TypePasswordVerified:
-		return nil
-	case wire.TypeError:
-		if ef.Code == wire.ErrCodeWrongPassword {
+		if ft != wire.TypePasswordChallenge {
+			return fmt.Errorf("%w: expected PASSWORD_CHALLENGE, got %v", fserrors.ErrProtocolError, ft)
+		}
+		password := opts.Password
+		if password == "" {
+			if opts.PromptPass == nil {
+				declineTransfer(s, wire.ErrCodePasswordRequired, "receiver has no password to offer")
+				return fserrors.ErrPasswordRequired
+			}
+			password, err = opts.PromptPass(attempt)
+			if err != nil {
+				return fmt.Errorf("recv: read password: %w", err)
+			}
+		}
+		mac := hmacPassword(password, ch.Nonce[:])
+		var resp wire.PasswordResponse
+		copy(resp.HMAC[:], mac)
+		if err := wire.WriteControl(s.Control, wire.TypePasswordResponse, &resp); err != nil {
+			return fmt.Errorf("recv: write password response: %w", err)
+		}
+		var ef wire.ErrorFrame
+		ft, err = wire.ReadControl(s.Control, &ef)
+		if err != nil {
+			return fmt.Errorf("recv: read password verdict: %w", err)
+		}
+		switch ft {
+		case wire.TypePasswordVerified:
+			return nil
+		case wire.TypeError:
+			if ef.Code != wire.ErrCodeWrongPassword {
+				return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
+			}
+			if opts.Password == "" && opts.PromptPass != nil {
+				continue // loop back for the sender's next challenge
+			}
 			return fserrors.ErrWrongPassword
+		default:
+			return fmt.Errorf("%w: expected PASSWORD_VERIFIED, got %v", fserrors.ErrProtocolError, ft)
 		}
-		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
-	default:
-		return fmt.Errorf("%w: expected PASSWORD_VERIFIED, got %v", fserrors.ErrProtocolError, ft)
 	}
 }
