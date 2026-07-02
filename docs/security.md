@@ -110,9 +110,12 @@ What makes a short code safe to use as the whole secret:
 - **Time-limited.** A code expires on the server after one hour if no one
   receives, or ten minutes once a receiver has paired. Pressing Ctrl-C on
   the sender invalidates it immediately.
-- **Rate-limited.** The public server caps new sessions at 30 per minute
-  per source IP (keyed on the full IPv4 address, or the /64 prefix for
-  IPv6), so online guessing against the ~45-bit space is infeasible.
+- **Rate-limited.** The public server is configured to cap new sessions
+  at 30 per minute per source IP (keyed on the full IPv4 address, or the
+  /64 prefix for IPv6), so online guessing against the ~45-bit space is
+  infeasible. On a self-hosted server the cap is opt-in — it defaults to
+  unlimited until you set `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE`
+  (see [self-hosting](self-hosting.md)).
 - **Not the encryption key.** File data is encrypted with the TLS 1.3
   session key. The code only drives the SPAKE2 handshake that
   authenticates the peer; it never feeds the encryption key and never

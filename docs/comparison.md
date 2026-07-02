@@ -33,7 +33,7 @@ no accounts, end-to-end encrypted, self-hostable. The differences are in
   *plus* SPAKE2 bound to it). The other two rest on a single classical
   layer.
 - **Hardest codes to guess, by default.** fsend's codes carry ~45 bits
-  (matching croc), and the server rate-limits guesses. magic-wormhole
+  (matching croc), and the public server rate-limits guesses. magic-wormhole
   defaults to 16 bits with no rate limiting — its own threat model
   documents a 1-in-65,536 guess chance.
 - **Works on a LAN with no internet.** fsend (mDNS) and croc (multicast)
@@ -59,7 +59,7 @@ no accounts, end-to-end encrypted, self-hostable. The differences are in
 | MITM protection                   | **Automatic** (channel-bound)              | PAKE only                             | Manual `--verify`                           |
 | Post-quantum forward secrecy      | **✓ X25519 + ML-KEM-768**                  | ✗                                     | ✗                                           |
 | Default code entropy              | **~45 bits**                               | **~45 bits**                          | 16 bits (adjustable)                        |
-| Online-guess protection           | **Rate-limited 30/min + bounded TTL**      | None server-side                      | None (acknowledged in docs)                 |
+| Online-guess protection           | **Rate-limited 30/min (public server) + bounded TTL** | None server-side           | None (acknowledged in docs)                 |
 | Password on top of the code       | **✓ `--password`**                             | ✗ (code is the secret)                | ✗ (code is the secret)                      |
 | Choose your own code phrase       | ✗                                          | **✓ `--code`**                        | **✓ `--code`**                              |
 | Resume after interruption         | **✓ (BLAKE3 chunk-verified)**              | **✓ (chunk-based)**                   | ✗ (classic transit restarts)               |
@@ -213,7 +213,7 @@ X25519 + ML-KEM-768 hybrid is not.
 | Receiver allocates the code | ✗ | ✗ | **✓ `--allocate`** |
 | One-shot | ✓ (can't be reused) | ✓ per session (reusable via `--code`) | ✓ nameplate single-use |
 | Server-side TTL | **1 h unclaimed / 10 min after pairing** | 3 h room TTL | Not specified in client docs |
-| Online-guess rate limiting | **30/min per source IP** | None server-side | None (acknowledged in docs) |
+| Online-guess rate limiting | **30/min per source IP (public server)** | None server-side | None (acknowledged in docs) |
 | Code reaches a server | **Never** — only an argon2id-stretched slot | The relay sees the room (SHA-256 of code prefix) | Words never; the (non-secret) nameplate does |
 
 fsend is strong by default, with nothing to configure. The code carries
