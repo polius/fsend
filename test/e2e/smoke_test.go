@@ -120,6 +120,9 @@ func TestServer_PasswordGate(t *testing.T) {
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE=10000",
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP=1000",
 	)
+	var out safeBuffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start guarded server: %v", err)
 	}
@@ -127,7 +130,7 @@ func TestServer_PasswordGate(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
-	if err := waitTCP("127.0.0.1:"+strconv.Itoa(httpPort), 5*time.Second); err != nil {
+	if err := waitServerReady("127.0.0.1:"+strconv.Itoa(httpPort), &out, 5*time.Second); err != nil {
 		t.Fatalf("guarded server not ready: %v", err)
 	}
 	addr := "127.0.0.1:" + strconv.Itoa(httpPort)
