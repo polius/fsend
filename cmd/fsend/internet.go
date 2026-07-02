@@ -437,6 +437,7 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a
 		// decline/target-exists error; report it as a cancellation (E026).
 		if ctx.Err() != nil {
+			printCancelKeptHint(f, ui)
 			return ctx.Err()
 		}
 		return err

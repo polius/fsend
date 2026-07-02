@@ -323,6 +323,18 @@ func (ui *receiverUI) bytes() (total, moved int64) {
 	return ui.total + ui.skipped, ui.total
 }
 
+// printCancelKeptHint tells a Ctrl-C'd receiver that its partial data
+// survives and how the transfer resumes. E026 itself is context-free
+// ("Cancelled.") — only the UI knows whether bytes had already landed.
+func printCancelKeptHint(f *flags, ui *receiverUI) {
+	if f.quiet {
+		return
+	}
+	if _, moved := ui.bytes(); moved > 0 {
+		fmt.Fprintf(os.Stderr, "%s Partial data kept — when the sender runs fsend again, the transfer resumes here.\n", uxlog.Info())
+	}
+}
+
 func (ui *receiverUI) close() {
 	ui.closeOnce.Do(func() {
 		ui.mu.Lock()

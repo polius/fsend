@@ -875,6 +875,27 @@ func TestPrintTextPayload_BreaksLineForPipedStdout(t *testing.T) {
 	}
 }
 
+// The cancel hint fires only when bytes actually landed — a Ctrl-C at
+// the accept prompt has no partial to speak of — and stays out of --quiet.
+func TestPrintCancelKeptHint(t *testing.T) {
+	moved := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	moved.total = 1024
+	if got := captureStderr(t, func() { printCancelKeptHint(moved.f, moved) }); !strings.Contains(got, "Partial data kept") {
+		t.Errorf("expected resume hint after moved bytes, got %q", got)
+	}
+
+	idle := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	if got := captureStderr(t, func() { printCancelKeptHint(idle.f, idle) }); got != "" {
+		t.Errorf("no bytes moved must print nothing, got %q", got)
+	}
+
+	quiet := newReceiverUI(context.Background(), &flags{quiet: true}, "/tmp", false, mustLANInfo())
+	quiet.total = 1024
+	if got := captureStderr(t, func() { printCancelKeptHint(quiet.f, quiet) }); got != "" {
+		t.Errorf("--quiet must suppress the hint, got %q", got)
+	}
+}
+
 func TestSummaryParts_ResumeShowsMovedAndHonestRate(t *testing.T) {
 	// 200 MB total, 50 MB moved in 1s → size annotated with the moved
 	// clause and the rate computed from moved, not total.
