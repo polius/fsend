@@ -581,6 +581,11 @@ func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
 	if !cmd.Flags().Changed("password") || bare {
 		if v := os.Getenv("FSEND_PASSWORD"); v != "" {
 			f.passArg = v
+			// The user who typed bare --password expects a prompt; say why
+			// none appears rather than silently pre-empting it.
+			if bare && !f.quiet {
+				fmt.Fprintln(os.Stderr, uxlog.Info(), "Using FSEND_PASSWORD from the environment — skipping the prompt.")
+			}
 		}
 	}
 }
