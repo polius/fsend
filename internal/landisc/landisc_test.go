@@ -52,6 +52,40 @@ func TestPortForCode_Deterministic(t *testing.T) {
 	}
 }
 
+// TestStopAnnounce_BoundedOnWedgedClose pins the watchdog: a Close that
+// never returns (a wedged pion/mdns) must not hang the caller past the grace.
+func TestStopAnnounce_BoundedOnWedgedClose(t *testing.T) {
+	unblock := make(chan struct{})
+	t.Cleanup(func() { close(unblock) }) // release the abandoned goroutine
+	start := time.Now()
+	StopAnnounce(blockingCloser{unblock})
+	elapsed := time.Since(start)
+	if elapsed < watchdogGrace {
+		t.Errorf("returned in %v, before the %v grace — watchdog skipped?", elapsed, watchdogGrace)
+	}
+	if limit := watchdogGrace + 2*time.Second; elapsed > limit {
+		t.Errorf("took %v, want < %v", elapsed, limit)
+	}
+}
+
+// TestStopAnnounce_FastPath: a Close that returns promptly must not wait out
+// the grace (the common case — the watchdog is only for a wedge).
+func TestStopAnnounce_FastPath(t *testing.T) {
+	start := time.Now()
+	StopAnnounce(nopCloser{})
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("blocked %v on a fast Close, want < 1s", elapsed)
+	}
+}
+
+type blockingCloser struct{ ch chan struct{} }
+
+func (b blockingCloser) Close() error { <-b.ch; return nil }
+
+type nopCloser struct{}
+
+func (nopCloser) Close() error { return nil }
+
 // TestPortForCode_InRange guards the 50000–50999 window the package
 // promises: the lower bound stays clear of the OS ephemeral range on
 // most systems, and the upper bound stops the hash from wrapping into
