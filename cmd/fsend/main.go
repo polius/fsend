@@ -118,7 +118,8 @@ func renderError(err error, debug bool) int {
 		errors.Is(err, fserrors.ErrRelayCapHit) ||
 		errors.Is(err, fserrors.ErrRelayIdleTimeout) ||
 		errors.Is(err, fserrors.ErrServerStartup) ||
-		errors.Is(err, fserrors.ErrUpdateFailed)) {
+		errors.Is(err, fserrors.ErrUpdateFailed) ||
+		errors.Is(err, fserrors.ErrUninstallFailed)) {
 		if extra := extractDetail(err.Error()); extra != "" {
 			detail = extra
 		}
