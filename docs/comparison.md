@@ -33,7 +33,8 @@ no accounts, end-to-end encrypted, self-hostable. The differences are in
   *plus* SPAKE2 bound to it). The other two rest on a single classical
   layer.
 - **Hardest codes to guess, by default.** fsend's codes carry ~45 bits
-  (matching croc), and the public server rate-limits guesses. magic-wormhole
+  (matching croc), and the server has built-in per-IP rate limiting of
+  guesses. magic-wormhole
   defaults to 16 bits with no rate limiting — its own threat model
   documents a 1-in-65,536 guess chance.
 - **Works on a LAN with no internet.** fsend (mDNS) and croc (multicast)
@@ -59,7 +60,7 @@ no accounts, end-to-end encrypted, self-hostable. The differences are in
 | MITM protection                   | **Automatic** (channel-bound)              | PAKE only                             | Manual `--verify`                           |
 | Post-quantum forward secrecy      | **✓ X25519 + ML-KEM-768**                  | ✗                                     | ✗                                           |
 | Default code entropy              | **~45 bits**                               | **~45 bits**                          | 16 bits (adjustable)                        |
-| Online-guess protection           | **Rate-limited 30/min (public server) + bounded TTL** | None server-side           | None (acknowledged in docs)                 |
+| Online-guess protection           | **✓ built-in per-IP rate limiting + bounded TTL** | None server-side           | None (acknowledged in docs)                 |
 | Password on top of the code       | **✓ `--password`**                             | ✗ (code is the secret)                | ✗ (code is the secret)                      |
 | Choose your own code phrase       | ✗                                          | **✓ `--code`**                        | **✓ `--code`**                              |
 | Resume after interruption         | **✓ (BLAKE3 chunk-verified)**              | **✓ (chunk-based)**                   | ✗ (classic transit restarts)               |
@@ -213,13 +214,14 @@ X25519 + ML-KEM-768 hybrid is not.
 | Receiver allocates the code | ✗ | ✗ | **✓ `--allocate`** |
 | One-shot | ✓ (can't be reused) | ✓ per session (reusable via `--code`) | ✓ nameplate single-use |
 | Server-side TTL | **1 h unclaimed / 10 min after pairing** | 3 h room TTL | Not specified in client docs |
-| Online-guess rate limiting | **30/min per source IP (public server)** | None server-side | None (acknowledged in docs) |
+| Rate limiting | **✓ built-in, per source IP (opt-in via env)** | None server-side | None (acknowledged in docs) |
 | Code reaches a server | **Never** — only an argon2id-stretched slot | The relay sees the room (SHA-256 of code prefix) | Words never; the (non-secret) nameplate does |
 
 fsend is strong by default, with nothing to configure. The code carries
 ~45 bits and never reaches the server (both peers register under a 64-MiB
-argon2id-stretched *slot* derived from it), and the public server
-rate-limits new sessions — so online brute force is infeasible.
+argon2id-stretched *slot* derived from it), and the server has per-IP
+rate limiting built in (opt-in via env; the other two have none to turn
+on) — so online brute force is infeasible.
 magic-wormhole's own
 [threat model](https://magic-wormhole.readthedocs.io/en/latest/attacks.html)
 is candid about the cost of its 16-bit default: an attacker on the
@@ -308,9 +310,9 @@ it; or Python is already your path of least resistance.
   relay through a third party;
 - you transfer on a **LAN with no internet**: fsend pairs over mDNS with
   the server entirely offline; magic-wormhole can't pair at all;
-- you want **harder-to-brute-force codes by default** (rate-limited,
-  bounded TTL, code never sent to the server) without asking anyone to
-  lengthen anything;
+- you want **harder-to-brute-force codes by default** (built-in rate
+  limiting, bounded TTL, code never sent to the server) without asking
+  anyone to lengthen anything;
 - you want **defense-in-depth** (SPAKE2 *over* TLS 1.3) and
   **post-quantum** forward secrecy — neither of the others has either;
 - you want **resume**, a separate **`--password`** secret, a **`--preview`**
