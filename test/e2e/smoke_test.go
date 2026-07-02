@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +90,33 @@ func TestServer_HealthCheck(t *testing.T) {
 	cmd.Env = append(os.Environ(), "FSEND_SERVER_ADDR=:"+strconv.Itoa(h.httpPort))
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("--health-check exit: %v", err)
+	}
+}
+
+// An unreachable server is the routine result a health probe exists to
+// detect: exit 1 (the documented Docker HEALTHCHECK contract) with a
+// one-line reason — never the E099 "file an issue" catchall (exit 99).
+func TestServer_HealthCheckUnreachableExitsOne(t *testing.T) {
+	requireE2E(t)
+	cmd := exec.Command(h.fsendBin, "server", "--health-check")
+	// A port nothing listens on: bind+close to reserve a known-free one.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	cmd.Env = append(os.Environ(), "FSEND_SERVER_ADDR=127.0.0.1:"+strconv.Itoa(port))
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected a nonzero exit, got err=%v\n%s", err, out)
+	}
+	if code := exitErr.ExitCode(); code != 1 {
+		t.Errorf("exit = %d, want 1\n%s", code, out)
+	}
+	if strings.Contains(string(out), "E099") || strings.Contains(string(out), "issue") {
+		t.Errorf("routine probe failure must not route to the E099 catchall:\n%s", out)
 	}
 }
 
