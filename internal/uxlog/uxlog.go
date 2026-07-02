@@ -155,6 +155,11 @@ func New(totalBytes int64) *Progress {
 			w: os.Stderr, total: totalBytes, lastLine: time.Now(), start: time.Now(),
 		}}
 	}
+	// The fixed width assumes ~55 columns of decorators around the bar; on
+	// narrower terminals the line would wrap and the in-place redraw only
+	// clears its last visual row, leaving stale fragments behind.
+	bw := min(barWidth, max(10, width-55))
+
 	p := &Progress{}
 	defer setActive(p)
 
@@ -251,7 +256,7 @@ func New(totalBytes int64) *Progress {
 
 	p.bar = p.mp.New(totalBytes,
 		style,
-		mpb.BarWidth(barWidth),
+		mpb.BarWidth(bw),
 		// Progress is transient: a completed bar erases itself and the
 		// summary line that follows is the permanent record. Aborted
 		// (partial) bars stay — see Done().

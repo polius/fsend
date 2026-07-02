@@ -231,6 +231,13 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 		}
 		fmt.Fprintf(os.Stderr, "  Sending %s%s  ·  %s\n",
 			name, uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))
+		// Directory-only sends (an empty folder) survive collectPlan's
+		// nothing-to-send guard because the dir entry itself is a source.
+		// Sending it is legitimate — but "0 files" is usually a mistake,
+		// so say what will actually happen.
+		if plan.totalFiles == 0 {
+			fmt.Fprintf(os.Stderr, "  %s No files here — only the empty directory will be created on the other side.\n", uxlog.Warn())
+		}
 		renderPreview(os.Stderr, senderPreview(plan.sources), 6)
 	}
 	fmt.Fprintln(os.Stderr)

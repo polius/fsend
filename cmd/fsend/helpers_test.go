@@ -106,7 +106,7 @@ func TestSanitizeRemote(t *testing.T) {
 		{"only control → placeholder", "\x00\x01\x02", "peer"},
 		{"strips bidi override", "abc\u202edef", "abcdef"},
 		{"strips zero-width", "ab\u200bc\u200dd", "abcd"},
-		{"caps at 64 runes", strings.Repeat("x", 200), strings.Repeat("x", 64)},
+		{"caps at 64 runes, cut marked", strings.Repeat("x", 200), strings.Repeat("x", 47) + "…" + strings.Repeat("x", 16)},
 		{"tabs and DEL dropped", "ab\tc\x7Fd", "abcd"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +129,27 @@ func TestIsBidi(t *testing.T) {
 		if isBidi(r) {
 			t.Errorf("isBidi(%U) = true, want false", r)
 		}
+	}
+}
+
+// Over-long peer names truncate in the middle with a visible ellipsis:
+// the name is what the accept prompt asks consent for, so a cut must be
+// marked and the extension must stay in view.
+func TestSanitizeForDisplay_TruncatesMiddleKeepingExtension(t *testing.T) {
+	long := strings.Repeat("a", 150) + ".tar.gz"
+	got := sanitizeForDisplay(long, 128)
+	if n := len([]rune(got)); n != 128 {
+		t.Errorf("truncated length = %d runes, want 128", n)
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("truncation must be visible: %q", got)
+	}
+	if !strings.HasSuffix(got, ".tar.gz") {
+		t.Errorf("extension must survive truncation: %q", got)
+	}
+	// Short names stay byte-exact.
+	if got := sanitizeForDisplay("report.pdf", 128); got != "report.pdf" {
+		t.Errorf("short name changed: %q", got)
 	}
 }
 

@@ -316,11 +316,15 @@ func sanitizeForDisplay(s string, maxLen int) string {
 			continue
 		}
 		out = append(out, r)
-		if len(out) >= maxLen {
-			break
-		}
 	}
-	return string(out)
+	if len(out) <= maxLen {
+		return string(out)
+	}
+	// Truncate in the middle with a visible ellipsis: this name is what
+	// the user consents to, so a cut must not masquerade as complete, and
+	// keeping the tail leaves the real extension in view.
+	const tail = 16
+	return string(out[:maxLen-tail-1]) + "…" + string(out[len(out)-tail:])
 }
 
 // sanitizeRemote sanitizes a peer-supplied hostname for display, then

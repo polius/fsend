@@ -2,6 +2,7 @@ package uxlog
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -25,11 +26,11 @@ func HumanBytes(n int64) string {
 		exp++
 	}
 	v := float64(n) / float64(div)
-	// Round values drop the decimal: "100 MB", not "100.0 MB".
-	if v == float64(int64(v)) {
-		return fmt.Sprintf("%d %cB", int64(v), "KMGTPE"[exp])
-	}
-	return fmt.Sprintf("%.1f %cB", v, "KMGTPE"[exp])
+	// Values that *display* round drop the decimal — 300006 B must read
+	// "300 KB", not "300.0 KB" (which sat inconsistently next to an exact
+	// 300000 B rendering as "300 KB").
+	s := strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0")
+	return fmt.Sprintf("%s %cB", s, "KMGTPE"[exp])
 }
 
 // HumanDuration renders elapsed in compact form. Sub-second durations
