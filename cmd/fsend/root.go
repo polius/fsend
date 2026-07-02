@@ -113,7 +113,7 @@ Examples:
 	passFlag := c.Flags().Lookup("password")
 	passFlag.NoOptDefVal = passPromptSentinel
 	passFlag.DefValue = ""
-	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers")
+	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers (differing files still need --overwrite)")
 	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files that differ on receive")
 	c.Flags().BoolVar(&f.checksum, "checksum", false, "decide identical files by content hash, not size+mtime (like rsync -c)")
@@ -261,7 +261,8 @@ SENDING
   --name <string>        Override the hostname shown to the peer
 
 RECEIVING
-  --yes                  Auto-accept incoming transfers (no prompt)
+  --yes                  Auto-accept incoming transfers (no prompt).
+                         Differing files are still kept unless --overwrite
   --out <dir>            Receive into this directory, created if missing
                          (default: current)
   --out -                Receive to stdout (single file, text, or piped

@@ -151,6 +151,13 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 
 	if f.yes {
 		fmt.Fprintln(os.Stderr, uxlog.Info(), "Accepting (--yes)")
+		// --yes answers the accept prompt, not the overwrite one — differing
+		// files are kept and the exit will be E013. Scripts reading --yes as
+		// "yes to everything" deserve to hear that now, not at the summary.
+		if summary.Differing > 0 && !f.overwrite {
+			fmt.Fprintf(os.Stderr, "%s Keeping %s that would be overwritten — pass --overwrite to replace\n",
+				uxlog.Warn(), uxlog.CountNoun(summary.Differing, "differing file"))
+		}
 		return true
 	}
 	question := "Save to " + saveTargetLabel(ui.outDir) + "?"
