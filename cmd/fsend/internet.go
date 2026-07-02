@@ -467,6 +467,9 @@ func retryNoticeFor(f *flags) func(attempt int, wait time.Duration, lastErr erro
 	// uxlog.Println coordinates with a live progress bar so the notice
 	// prints above it instead of colliding with the in-place redraw.
 	return func(attempt int, wait time.Duration, lastErr error) {
+		// The raw jittered duration ("618.167744ms") is debugging noise
+		// on a user-facing line.
+		wait = wait.Round(100 * time.Millisecond)
 		if f.debug {
 			uxlog.Println(fmt.Sprintf("  %s Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
 				uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts))

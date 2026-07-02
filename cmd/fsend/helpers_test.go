@@ -61,6 +61,24 @@ func TestShortErr_TruncatesAndStripsNewlines(t *testing.T) {
 	}
 }
 
+// The retry notice rounds the jittered wait — "618.167744ms" is
+// debugging noise on a user-facing line.
+func TestRetryNoticeFor_RoundsWait(t *testing.T) {
+	notice := retryNoticeFor(&flags{})
+	got := captureStderr(t, func() {
+		notice(2, 618167744*time.Nanosecond, errors.New("idle timeout"))
+	})
+	if !strings.Contains(got, "retrying in 600ms (attempt 2/3)") {
+		t.Errorf("wait not rounded: %q", got)
+	}
+	got = captureStderr(t, func() {
+		notice(3, 2822002555*time.Nanosecond, errors.New("idle timeout"))
+	})
+	if !strings.Contains(got, "retrying in 2.8s (attempt 3/3)") {
+		t.Errorf("wait not rounded: %q", got)
+	}
+}
+
 func TestHostnameOrDefault(t *testing.T) {
 	if got := hostnameOrDefault("override"); got != "override" {
 		t.Errorf("override ignored: %q", got)
