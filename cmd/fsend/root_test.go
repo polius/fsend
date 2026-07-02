@@ -322,3 +322,25 @@ func TestHelpTemplate_ListsEveryFlag(t *testing.T) {
 		}
 	})
 }
+
+// An explicit --receive must tolerate the same chat-app mangling
+// (auto-capitalized first letter, wrapped whitespace) that auto-detect
+// already fixes up — not fail E004 where the implicit path would work.
+// The probe uses --quiet without --yes: a code that survives validation
+// hits that usage guard (E024) before any network work, so E004-vs-E024
+// distinguishes "rejected by format" from "normalized and accepted".
+func TestStartReceive_NormalizesMangledCodes(t *testing.T) {
+	for _, mangled := range []string{"Abc-Defg-Jkm", "ABC-DEFG-JKM", " abc-defg-jkm\n"} {
+		err := startReceive(&flags{quiet: true}, mangled)
+		if errors.Is(err, fserrors.ErrInvalidCodeFormat) {
+			t.Errorf("startReceive(%q) rejected a normalizable code: %v", mangled, err)
+		}
+		if !errors.Is(err, fserrors.ErrUsage) {
+			t.Errorf("startReceive(%q) = %v, want the quiet-without-yes usage guard", mangled, err)
+		}
+	}
+	// Genuinely invalid stays E004.
+	if err := startReceive(&flags{quiet: true}, "Not-A-Code-At-All"); !errors.Is(err, fserrors.ErrInvalidCodeFormat) {
+		t.Errorf("invalid code should stay E004, got %v", err)
+	}
+}
