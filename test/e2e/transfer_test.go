@@ -322,6 +322,49 @@ func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
+// A typo at the overwrite prompt must re-prompt, not silently count as
+// "keep" — a mistyped "yes" ("yws") followed by a real "y" still
+// overwrites. Regression for the prompt's old catch-all-means-no default.
+func TestReceive_OverwritePromptRepromptsOnTypo(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 16*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nyws\ny\n")
+	r.requireSuccess(t)
+	if !strings.Contains(r.receiverErr, "Please answer y or n") {
+		t.Errorf("typo did not re-prompt:\n%s", r.receiverErr)
+	}
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
+}
+
+// EOF at the overwrite prompt keeps the local copies and says so — the
+// old code fell into the silent catch-all.
+func TestReceive_OverwritePromptEOFKeepsAndExplains(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 16*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Stdin carries only the accept answer; it closes before the
+	// overwrite prompt reads.
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\n")
+	if r.receiverExitCode != 13 {
+		t.Errorf("receiver exit = %d, want 13 (kept conflict)\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
+	}
+	if !strings.Contains(r.receiverErr, "keeping your local copies") {
+		t.Errorf("EOF keep was silent:\n%s", r.receiverErr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
+		t.Errorf("EOF must keep the local copy, got %q", got)
+	}
+}
+
 // Interactive: receiver declines the transfer at the accept prompt. With
 // the single-prompt flow, a single-file collision is disclosed inline as
 // a chip on the artifact line — so "accept the transfer but decline the
