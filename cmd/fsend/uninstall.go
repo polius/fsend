@@ -18,6 +18,18 @@ import (
 // Config dir first because it's always writable; binary may live in a
 // privileged directory and need the user to escalate by hand.
 func runUninstall(f *flags) error {
+	// A brew-managed binary belongs to brew: deleting it strands the
+	// formula's metadata and `brew list/upgrade` keep believing it's
+	// installed. Refuse before even asking for confirmation.
+	if binPath, err := os.Executable(); err == nil {
+		if resolved, rerr := filepath.EvalSymlinks(binPath); rerr == nil && resolved != "" {
+			binPath = resolved
+		}
+		if managedByHomebrew(binPath) {
+			return fmt.Errorf("%w: this fsend was installed with Homebrew — uninstall it with: brew uninstall fsend", fserrors.ErrUninstallFailed)
+		}
+	}
+
 	if !confirmUninstall(f) {
 		fmt.Fprintln(os.Stderr, "  Uninstall cancelled.")
 		return nil
