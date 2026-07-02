@@ -264,7 +264,8 @@ SENDING
 
 RECEIVING
   --yes                  Auto-accept incoming transfers (no prompt)
-  --out <dir>            Receive into this directory (default: current)
+  --out <dir>            Receive into this directory, created if missing
+                         (default: current)
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
   --password[=<value>]       Supply the sender's password up front as --password=VALUE,

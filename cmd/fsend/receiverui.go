@@ -70,10 +70,16 @@ func resolveOutDir(f *flags) (dir string, sink bool, err error) {
 	if f.outDir != "" {
 		st, statErr := os.Stat(dir)
 		switch {
-		case statErr != nil:
-			return "", false, fmt.Errorf("%w: --out directory does not exist: %s", fserrors.ErrUsage, dir)
-		case !st.IsDir():
+		case statErr == nil && !st.IsDir():
 			return "", false, fmt.Errorf("%w: --out is not a directory: %s", fserrors.ErrUsage, dir)
+		case os.IsNotExist(statErr):
+			// Create it (and parents), like `mkdir -p` — failing after the
+			// one-shot code is consumed just to say "make this first" is poor UX.
+			if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+				return "", false, fmt.Errorf("%w: could not create --out directory %s: %v", fserrors.ErrUsage, dir, mkErr)
+			}
+		case statErr != nil:
+			return "", false, fmt.Errorf("%w: cannot access --out directory %s: %v", fserrors.ErrUsage, dir, statErr)
 		}
 	}
 	return dir, false, nil

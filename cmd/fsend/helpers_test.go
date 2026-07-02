@@ -831,3 +831,44 @@ func TestPromptAccept_PathChipShown(t *testing.T) {
 		}
 	}
 }
+
+// resolveOutDir creates a missing --out directory (mkdir -p), accepts an
+// existing one, and rejects a path that exists but isn't a directory.
+func TestResolveOutDir(t *testing.T) {
+	base := t.TempDir()
+
+	t.Run("creates_missing_nested", func(t *testing.T) {
+		want := filepath.Join(base, "a", "b", "c")
+		dir, sink, err := resolveOutDir(&flags{outDir: want})
+		if err != nil || sink {
+			t.Fatalf("got (%q, sink=%v, %v), want created dir", dir, sink, err)
+		}
+		if st, statErr := os.Stat(want); statErr != nil || !st.IsDir() {
+			t.Fatalf("--out dir was not created: %v", statErr)
+		}
+	})
+
+	t.Run("accepts_existing", func(t *testing.T) {
+		if _, _, err := resolveOutDir(&flags{outDir: base}); err != nil {
+			t.Fatalf("existing dir rejected: %v", err)
+		}
+	})
+
+	t.Run("rejects_file", func(t *testing.T) {
+		file := filepath.Join(base, "file.txt")
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := resolveOutDir(&flags{outDir: file})
+		if !errors.Is(err, fserrors.ErrUsage) || !strings.Contains(err.Error(), "not a directory") {
+			t.Fatalf("got %v, want ErrUsage 'not a directory'", err)
+		}
+	})
+
+	t.Run("stdout_sink", func(t *testing.T) {
+		_, sink, err := resolveOutDir(&flags{outDir: "-"})
+		if err != nil || !sink {
+			t.Fatalf("got (sink=%v, %v), want sink=true", sink, err)
+		}
+	})
+}
