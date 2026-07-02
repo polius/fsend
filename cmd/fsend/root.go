@@ -594,6 +594,12 @@ func startReceive(f *flags, c string) error {
 	if f.preview {
 		return fmt.Errorf("%w: --preview is a send-side flag and has no effect when receiving", fserrors.ErrUsage)
 	}
+	// An explicit --receive deserves the same tolerance auto-detect has
+	// for chat-app mangling (auto-capitalized first letter, copied
+	// whitespace) — the more explicit user must not get the worse E004.
+	if t := strings.ToLower(strings.TrimSpace(c)); t != c && code.IsCode(t) {
+		c = t
+	}
 	return runReceive(f, c)
 }
 
