@@ -178,7 +178,36 @@ func normalizeServer(s string) (string, error) {
 	if strings.TrimSpace(host) == "" {
 		return "", fmt.Errorf("host part is empty in %q", s)
 	}
+	if !validHost(host) {
+		return "", fmt.Errorf("invalid server hostname %q", host)
+	}
 	return net.JoinHostPort(host, port), nil
+}
+
+// validHost reports whether host is an IP literal or a plausible DNS name.
+// Persisting a syntactically impossible host ("not a host!") would break
+// every later transfer as E001, so it must be rejected here — unlike a
+// well-formed name that merely fails to resolve, which only warns (the
+// user may be offline or on another network).
+func validHost(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	host = strings.TrimSuffix(host, ".") // tolerate a FQDN's trailing dot
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			case r == '-', r == '_': // '_' is invalid DNS but common on LANs
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // defaultPortForHost returns the implicit port for an address where the

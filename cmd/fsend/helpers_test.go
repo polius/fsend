@@ -227,9 +227,20 @@ func TestNormalizeServer(t *testing.T) {
 			t.Errorf("normalizeServer(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	for _, bad := range []string{"", "   ", ":443", "host:0", "host:99999", "host:abc", "http://", "https://"} {
+	for _, bad := range []string{
+		"", "   ", ":443", "host:0", "host:99999", "host:abc", "http://", "https://",
+		// Syntactically impossible hostnames must be rejected, not
+		// persisted with a resolve warning.
+		"not a host!", "host!", "a b.example.com", "host..double", "-lead.example.com", "trail-.example.com", "héllo.example.com",
+	} {
 		if _, err := normalizeServer(bad); err == nil {
 			t.Errorf("normalizeServer(%q) accepted bad input", bad)
+		}
+	}
+	// Unusual-but-real shapes stay accepted.
+	for _, ok := range []string{"my_host", "fs.example.com.", "xn--nxasmq6b.example"} {
+		if _, err := normalizeServer(ok); err != nil {
+			t.Errorf("normalizeServer(%q) rejected valid host: %v", ok, err)
 		}
 	}
 }
