@@ -190,10 +190,16 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID,
 // E003), not E017 — a mistyped code must not surface as "too many
 // attempts".
 func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags, existing *uxlog.Spinner) (*server.JoinSessionResponse, error) {
+	// The retry window can run the full budget (~15 s); a spinner stuck on
+	// the caller's "Connecting" for that long reads as a network problem.
+	// Say what we're actually doing — holding for the sender's Create.
+	const waitMsg = "Waiting for the sender to publish this code"
+
 	deadline := time.Now().Add(joinRetryBudget)
 	delay := 500 * time.Millisecond
 	var lastRetryable error
 	var spin *uxlog.Spinner
+	retitled := false
 	// Close over the variable so a spinner started inside the loop is
 	// still Stopped on return — a plain `defer spin.Stop()` would only
 	// stop the nil pointer captured at defer-time.
@@ -201,6 +207,11 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 	for {
 		joined, err := client.Join(ctx, code)
 		if err == nil {
+			if retitled {
+				// The caller's spinner keeps running through ICE/relay setup;
+				// hand it back with its original label.
+				existing.SetMessage("Connecting")
+			}
 			return joined, nil
 		}
 		if lastRetryable != nil && errors.Is(err, fserrors.ErrRateLimited) {
@@ -211,12 +222,17 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 			return nil, err
 		}
 		lastRetryable = err
-		// Animate a single line for the duration of the wait so the
-		// user knows we're holding for the sender rather than stuck.
-		// If the caller already gave us a running spinner, leave it
-		// alone — two spinners would fight each other on stderr.
-		if spin == nil && existing == nil && !f.quiet {
-			spin = uxlog.StartSpinner("Waiting for sender")
+		// Animate a single line for the duration of the wait so the user
+		// knows we're holding for the sender rather than stuck. A caller-
+		// owned spinner is retitled in place — starting a second one would
+		// fight it on stderr.
+		if !retitled && !f.quiet {
+			if existing != nil {
+				existing.SetMessage(waitMsg)
+			} else if spin == nil {
+				spin = uxlog.StartSpinner(waitMsg)
+			}
+			retitled = existing != nil
 		}
 		select {
 		case <-ctx.Done():
