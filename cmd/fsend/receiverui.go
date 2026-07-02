@@ -189,22 +189,29 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 
 // confirmOverwrite is the consolidated prompt for differing/conflicting
 // entries. Returns true to overwrite all, false to keep all local copies.
+// Only "n"/"no"/bare-enter take the keep default; a mistyped "yes" must
+// re-prompt, not silently count as "no" — mirroring promptAccept. EOF
+// keeps the local copies but says so.
 func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	const preview = 5
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "  %s %s from your local copies:\n",
+		uxlog.CountNoun(len(conflicts), "file"), differVerb(len(conflicts)))
+	shown := min(len(conflicts), preview)
+	for _, c := range conflicts[:shown] {
+		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
+	}
+	if more := len(conflicts) - shown; more > 0 {
+		fmt.Fprintf(os.Stderr, "    %s\n", uxlog.Dim(fmt.Sprintf("… and %d more", more)))
+	}
 	for {
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "  %s %s from your local copies:\n",
-			uxlog.CountNoun(len(conflicts), "file"), differVerb(len(conflicts)))
-		shown := min(len(conflicts), preview)
-		for _, c := range conflicts[:shown] {
-			fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
-		}
-		if more := len(conflicts) - shown; more > 0 {
-			fmt.Fprintf(os.Stderr, "    %s\n", uxlog.Dim(fmt.Sprintf("… and %d more", more)))
-		}
 		fmt.Fprint(os.Stderr, "  Overwrite all? [y / N / l = list all] ")
-		line, _, ok := readLineCtx(ui.ctx)
+		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
+			return false
+		}
+		if eof {
+			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — keeping your local copies.\n", uxlog.Info())
 			return false
 		}
 		switch line {
@@ -216,14 +223,15 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 			ui.bytesHint += ui.diffBytes
 			ui.mu.Unlock()
 			return true
+		case "", "n", "no":
+			return false
 		case "l", "list":
 			for _, c := range conflicts {
 				fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
 			}
 			continue
-		default:
-			return false
 		}
+		fmt.Fprintln(os.Stderr, "  Please answer y or n (or l to list all).")
 	}
 }
 
