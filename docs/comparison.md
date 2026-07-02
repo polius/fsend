@@ -60,7 +60,7 @@ no accounts, end-to-end encrypted, self-hostable. The differences are in
 | Post-quantum forward secrecy      | **✓ X25519 + ML-KEM-768**                  | ✗                                     | ✗                                           |
 | Default code entropy              | **~45 bits**                               | **~45 bits**                          | 16 bits (adjustable)                        |
 | Online-guess protection           | **Rate-limited 30/min + bounded TTL**      | None server-side                      | None (acknowledged in docs)                 |
-| Password on top of the code       | **✓ `--pass`**                             | ✗ (code is the secret)                | ✗ (code is the secret)                      |
+| Password on top of the code       | **✓ `--password`**                             | ✗ (code is the secret)                | ✗ (code is the secret)                      |
 | Choose your own code phrase       | ✗                                          | **✓ `--code`**                        | **✓ `--code`**                              |
 | Resume after interruption         | **✓ (BLAKE3 chunk-verified)**              | **✓ (chunk-based)**                   | ✗ (classic transit restarts)               |
 | Skip unchanged files on re-send   | **✓ (size+mtime; `--checksum` to hash)**   | **✓ (always hashes)**                 | ✗                                           |
@@ -245,7 +245,7 @@ own code phrase, while fsend always picks it for you.
 | Skip unchanged files on re-send | **✓ (size+mtime; `--checksum`)** | **✓ (always hashes)** | ✗ |
 | Preview what you'd send | **✓ `--preview`** — list every file + size as CSV, locally, without sending | ✗ | ✗ |
 | Record of what was received | **✓ `--manifest`** — CSV of each file with its outcome (new / identical / overwritten / kept / resumed) | ✗ | ✗ |
-| Password on top of the code | **✓ `--pass`** | code phrase doubles as secret | ✗ (the code is the secret) |
+| Password on top of the code | **✓ `--password`** | code phrase doubles as secret | ✗ (the code is the secret) |
 | Exclude paths in a directory | **✓ `--exclude`** | **✓ `--exclude` (+ `--git`)** | ✗ |
 | Custom output dir / name | `--out` | `--out` | `--output-file` |
 | Compression | zstd (automatic; skips chunks it can't shrink) | DEFLATE (`--no-compress` to disable) | DEFLATE (folders only) |
@@ -313,7 +313,7 @@ it; or Python is already your path of least resistance.
   lengthen anything;
 - you want **defense-in-depth** (SPAKE2 *over* TLS 1.3) and
   **post-quantum** forward secrecy — neither of the others has either;
-- you want **resume**, a separate **`--pass`** secret, a **`--preview`**
+- you want **resume**, a separate **`--password`** secret, a **`--preview`**
   of what you'd send, **multi-file** transfers, or **binary stdin/stdout**
   streaming;
 - you'd rather deploy **one static binary** than a Python environment.

@@ -63,7 +63,7 @@ var (
 	// E020 — transfer was interrupted but is recoverable; surfaced when
 	// retries are exhausted.
 	ErrTransientFailure = errors.New("transient transfer failure")
-	// E021 — receiver did not match the sender's --pass challenge.
+	// E021 — receiver did not match the sender's --password challenge.
 	ErrWrongPassword = errors.New("wrong password")
 	// E022 — peers did not agree on the short code (or someone in the
 	// middle tried to MITM): SPAKE2-derived key + TLS exporter mismatch.
@@ -104,7 +104,7 @@ var (
 	// not route through the E099 "file an issue" catchall.
 	ErrServerStartup = errors.New("server failed to start")
 	// E031 — the sender requires a password and the receiver had none to
-	// offer (--quiet with no --pass / FSEND_PASS), so the challenge was
+	// offer (--quiet with no --password / FSEND_PASSWORD), so the challenge was
 	// never answered. Distinct from E021: no password was entered at all.
 	ErrPasswordRequired = errors.New("password required")
 	// E032 — the peer deliberately cancelled (Ctrl-C) mid-transfer.
@@ -393,10 +393,10 @@ var catalog = map[error]Entry{
 	ErrPasswordRequired: {
 		Code: "E031", Exit: 31,
 		Message:       "This transfer requires a password.",
-		Action:        "Rerun with --pass=<password> (or set FSEND_PASS).",
+		Action:        "Rerun with --password=<password> (or set FSEND_PASSWORD).",
 		SenderMessage: "The receiver couldn't supply the password.",
 		SenderAction: "Run fsend again to issue a fresh code, and ask them to rerun with\n" +
-			"  --pass=<password> (or FSEND_PASS).",
+			"  --password=<password> (or FSEND_PASSWORD).",
 	},
 	ErrPeerCancelled: {
 		Code: "E032", Exit: 32,

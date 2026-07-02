@@ -75,18 +75,18 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			"--connect default takes no password",
 		},
 		{
-			// Regression: `--pass=` skipped every password path, so the
+			// Regression: `--password=` skipped every password path, so the
 			// user believed the transfer was gated when it wasn't.
 			"pass_empty_value",
-			[]string{"--pass="},
-			"--pass requires a non-empty password",
+			[]string{"--password="},
+			"--password requires a non-empty password",
 		},
 		{
-			// A bare --pass followed by a non-file, non-code word is very
+			// A bare --password followed by a non-file, non-code word is very
 			// likely a misplaced inline password — point at the = form.
 			"pass_bare_then_nonfile",
-			[]string{"--pass", "secret", "report.pdf"},
-			"if it's the password, use --pass=secret",
+			[]string{"--password", "secret", "report.pdf"},
+			"if it's the password, use --password=secret",
 		},
 		{
 			// Same trap on --connect: the code would be persisted as the

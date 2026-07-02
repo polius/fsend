@@ -66,7 +66,7 @@ without a positional argument.
 | Flag | Purpose |
 |---|---|
 | `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. To keep it: `fsend <code> > note.txt`. |
-| `--pass[=<password>]` | Require the receiver to supply this password. Bare `--pass` prompts interactively with a random default; supply it inline as `--pass=<password>`. Also `FSEND_PASS`. |
+| `--password[=<password>]` | Require the receiver to supply this password. Bare `--password` prompts interactively with a random default; supply it inline as `--password=<password>`. Also `FSEND_PASSWORD`. |
 | `--exclude <glob,…>` | Skip entries when bundling a directory. |
 | `--name <hostname>` | Override the hostname shown to the peer. |
 | `--preview` | List what would be sent as CSV (`path,size`) and exit — no code, no transfer. Redirect with `> files.csv` to inspect. |
@@ -76,7 +76,7 @@ fsend report.pdf
 fsend ./project --exclude 'node_modules,*.log,.git'
 tar c ./build | fsend
 fsend --text "the wifi password is hunter2"
-fsend ./secret.tar.gz --pass         # prompts with a random default
+fsend ./secret.tar.gz --password         # prompts with a random default
 ```
 
 ### Symlinks
@@ -114,13 +114,13 @@ sending, then confirms. Pass `--yes` to skip.
 | `--overwrite` | Replace existing files whose contents **differ**. Without it they're kept and the receiver exits `E013`. (Identical files are skipped either way.) |
 | `--manifest <file>` | After receiving, write a CSV record (`path,size,status`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `kept` / `resumed`). |
 | `--checksum` | Decide what's already present by hashing **contents** (BLAKE3) instead of comparing size + mtime — like rsync's `-c`. See [below](#when-a-file-already-exists). |
-| `--pass[=<password>]` | Supply the sender's password non-interactively as `--pass=<password>`. Also `FSEND_PASS`. |
+| `--password[=<password>]` | Supply the sender's password non-interactively as `--password=<password>`. Also `FSEND_PASSWORD`. |
 
 ```sh
 fsend abc-defg-jkm
 fsend --yes --out ~/Downloads abc-defg-jkm
 fsend --yes --out - abc-defg-jkm > dump.sql   # pipe-to-pipe with the sender's `… | fsend`
-FSEND_PASS=swordfish fsend --yes abc-defg-jkm
+FSEND_PASSWORD=swordfish fsend --yes abc-defg-jkm
 ```
 
 ### When a file already exists
@@ -170,10 +170,10 @@ fsend file1.txt --quiet > code.txt    # prints the code, then waits
 ```
 
 On receive, pair `--quiet` with `--yes` (nothing else can answer the
-prompt) and pass any password via `FSEND_PASS`:
+prompt) and pass any password via `FSEND_PASSWORD`:
 
 ```sh
-FSEND_PASS=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
+FSEND_PASSWORD=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
 ```
 
 ## Chaining through a middle machine
@@ -228,7 +228,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 
 | Variable | Equivalent flag | Purpose |
 |---|---|---|
-| `FSEND_PASS` | `--pass` | Supply the transfer password out-of-band. |
+| `FSEND_PASSWORD` | `--password` | Supply the transfer password out-of-band. |
 | `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
 | `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
 
@@ -304,7 +304,7 @@ failure. For what to *do* about a given error, see
 | `28`  | `E028` — pairing server requires a password (missing or wrong). |
 | `29`  | `E029` — server closed the connection because no data was flowing. |
 | `30`  | `E030` — `fsend server` could not start (port in use or no permission to bind). |
-| `31`  | `E031` — transfer requires a password the receiver didn't have (`--pass` / `FSEND_PASS`). |
+| `31`  | `E031` — transfer requires a password the receiver didn't have (`--password` / `FSEND_PASSWORD`). |
 | `32`  | `E032` — the other side cancelled the transfer. |
 | `33`  | `E033` — `fsend --update` could not complete. |
 | `34`  | `E034` — the other device is running an incompatible fsend version. |
@@ -321,6 +321,6 @@ Codes look like `abc-defg-jkm` — three groups (3-4-3) from a 23-letter
 alphabet (`i`, `l`, `o` are excluded for legibility). One-shot,
 system-generated, server-side TTL.
 
-To require a password before the receiver can download, add `--pass`
+To require a password before the receiver can download, add `--password`
 when sending. For the full model — entropy, TTL, rate-limiting, channel
 binding — see [Security → Share codes](security.md#share-codes).

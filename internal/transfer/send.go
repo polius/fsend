@@ -394,7 +394,7 @@ func peerError(body []byte) error {
 	return mapPeerError(ef)
 }
 
-// senderPasswordHandshake runs the challenge/response that gates --pass.
+// senderPasswordHandshake runs the challenge/response that gates --password.
 func senderPasswordHandshake(s *Streams, password string) error {
 	var nonce [32]byte
 	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
