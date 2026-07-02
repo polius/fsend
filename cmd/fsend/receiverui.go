@@ -146,7 +146,7 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "  Incoming from %s%s\n", peer, pathChip)
 	fmt.Fprintln(os.Stderr)
-	renderArtifact(os.Stderr, h, summary)
+	renderArtifact(os.Stderr, h, summary, ui.sink)
 	fmt.Fprintln(os.Stderr)
 
 	if f.yes {

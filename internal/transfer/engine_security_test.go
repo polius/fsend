@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -330,5 +331,59 @@ func TestSenderNegotiate_RejectsExcessDecisions(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("senderNegotiate did not reject excess decisions")
+	}
+}
+
+func TestEngine_StreamRefusesExistingTarget(t *testing.T) {
+	dst := t.TempDir()
+	precious := []byte("precious local content")
+	writeFile(t, filepath.Join(dst, ".bashrc"), precious)
+
+	// A crafted DisplayName pointing at an existing file must be declined,
+	// not silently truncated and renamed over.
+	se, re := runTransfer(t,
+		SendOptions{Mode: wire.ModeStream, Stream: bytes.NewReader([]byte("evil")), DisplayName: ".bashrc"},
+		RecvOptions{TargetDir: dst},
+	)
+	if !errors.Is(re, fserrors.ErrTargetExists) {
+		t.Fatalf("recv: want ErrTargetExists, got %v", re)
+	}
+	if !errors.Is(se, fserrors.ErrTargetExists) {
+		t.Fatalf("send: want ErrTargetExists, got %v", se)
+	}
+	if got := mustRead(t, filepath.Join(dst, ".bashrc")); !bytes.Equal(got, precious) {
+		t.Fatalf("existing file was modified: %q", got)
+	}
+}
+
+func TestEngine_StreamOverwriteReplacesExisting(t *testing.T) {
+	dst := t.TempDir()
+	writeFile(t, filepath.Join(dst, "out.txt"), []byte("old"))
+
+	se, re := runTransfer(t,
+		SendOptions{Mode: wire.ModeStream, Stream: bytes.NewReader([]byte("new")), DisplayName: "out.txt"},
+		RecvOptions{TargetDir: dst, Overwrite: true},
+	)
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if got := mustRead(t, filepath.Join(dst, "out.txt")); string(got) != "new" {
+		t.Fatalf("want overwritten content, got %q", got)
+	}
+}
+
+func TestStreamFileName(t *testing.T) {
+	cases := map[string]string{
+		"msg.txt":       "msg.txt",
+		"dir/inner.txt": "inner.txt",
+		"":              "fsend-received",
+		".":             "fsend-received",
+		"../../.bashrc": "fsend-received",
+		"/etc/passwd":   "fsend-received",
+	}
+	for in, want := range cases {
+		if got := StreamFileName(in); got != want {
+			t.Errorf("StreamFileName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
