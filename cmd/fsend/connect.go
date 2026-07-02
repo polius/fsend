@@ -28,6 +28,12 @@ func warnIfConfigCorrupted(err error, quiet bool) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s [%s] %s\n", uxlog.Warn(), entry.Code, entry.Message)
+	// Load wraps the sentinel with the file and cause ("<path>: not valid
+	// JSON", "open <path>: permission denied") — show it so the user knows
+	// which file to fix and why it was rejected.
+	if detail := strings.TrimPrefix(err.Error(), fserrors.ErrConfigCorrupted.Error()+": "); detail != err.Error() {
+		fmt.Fprintf(os.Stderr, "  %s\n", detail)
+	}
 	if entry.Action != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 	}
@@ -79,7 +85,11 @@ func runConnect(f *flags) error {
 		if len(args) > 1 {
 			return fmt.Errorf("%w: --connect default takes no password", fserrors.ErrUsage)
 		}
-		if cfg.IsDefault() {
+		// "Already default" short-circuits only when the file also loaded
+		// cleanly. A corrupt file loads as the zero-value (default) config,
+		// and this command is E016's suggested fix — it must rewrite the
+		// file, or the warning recurs forever.
+		if cfg.IsDefault() && loadErr == nil {
 			fmt.Fprintln(os.Stderr, uxlog.Info(), "Already on the default server:", config.DefaultServer)
 			return nil
 		}
@@ -240,6 +250,9 @@ func printCurrentServer(cfg *config.Config) {
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  Revert to the default:  fsend --connect default")
 		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host[:port]>[,<password>]")
+	}
+	if p, err := config.Path(); err == nil {
+		fmt.Fprintln(os.Stderr, "  Config file:", p)
 	}
 	fmt.Fprintln(os.Stderr)
 }
