@@ -638,6 +638,22 @@ func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.
 	return d
 }
 
+// StreamFileName is the filename a ModeStream payload lands under: the
+// sanitized base of the peer-supplied display name, or a fixed fallback.
+// Exported so the CLI accept prompt can show the exact name recvStream
+// will write.
+func StreamFileName(displayName string) string {
+	name, err := SanitizeRelativePath(displayName)
+	if err != nil {
+		return "fsend-received"
+	}
+	base := filepath.Base(name)
+	if base == "." || base == string(filepath.Separator) {
+		return "fsend-received"
+	}
+	return base
+}
+
 // recvStream receives one ModeStream payload (stdin/--text) to a sink or a
 // single file under TargetDir.
 func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts RecvOptions) error {
@@ -657,11 +673,18 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 	var target string
 	var f *os.File
 	if w == nil {
-		name, err := SanitizeRelativePath(hello.DisplayName)
-		if err != nil || name == "" {
-			name = "fsend-received"
+		base := StreamFileName(hello.DisplayName)
+		target = filepath.Join(opts.TargetDir, base)
+		// An honest sender names streams with a random suffix, so an existing
+		// target means a crafted DisplayName (or a freak collision) — refuse
+		// to clobber it unless the user opted in with --overwrite.
+		if !opts.Overwrite {
+			if _, lerr := os.Lstat(target); lerr == nil {
+				declineTransfer(s, wire.ErrCodeTargetExists, base)
+				return fmt.Errorf("%w: %s (use --overwrite to replace it)", fserrors.ErrTargetExists, base)
+			}
 		}
-		target = filepath.Join(opts.TargetDir, filepath.Base(name))
+		var err error
 		f, err = os.OpenFile(target+partialSuffix, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			declineTransfer(s, wire.ErrCodeWriteFailed, "create: "+err.Error())

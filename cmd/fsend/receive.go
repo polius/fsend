@@ -183,16 +183,22 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func() (string, error
 // renderArtifact prints the indented artifact line and the classification
 // breakdown. The breakdown is how the user learns, before consenting, that
 // most files are already up to date and only a few will move.
-func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySummary) {
+func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySummary, sink bool) {
 	pwChip := ""
 	if h.HasPassword {
 		pwChip = "  " + uxlog.PasswordChip()
 	}
 	if h.Mode == wire.ModeStream {
-		if h.IsText {
+		switch {
+		case h.IsText:
 			_, _ = fmt.Fprintf(w, "      text%s\n", pwChip)
-		} else {
+		case sink:
 			_, _ = fmt.Fprintf(w, "      stdin stream  ·  size unknown%s\n", pwChip)
+		default:
+			// The name is peer-supplied; show exactly what will land on disk
+			// (same derivation as the engine) so consent covers the filename.
+			name := sanitizeForDisplay(transfer.StreamFileName(h.DisplayName), 128)
+			_, _ = fmt.Fprintf(w, "      stdin stream  ·  saves as %s  ·  size unknown%s\n", name, pwChip)
 		}
 		return
 	}

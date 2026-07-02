@@ -345,11 +345,14 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 	}
 	var r [32]byte
 	copy(r[:], root.Sum(nil))
+	// endFile/flush are where a short stream's write actually hits the wire,
+	// so a receiver decline (e.g. target exists) surfaces here — check for
+	// its posted reason like appendBytes does.
 	if err := packer.endFile(0, r); err != nil {
-		return err
+		return sendChunkErr(s, err)
 	}
 	if err := packer.flush(); err != nil {
-		return err
+		return sendChunkErr(s, err)
 	}
 	if opts.OnStreamingEOF != nil {
 		opts.OnStreamingEOF(0, sent)
