@@ -50,7 +50,7 @@ type harness struct {
 	withCover bool
 
 	serverCmd    *exec.Cmd
-	serverOutput bytes.Buffer
+	serverOutput safeBuffer
 }
 
 func TestMain(m *testing.M) {
@@ -124,10 +124,9 @@ func startHarness() (*harness, error) {
 	if err := hh.serverCmd.Start(); err != nil {
 		return nil, fmt.Errorf("start fsend server: %w", err)
 	}
-	if err := waitTCP("127.0.0.1:"+strconv.Itoa(hh.httpPort), 5*time.Second); err != nil {
+	if err := waitServerReady("127.0.0.1:"+strconv.Itoa(hh.httpPort), &hh.serverOutput, 5*time.Second); err != nil {
 		hh.shutdown()
-		return nil, fmt.Errorf("fsend server not ready: %w\n--- server output ---\n%s",
-			err, hh.serverOutput.String())
+		return nil, fmt.Errorf("fsend server not ready: %w", err)
 	}
 	return hh, nil
 }
@@ -212,6 +211,17 @@ func waitTCP(addr string, timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("no listener on %s after %s", addr, timeout)
+}
+
+// waitServerReady waits for an fsend server subprocess to accept connections
+// on addr, appending its captured output to any failure. Without this a bind
+// or config error surfaces only as a bare "no listener" timeout, which is why
+// a rare CI port collision was undiagnosable.
+func waitServerReady(addr string, output fmt.Stringer, timeout time.Duration) error {
+	if err := waitTCP(addr, timeout); err != nil {
+		return fmt.Errorf("%w\n--- server output ---\n%s", err, output.String())
+	}
+	return nil
 }
 
 // ----------------------------------------------------------------------
