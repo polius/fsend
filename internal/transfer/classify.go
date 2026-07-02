@@ -179,11 +179,17 @@ func classifyOne(e wire.ListingEntry, target, targetDir string, checksum bool) e
 				return p
 			}
 		}
-		if off, imo, ok := resumeCandidate(target+partialSuffix, e.Size); ok {
-			p.disp = dispResume
-			p.resumeOffset = off
-			p.imohash = imo
-			return p
+		// Resume only when the target is absent. An existing non-identical
+		// target is the user's file — resuming would rename over it with no
+		// consent, so fall through to differs/conflict (an approved
+		// overwrite re-sends fresh, truncating the stale partial).
+		if !exists {
+			if off, imo, ok := resumeCandidate(target+partialSuffix, e.Size); ok {
+				p.disp = dispResume
+				p.resumeOffset = off
+				p.imohash = imo
+				return p
+			}
 		}
 		switch {
 		case exists && (st.IsDir() || st.Mode()&os.ModeSymlink != 0):
