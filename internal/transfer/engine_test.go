@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -305,6 +306,50 @@ func TestEngine_SkipIdenticalOnResend(t *testing.T) {
 	}
 	if len(skipped) != 2 {
 		t.Errorf("expected 2 skipped, got %d", len(skipped))
+	}
+}
+
+// A permission-only change (chmod +x) leaves content, size and mtime
+// untouched, so the file still classifies identical — but the new mode must
+// still land on the receiver's copy instead of being silently lost.
+func TestEngine_PermissionChangePropagatesOnIdenticalResend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits; the exec bit is meaningless there")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	sp := filepath.Join(src, "deploy.sh")
+	writeFile(t, sp, []byte("#!/bin/sh\necho hi\n"))
+	if err := os.Chmod(sp, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First transfer lands it non-executable.
+	if se, re := fileTransfer(t, []string{sp}, dst, nil); se != nil || re != nil {
+		t.Fatalf("seed send=%v recv=%v", se, re)
+	}
+	dp := filepath.Join(dst, "deploy.sh")
+	if st, _ := os.Stat(dp); st.Mode()&0o111 != 0 {
+		t.Fatal("precondition: dst should start non-executable")
+	}
+
+	// chmod +x on the source (content/size/mtime unchanged), re-send.
+	st, _ := os.Stat(sp)
+	if err := os.Chmod(sp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(sp, st.ModTime(), st.ModTime())
+
+	var skipped int
+	if se, re := fileTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+		o.OnSkip = func(uint32) { skipped++ }
+	}); se != nil || re != nil {
+		t.Fatalf("resend send=%v recv=%v", se, re)
+	}
+	if skipped != 1 {
+		t.Errorf("expected the file to skip the data transfer, got skipped=%d", skipped)
+	}
+	if st, _ := os.Stat(dp); st.Mode()&os.ModePerm != 0o755 {
+		t.Errorf("mode not propagated: dst is %o, want 0755", st.Mode()&os.ModePerm)
 	}
 }
 

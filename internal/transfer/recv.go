@@ -166,6 +166,12 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 		p := &plans[i]
 		byIndex[p.entry.Index] = p
 		if decisions[i].Action == wire.DecisionSkip {
+			// An identical file skips the data transfer, but a permission-only
+			// change (chmod +x) leaves size+mtime untouched — repair the mode
+			// locally or it never propagates. Kept conflicts stay as-is.
+			if p.disp == dispIdentical {
+				repairIdenticalMode(p)
+			}
 			continue
 		}
 		if p.entry.Type == wire.EntryFile && p.entry.Size > 0 {
@@ -610,6 +616,20 @@ func materialize(s *Streams, p *entryPlan, approveOverwrite bool) error {
 }
 
 // planToDecision maps a plan to its wire decision and fires receiver-side
+// repairIdenticalMode propagates a permission-only change onto an
+// already-identical regular file, whose unchanged size+mtime (or content
+// hash under --checksum) would otherwise skip it and never pick up the new
+// mode. Best-effort; a chmod failure isn't worth failing the transfer.
+func repairIdenticalMode(p *entryPlan) {
+	if p.entry.Type != wire.EntryFile {
+		return
+	}
+	want := os.FileMode(p.entry.Mode) & os.ModePerm
+	if st, err := os.Stat(p.target); err == nil && st.Mode()&os.ModePerm != want {
+		_ = os.Chmod(p.target, want)
+	}
+}
+
 // notifications (skip / conflict-kept).
 func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.Decision {
 	d := wire.Decision{Index: p.entry.Index}
