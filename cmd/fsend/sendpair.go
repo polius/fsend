@@ -446,7 +446,16 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 			return err
 		}
 		if !f.quiet {
-			fmt.Fprintf(os.Stderr, "%s Receiver disconnected — waiting for them to reconnect.\n", uxlog.Info())
+			// A deliberate close (Ctrl-C, clean exit) may genuinely re-run
+			// and reconnect. A death (kill, crash, network gone) surfaces
+			// as exhausted retries — that process is never coming back, so
+			// "reconnect" would misdirect the user; what's true is that the
+			// code still works for a fresh `fsend <code>`.
+			msg := "Receiver disconnected — waiting for them to reconnect."
+			if !isReceiverClose(err) {
+				msg = "Lost contact with the receiver — waiting for a new connection on the same code."
+			}
+			fmt.Fprintf(os.Stderr, "%s %s\n", uxlog.Info(), msg)
 		}
 		waitSpin = startWaitSpinner(f, "Waiting for receiver")
 	}
