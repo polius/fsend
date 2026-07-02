@@ -250,10 +250,8 @@ EXAMPLES
     fsend --connect relay.mycompany.com:443
 
 SENDING
-  --password[=<password>]    Require the receiver to enter a password.
-                         Bare --password prompts interactively — sender side
-                         suggests a fresh random default (press Enter to
-                         accept). Inline: --password=SECRET. Env: FSEND_PASSWORD.
+  --password             Require a password to receive. Bare --password prompts;
+                         inline --password=SECRET; env FSEND_PASSWORD.
   --exclude <glob,…>     Skip entries matching these globs in a directory
   --text "<string>"      Send a literal string instead of a file
                          (the receiver prints it — nothing is saved;
@@ -267,8 +265,8 @@ RECEIVING
   --out <dir>            Receive into this directory (default: current)
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
-  --password[=<value>]       Supply the sender's password up front as --password=VALUE,
-                         skipping the prompt (bare --password prompts). Env: FSEND_PASSWORD
+  --password             Supply the sender's password. Bare --password prompts;
+                         inline --password=SECRET; env FSEND_PASSWORD.
   --overwrite            Replace existing files that differ (identical files
                          are always skipped)
   --checksum             Decide identical files by content hash, not
