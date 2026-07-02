@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
+
 	"github.com/polius/fsend/internal/fserrors"
 )
 
@@ -249,6 +251,20 @@ func TestBoldHelpHeaders(t *testing.T) {
 		t.Setenv("NO_COLOR", "1")
 		if got := boldHelpHeaders(helpTemplate); got != helpTemplate {
 			t.Error("template must be byte-for-byte unchanged when color is off")
+		}
+	})
+}
+
+// TestHelpTemplate_ListsEveryFlag guards against the hand-written help
+// drifting out of sync with the registered flags — every non-hidden flag
+// must appear in helpTemplate. (--password once had two spellings here.)
+func TestHelpTemplate_ListsEveryFlag(t *testing.T) {
+	rootCmd().Flags().VisitAll(func(f *pflag.Flag) {
+		if f.Hidden {
+			return
+		}
+		if !strings.Contains(helpTemplate, "--"+f.Name) {
+			t.Errorf("flag --%s is registered but missing from helpTemplate", f.Name)
 		}
 	})
 }
