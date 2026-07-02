@@ -498,7 +498,7 @@ func TestEngine_SenderReadFailureReachesReceiver(t *testing.T) {
 
 // passwordTransfer runs a password-gated single-file transfer with the given
 // receiver password options.
-func passwordTransfer(t *testing.T, senderPass string, mutate func(*RecvOptions)) (sendErr, recvErr error, dst string) {
+func passwordTransfer(t *testing.T, senderPass string, mutate func(*RecvOptions)) (dst string, sendErr, recvErr error) {
 	t.Helper()
 	src := t.TempDir()
 	dst = t.TempDir()
@@ -511,7 +511,7 @@ func passwordTransfer(t *testing.T, senderPass string, mutate func(*RecvOptions)
 	mutate(&recvOpts)
 	sendErr, recvErr = runTransfer(t,
 		SendOptions{Mode: wire.ModeFiles, Sources: sources, Password: senderPass}, recvOpts)
-	return sendErr, recvErr, dst
+	return dst, sendErr, recvErr
 }
 
 // A typo at the prompt gets fresh challenges: two wrong tries then the right
@@ -519,7 +519,7 @@ func passwordTransfer(t *testing.T, senderPass string, mutate func(*RecvOptions)
 func TestEngine_PasswordRetriesWithinCap(t *testing.T) {
 	tries := []string{"wrong1", "wrong2", "right"}
 	var attempts []int
-	se, re, dst := passwordTransfer(t, "right", func(o *RecvOptions) {
+	dst, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
 		o.PromptPass = func(attempt int) (string, error) {
 			attempts = append(attempts, attempt)
 			return tries[attempt-1], nil
@@ -540,7 +540,7 @@ func TestEngine_PasswordRetriesWithinCap(t *testing.T) {
 // PasswordAttempts wrong tries abort with ErrWrongPassword on both sides.
 func TestEngine_PasswordExhaustedAborts(t *testing.T) {
 	prompts := 0
-	se, re, dst := passwordTransfer(t, "right", func(o *RecvOptions) {
+	dst, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
 		o.PromptPass = func(attempt int) (string, error) {
 			prompts++
 			return "wrong", nil
@@ -560,7 +560,7 @@ func TestEngine_PasswordExhaustedAborts(t *testing.T) {
 // A fixed password (--password / FSEND_PASSWORD) can't change between tries,
 // so a mismatch aborts after one attempt on both sides.
 func TestEngine_PasswordFixedWrongSingleAttempt(t *testing.T) {
-	se, re, _ := passwordTransfer(t, "right", func(o *RecvOptions) {
+	_, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
 		o.Password = "wrong"
 	})
 	if !errors.Is(se, fserrors.ErrWrongPassword) || !errors.Is(re, fserrors.ErrWrongPassword) {
