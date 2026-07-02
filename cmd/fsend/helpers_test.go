@@ -790,6 +790,9 @@ func TestDifferVerb(t *testing.T) {
 	}
 	if got := differVerb(2); got != "differ" {
 		t.Errorf("differVerb(2) = %q", got)
+	}
+}
+
 // --yes answers the accept prompt only — differing files are still kept. The
 // accept line must say so upfront instead of leaving a surprise E013 exit.
 func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
