@@ -45,15 +45,21 @@ type SendOptions struct {
 // Send executes the full sender-side protocol over the supplied streams.
 func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	err := send(ctx, s, opts)
-	if errors.Is(err, context.Canceled) {
-		notifyCancel(s)
+	switch {
+	case errors.Is(err, context.Canceled):
+		notifyPeer(s, wire.ErrCodeCancelled, "sender cancelled")
+	case errors.Is(err, fserrors.ErrReadFailed):
+		// A local source failure (unreadable, vanished, shrunk) otherwise
+		// surfaces on the receiver as a bare stream close — a "network"
+		// error it would burn retries on. Post the real reason instead.
+		notifyPeer(s, wire.ErrCodeReadFailed, err.Error())
 	}
 	return err
 }
 
 func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	// Bind the streams to ctx so a Ctrl-C parked in a blocked QUIC write
-	// unblocks promptly instead of waiting out the idle timeout. notifyCancel
+	// unblocks promptly instead of waiting out the idle timeout. notifyPeer
 	// (called by the outer Send with the raw, unwrapped streams) is unaffected.
 	s, stop := bindCtx(ctx, s)
 	defer stop()
@@ -375,14 +381,16 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 	return nil
 }
 
-// notifyCancel posts a cancel ERROR so the peer can tell a deliberate Ctrl-C
-// from a network drop. Bounded so a wedged peer can't hold the cancel hostage.
-func notifyCancel(s *Streams) {
+// notifyPeer posts a terminal ERROR so the peer can tell the real cause
+// (cancel, unreadable source, …) from a network drop. Data closes first so
+// a receiver blocked mid-chunk unblocks and reads the reason. Bounded so a
+// wedged peer can't hold the sender hostage.
+func notifyPeer(s *Streams, code wire.ErrorCode, msg string) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_ = s.Data.Close()
-		declineTransfer(s, wire.ErrCodeCancelled, "sender cancelled")
+		declineTransfer(s, code, msg)
 	}()
 	select {
 	case <-done:

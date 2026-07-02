@@ -18,7 +18,7 @@ import (
 // directions) and the control read side, unblocking the parked call with a
 // deadline error; the returned ctxConn then reports it as ctx.Err() so the
 // loops surface a clean cancellation. The control *write* side is left alone
-// so the sender's best-effort cancel notification (notifyCancel) still
+// so the sender's best-effort terminal notification (notifyPeer) still
 // reaches the peer.
 //
 // Streams that don't expose deadlines (the io.Pipe pair used in tests) are
