@@ -155,6 +155,11 @@ const firstAcceptTimeout = 60 * time.Second
 // real receiver arriving right after an impostor barely waits.
 const lanAcceptRetryDelay = 100 * time.Millisecond
 
+// sessionDeleteTimeout bounds best-effort session cleanup: it runs on the
+// drain path the winning transfer and Ctrl-C wait on, so an unreachable
+// server mustn't stall it up to the client's full request timeout.
+const sessionDeleteTimeout = 3 * time.Second
+
 // errPairedGone marks failures after a receiver claimed the code. The
 // LAN race can't recover from these — a receiver that joined via the
 // server already failed LAN discovery — so the coordinator aborts
@@ -178,10 +183,14 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 	if err != nil {
 		return nil, err
 	}
-	// From here on we own a server-side session and must Delete it on
-	// every error path. We use a fresh ctx for Delete because the parent
-	// ctx may already be cancelled (e.g., the LAN path won the race).
-	deleteSession := func() { _ = client.Delete(context.Background(), created.SessionID, created.RoleToken) }
+	// Delete the session on every error path. Fresh ctx (the parent is often
+	// already cancelled, e.g. the LAN path won) but bounded — see
+	// sessionDeleteTimeout.
+	deleteSession := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), sessionDeleteTimeout)
+		defer cancel()
+		_ = client.Delete(ctx, created.SessionID, created.RoleToken)
+	}
 
 	waitResp, err := waitForReceiver(ctx, client, created.Code)
 	if err != nil {
