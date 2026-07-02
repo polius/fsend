@@ -66,7 +66,7 @@ without a positional argument.
 | Flag | Purpose |
 |---|---|
 | `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. To keep it: `fsend <code> > note.txt`. |
-| `--pass <password>` | Require the receiver to supply this password. Bare `--pass` prompts interactively with a random default. Also `FSEND_PASS`. |
+| `--pass[=<password>]` | Require the receiver to supply this password. Bare `--pass` prompts interactively with a random default; supply it inline as `--pass=<password>`. Also `FSEND_PASS`. |
 | `--exclude <glob,…>` | Skip entries when bundling a directory. |
 | `--name <hostname>` | Override the hostname shown to the peer. |
 | `--preview` | List what would be sent as CSV (`path,size`) and exit — no code, no transfer. Redirect with `> files.csv` to inspect. |
@@ -114,7 +114,7 @@ sending, then confirms. Pass `--yes` to skip.
 | `--overwrite` | Replace existing files whose contents **differ**. Without it they're kept and the receiver exits `E013`. (Identical files are skipped either way.) |
 | `--manifest <file>` | After receiving, write a CSV record (`path,size,status`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `kept` / `resumed`). |
 | `--checksum` | Decide what's already present by hashing **contents** (BLAKE3) instead of comparing size + mtime — like rsync's `-c`. See [below](#when-a-file-already-exists). |
-| `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
+| `--pass[=<password>]` | Supply the sender's password non-interactively as `--pass=<password>`. Also `FSEND_PASS`. |
 
 ```sh
 fsend abc-defg-jkm
