@@ -15,6 +15,7 @@ import (
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -740,7 +741,7 @@ func TestPromptAccept_HeadlineReconcilesOfferedAndNet(t *testing.T) {
 			},
 		})
 	})
-	for _, want := range []string{"307 MB of 1.2 GB", "1 differ"} {
+	for _, want := range []string{"307 MB of 1.2 GB", "1 differs"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("headline missing %q:\n%s", want, got)
 		}
@@ -748,6 +749,36 @@ func TestPromptAccept_HeadlineReconcilesOfferedAndNet(t *testing.T) {
 	// The old stacked breakdown line must be gone.
 	if strings.Contains(got, "3 new") || strings.Contains(got, "6 up to date") {
 		t.Errorf("stacked breakdown line should be removed:\n%s", got)
+	}
+}
+
+// A summary with kept-back files must not read as an unqualified success:
+// warn glyph, and the headline counts what was written, not what was offered.
+func TestFinishReceive_KeptFilesGetHonestSummary(t *testing.T) {
+	ui := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "2 files"}
+	ui.hello = &h
+	ui.kept = 1
+	ui.skippedSame = 1
+	got := captureStderr(t, func() {
+		if err := finishReceive(ui.f, ui, time.Second); !errors.Is(err, fserrors.ErrTargetExists) {
+			t.Errorf("finishReceive error = %v, want ErrTargetExists", err)
+		}
+	})
+	if want := uxlog.Warn() + " Saved 0 of 2 files to /tmp"; !strings.Contains(got, want) {
+		t.Errorf("summary missing %q:\n%s", want, got)
+	}
+	if strings.Contains(got, uxlog.Check()) {
+		t.Errorf("kept-back summary must not carry the success glyph:\n%s", got)
+	}
+}
+
+func TestDifferVerb(t *testing.T) {
+	if got := differVerb(1); got != "differs" {
+		t.Errorf("differVerb(1) = %q", got)
+	}
+	if got := differVerb(2); got != "differ" {
+		t.Errorf("differVerb(2) = %q", got)
 	}
 }
 
