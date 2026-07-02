@@ -2,7 +2,6 @@ package transfer
 
 import (
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -75,34 +74,5 @@ func TestPathIsUnder(t *testing.T) {
 		if got := pathIsUnder(tc.child, root); got != tc.want {
 			t.Errorf("pathIsUnder(%q, %q) = %v, want %v", tc.child, root, got, tc.want)
 		}
-	}
-}
-
-// TestSymlinkEscapes pins the guard that stops a malicious sender from planting
-// a symlink that resolves outside the target dir — a classic transfer RCE
-// vector with no negative coverage before this.
-func TestSymlinkEscapes(t *testing.T) {
-	absTarget := "/etc/passwd"
-	if runtime.GOOS == "windows" {
-		absTarget = `C:\Windows\System32\drivers\etc\hosts`
-	}
-	cases := []struct {
-		name, relPath, linkTarget string
-		want                      bool
-	}{
-		{"absolute target", "link", absTarget, true},
-		{"climbs above root", "link", "../../../etc", true},
-		{"deep climb", "a/b/link", "../../../../etc", true},
-		{"in-bounds sibling", "a/b/link", "../c", false},
-		{"in-bounds same dir", "a/link", "c", false},
-		{"in-bounds nested", "link", "sub/file", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := symlinkEscapes("/target", tc.relPath, tc.linkTarget); got != tc.want {
-				t.Fatalf("symlinkEscapes(/target, %q, %q) = %v, want %v",
-					tc.relPath, tc.linkTarget, got, tc.want)
-			}
-		})
 	}
 }

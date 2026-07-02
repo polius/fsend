@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -170,7 +169,7 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 			expected++
 			continue
 		}
-		if err := materialize(s, p, opts.TargetDir, approveOverwrite); err != nil {
+		if err := materialize(s, p, approveOverwrite); err != nil {
 			return err
 		}
 	}
@@ -570,7 +569,7 @@ func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error 
 }
 
 // materialize creates a structural entry (dir / symlink / empty file).
-func materialize(s *Streams, p *entryPlan, targetDir string, approveOverwrite bool) error {
+func materialize(s *Streams, p *entryPlan, approveOverwrite bool) error {
 	target := p.target
 	if p.needsConsent() && approveOverwrite {
 		_ = os.RemoveAll(target) // clear the slot (approved)
@@ -583,19 +582,11 @@ func materialize(s *Streams, p *entryPlan, targetDir string, approveOverwrite bo
 		}
 		return nil
 	case wire.EntrySymlink:
-		if symlinkEscapes(targetDir, p.entry.RelativePath, p.entry.SymlinkTarget) {
-			declineTransfer(s, wire.ErrCodeProtocolError, "symlink escapes target dir")
-			return fserrors.ErrPathTraversal
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir parent")
-			return fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
-		}
-		_ = os.Remove(target)
-		if err := os.Symlink(p.entry.SymlinkTarget, target); err != nil && runtime.GOOS != "windows" {
-			return fmt.Errorf("%w: symlink: %v", fserrors.ErrWriteFailed, err)
-		}
-		return nil
+		// Defense in depth: classify already rejects peer symlinks. Never
+		// create one from peer input — a planted link lets a later write
+		// traverse out of the receive dir. Fail closed.
+		declineTransfer(s, wire.ErrCodeProtocolError, "symlink entries are not accepted")
+		return fmt.Errorf("%w: symlink entry %q", fserrors.ErrPathTraversal, p.entry.RelativePath)
 	default: // empty regular file
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir parent")

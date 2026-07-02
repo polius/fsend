@@ -74,6 +74,87 @@ func mkChunk(index uint32, payload []byte, eof bool) *wire.Chunk {
 	return &wire.Chunk{ChunkHash: blakeHash32(payload), Segments: []wire.Segment{seg}, Payload: payload}
 }
 
+// A malicious sender must not escape the receive dir via symlink indirection:
+// two symlinks that look in-bounds to a lexical check but, once materialized,
+// redirect a later file write one level ABOVE the receive dir.
+//
+//	p        -> .           (real path: <dst>)
+//	p/q      -> ../outside  (real path: <base>/outside, above <dst>)
+//	p/q/evil (regular file)  lexically <dst>/p/q/evil, really <base>/outside/evil
+//
+// Pre-fix, materialize created the links and openRecvFile followed them,
+// writing attacker content into <base>/outside. The honest sender never emits
+// symlinks, so the receiver now rejects any symlink entry outright.
+func TestHostile_SymlinkListingRejected(t *testing.T) {
+	base := t.TempDir()
+	dst := filepath.Join(base, "target")
+	outside := filepath.Join(base, "outside") // where a successful escape would land
+	for _, d := range []string{dst, outside} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctrlA, ctrlB := net.Pipe()
+	dataA, dataB := net.Pipe()
+	sender := &Streams{Control: ctrlA, Data: dataA}
+	receiver := &Streams{Control: ctrlB, Data: dataB}
+
+	recvErr := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		recvErr <- Recv(ctx, receiver, RecvOptions{TargetDir: dst})
+		receiver.Close()
+	}()
+	// Drain the receiver's replies so its ack write and teardown decline can
+	// complete over the synchronous pipe (writes are a separate direction).
+	go func() { _, _ = io.Copy(io.Discard, sender.Control) }()
+	go func() { _, _ = io.Copy(io.Discard, sender.Data) }()
+
+	if err := wire.WriteControl(sender.Control, wire.TypeHello, &wire.SenderHello{
+		ProtocolVersion: wire.ProtocolVersion, Mode: wire.ModeFiles, Hostname: "evil",
+	}); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	entries := []wire.ListingEntry{
+		{Index: 0, RelativePath: "p", Type: wire.EntrySymlink, SymlinkTarget: "."},
+		{Index: 1, RelativePath: "p/q", Type: wire.EntrySymlink, SymlinkTarget: "../outside"},
+		{Index: 2, RelativePath: "p/q/evil", Size: 4, Type: wire.EntryFile},
+	}
+	if err := wire.WriteControl(sender.Control, wire.TypeListingBatch, entries); err != nil {
+		t.Fatalf("listing: %v", err)
+	}
+	if err := wire.WriteControl(sender.Control, wire.TypeListingEnd, nil); err != nil {
+		t.Fatalf("listing-end: %v", err)
+	}
+	// Best-effort payload for the escaping file: a fixed receiver rejects at
+	// classify before the data phase (the drain discards this); a vulnerable one
+	// would materialize the links and write it into <base>/outside.
+	go func() { _ = wire.WriteChunk(sender.Data, mkChunk(2, []byte("PWND"), true)) }()
+
+	select {
+	case err := <-recvErr:
+		if err == nil {
+			t.Fatal("receiver accepted a peer-supplied symlink listing")
+		}
+		if !errors.Is(err, fserrors.ErrPathTraversal) {
+			t.Fatalf("want ErrPathTraversal, got %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("receiver did not reject the symlink listing")
+	}
+
+	// No file escaped, and no symlink was planted inside the receive dir.
+	if _, err := os.Lstat(filepath.Join(outside, "evil")); !os.IsNotExist(err) {
+		t.Fatalf("file escaped the receive dir into %s", filepath.Join(outside, "evil"))
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "p")); !os.IsNotExist(err) {
+		t.Fatal("receiver planted a peer-supplied symlink")
+	}
+	sender.Close()
+}
+
 // A chunk for a file the receiver chose to keep (a differing file, no
 // --overwrite) must be rejected — never written over the protected local copy.
 func TestHostile_ChunkForKeptFile(t *testing.T) {
