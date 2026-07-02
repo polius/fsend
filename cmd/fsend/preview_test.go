@@ -151,12 +151,18 @@ func TestOnManifest_WritesCSV(t *testing.T) {
 }
 
 func TestOnManifest_WriteError(t *testing.T) {
-	// Parent directory doesn't exist → os.Create fails.
+	// Parent directory doesn't exist → os.Create fails. The error must be
+	// E038 (manifest-specific: the transfer itself succeeded — E009's "try
+	// --out" advice would point at the wrong path) and must carry the
+	// manifest path so the user knows which file failed.
 	path := filepath.Join(t.TempDir(), "no-such-dir", "m.csv")
 	ui := &receiverUI{f: &flags{manifest: path}}
 	ui.onManifest([]transfer.ManifestEntry{{RelativePath: "a", Size: 1, Status: "new"}})
-	if !errors.Is(ui.manifestErr, fserrors.ErrWriteFailed) {
-		t.Errorf("manifestErr = %v, want wrapping ErrWriteFailed", ui.manifestErr)
+	if !errors.Is(ui.manifestErr, fserrors.ErrManifestWriteFailed) {
+		t.Errorf("manifestErr = %v, want wrapping ErrManifestWriteFailed", ui.manifestErr)
+	}
+	if ui.manifestErr == nil || !strings.Contains(ui.manifestErr.Error(), path) {
+		t.Errorf("manifestErr should name the manifest path: %v", ui.manifestErr)
 	}
 }
 
