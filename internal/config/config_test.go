@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/polius/fsend/internal/fserrors"
@@ -95,11 +96,35 @@ func TestLoad_CorruptedJSON(t *testing.T) {
 	if !errors.Is(err, fserrors.ErrConfigCorrupted) {
 		t.Errorf("expected ErrConfigCorrupted, got %v", err)
 	}
+	// The wrapped cause names the file so the E016 warning can show it.
+	if err == nil || !strings.Contains(err.Error(), path+": not valid JSON") {
+		t.Errorf("error should name the file and cause, got %v", err)
+	}
 	if c == nil {
 		t.Fatal("expected non-nil zero Config even on corruption")
 	}
 	if !c.IsDefault() {
 		t.Error("corrupted config should fall back to defaults")
+	}
+}
+
+func TestLoad_PermissionDenied(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads through file modes")
+	}
+	path := withTempXDG(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"schema_version": 1}`), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load()
+	if !errors.Is(err, fserrors.ErrConfigCorrupted) {
+		t.Errorf("expected ErrConfigCorrupted for unreadable file, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("error should carry the permission cause, got %v", err)
 	}
 }
 

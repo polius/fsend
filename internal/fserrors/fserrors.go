@@ -284,7 +284,7 @@ var catalog = map[error]Entry{
 	},
 	ErrConfigCorrupted: {
 		Code: "E016", Exit: 0, // warning, not fatal
-		Message: "Your config file is invalid. Falling back to defaults.",
+		Message: "Your config file could not be used. Falling back to defaults.",
 		Action:  "To reset:  fsend --connect default",
 	},
 	ErrRateLimited: {

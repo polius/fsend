@@ -273,6 +273,61 @@ func TestRunConnect_PersistsServerAndPassword(t *testing.T) {
 	}
 }
 
+// `--connect default` is E016's suggested fix, so it must rewrite a corrupt
+// config file — not short-circuit on "already default" (a corrupt file loads
+// as the zero-value config) and leave the warning to recur forever.
+func TestRunConnect_DefaultRewritesCorruptConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.json")
+	config.SetPathForTesting(cfgPath)
+	t.Cleanup(func() { config.SetPathForTesting("") })
+	if err := os.WriteFile(cfgPath, []byte("{garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr := captureStderr(t, func() {
+		if err := runConnect(&flags{connectArgsRaw: []string{"default"}}); err != nil {
+			t.Fatalf("runConnect default: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "Reverted to default server") {
+		t.Errorf("expected revert message, got:\n%s", stderr)
+	}
+	if _, err := config.Load(); err != nil {
+		t.Errorf("config still unusable after --connect default: %v", err)
+	}
+}
+
+// The show screen names the config file, and a corrupt file's warning says
+// which file was rejected and why.
+func TestRunConnect_ShowPrintsPathAndCorruptionDetail(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.json")
+	config.SetPathForTesting(cfgPath)
+	t.Cleanup(func() { config.SetPathForTesting("") })
+
+	stderr := captureStderr(t, func() {
+		if err := runConnect(&flags{connectArgsRaw: []string{connectShowSentinel}}); err != nil {
+			t.Fatalf("runConnect show: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "Config file: "+cfgPath) {
+		t.Errorf("show screen missing config path:\n%s", stderr)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte("{garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr = captureStderr(t, func() {
+		if err := runConnect(&flags{connectArgsRaw: []string{connectShowSentinel}}); err != nil {
+			t.Fatalf("runConnect show: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "E016") || !strings.Contains(stderr, cfgPath+": not valid JSON") {
+		t.Errorf("corruption warning missing file/cause detail:\n%s", stderr)
+	}
+}
+
 func TestRunConnect_RejectsBadHostPort(t *testing.T) {
 	tmp := t.TempDir()
 	config.SetPathForTesting(filepath.Join(tmp, "config.json"))
