@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -459,5 +462,36 @@ func TestManifestStatus(t *testing.T) {
 		if got := manifestStatus(tc.disp, tc.act); got != tc.want {
 			t.Errorf("manifestStatus(%v, %v) = %q, want %q", tc.disp, tc.act, got, tc.want)
 		}
+	}
+}
+
+// A sender whose source vanishes between walk and send must tell the
+// receiver why. Without the ERROR frame the receiver saw only a bare
+// stream close, classified it transient, and burned retries on a
+// misleading "network" error.
+func TestEngine_SenderReadFailureReachesReceiver(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	p := filepath.Join(src, "gone.bin")
+	writeFile(t, p, randBytes(1024))
+	sources, err := Walk([]string{p}, nil)
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+
+	se, re := runTransfer(t,
+		SendOptions{Mode: wire.ModeFiles, Sources: sources},
+		RecvOptions{TargetDir: dst},
+	)
+	if !errors.Is(se, fserrors.ErrReadFailed) {
+		t.Fatalf("send: want ErrReadFailed, got %v", se)
+	}
+	if !errors.Is(re, fserrors.ErrReadFailed) {
+		t.Fatalf("recv: want the sender's ErrReadFailed, got %v", re)
+	}
+	if retry.IsTransient(re) {
+		t.Fatalf("receiver error must be terminal (no retry), got transient: %v", re)
 	}
 }

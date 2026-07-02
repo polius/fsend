@@ -839,6 +839,8 @@ func mapPeerError(ef wire.ErrorFrame) error {
 		return fserrors.ErrReceiverDeclined
 	case wire.ErrCodeWriteFailed:
 		return fmt.Errorf("%w: receiver: %s", fserrors.ErrWriteFailed, ef.Message)
+	case wire.ErrCodeReadFailed:
+		return fmt.Errorf("%w: sender: %s", fserrors.ErrReadFailed, ef.Message)
 	case wire.ErrCodeCancelled:
 		return fserrors.ErrPeerCancelled
 	default:

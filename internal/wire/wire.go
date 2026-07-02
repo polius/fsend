@@ -127,6 +127,10 @@ const (
 	// ErrCodeDeclined — the receiver declined at the accept prompt (after the
 	// listing, so it can't ride on HELLO_ACK like the stream-mode decline).
 	ErrCodeDeclined ErrorCode = 17
+	// ErrCodeReadFailed — sender hit a local filesystem error reading the
+	// source (open, read, hash). Terminal for the receiver: retrying won't
+	// fix the sender's disk. Mirror of ErrCodeWriteFailed.
+	ErrCodeReadFailed ErrorCode = 18
 )
 
 // Chunk-frame flag bits (frame-level).
