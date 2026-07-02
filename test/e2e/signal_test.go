@@ -292,6 +292,15 @@ func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
 	}
 	_ = r1.Wait()
 
+	// The interrupt must explain itself: the force-quit escape hatch and
+	// the fact that the partial survives for the resume exercised below.
+	if !strings.Contains(r1Err.String(), "press Ctrl-C again to force quit") {
+		t.Errorf("no force-quit hint on first SIGINT\n--- recv1 stderr ---\n%s", r1Err.String())
+	}
+	if !strings.Contains(r1Err.String(), "Partial data kept") {
+		t.Errorf("no partial-kept resume hint after mid-transfer SIGINT\n--- recv1 stderr ---\n%s", r1Err.String())
+	}
+
 	// The sender must go back to waiting rather than exit.
 	if !waitForStderr(s, "Receiver disconnected", 15*time.Second) {
 		t.Fatalf("sender never re-entered pairing\n--- sender stderr ---\n%s", s.stderr.String())

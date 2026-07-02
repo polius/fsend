@@ -54,7 +54,7 @@ func runReceive(f *flags, c string) error {
 	// resolvePassword reads with echo off, and a default-disposition
 	// SIGINT inside that read would kill the process without restoring
 	// the terminal.
-	ctx, cancel := signalContext()
+	ctx, cancel := signalContext(f.quiet)
 	defer cancel()
 
 	// Bare --password: hidden no-echo prompt. We're not the password's
@@ -149,6 +149,7 @@ func runReceive(f *flags, c string) error {
 		// decline/target-exists error from the engine; report it as a
 		// cancellation (E026) rather than that incidental error.
 		if ctx.Err() != nil {
+			printCancelKeptHint(f, ui)
 			return ctx.Err()
 		}
 		return err

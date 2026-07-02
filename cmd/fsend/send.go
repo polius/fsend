@@ -58,7 +58,7 @@ func runSend(f *flags, paths []string) error {
 		}
 	}
 
-	ctx, cancel := signalContext()
+	ctx, cancel := signalContext(f.quiet)
 	defer cancel()
 
 	if err := resolvePassword(ctx, f, true); err != nil {
@@ -393,14 +393,19 @@ func displayPath(p string) string {
 }
 
 // signalContext wires Ctrl-C / SIGTERM to ctx cancellation; a second signal
-// reverts to the default disposition and terminates outright.
-func signalContext() (context.Context, context.CancelFunc) {
+// reverts to the default disposition and terminates outright. Teardown
+// (session delete, QUIC close) can take a few seconds, so the first
+// signal says so — otherwise the pause reads as a hang.
+func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
 		cancel()
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "\n%s Cancelling — press Ctrl-C again to force quit.\n", uxlog.Info())
+		}
 		signal.Stop(ch)
 	}()
 	return ctx, cancel
