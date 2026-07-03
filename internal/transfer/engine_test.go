@@ -624,6 +624,62 @@ func TestEngine_PasswordExhaustedAborts(t *testing.T) {
 	}
 }
 
+// A hostile sender that keeps re-challenging past its own PasswordAttempts cap
+// must not hold the receiver in an endless prompt: the receiver stops at the
+// same cap and returns ErrWrongPassword.
+func TestEngine_ReceiverPasswordPromptBounded(t *testing.T) {
+	ctrlA, ctrlB := net.Pipe()
+	dataA, dataB := net.Pipe()
+	sender := &Streams{Control: ctrlA, Data: dataA}
+	receiver := &Streams{Control: ctrlB, Data: dataB}
+
+	// Fake sender: HELLO with a password gate, then re-challenge forever,
+	// rejecting every response — never honouring the PasswordAttempts cap.
+	go func() {
+		defer sender.Close()
+		_ = wire.WriteControl(sender.Control, wire.TypeHello, &wire.SenderHello{
+			ProtocolVersion: wire.ProtocolVersion, HasPassword: true, Mode: wire.ModeFiles,
+		})
+		var rh wire.ReceiverHello
+		if _, err := wire.ReadControl(sender.Control, &rh); err != nil {
+			return
+		}
+		for {
+			var nonce [32]byte
+			if err := wire.WriteControl(sender.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
+				return
+			}
+			if _, _, err := wire.ReadControlRaw(sender.Control); err != nil {
+				return
+			}
+			if err := wire.WriteControl(sender.Control, wire.TypeError, &wire.ErrorFrame{
+				Code: wire.ErrCodeWrongPassword, Message: "wrong password",
+			}); err != nil {
+				return
+			}
+		}
+	}()
+
+	prompts := 0
+	re := Recv(context.Background(), receiver, RecvOptions{
+		TargetDir: t.TempDir(),
+		PromptPass: func(int) (string, error) {
+			prompts++
+			if prompts > PasswordAttempts+2 {
+				t.Fatalf("receiver kept prompting past the cap (%d)", prompts)
+			}
+			return "nope", nil
+		},
+	})
+	receiver.Close()
+	if !errors.Is(re, fserrors.ErrWrongPassword) {
+		t.Fatalf("recv err = %v, want ErrWrongPassword", re)
+	}
+	if prompts != PasswordAttempts {
+		t.Errorf("receiver prompted %d times, want %d (the cap)", prompts, PasswordAttempts)
+	}
+}
+
 // A fixed password (--password / FSEND_PASSWORD) can't change between tries,
 // so a mismatch aborts after one attempt on both sides.
 func TestEngine_PasswordFixedWrongSingleAttempt(t *testing.T) {
