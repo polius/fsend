@@ -632,7 +632,11 @@ func restoreDirModes(plans []entryPlan) {
 			continue
 		}
 		want := os.FileMode(p.entry.Mode) & os.ModePerm
-		if st, err := os.Stat(p.target); err == nil && st.IsDir() && st.Mode()&os.ModePerm != want {
+		// Lstat, not Stat: if a receiver-side symlink sits in the slot (a kept
+		// dir↔symlink conflict), Stat would follow it and chmod the link's
+		// target anywhere on disk. Lstat reports the link itself, so IsDir is
+		// false and we skip it — we only ever chmod a real directory we own.
+		if st, err := os.Lstat(p.target); err == nil && st.IsDir() && st.Mode()&os.ModePerm != want {
 			_ = os.Chmod(p.target, want)
 		}
 	}
@@ -647,7 +651,8 @@ func repairIdenticalMode(p *entryPlan) {
 		return
 	}
 	want := os.FileMode(p.entry.Mode) & os.ModePerm
-	if st, err := os.Stat(p.target); err == nil && st.Mode()&os.ModePerm != want {
+	// Lstat, not Stat: never chmod through a symlink swapped into the slot.
+	if st, err := os.Lstat(p.target); err == nil && st.Mode().IsRegular() && st.Mode()&os.ModePerm != want {
 		_ = os.Chmod(p.target, want)
 	}
 }

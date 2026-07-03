@@ -655,6 +655,41 @@ func TestEngine_DirModePreserved(t *testing.T) {
 	}
 }
 
+// A receiver-side symlink standing where an incoming directory would go is a
+// kept conflict (no --overwrite): the transfer must leave it and, crucially,
+// must not chmod the link's target — which lives outside the receive tree and
+// carries a sender-controlled mode.
+func TestEngine_DirModeDoesNotFollowKeptSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix directory permission bits")
+	}
+	outside := t.TempDir()
+	if err := os.Chmod(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "d", "f.txt"), []byte("x"))
+	if err := os.Chmod(filepath.Join(src, "d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Receiver already has dst/d as its own symlink to a dir outside the tree.
+	if err := os.Symlink(outside, filepath.Join(dst, "d")); err != nil {
+		t.Fatal(err)
+	}
+
+	// No --overwrite, so the conflict is kept.
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "d")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+
+	if st, err := os.Lstat(filepath.Join(dst, "d")); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("receiver symlink not left intact: mode=%v err=%v", st.Mode(), err)
+	}
+	if st, _ := os.Stat(outside); st.Mode()&os.ModePerm != 0o755 {
+		t.Errorf("outside dir chmod'd through symlink: %o, want 0755", st.Mode()&os.ModePerm)
+	}
+}
+
 // A chmod on a source directory propagates on an identical re-send, matching
 // the file behavior — the dir is otherwise never re-created.
 func TestEngine_DirModePropagatesOnIdenticalResend(t *testing.T) {
