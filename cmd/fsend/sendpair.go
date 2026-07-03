@@ -723,9 +723,9 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	}
 	// An all-skipped transfer (receiver had everything) emits no bytes, so
 	// the skip is the only event that stops the accept spinner.
-	skip := func(fi uint32) {
+	skip := func(fi uint32, kept bool) {
 		spin.Stop()
-		onSkip(fi)
+		onSkip(fi, kept)
 	}
 	current := firstRes
 	opts := retry.Options{OnRetry: retryNoticeFor(f)}
@@ -790,8 +790,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// down to a full skip ("0 B sent") — reconciles instead of silently
 	// dropping to the sent bytes. The skipped-file count explains the gap and
 	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
-	s := stats()
-	printSendSummary(f, int64(plan.totalBytes), s.moved, s.skippedFiles, elapsed, pathInfo)
+	printSendSummary(f, int64(plan.totalBytes), stats(), elapsed, pathInfo)
 	return nil
 }
 
