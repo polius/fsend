@@ -155,6 +155,34 @@ func TestEngine_EmptyFileFiresOnFileDone(t *testing.T) {
 	}
 }
 
+// A source that shrinks between the walk and the read must fail the transfer,
+// not hand the receiver a truncated file that hashes clean and lands as a
+// "success". The sender reports ErrReadFailed and nothing is written.
+func TestEngine_SourceShrinksMidSend(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	sp := filepath.Join(src, "growing.bin")
+	writeFile(t, sp, randBytes(3*wire.MaxChunkSize))
+	sources, err := Walk([]string{sp}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Truncate on disk after the walk recorded the larger size.
+	if err := os.Truncate(sp, wire.MaxChunkSize); err != nil {
+		t.Fatal(err)
+	}
+
+	se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources}, RecvOptions{TargetDir: dst})
+	if !errors.Is(se, fserrors.ErrReadFailed) {
+		t.Fatalf("send err = %v, want ErrReadFailed", se)
+	}
+	if !errors.Is(re, fserrors.ErrReadFailed) {
+		t.Fatalf("recv err = %v, want ErrReadFailed (sender reason relayed)", re)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "growing.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a truncated file must not land as success")
+	}
+}
+
 func TestEngine_Directory(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	files := map[string][]byte{
