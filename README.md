@@ -59,17 +59,6 @@ irm https://getfsend.alzina.dev/windows | iex
 All three verify the release's SHA-256 checksum before installing.
 
 <details>
-<summary>Tab-completion (optional)</summary>
-
-For bash, zsh, fish, or powershell — add to your shell's rc file:
-
-```bash
-eval "$(fsend completion zsh)"
-```
-
-</details>
-
-<details>
 <summary>Other install methods</summary>
 
 From source:
@@ -79,6 +68,17 @@ go install github.com/polius/fsend/cmd/fsend@latest
 ```
 
 Or grab a release binary from [the releases page](https://github.com/polius/fsend/releases).
+
+</details>
+
+<details>
+<summary>Tab-completion (optional)</summary>
+
+For bash, zsh, fish, or powershell — add to your shell's rc file:
+
+```bash
+eval "$(fsend completion zsh)"
+```
 
 </details>
 
