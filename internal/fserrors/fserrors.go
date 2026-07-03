@@ -9,7 +9,7 @@
 //   - First line says what failed in user terms.
 //   - Second line gives an actionable next step.
 //   - Never blame the user.
-//   - Exit codes are stable from v0.1.0 onward.
+//   - Exit codes are stable from v1.0.0 onward.
 package fserrors
 
 import (
@@ -189,7 +189,7 @@ func (e Entry) Render() string {
 // Exit codes are kept in lockstep with the Exxx number (E001 → exit 1,
 // E024 → exit 24, etc.) so scripts can match on either. The only
 // exceptions are E016 (a non-fatal warning, exit 0) and E026 (Ctrl-C,
-// exit 130 by shell convention). Codes are stable from v0.1.0 onward.
+// exit 130 by shell convention). Codes are stable from v1.0.0 onward.
 //
 // Placeholders like {addr}, {code}, {path} are filled in by the caller via
 // fmt.Sprintf when known; we use plain text so unknown contexts still render.

@@ -115,14 +115,14 @@ Examples:
 	passFlag.NoOptDefVal = passPromptSentinel
 	passFlag.DefValue = ""
 	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers (differing files still need --overwrite)")
-	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
+	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory, created if missing")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files that differ on receive")
 	c.Flags().BoolVar(&f.checksum, "checksum", false, "decide identical files by content hash, not size+mtime (like rsync -c)")
 	c.Flags().BoolVar(&f.preview, "preview", false, "list what would be sent (CSV: path,size) and exit; no transfer")
 	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status) of the received files to this path")
-	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress non-error output")
+	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress all non-error output (send still prints the bare code to stdout)")
 	c.Flags().BoolVar(&f.json, "json", false, "emit NDJSON events (code, final summary) on stdout")
-	c.Flags().StringVar(&f.hostname, "name", "", "override the hostname shown to the peer")
+	c.Flags().StringVar(&f.hostname, "name", "", "override the device name shown to the peer (default: hostname)")
 	c.Flags().StringSliceVar(&f.excludes, "exclude", nil,
 		"glob patterns to skip when bundling a directory (repeatable or comma-separated)")
 
@@ -262,7 +262,6 @@ SENDING
                          keep it with: fsend <code> > note.txt)
   --preview              List what would be sent (CSV: path,size) and exit —
                          no code, no transfer (pipe-friendly: --preview > out.csv)
-  --name <string>        Override the hostname shown to the peer
 
 RECEIVING
   --yes                  Auto-accept incoming transfers (no prompt).
@@ -281,7 +280,10 @@ RECEIVING
                          received files to <file>
 
 GENERAL
-  --quiet                Suppress all non-error output
+  --name <string>        Override the device name shown to the peer
+                         (default: hostname)
+  --quiet                Suppress all non-error output (send still prints
+                         the bare code to stdout)
   --json                 NDJSON events on stdout: the code when issued, and
                          a final summary (see docs/usage.md for the schema)
   --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
@@ -297,6 +299,10 @@ ADVANCED
   --send / --receive     Force mode (skip code/path auto-detect)
   --update               Update fsend to the latest release
   --uninstall            Remove the fsend binary and its config dir
+  fsend server           Run your own pairing/relay server (--help for env vars)
+  fsend completion <shell>
+                         Print a tab-completion script (bash, zsh, fish,
+                         powershell)
 
 LEARN MORE
   https://github.com/polius/fsend
