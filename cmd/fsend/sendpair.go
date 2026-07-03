@@ -118,6 +118,11 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 				cleanup: func() {
 					stopMDNS()
 					_ = ln.Close()
+					// Closing the listener leaves an accepted conn open
+					// (quic-go), so close the paired one too — else the loser
+					// in a two-receiver race hangs. Idempotent with the
+					// winning transfer's own close.
+					res.Close()
 				},
 			}, nil
 		}
