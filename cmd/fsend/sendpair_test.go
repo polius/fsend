@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -139,6 +140,30 @@ func TestPickFinalSendError(t *testing.T) {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// serverPairNotice must name the causes the sender can act on (401,
+// 429) — the LAN wait that follows never ends, so this notice is the
+// only place they surface — and keep the generic line for the rest.
+func TestServerPairNotice(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string // substring
+	}{
+		{fmt.Errorf("claim: %w", fserrors.ErrServerAuthRequired), "requires a password"},
+		{fmt.Errorf("claim: %w", fserrors.ErrRateLimited), "rate-limited"},
+		{fserrors.ErrServerUnreachable, "Server unavailable"},
+		{errors.New("http 503"), "Server unavailable"},
+	}
+	for _, tc := range cases {
+		got := serverPairNotice(tc.err)
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("serverPairNotice(%v) = %q, want substring %q", tc.err, got, tc.want)
+		}
+		if !strings.Contains(got, "local network") {
+			t.Errorf("notice %q must keep the LAN consolation", got)
+		}
 	}
 }
 
