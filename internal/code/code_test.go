@@ -115,10 +115,12 @@ func TestLooksLikeCode(t *testing.T) {
 		{"abc-def0-jkm", true},  // digit for letter (0 ↔ o confusion)
 		{"Abc-Defg-Jkm", true},  // chat-app capitalization
 		{"abc-defg-jkm", true},  // exact code shape counts too
+		{"abc-defg", true},      // whole group dropped (verbal relay)
+		{"my-file", true},       // in-window false positive — costs only a hint line
 
 		// Things that are clearly not codes.
 		{"report.pdf", false},                  // extension
-		{"my-file", false},                     // too short
+		{"a-b", false},                         // too short even for a dropped group
 		{"my-favorite-very-long-notes", false}, // too long
 		{"abc defg jkm", false},                // spaces, not hyphens
 		{"abc-defg-", false},                   // trailing hyphen

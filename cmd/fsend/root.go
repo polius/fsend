@@ -140,6 +140,8 @@ Examples:
 
 	// Misc
 	c.Flags().BoolVar(&f.debug, "debug", false, "verbose logging to stderr")
+	// Acted on before cobra parses (see main): the help template is built
+	// — and flag-parse errors render — before RunE ever runs.
 	c.Flags().BoolVar(&f.update, "update", false, "update fsend to the latest release")
 	c.Flags().BoolVar(&f.uninstall, "uninstall", false, "remove the fsend binary and config dir")
 
@@ -507,7 +509,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		// Don't silently drop files the user also listed; runSend's own
 		// guard never sees them otherwise (we'd pass nil).
 		if len(f.posArgs) > 0 {
-			return fmt.Errorf("%w: --text cannot be combined with file arguments", fserrors.ErrUsage)
+			return fmt.Errorf("%w: --text cannot be combined with positional arguments", fserrors.ErrUsage)
 		}
 		return runSend(f, nil)
 	}
