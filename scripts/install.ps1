@@ -65,6 +65,9 @@ Parameters (or matching env var):
   -Version VERSION   Version to install    (default: latest; env FSEND_VERSION)
   -Help              Show this help and exit
 
+Environment variables:
+  FSEND_REQUIRE_SIGNATURE=1   Refuse to install unless cosign verifies the release signature
+
 Source: https://github.com/polius/fsend/blob/main/scripts/install.ps1
 '@
 }

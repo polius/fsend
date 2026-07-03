@@ -1,23 +1,27 @@
 package version
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 // String shapes the user-visible header on --version and --help. Dev
-// builds collapse to "fsend dev" because Commit/Date are unset; release
-// builds carry the full "(build SHA, DATE)" parenthetical.
+// builds collapse to "fsend dev (os/arch)" because Commit/Date are unset;
+// release builds carry the full "(build SHA, DATE, os/arch)" parenthetical.
 func TestString(t *testing.T) {
 	orig := struct{ Ver, Commit, Date string }{Version, Commit, Date}
 	t.Cleanup(func() { Version, Commit, Date = orig.Ver, orig.Commit, orig.Date })
 
+	plat := runtime.GOOS + "/" + runtime.GOARCH
 	cases := []struct {
 		name                  string
 		version, commit, date string
 		want                  string
 	}{
-		{"dev_default", "dev", "unknown", "unknown", "fsend dev"},
-		{"dev_empty_commit", "dev", "", "2026-06-01", "fsend dev"},
-		{"dev_empty_date", "dev", "abc1234", "", "fsend dev"},
-		{"release", "0.1.0", "abc1234", "2026-06-01", "fsend 0.1.0 (build abc1234, 2026-06-01)"},
+		{"dev_default", "dev", "unknown", "unknown", "fsend dev (" + plat + ")"},
+		{"dev_empty_commit", "dev", "", "2026-06-01", "fsend dev (" + plat + ")"},
+		{"dev_empty_date", "dev", "abc1234", "", "fsend dev (" + plat + ")"},
+		{"release", "0.1.0", "abc1234", "2026-06-01", "fsend 0.1.0 (build abc1234, 2026-06-01, " + plat + ")"},
 	}
 	for _, c := range cases {
 		Version, Commit, Date = c.version, c.commit, c.date

@@ -177,6 +177,9 @@ func runServer() error {
 	go func() { defer wg.Done(); drainRelay(shutdownCtx, relaySrv, logger) }()
 	wg.Wait()
 	cancel()
+	// Marks a clean drain: absent from the logs when SIGKILL (e.g. a too-low
+	// stop_grace_period) cut the shutdown short.
+	logger.Info("shutdown complete")
 	return nil
 }
 
@@ -266,7 +269,11 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 	if cfg.enableRelay, err = envBool(envRelayEnabled, defaultRelayEnabled); err != nil {
 		return cfg, err
 	}
-	switch strings.ToLower(os.Getenv(envLogLevel)) {
+	// A typo'd level fails loudly like every other FSEND_* var — silently
+	// running at info would hide the debug logs the operator asked for.
+	switch v := strings.TrimSpace(os.Getenv(envLogLevel)); strings.ToLower(v) {
+	case "", "info":
+		cfg.logLevel = slog.LevelInfo
 	case "debug":
 		cfg.logLevel = slog.LevelDebug
 	case "warn":
@@ -274,7 +281,7 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 	case "error":
 		cfg.logLevel = slog.LevelError
 	default:
-		cfg.logLevel = slog.LevelInfo
+		return cfg, fmt.Errorf("%s=%q: not a log level (use debug, info, warn, or error)", envLogLevel, v)
 	}
 	return cfg, nil
 }
