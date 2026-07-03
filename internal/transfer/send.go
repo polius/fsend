@@ -298,6 +298,12 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 			}
 		}
 		if rerr == io.EOF {
+			// EOF before the declared size means the source shrank since the
+			// walk. Finishing here would hand the receiver a truncated file
+			// that hashes clean and lands as a "success"; fail instead.
+			if sent < src.Entry.Size {
+				return fmt.Errorf("%w: %s shrank during send (%d of %d bytes)", fserrors.ErrReadFailed, src.AbsPath, sent, src.Entry.Size)
+			}
 			break
 		}
 		if rerr != nil {
