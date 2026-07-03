@@ -42,7 +42,7 @@ func (p *sendPlan) consumable() bool { return p.mode == wire.ModeStream }
 
 // runSend executes the send-side flow.
 func runSend(f *flags, paths []string) error {
-	errorRoleSender = true
+	errorRole = "sender"
 	if f.textArg != "" && len(paths) > 0 {
 		return fmt.Errorf("%w: --text cannot be combined with positional arguments", fserrors.ErrUsage)
 	}

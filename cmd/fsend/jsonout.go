@@ -22,7 +22,7 @@ import (
 //     summary path when the transfer reached one (rich: bytes/files/route),
 //     or from renderError otherwise (ok/error/exit only).
 //
-// jsonOut is package-level state, mirroring errorRoleSender: renderError
+// jsonOut is package-level state, mirroring errorRole: renderError
 // runs after the transfer stack has unwound, and the once-guard is what
 // lets the rich summary event win over the generic failure event.
 var jsonOut struct {
@@ -62,12 +62,13 @@ type jsonCodeEvent struct {
 }
 
 // jsonDoneEvent is the terminal event. Omitted fields mean "not known at
-// this exit path" (a failure before the summary has no byte counts).
+// this exit path" (a failure before the summary has no byte counts; a
+// flag-parse failure has no role yet — documented in docs/usage.md).
 type jsonDoneEvent struct {
 	V          int    `json:"v"`
 	Event      string `json:"event"`
 	Ok         bool   `json:"ok"`
-	Role       string `json:"role"`
+	Role       string `json:"role,omitempty"`
 	Error      string `json:"error,omitempty"` // catalog code, e.g. "E013"
 	Exit       int    `json:"exit"`
 	BytesTotal *int64 `json:"bytes_total,omitempty"`
@@ -109,11 +110,10 @@ func jsonEmitDone(ev jsonDoneEvent) {
 
 // jsonDoneFromErr builds the generic failure event renderError emits when
 // no summary ran. err == nil is a clean exit some caller narrated itself.
-func jsonDoneFromErr(err error, exit int, sender bool) jsonDoneEvent {
-	ev := jsonDoneEvent{Ok: err == nil && exit == 0, Role: "receiver", Exit: exit}
-	if sender {
-		ev.Role = "sender"
-	}
+// role is errorRole — "" (field omitted) when the run failed before a
+// send/receive path was entered, e.g. a flag-parse error.
+func jsonDoneFromErr(err error, exit int, role string) jsonDoneEvent {
+	ev := jsonDoneEvent{Ok: err == nil && exit == 0, Role: role, Exit: exit}
 	if err != nil {
 		entry, _ := fserrors.Lookup(err)
 		ev.Error = entry.Code

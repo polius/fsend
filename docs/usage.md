@@ -203,7 +203,9 @@ Fields of `done`:
 | Field | Meaning |
 | --- | --- |
 | `ok` / `error` / `exit` | Outcome; `error` is the catalog code (e.g. `"E013"`) and matches the exit code table below |
-| `bytes_total` / `bytes_moved` | Offered size vs. bytes that crossed the wire (a re-send of unchanged files moves 0) |
+| `role` | `"sender"` or `"receiver"`; omitted when the command fails before either path is entered (e.g. a flag-parse error) |
+| `bytes_total` | Per role: the sender reports the full offered size; the receiver reports the bytes it accepted for writing (up-to-date and kept files count 0) — the two sides can differ for the same session |
+| `bytes_moved` | Bytes that crossed the wire this run (a re-send of unchanged files moves 0) |
 | `files_sent`, `files_skipped`, `files_kept` | Sender counts (`files_skipped` = receiver-declined for an unknown reason — old receivers don't report the distinction) |
 | `files_saved`, `files_up_to_date`, `files_kept` | Receiver counts |
 | `duration_ms`, `route` | Timed from the first byte; `route` is `local`, `direct`, or `relay` |
@@ -211,8 +213,10 @@ Fields of `done`:
 | `text` | Receiver: a `--text` payload rides here instead of raw stdout |
 
 On a failure before any summary exists (bad code, unreachable server),
-the `done` event carries only `ok`/`error`/`exit`. Fields are only ever
-**added** to this schema; `v` bumps on the first breaking change.
+the `done` event carries only `ok`/`error`/`exit` — plus `role` when the
+failure happened after a send or receive path was entered. Fields are
+only ever **added** to this schema; `v` bumps on the first breaking
+change.
 
 `--json` is rejected with `--preview` (already CSV) and with `--out -`
 (stdout carries the received bytes).
