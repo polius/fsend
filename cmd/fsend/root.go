@@ -611,6 +611,7 @@ func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
 // so `fsend <code> --exclude '*.log'` fails fast instead of silently
 // ignoring the flag.
 func startReceive(f *flags, c string) error {
+	errorRole = "receiver"
 	if len(f.excludes) > 0 {
 		return errExcludeMisuse()
 	}

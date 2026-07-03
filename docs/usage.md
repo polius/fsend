@@ -156,8 +156,10 @@ If a transfer is interrupted, fsend keeps what it already received in a
 `.fsend-partial` file and continues from there next time — only the
 missing bytes transfer.
 
-Share codes are **one-shot**, so resuming isn't "rerun with the same
-code." It's a fresh send with a new code:
+While the sender's fsend is **still running**, just rerun the same
+`fsend <code>` — the sender re-registers the code and the transfer
+resumes. Once the sender has exited, codes are **one-shot** and resuming
+is a fresh send with a new code:
 
 1. **Sender** runs the original command again. fsend issues a *new* code.
 2. **Share the new code** with the receiver (the old one no longer works).
@@ -203,8 +205,9 @@ Fields of `done`:
 | Field | Meaning |
 | --- | --- |
 | `ok` / `error` / `exit` | Outcome; `error` is the catalog code (e.g. `"E013"`) and matches the exit code table below |
-| `role` | `"sender"` or `"receiver"` — which side emitted the event; always present |
-| `bytes_total` / `bytes_moved` | Offered size vs. bytes that crossed the wire (a re-send of unchanged files moves 0) |
+| `role` | `"sender"` or `"receiver"`; omitted when the command fails before either path is entered (e.g. a flag-parse error) |
+| `bytes_total` | Per role: the sender reports the full offered size; the receiver reports the bytes it accepted for writing (up-to-date and kept files count 0) — the two sides can differ for the same session |
+| `bytes_moved` | Bytes that crossed the wire this run (a re-send of unchanged files moves 0) |
 | `files_sent`, `files_skipped`, `files_kept` | Sender counts (`files_skipped` = receiver-declined for an unknown reason — old receivers don't report the distinction) |
 | `files_saved`, `files_up_to_date`, `files_kept` | Receiver counts |
 | `duration_ms`, `route` | Timed from the first byte; `route` is `local`, `direct`, or `relay` |
@@ -212,8 +215,10 @@ Fields of `done`:
 | `text` | Receiver: a `--text` payload rides here instead of raw stdout |
 
 On a failure before any summary exists (bad code, unreachable server),
-the `done` event carries only `ok`/`role`/`error`/`exit`. Fields are only ever
-**added** to this schema; `v` bumps on the first breaking change.
+the `done` event carries only `ok`/`error`/`exit` — plus `role` when the
+failure happened after a send or receive path was entered. Fields are
+only ever **added** to this schema; `v` bumps on the first breaking
+change.
 
 `--json` is rejected with `--preview` (already CSV) and with `--out -`
 (stdout carries the received bytes).

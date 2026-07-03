@@ -210,7 +210,8 @@ var catalog = map[error]Entry{
 	ErrCodeNotFound: {
 		Code: "E002", Exit: 2,
 		Message: "That code was not found.",
-		Action:  "Double-check the code with the sender and make sure their fsend is still running.",
+		Action: "Double-check the code with the sender and make sure their fsend is\n" +
+			"  still running — or another receiver may have already claimed this code.",
 	},
 	ErrCodeAlreadyClaimed: {
 		Code: "E003", Exit: 3,
@@ -320,11 +321,13 @@ var catalog = map[error]Entry{
 	ErrTransientFailure: {
 		Code: "E020", Exit: 20,
 		Message: "Transfer was interrupted and retries did not recover.",
-		// Receiver wording: share codes are one-shot, so rerunning the
-		// same `fsend <code>` yields E002 — resume needs a fresh code
-		// from the sender.
-		Action: "Ask the sender to run fsend again, then use the new code — the\n" +
-			"  transfer will resume in this same directory.",
+		// Receiver wording: while the sender's fsend is still up it re-enters
+		// pairing and re-registers the same code, so rerunning the same
+		// `fsend <code>` resumes. Once the sender is gone the code is dead
+		// (one-shot) and resume needs a fresh one.
+		Action: "If the sender is still running, run the same fsend command again to\n" +
+			"  resume. Otherwise ask the sender to run fsend again, then use the new\n" +
+			"  code — the transfer will resume in this same directory.",
 		SenderAction: "Check your network connection and try again — fsend will resume\n" +
 			"  from where it left off.",
 	},

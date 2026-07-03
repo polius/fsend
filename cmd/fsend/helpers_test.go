@@ -957,25 +957,62 @@ func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
 
 // A text payload with no trailing newline must not let the stderr summary
 // butt against it when both streams share a sink (2>&1, CI logs) — the line
-// break goes to stderr, keeping the piped stdout bytes exact.
-func TestPrintTextPayload_BreaksLineForPipedStdout(t *testing.T) {
-	var stdout string
-	stderr := captureStderr(t, func() {
-		stdout = captureStdout(t, func() {
-			if err := printTextPayload("no-newline"); err != nil {
-				t.Errorf("printTextPayload: %v", err)
-			}
-		})
-	})
-	if stdout != "no-newline" {
-		t.Errorf("piped stdout must carry the exact bytes, got %q", stdout)
+// break goes to stderr, keeping the piped stdout bytes exact. When stderr is
+// a different sink (the terminal), that break would only render as a stray
+// blank line before the summary, so it must stay away.
+func TestPrintTextPayload_BreaksLineForSharedSinkOnly(t *testing.T) {
+	// Separate sinks: exact stdout bytes, silent stderr. Real files, not
+	// os.Pipe: Windows pipes carry no file IDs, so two distinct pipes
+	// compare as the same sink (see the sameSink comment).
+	dir := t.TempDir()
+	outF, err := os.Create(filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if stderr != "\n" {
-		t.Errorf("expected a line break on stderr, got %q", stderr)
+	errF, err := os.Create(filepath.Join(dir, "err"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outF, errF
+	perr := printTextPayload("no-newline")
+	os.Stdout, os.Stderr = oldOut, oldErr
+	_ = outF.Close()
+	_ = errF.Close()
+	if perr != nil {
+		t.Fatalf("printTextPayload: %v", perr)
+	}
+	if b, _ := os.ReadFile(outF.Name()); string(b) != "no-newline" {
+		t.Errorf("piped stdout must carry the exact bytes, got %q", string(b))
+	}
+	if b, _ := os.ReadFile(errF.Name()); string(b) != "" {
+		t.Errorf("separate stderr must stay silent, got %q", string(b))
 	}
 
-	// A newline-terminated payload needs no break.
-	stderr = captureStderr(t, func() {
+	// Shared sink (2>&1): the break lands after the payload.
+	shared := filepath.Join(t.TempDir(), "sink")
+	f, err := os.OpenFile(shared, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr = os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = f, f
+	perr = printTextPayload("no-newline")
+	os.Stdout, os.Stderr = oldOut, oldErr
+	_ = f.Close()
+	if perr != nil {
+		t.Fatalf("printTextPayload: %v", perr)
+	}
+	b, err := os.ReadFile(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "no-newline\n" {
+		t.Errorf("shared sink must get the break, got %q", string(b))
+	}
+
+	// A newline-terminated payload needs no break anywhere.
+	stderr := captureStderr(t, func() {
 		_ = captureStdout(t, func() { _ = printTextPayload("clean\n") })
 	})
 	if stderr != "" {
@@ -1124,6 +1161,68 @@ func TestResolveOutDir(t *testing.T) {
 			t.Fatalf("got (sink=%v, %v), want sink=true", sink, err)
 		}
 	})
+}
+
+// With zero bytes moved the elapsed figure is prompt dwell or connection
+// wall time, not a transfer duration — it must not render.
+func TestSummaryParts_ZeroMovedOmitsDuration(t *testing.T) {
+	parts := strings.Join(summaryParts(4096, 0, "sent", 5800*time.Millisecond, mustLANInfo()), "  ·  ")
+	if strings.Contains(parts, "5.8s") {
+		t.Errorf("0 B moved must not show a duration: %s", parts)
+	}
+	if !strings.Contains(parts, "4.1 KB (0 B sent)") {
+		t.Errorf("size clause changed shape: %s", parts)
+	}
+}
+
+// An all-skipped send (receiver already had everything) must mirror the
+// receiver's "Already up to date", not the self-contradictory
+// "Sent · (0 B sent)". Kept files still win over the up-to-date headline.
+func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
+	got := captureStderr(t, func() {
+		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
+	})
+	if !strings.Contains(got, "Already up to date") || !strings.Contains(got, "1 file unchanged") {
+		t.Errorf("all-skipped summary must read up to date, got %q", got)
+	}
+	if strings.Contains(got, "Sent") || strings.Contains(got, "0 B") {
+		t.Errorf("no byte counter on an up-to-date no-op: %q", got)
+	}
+
+	// Kept files: still the "Nothing sent" warning path.
+	got = captureStderr(t, func() {
+		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1, keptFiles: 1}, time.Millisecond, mustLANInfo())
+	})
+	if !strings.Contains(got, "Nothing sent") || !strings.Contains(got, "kept by receiver") {
+		t.Errorf("kept-file summary changed shape: %q", got)
+	}
+}
+
+// Kept files render as a count only — the --overwrite remedy already
+// appears once elsewhere (the --yes warning or E013's action line), and
+// after an explicit "n" it must not appear at all. The glyph tracks who
+// decided: warn for the silent auto-keep, info for the user's own "n".
+func TestPrintRecvSummary_KeptCarriesNoFlagAdvice(t *testing.T) {
+	autoKept := captureStderr(t, func() {
+		printRecvSummary(&flags{}, "Saved 0 of 1 file to /tmp", 0, 0, 1, 0, false, time.Second, mustLANInfo())
+	})
+	if strings.Contains(autoKept, "--overwrite") {
+		t.Errorf("summary must not repeat the --overwrite advice: %q", autoKept)
+	}
+	if !strings.Contains(autoKept, "1 file kept") || !strings.Contains(autoKept, uxlog.Warn()) {
+		t.Errorf("auto-kept summary must warn with a kept count: %q", autoKept)
+	}
+
+	byChoice := captureStderr(t, func() {
+		printRecvSummary(&flags{}, "Saved 0 of 1 file to /tmp", 0, 0, 1, 0, true, time.Second, mustLANInfo())
+	})
+	if strings.Contains(byChoice, "--overwrite") || !strings.Contains(byChoice, uxlog.Info()) {
+		t.Errorf("kept-by-choice must render as the user's decision: %q", byChoice)
+	}
+	// Prompt dwell must not masquerade as a transfer duration.
+	if strings.Contains(byChoice, "1s") {
+		t.Errorf("0 B moved must not show a duration: %q", byChoice)
+	}
 }
 
 // A stream's total is 0 until EOF; the summary must report the moved

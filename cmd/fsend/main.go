@@ -24,9 +24,11 @@ import (
 	"github.com/polius/fsend/internal/uxlog"
 )
 
-// errorRoleSender is set by runSend so renderError can pick sender-side
-// wording for errors mirrored from the receiver (E009, E013, E021).
-var errorRoleSender bool
+// errorRole is set by runSend ("sender") / runReceive ("receiver") so
+// renderError can pick sender-side wording for errors mirrored from the
+// receiver (E009, E013, E021) and stamp the --json done event. Empty until
+// a transfer path is entered — a flag-parse failure has no role.
+var errorRole string
 
 func main() {
 	// Normalise --connect arguments before cobra parses. We use
@@ -117,7 +119,7 @@ func renderError(err error, debug bool) int {
 		err = fserrors.ErrUserCancelled
 	}
 	entry, known := fserrors.Lookup(err)
-	if known && errorRoleSender {
+	if known && errorRole == "sender" {
 		entry = entry.ForSender()
 	}
 
@@ -159,7 +161,7 @@ func renderError(err error, debug bool) int {
 		glyph = uxlog.Warn()
 	case errors.Is(err, fserrors.ErrUserCancelled),
 		errors.Is(err, errKeptByChoice),
-		!errorRoleSender && errors.Is(err, fserrors.ErrReceiverDeclined):
+		errorRole != "sender" && errors.Is(err, fserrors.ErrReceiverDeclined):
 		glyph = uxlog.Info()
 	}
 
@@ -224,7 +226,7 @@ func renderError(err error, debug bool) int {
 		}
 	}
 	// No-op if the summary already emitted the rich done event.
-	jsonEmitDone(jsonDoneFromErr(err, entry.Exit, errorRoleSender))
+	jsonEmitDone(jsonDoneFromErr(err, entry.Exit, errorRole))
 	return entry.Exit
 }
 

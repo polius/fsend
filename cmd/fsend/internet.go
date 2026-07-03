@@ -79,11 +79,12 @@ var joinRetryBudget = 15 * time.Second
 // controlled), fall back to relay on failure.
 //
 // connSpin, when non-nil, is the "Connecting" spinner the caller
-// started. We keep it animating through Join + ICE/relay setup and stop
-// it just before printPath — the first user-visible status line. This
-// replaces what used to be a sequence of brief spinner flashes that read
-// as glitchy. The deferred Stop covers error returns; Stop is idempotent
-// (sync.Once), so explicit stops before printPath don't double-close.
+// started. We keep it animating through Join + ICE/relay setup, then
+// hand it to runReceiverQUICOver, which retitles it for classification
+// and stops it at the accept prompt. This replaces what used to be a
+// sequence of brief spinner flashes that read as glitchy. The deferred
+// Stop covers error returns; Stop is idempotent (sync.Once), so the
+// earlier stops don't double-close.
 func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config, connSpin *uxlog.Spinner) error {
 	client, _ := signalingClient(cfg)
 	defer connSpin.Stop()
@@ -106,11 +107,11 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}, false /* controlled */, f.debug)
 	if iceErr == nil {
 		defer func() { _ = iceConn.Close() }()
-		// Stop the spinner; the receive UX is owned by runReceiverQUICOver
-		// from here (no standalone path line — the prompt block carries
-		// path info as a chip and the summary names it again).
-		connSpin.Stop()
-		return runReceiverQUICOver(ctx, f, iceConn, c, icePath)
+		// Hand the spinner to runReceiverQUICOver: it keeps animating
+		// through classification and stops at the accept prompt (no
+		// standalone path line — the prompt block carries path info as a
+		// chip and the summary names it again).
+		return runReceiverQUICOver(ctx, f, iceConn, c, icePath, connSpin)
 	}
 	if f.debug {
 		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
@@ -135,9 +136,8 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}
 	defer func() { _ = relayConn.Close() }()
-	connSpin.Stop()
 	return classifyRelayDrop(ctx, client, joined.SessionID, joined.RoleToken,
-		runReceiverQUICOver(ctx, f, relayConn, c, connpath.FromRelay(alloc.RelayAddr)))
+		runReceiverQUICOver(ctx, f, relayConn, c, connpath.FromRelay(alloc.RelayAddr), connSpin))
 }
 
 // classifyRelayDrop probes the relay-status endpoint when a relay-path
@@ -410,12 +410,17 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 // runReceiverQUICOver runs the receiver's QUIC + transfer flow over an
 // already-established net.PacketConn.
 //
+// spin is the caller's "Connecting" spinner (nil under --quiet); it is
+// retitled and kept alive through classification — with --checksum the
+// pre-prompt hashing scales with the data already on disk — and stopped
+// by the accept prompt (or ui.close on error).
+//
 // Symmetric retry: a transient error tears down the current QUIC
 // session, sleeps, and re-Dials on the same PacketConn. The receiver's
 // .fsend-partial sidecar plus its imohash fingerprint let the next
 // attempt resume mid-file — the sender verifies the prefix, seeks past
 // it, and streams the remainder.
-func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string, pathInfo connpath.Info) error {
+func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string, pathInfo connpath.Info, spin *uxlog.Spinner) error {
 	tr := quicconn.NewTransport(pc)
 	defer func() { _ = tr.Close() }()
 
@@ -424,12 +429,14 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		return err
 	}
 	ui := newReceiverUI(ctx, f, outDir, sink, pathInfo)
+	spin.SetMessage("Checking existing files")
+	ui.spin = spin
 	defer ui.close()
 
 	start := time.Now()
 	// Sink mode gets one attempt: emitted bytes can't be reconciled, so
 	// a retry would duplicate output.
-	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	opts := retry.Options{OnRetry: ui.retryNotice()}
 	if sink {
 		opts.Attempts = 1
 	}

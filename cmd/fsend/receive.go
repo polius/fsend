@@ -75,9 +75,9 @@ func runReceive(f *flags, c string) error {
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
 		// LAN miss → internet path. A single "Connecting" spinner runs
-		// from here through Join + ICE/relay setup, replacing what used
-		// to be a sequence of brief flashes. runReceiveOverInternet
-		// owns its lifetime and stops it just before printPath.
+		// from here through Join + ICE/relay setup and classification,
+		// replacing what used to be a sequence of brief flashes.
+		// runReceiveOverInternet owns its lifetime.
 		cfg := loadConfig(f.quiet)
 		var spin *uxlog.Spinner
 		if !f.quiet {
@@ -122,6 +122,13 @@ func runReceive(f *flags, c string) error {
 	}
 
 	ui := newReceiverUI(ctx, f, outDir, sink, connpath.FromLAN())
+	// --checksum hashes the files already on disk before the accept prompt —
+	// a silence that scales with the existing data. Cover it with a spinner
+	// (stopped by the prompt). Without --checksum classification is stat-only
+	// and near-instant; a spinner would just flash.
+	if f.checksum && !f.quiet {
+		ui.spin = uxlog.StartSpinner("Checking existing files")
+	}
 	defer ui.close()
 
 	start := time.Now()
@@ -130,7 +137,7 @@ func runReceive(f *flags, c string) error {
 	// itself so a mid-stream drop can re-dial and resume from the
 	// receiver's partial. Sink mode gets one attempt: emitted bytes
 	// can't be reconciled, so a retry would duplicate output.
-	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	opts := retry.Options{OnRetry: ui.retryNotice()}
 	if sink {
 		opts.Attempts = 1
 	}

@@ -42,7 +42,7 @@ func (p *sendPlan) consumable() bool { return p.mode == wire.ModeStream }
 
 // runSend executes the send-side flow.
 func runSend(f *flags, paths []string) error {
-	errorRoleSender = true
+	errorRole = "sender"
 	if f.textArg != "" && len(paths) > 0 {
 		return fmt.Errorf("%w: --text cannot be combined with positional arguments", fserrors.ErrUsage)
 	}
@@ -387,11 +387,20 @@ func resumeNotice(offset, total uint64) string {
 
 // printSendSummary renders the post-transfer outcome line. Files the receiver
 // kept (differing, no --overwrite there) make it a warning, not a success —
-// the sender must not read "✓ Sent" when nothing was delivered. Skips without
-// the kept flag stay the neutral "skipped": an old receiver doesn't report
-// the distinction (wire.Decision.Kept), so "up to date" would overclaim.
+// the sender must not read "✓ Sent" when nothing was delivered. Partial skips
+// without the kept flag stay the neutral "skipped": an old receiver doesn't
+// report the distinction (wire.Decision.Kept), so "up to date" would overclaim.
 func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
+		return
+	}
+	// Everything skipped, nothing kept: the receiver already had it all and
+	// says "Already up to date" — "Sent · (0 B sent)" would contradict
+	// itself. Mirror the receiver's headline.
+	if s.moved == 0 && s.keptFiles == 0 && s.skippedFiles > 0 {
+		fmt.Fprintf(os.Stderr, "%s Already up to date  ·  %s unchanged  ·  %s\n",
+			uxlog.Check(), uxlog.CountNoun(s.skippedFiles, "file"), path.Tag())
+		printUpdateNotice(f)
 		return
 	}
 	glyph, headline := uxlog.Check(), "Sent"
@@ -428,7 +437,13 @@ func summaryParts(total, moved int64, verb string, elapsed time.Duration, path c
 	if moved < total {
 		size += " (" + uxlog.HumanBytes(moved) + " " + verb + ")"
 	}
-	parts := []string{size, uxlog.HumanDuration(elapsed)}
+	parts := []string{size}
+	// With zero bytes moved, elapsed is prompt dwell or connection wall
+	// time, not a transfer duration — "0 B · 5.8s" reads as a slow
+	// transfer. Omit it (HumanRate already suppresses the rate).
+	if moved > 0 {
+		parts = append(parts, uxlog.HumanDuration(elapsed))
+	}
 	if r := uxlog.HumanRate(moved, elapsed); r != "" {
 		parts = append(parts, r)
 	}

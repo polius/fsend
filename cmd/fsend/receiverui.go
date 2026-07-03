@@ -31,6 +31,10 @@ type receiverUI struct {
 	outDir   string
 	sink     bool
 	pathInfo connpath.Info
+	// spin animates the pre-prompt phase (connect/classify); set before the
+	// transfer starts, stopped by the first prompt or close(). Stop is
+	// idempotent and nil-safe.
+	spin *uxlog.Spinner
 
 	mu           sync.Mutex
 	hello        *wire.SenderHello
@@ -101,12 +105,19 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 		Checksum:       ui.f.checksum,
 		Accept:         ui.accept,
 		Password:       ui.f.passArg,
-		PromptPass:     receiverPasswordPrompt(ui.ctx, ui.f),
 		ProgressFn:     ui.progress,
 		OnResume:       ui.onResume,
 		OnSkip:         ui.onSkip,
 		OnFileDone:     ui.onFileDone,
 		OnConflictKept: ui.onConflictKept,
+	}
+	// The password prompt fires before classification; the spinner must not
+	// animate under the hidden-input line.
+	if pp := receiverPasswordPrompt(ui.ctx, ui.f); pp != nil {
+		o.PromptPass = func(attempt int) (string, error) {
+			ui.spin.Stop()
+			return pp(attempt)
+		}
 	}
 	if ui.sink {
 		o.Sink = os.Stdout
@@ -124,6 +135,8 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 
 // accept records the HELLO, then runs the accept prompt with the breakdown.
 func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummary) bool {
+	// Classification is done — the prompt block owns the terminal from here.
+	ui.spin.Stop()
 	ui.mu.Lock()
 	cp := h
 	ui.hello = &cp
@@ -370,6 +383,8 @@ func (ui *receiverUI) bytes() (total, moved int64) {
 // printCancelKeptHint tells a Ctrl-C'd receiver that its partial data
 // survives and how the transfer resumes. E026 itself is context-free
 // ("Cancelled.") — only the UI knows whether bytes had already landed.
+// Self-service leads: the still-running sender re-registers the same
+// code, so the receiver can resume without involving the other person.
 func printCancelKeptHint(f *flags, ui *receiverUI) {
 	if f.quiet {
 		return
@@ -378,12 +393,13 @@ func printCancelKeptHint(f *flags, ui *receiverUI) {
 		// Via uxlog.Println: the aborted bar is still live here (ui.close
 		// runs on a defer), and its next refresh frame would erase a raw
 		// stderr write.
-		uxlog.Println(fmt.Sprintf("%s Partial data kept — when the sender runs fsend again, the transfer resumes here.", uxlog.Info()))
+		uxlog.Println(fmt.Sprintf("%s Partial data kept — run the same fsend <code> again to resume while the sender is still waiting.", uxlog.Info()))
 	}
 }
 
 func (ui *receiverUI) close() {
 	ui.closeOnce.Do(func() {
+		ui.spin.Stop()
 		ui.mu.Lock()
 		bar := ui.bar
 		ui.mu.Unlock()
@@ -391,6 +407,19 @@ func (ui *receiverUI) close() {
 			bar.Done()
 		}
 	})
+}
+
+// retryNotice wraps retryNoticeFor so the pre-prompt spinner is stopped
+// before a notice prints — otherwise the spinner's redraw garbles the line.
+func (ui *receiverUI) retryNotice() func(int, time.Duration, error) {
+	notice := retryNoticeFor(ui.f)
+	if notice == nil {
+		return nil
+	}
+	return func(attempt int, wait time.Duration, lastErr error) {
+		ui.spin.Stop()
+		notice(attempt, wait, lastErr)
+	}
 }
 
 // finishReceive runs the post-transfer epilogue. When differing files were
@@ -437,7 +466,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 				return err
 			}
 		}
-		printRecvSummary(f, "Received text", total, moved, kept, 0, elapsed, ui.pathInfo)
+		printRecvSummary(f, "Received text", total, moved, kept, 0, keptByChoice, elapsed, ui.pathInfo)
 	} else {
 		headline := ui.headline(h, files)
 		// With kept-back files the peer-supplied display name ("2 files") would
@@ -446,7 +475,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 			headline = fmt.Sprintf("Saved %d of %s to %s",
 				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), displayPath(ui.outDir))
 		}
-		printRecvSummary(f, headline, total, moved, kept, skippedSame, elapsed, ui.pathInfo)
+		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
 	}
 	// manifestErr is set by onManifest, which runs on this goroutine before we
 	// return, so no lock is needed. The transfer succeeded; the failure is only
@@ -506,14 +535,28 @@ func printTextPayload(text string) error {
 	if text[len(text)-1] != '\n' {
 		if term.IsTerminal(int(os.Stdout.Fd())) {
 			fmt.Println()
-		} else {
+		} else if sameSink(os.Stdout, os.Stderr) {
 			// stdout is piped, so its bytes must stay exact — but when
 			// stderr shares the sink (2>&1, CI logs) the summary line would
 			// butt against the payload. Break the line on stderr instead.
+			// When stderr is elsewhere (the terminal), this newline would
+			// only render as a stray blank line before the summary.
 			fmt.Fprintln(os.Stderr)
 		}
 	}
 	return nil
+}
+
+// sameSink reports whether two files point at the same underlying sink
+// (same dev+inode), e.g. stdout and stderr under 2>&1. Windows caveat:
+// pipes carry no file IDs there, so two *distinct* pipes compare equal —
+// worst case a stray line break on a separately-piped stderr log.
+// Consoles vs pipes vs disk files still compare correctly (filetype and
+// real file IDs), which covers the cases that matter.
+func sameSink(a, b *os.File) bool {
+	ai, err1 := a.Stat()
+	bi, err2 := b.Stat()
+	return err1 == nil && err2 == nil && os.SameFile(ai, bi)
 }
 
 // headline names what landed where for the summary line.
@@ -539,13 +582,18 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 }
 
 // printRecvSummary renders the post-transfer outcome line. Kept-back files
-// make it a partial success: warn glyph, matching the E013 exit that follows.
-func printRecvSummary(f *flags, headline string, total, moved int64, kept, skippedSame int, elapsed time.Duration, path connpath.Info) {
+// make it a partial success: warn glyph, matching the E013 exit that follows —
+// unless the user chose to keep them at the prompt, which is their decision,
+// not a warning (info glyph, matching renderError's errKeptByChoice).
+func printRecvSummary(f *flags, headline string, total, moved int64, kept, skippedSame int, keptByChoice bool, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
 	glyph := uxlog.Check()
-	if kept > 0 {
+	switch {
+	case kept > 0 && keptByChoice:
+		glyph = uxlog.Info()
+	case kept > 0:
 		glyph = uxlog.Warn()
 	}
 	if headline == "" {
@@ -564,8 +612,11 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	if skippedSame > 0 {
 		parts = append(parts, fmt.Sprintf("%s up to date", uxlog.CountNoun(skippedSame, "file")))
 	}
+	// No "(use --overwrite)" here: the remedy already appears once — the
+	// upfront --yes warning or E013's action line — and after an explicit
+	// "n" at the prompt it must not appear at all.
 	if kept > 0 {
-		parts = append(parts, fmt.Sprintf("%s kept (use --overwrite)", uxlog.CountNoun(kept, "file")))
+		parts = append(parts, fmt.Sprintf("%s kept", uxlog.CountNoun(kept, "file")))
 	}
 	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
