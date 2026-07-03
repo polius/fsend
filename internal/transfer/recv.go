@@ -186,6 +186,7 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 	if err := receiveData(ctx, s, byIndex, decisions, plans, expected, opts); err != nil {
 		return err
 	}
+	restoreDirModes(plans)
 	if err := finishRecv(s); err != nil {
 		return err
 	}
@@ -616,6 +617,24 @@ func materialize(s *Streams, p *entryPlan, approveOverwrite bool) error {
 			_ = os.Chtimes(target, t, t)
 		}
 		return nil
+	}
+}
+
+// restoreDirModes sets each received directory to the sender's mode, after
+// its children are written. Dirs are created writable (Mode|0o700) during
+// the transfer and an identical dir is never re-created, so without this a
+// restrictive or changed dir mode would never land. Applied last, deepest
+// first, so a read-only mode can't block writing the dir's own children.
+func restoreDirModes(plans []entryPlan) {
+	for i := len(plans) - 1; i >= 0; i-- {
+		p := &plans[i]
+		if p.entry.Type != wire.EntryDir {
+			continue
+		}
+		want := os.FileMode(p.entry.Mode) & os.ModePerm
+		if st, err := os.Stat(p.target); err == nil && st.IsDir() && st.Mode()&os.ModePerm != want {
+			_ = os.Chmod(p.target, want)
+		}
 	}
 }
 
