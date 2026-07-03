@@ -194,9 +194,15 @@ func New(totalBytes int64, showNames bool) *Progress {
 		mpb.WithRefreshRate(100*time.Millisecond), // spec: ≥10 Hz
 	)
 
+	hasTotal := totalBytes > 0
 	// The ━/╸/─ trio gives a calm, modern look without the "=====>"
-	// telegraph aesthetic the default style carries.
-	style := mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	// telegraph aesthetic the default style carries. Unknown totals get
+	// no track at all: it could never fill, and a full-width ─ line at
+	// 0% reads as "stalled" — the counter/rate decorators carry the line.
+	var style mpb.BarFillerBuilder = mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	if !hasTotal {
+		style = mpb.NopStyle()
+	}
 
 	// Track elapsed locally — decor.Statistics doesn't carry it. Only the
 	// ETA's ≥1 s warm-up gate uses it; the rate itself comes from win, a
@@ -205,7 +211,6 @@ func New(totalBytes int64, showNames bool) *Progress {
 	// summary line still reports the lifetime figure — that one is correct.
 	start := time.Now()
 	win := &rateWindow{}
-	hasTotal := totalBytes > 0
 	// Rate needs no total — a multi-GB stdin stream is exactly where the
 	// user wants throughput. HumanRate's own noise floor keeps it hidden
 	// until ~1 MB has moved, covering the small-stream case; ETA stays
