@@ -176,6 +176,39 @@ prompt) and pass any password via `FSEND_PASSWORD`:
 FSEND_PASSWORD=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
 ```
 
+### JSON output (`--json`)
+
+`--json` turns stdout into NDJSON — one JSON object per line, nothing
+else. Human output (progress, prompts, summaries) stays on stderr, so
+`--json` composes with or without `--quiet`. Exit codes are unchanged.
+
+Two events exist. The **sender** emits the pairing code as soon as it is
+issued, then a final summary; the **receiver** emits only the summary:
+
+```json
+{"v":1,"event":"code","code":"abc-defg-jkm"}
+{"v":1,"event":"done","ok":true,"role":"sender","exit":0,"bytes_total":2100000,"bytes_moved":2100000,"files_sent":1,"files_skipped":0,"files_kept":0,"duration_ms":312,"route":"local"}
+```
+
+Fields of `done`:
+
+| Field | Meaning |
+| --- | --- |
+| `ok` / `error` / `exit` | Outcome; `error` is the catalog code (e.g. `"E013"`) and matches the exit code table below |
+| `bytes_total` / `bytes_moved` | Offered size vs. bytes that crossed the wire (a re-send of unchanged files moves 0) |
+| `files_sent`, `files_skipped`, `files_kept` | Sender counts (`files_skipped` = receiver-declined for an unknown reason — old receivers don't report the distinction) |
+| `files_saved`, `files_up_to_date`, `files_kept` | Receiver counts |
+| `duration_ms`, `route` | Timed from the first byte; `route` is `local`, `direct`, or `relay` |
+| `dir` | Receiver: absolute directory files landed in |
+| `text` | Receiver: a `--text` payload rides here instead of raw stdout |
+
+On a failure before any summary exists (bad code, unreachable server),
+the `done` event carries only `ok`/`error`/`exit`. Fields are only ever
+**added** to this schema; `v` bumps on the first breaking change.
+
+`--json` is rejected with `--preview` (already CSV) and with `--out -`
+(stdout carries the received bytes).
+
 ## Chaining through a middle machine
 
 If the sender and receiver can't reach each other but a third machine can

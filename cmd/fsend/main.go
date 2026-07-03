@@ -38,6 +38,12 @@ func main() {
 	//   fsend --connect host:port [password]  → set custom
 	os.Args = normalizeConnectArgs(os.Args)
 
+	// Raw-args scan (like debugRequested): flag parsing itself can fail,
+	// and a script that asked for --json still deserves a JSON failure.
+	if argsHaveFlag("--json") {
+		jsonEnable()
+	}
+
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(renderError(err, debugRequested()))
 	}
@@ -193,6 +199,8 @@ func renderError(err error, debug bool) int {
 			fmt.Fprintf(os.Stderr, "  DEBUG: %s\n", c)
 		}
 	}
+	// No-op if the summary already emitted the rich done event.
+	jsonEmitDone(jsonDoneFromErr(err, entry.Exit, errorRoleSender))
 	return entry.Exit
 }
 

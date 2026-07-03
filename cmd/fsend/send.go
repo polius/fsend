@@ -75,6 +75,9 @@ func runSend(f *flags, paths []string) error {
 		if plan.mode != wire.ModeFiles {
 			return fmt.Errorf("%w: --preview only applies to file or folder sends", fserrors.ErrUsage)
 		}
+		if f.json {
+			return fmt.Errorf("%w: --json does not apply to --preview (its CSV is already machine-readable)", fserrors.ErrUsage)
+		}
 		return writeSendPreview(os.Stdout, plan.sources)
 	}
 
@@ -214,8 +217,13 @@ func shortRand() string {
 // printSendArtifact renders the receive-command block and starts the
 // "Waiting for receiver" spinner. --quiet emits just the code on stdout.
 func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
+	// Under --json the code event replaces --quiet's bare-code line —
+	// stdout must carry exactly one machine format.
+	jsonEmitCode(c)
 	if f.quiet {
-		_, _ = fmt.Fprintln(os.Stdout, c)
+		if !jsonEnabled() {
+			_, _ = fmt.Fprintln(os.Stdout, c)
+		}
 		return nil
 	}
 	fmt.Fprintln(os.Stderr)
