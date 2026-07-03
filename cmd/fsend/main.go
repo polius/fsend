@@ -189,6 +189,8 @@ func renderError(err error, debug bool) int {
 			fmt.Fprintf(os.Stderr, "  For the fsend version, run: fsend --version\n")
 		case detail == "send" || detail == "receive":
 			fmt.Fprintf(os.Stderr, "  fsend has no %q subcommand — `fsend <file>` sends, `fsend <code>` receives.\n", detail)
+		case detail == "update" || detail == "uninstall":
+			fmt.Fprintf(os.Stderr, "  To %s fsend, run: fsend --%s\n", detail, detail)
 		}
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)

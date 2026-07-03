@@ -228,6 +228,7 @@ func TestServerLoadConfigRejectsBadValues(t *testing.T) {
 		"FSEND_RELAY_MAX_BYTES_PER_SESSION":           "1GiB",
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP":            "many",
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE": "-1",
+		"FSEND_LOG_LEVEL":                             "verbose",
 	}
 	for k, v := range cases {
 		t.Run(k+"="+v, func(t *testing.T) {
@@ -246,10 +247,10 @@ func TestServerLoadConfigLogLevels(t *testing.T) {
 		"DEBUG":   slog.LevelDebug,
 		"warn":    slog.LevelWarn,
 		"WARN":    slog.LevelWarn,
-		"error":   slog.LevelError,
-		"info":    slog.LevelInfo,
-		"":        slog.LevelInfo,
-		"garbage": slog.LevelInfo,
+		"error": slog.LevelError,
+		"info":  slog.LevelInfo,
+		"INFO":  slog.LevelInfo,
+		"":      slog.LevelInfo,
 	}
 	for input, want := range cases {
 		t.Run(input, func(t *testing.T) {
