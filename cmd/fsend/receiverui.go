@@ -521,7 +521,11 @@ func printTextPayload(text string) error {
 }
 
 // sameSink reports whether two files point at the same underlying sink
-// (same dev+inode), e.g. stdout and stderr under 2>&1.
+// (same dev+inode), e.g. stdout and stderr under 2>&1. Windows caveat:
+// pipes carry no file IDs there, so two *distinct* pipes compare equal —
+// worst case a stray line break on a separately-piped stderr log.
+// Consoles vs pipes vs disk files still compare correctly (filetype and
+// real file IDs), which covers the cases that matter.
 func sameSink(a, b *os.File) bool {
 	ai, err1 := a.Stat()
 	bi, err2 := b.Stat()

@@ -961,20 +961,32 @@ func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
 // a different sink (the terminal), that break would only render as a stray
 // blank line before the summary, so it must stay away.
 func TestPrintTextPayload_BreaksLineForSharedSinkOnly(t *testing.T) {
-	// Separate sinks: exact stdout bytes, silent stderr.
-	var stdout string
-	stderr := captureStderr(t, func() {
-		stdout = captureStdout(t, func() {
-			if err := printTextPayload("no-newline"); err != nil {
-				t.Errorf("printTextPayload: %v", err)
-			}
-		})
-	})
-	if stdout != "no-newline" {
-		t.Errorf("piped stdout must carry the exact bytes, got %q", stdout)
+	// Separate sinks: exact stdout bytes, silent stderr. Real files, not
+	// os.Pipe: Windows pipes carry no file IDs, so two distinct pipes
+	// compare as the same sink (see the sameSink comment).
+	dir := t.TempDir()
+	outF, err := os.Create(filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if stderr != "" {
-		t.Errorf("separate stderr must stay silent, got %q", stderr)
+	errF, err := os.Create(filepath.Join(dir, "err"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outF, errF
+	perr := printTextPayload("no-newline")
+	os.Stdout, os.Stderr = oldOut, oldErr
+	_ = outF.Close()
+	_ = errF.Close()
+	if perr != nil {
+		t.Fatalf("printTextPayload: %v", perr)
+	}
+	if b, _ := os.ReadFile(outF.Name()); string(b) != "no-newline" {
+		t.Errorf("piped stdout must carry the exact bytes, got %q", string(b))
+	}
+	if b, _ := os.ReadFile(errF.Name()); string(b) != "" {
+		t.Errorf("separate stderr must stay silent, got %q", string(b))
 	}
 
 	// Shared sink (2>&1): the break lands after the payload.
@@ -983,9 +995,9 @@ func TestPrintTextPayload_BreaksLineForSharedSinkOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldOut, oldErr := os.Stdout, os.Stderr
+	oldOut, oldErr = os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = f, f
-	perr := printTextPayload("no-newline")
+	perr = printTextPayload("no-newline")
 	os.Stdout, os.Stderr = oldOut, oldErr
 	_ = f.Close()
 	if perr != nil {
@@ -1000,7 +1012,7 @@ func TestPrintTextPayload_BreaksLineForSharedSinkOnly(t *testing.T) {
 	}
 
 	// A newline-terminated payload needs no break anywhere.
-	stderr = captureStderr(t, func() {
+	stderr := captureStderr(t, func() {
 		_ = captureStdout(t, func() { _ = printTextPayload("clean\n") })
 	})
 	if stderr != "" {
