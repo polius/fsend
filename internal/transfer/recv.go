@@ -178,7 +178,7 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 			expected++
 			continue
 		}
-		if err := materialize(s, p, approveOverwrite); err != nil {
+		if err := materialize(s, p, approveOverwrite, opts); err != nil {
 			return err
 		}
 	}
@@ -583,7 +583,7 @@ func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error 
 }
 
 // materialize creates a structural entry (dir / symlink / empty file).
-func materialize(s *Streams, p *entryPlan, approveOverwrite bool) error {
+func materialize(s *Streams, p *entryPlan, approveOverwrite bool, opts RecvOptions) error {
 	target := p.target
 	if p.needsConsent() && approveOverwrite {
 		_ = os.RemoveAll(target) // clear the slot (approved)
@@ -615,6 +615,12 @@ func materialize(s *Streams, p *entryPlan, approveOverwrite bool) error {
 		if p.entry.ModTimeSec > 0 {
 			t := time.Unix(p.entry.ModTimeSec, 0)
 			_ = os.Chtimes(target, t, t)
+		}
+		// An empty file is a saved file too — fire OnFileDone like finalize
+		// does for non-empty ones, so it's counted in the receiver's saved-file
+		// tally (files_saved / the "Saved N of M" headline).
+		if opts.OnFileDone != nil {
+			opts.OnFileDone(target)
 		}
 		return nil
 	}
