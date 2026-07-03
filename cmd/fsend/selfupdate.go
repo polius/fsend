@@ -37,7 +37,7 @@ func runUpdate() error {
 	// the Cellar file would diverge from the formula's metadata and the
 	// next `brew upgrade` would fight it. Checked before any network work.
 	if managedByHomebrew(binPath) {
-		return fmt.Errorf("%w: this fsend was installed with Homebrew — update it with: brew upgrade fsend", fserrors.ErrUpdateFailed)
+		return fmt.Errorf("%w: update it with: brew upgrade fsend", fserrors.ErrHomebrewManaged)
 	}
 
 	fmt.Fprintln(os.Stderr, "  Checking the latest release...")

@@ -26,7 +26,7 @@ func runUninstall(f *flags) error {
 			binPath = resolved
 		}
 		if managedByHomebrew(binPath) {
-			return fmt.Errorf("%w: this fsend was installed with Homebrew — uninstall it with: brew uninstall fsend", fserrors.ErrUninstallFailed)
+			return fmt.Errorf("%w: uninstall it with: brew uninstall fsend", fserrors.ErrHomebrewManaged)
 		}
 	}
 

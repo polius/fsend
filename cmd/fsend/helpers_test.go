@@ -457,6 +457,30 @@ func TestRenderError_UnsendableSymlink(t *testing.T) {
 	}
 }
 
+// A Homebrew-managed refusal renders as E039 with the brew command on the
+// detail line and no contradictory "remove by hand"/"reinstall" boilerplate.
+func TestRenderError_HomebrewManaged(t *testing.T) {
+	err := fmt.Errorf("%w: uninstall it with: brew uninstall fsend", fserrors.ErrHomebrewManaged)
+	var code int
+	got := captureStderr(t, func() { code = renderError(err, false) })
+	if code != 39 {
+		t.Errorf("exit code = %d, want 39", code)
+	}
+	for _, want := range []string{
+		"[E039] This fsend is managed by Homebrew.",
+		"uninstall it with: brew uninstall fsend",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"Remove the binary by hand", "reinstall", "path is printed above"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("contradictory boilerplate %q leaked in:\n%s", unwanted, got)
+		}
+	}
+}
+
 // A broken pipe on a stdout payload path (`--preview | head`, `--out - | ...`)
 // exits silently with the shell convention 128+SIGPIPE.
 func TestRenderError_BrokenPipeExitsSilently141(t *testing.T) {

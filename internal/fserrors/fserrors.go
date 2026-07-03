@@ -133,6 +133,11 @@ var (
 	// only the sidecar CSV is missing, so the fix is the manifest path —
 	// not --out.
 	ErrManifestWriteFailed = errors.New("manifest write failed")
+	// E039 — `fsend --update`/`--uninstall` on a Homebrew-managed binary.
+	// A deliberate refusal (brew owns the binary, so self-modifying it would
+	// fight the next `brew` run), not a failure — distinct from E033/E035 so
+	// the message points at brew instead of "reinstall"/"remove by hand".
+	ErrHomebrewManaged = errors.New("managed by Homebrew")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -448,6 +453,12 @@ var catalog = map[error]Entry{
 		Code: "E038", Exit: 38,
 		Message: "Files received, but the --manifest record could not be written.",
 		Action:  "Check that the --manifest path is writable.",
+	},
+	// The specific brew command rides the wrapped detail (upgrade vs
+	// uninstall), so the Action is left empty rather than contradicting it.
+	ErrHomebrewManaged: {
+		Code: "E039", Exit: 39,
+		Message: "This fsend is managed by Homebrew.",
 	},
 }
 

@@ -144,6 +144,7 @@ func renderError(err error, debug bool) int {
 		errors.Is(err, fserrors.ErrServerStartup) ||
 		errors.Is(err, fserrors.ErrUpdateFailed) ||
 		errors.Is(err, fserrors.ErrUninstallFailed) ||
+		errors.Is(err, fserrors.ErrHomebrewManaged) ||
 		errors.Is(err, fserrors.ErrManifestWriteFailed)) {
 		if extra := extractDetail(err.Error()); extra != "" {
 			detail = extra
