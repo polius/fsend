@@ -44,7 +44,7 @@ sending and what, then asks before writing anything:
 $ fsend abc-defg-jkm
   Incoming from mbp.local  ·  direct
 
-      report.pdf  ·  1 item  ·  2.4 MB
+      report.pdf  ·  1 file  ·  2.4 MB
 
   Save to ./? [Y/n] y
   Saved report.pdf to ./
@@ -68,7 +68,6 @@ without a positional argument.
 | `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. To keep it: `fsend <code> > note.txt`. |
 | `--password[=<password>]` | Require the receiver to supply this password. Bare `--password` prompts interactively with a random default; supply it inline as `--password=<password>`. Also `FSEND_PASSWORD`. |
 | `--exclude <glob,…>` | Skip entries when bundling a directory. |
-| `--name <hostname>` | Override the hostname shown to the peer. |
 | `--preview` | List what would be sent as CSV (`path,size`) and exit — no code, no transfer. Redirect with `> files.csv` to inspect. |
 
 ```sh
@@ -122,6 +121,15 @@ fsend --yes --out ~/Downloads abc-defg-jkm
 fsend --yes --out - abc-defg-jkm > dump.sql   # pipe-to-pipe with the sender's `… | fsend`
 FSEND_PASSWORD=swordfish fsend --yes abc-defg-jkm
 ```
+
+### Password attempts
+
+When the sender required a password and the receiver didn't supply one,
+the receiver is prompted interactively and gets **3 attempts**. A wrong
+password supplied non-interactively (`--password=<password>` or
+`FSEND_PASSWORD`) aborts the transfer **on the first try** and burns the
+code — with no human present to retry, failing fast beats hanging a
+script. The sender has to run again for a fresh code.
 
 ### When a file already exists
 
@@ -250,6 +258,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | Flag | Purpose |
 |---|---|
 | `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
+| `--name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming from …` line, the receiver's name in the sender's `Receiver connected` line. |
 | `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
@@ -264,6 +273,9 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | `FSEND_PASSWORD` | `--password` | Supply the transfer password out-of-band. |
 | `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
 | `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
+| `NO_COLOR` | — | Set to any non-empty value to disable ANSI colors ([no-color.org](https://no-color.org)). |
+| `FORCE_COLOR` | — | Set to `1` (any value except `0`/`false`) to force ANSI colors on, even when output isn't a terminal. Colors only — spinners and progress bars still require a terminal. |
+| `TERM` | — | `TERM=dumb` disables all ANSI escapes: colors, spinners, progress rendering. |
 
 Flags always win when both are set.
 

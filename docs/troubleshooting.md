@@ -10,12 +10,15 @@ two machines. See [Security](security.md) for the details.
 
 ## Connecting
 
-### "Server unavailable — only receivers on your local network can connect" (`E001`)
+### "Server unavailable — only receivers on your local network can connect"
 
-fsend couldn't reach the pairing server. **Same-Wi-Fi transfers still
-work** — they use the local network directly and don't need the server.
-Only *cross-network* receivers (someone on a different network) can't
-connect right now.
+fsend couldn't reach the pairing server. This sender-side warning isn't
+fatal: **same-Wi-Fi transfers still work** — they use the local network
+directly and don't need the server. Only *cross-network* receivers
+(someone on a different network) can't connect right now.
+
+When the server can't be reached at all — no local-network fallback in
+play — the run ends with `E001`: "Could not reach the server (timeout)."
 
 What to try:
 

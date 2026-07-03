@@ -76,7 +76,7 @@ func SetPathForTesting(p string) { pathMu.Lock(); pathOverride = p; pathMu.Unloc
 // Path returns the absolute path where the config file lives.
 //
 // Production: resolved via XDG (Linux $XDG_CONFIG_HOME, macOS Application
-// Support, Windows %AppData%).
+// Support, Windows %LOCALAPPDATA%).
 // Test: overridden via SetPathForTesting.
 //
 // Errors only on truly broken environments where the home directory cannot
