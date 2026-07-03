@@ -460,10 +460,13 @@ func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
-		cancel()
+		// Notice before cancel(), and via uxlog.Println: a live progress
+		// bar's next refresh frame would erase a raw stderr write, and
+		// cancel() races the bar's teardown.
 		if !quiet {
-			fmt.Fprintf(os.Stderr, "\n%s Cancelling — press Ctrl-C again to force quit.\n", uxlog.Info())
+			uxlog.Println(fmt.Sprintf("%s Cancelling — press Ctrl-C again to force quit.", uxlog.Info()))
 		}
+		cancel()
 		signal.Stop(ch)
 	}()
 	return ctx, cancel

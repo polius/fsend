@@ -16,6 +16,7 @@ package uxlog
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -195,9 +196,15 @@ func New(totalBytes int64, showNames bool) *Progress {
 		mpb.WithRefreshRate(100*time.Millisecond), // spec: ≥10 Hz
 	)
 
+	hasTotal := totalBytes > 0
 	// The ━/╸/─ trio gives a calm, modern look without the "=====>"
-	// telegraph aesthetic the default style carries.
-	style := mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	// telegraph aesthetic the default style carries. Unknown totals get
+	// no track at all: it could never fill, and a full-width ─ line at
+	// 0% reads as "stalled" — the counter/rate decorators carry the line.
+	var style mpb.BarFillerBuilder = mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	if !hasTotal {
+		style = mpb.NopStyle()
+	}
 
 	// Track elapsed locally — decor.Statistics doesn't carry it. Only the
 	// ETA's ≥1 s warm-up gate uses it; the rate itself comes from win, a
@@ -206,7 +213,6 @@ func New(totalBytes int64, showNames bool) *Progress {
 	// summary line still reports the lifetime figure — that one is correct.
 	start := time.Now()
 	win := &rateWindow{}
-	hasTotal := totalBytes > 0
 	// Rate needs no total — a multi-GB stdin stream is exactly where the
 	// user wants throughput. HumanRate's own noise floor keeps it hidden
 	// until ~1 MB has moved, covering the small-stream case; ETA stays
@@ -249,26 +255,35 @@ func New(totalBytes int64, showNames bool) *Progress {
 			// Rate: hidden when the figure would be misleading (start
 			// of transfer, sub-MB movement — HumanRate's noise floor —
 			// or on completion; the summary carries the final figure).
-			// This decorator also feeds the window each refresh frame,
-			// so a stall shows up as a decaying rate and a growing ETA.
+			// This decorator also feeds the window each refresh frame.
+			// A stall says "stalled" rather than letting the windowed
+			// rate decay through fictional values.
 			decor.Any(func(s decor.Statistics) string {
 				if s.Completed || s.Aborted || s.Current == 0 {
 					return ""
 				}
-				r := win.observe(time.Now(), s.Current)
-				if r <= 0 || s.Current < rateThreshold {
+				now := time.Now()
+				r := win.observe(now, s.Current)
+				if s.Current < rateThreshold {
+					return ""
+				}
+				if win.stalled(now) {
+					return "  ·  " + Dim("stalled")
+				}
+				if r <= 0 {
 					return ""
 				}
 				return "  ·  " + HumanBytes(int64(r)) + "/s"
 			}),
 			// ETA: needs a known total, non-zero progress, and at least
 			// 1 s elapsed so the projection isn't dominated by handshake
-			// time. Hidden on completion.
+			// time. Hidden on completion and during a stall (a projection
+			// off a decaying rate only inflates).
 			decor.Any(func(s decor.Statistics) string {
 				if s.Completed || s.Aborted || s.Total <= 0 || s.Current == 0 {
 					return ""
 				}
-				if time.Since(start) < time.Second {
+				if time.Since(start) < time.Second || win.stalled(time.Now()) {
 					return ""
 				}
 				rate := win.rate()
@@ -279,7 +294,7 @@ func New(totalBytes int64, showNames bool) *Progress {
 				if remainingSecs <= 0 {
 					return ""
 				}
-				return "  ·  ETA " + HumanDuration(time.Duration(remainingSecs*float64(time.Second)))
+				return "  ·  ETA " + etaLabel(remainingSecs)
 			}),
 		)
 	}
@@ -307,6 +322,22 @@ func New(totalBytes int64, showNames bool) *Progress {
 		mpb.AppendDecorators(appendDecs...),
 	)
 	return p
+}
+
+// etaLabel renders an ETA projection, rounding up to whole seconds: at
+// 10 Hz refresh a sub-second projection would flicker millisecond values
+// ("ETA 943ms", "ETA 42ms") through the tail of a transfer. Sub-minute
+// values are formatted here rather than via HumanDuration, whose ms and
+// decimal precision is calibrated for measured elapsed times.
+func etaLabel(remainingSecs float64) string {
+	secs := int64(math.Ceil(remainingSecs))
+	if secs < 1 {
+		secs = 1
+	}
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	return HumanDuration(time.Duration(secs) * time.Second)
 }
 
 // Add increments the bar by n bytes.

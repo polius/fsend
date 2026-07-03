@@ -172,6 +172,27 @@ func TestProgress_PlainModeLabelInLine(t *testing.T) {
 	}
 }
 
+// etaLabel rounds projections up to whole seconds — never milliseconds —
+// so the bar's tail doesn't flicker "ETA 943ms" at 10 Hz.
+func TestETALabel(t *testing.T) {
+	cases := []struct {
+		secs float64
+		want string
+	}{
+		{0.042, "1s"}, // sub-second rounds up, never "42ms"
+		{0.943, "1s"},
+		{1.2, "2s"},
+		{9.01, "10s"},
+		{59.5, "1m00s"},
+		{90, "1m30s"},
+	}
+	for _, c := range cases {
+		if got := etaLabel(c.secs); got != c.want {
+			t.Errorf("etaLabel(%v) = %q, want %q", c.secs, got, c.want)
+		}
+	}
+}
+
 // A caller whose accounting overshoots the total must never see a
 // percentage past 100 — the raw counters still expose the mismatch.
 func TestProgress_PlainModePercentClamped(t *testing.T) {
