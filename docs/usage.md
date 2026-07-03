@@ -190,7 +190,7 @@ FSEND_PASSWORD=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
 else. Human output (progress, prompts, summaries) stays on stderr, so
 `--json` composes with or without `--quiet`. Exit codes are unchanged.
 
-Two events exist. The **sender** emits the pairing code as soon as it is
+Two events exist. The **sender** emits the share code as soon as it is
 issued, then a final summary; the **receiver** emits only the summary:
 
 ```json
@@ -203,6 +203,7 @@ Fields of `done`:
 | Field | Meaning |
 | --- | --- |
 | `ok` / `error` / `exit` | Outcome; `error` is the catalog code (e.g. `"E013"`) and matches the exit code table below |
+| `role` | `"sender"` or `"receiver"` — which side emitted the event; always present |
 | `bytes_total` / `bytes_moved` | Offered size vs. bytes that crossed the wire (a re-send of unchanged files moves 0) |
 | `files_sent`, `files_skipped`, `files_kept` | Sender counts (`files_skipped` = receiver-declined for an unknown reason — old receivers don't report the distinction) |
 | `files_saved`, `files_up_to_date`, `files_kept` | Receiver counts |
@@ -211,7 +212,7 @@ Fields of `done`:
 | `text` | Receiver: a `--text` payload rides here instead of raw stdout |
 
 On a failure before any summary exists (bad code, unreachable server),
-the `done` event carries only `ok`/`error`/`exit`. Fields are only ever
+the `done` event carries only `ok`/`role`/`error`/`exit`. Fields are only ever
 **added** to this schema; `v` bumps on the first breaking change.
 
 `--json` is rejected with `--preview` (already CSV) and with `--out -`
