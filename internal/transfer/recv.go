@@ -901,9 +901,11 @@ func mapPeerError(ef wire.ErrorFrame) error {
 // mismatch the sender issues a fresh challenge (up to PasswordAttempts), so
 // an interactively-prompted receiver can retry a typo without burning the
 // one-shot code. A fixed password (--password / FSEND_PASSWORD) gets one
-// try — resending the same value can't succeed.
+// try — resending the same value can't succeed. The loop is bounded by the
+// same PasswordAttempts cap the sender enforces, so a hostile sender can't
+// hold the receiver in an endless password prompt.
 func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
-	for attempt := 1; ; attempt++ {
+	for attempt := 1; attempt <= PasswordAttempts; attempt++ {
 		var ch wire.PasswordChallenge
 		ft, err := wire.ReadControl(s.Control, &ch)
 		if err != nil {
@@ -954,4 +956,7 @@ func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
 			return fmt.Errorf("%w: expected PASSWORD_VERIFIED, got %v", fserrors.ErrProtocolError, ft)
 		}
 	}
+	// Exhausted the attempt cap without a verified verdict (a sender that keeps
+	// re-challenging past its own limit): the honest outcome is a bad password.
+	return fserrors.ErrWrongPassword
 }
