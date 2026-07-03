@@ -410,7 +410,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 				return err
 			}
 		}
-		printRecvSummary(f, "Received text", total, moved, kept, 0, elapsed, ui.pathInfo)
+		printRecvSummary(f, "Received text", total, moved, kept, 0, keptByChoice, elapsed, ui.pathInfo)
 	} else {
 		headline := ui.headline(h, files)
 		// With kept-back files the peer-supplied display name ("2 files") would
@@ -419,7 +419,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 			headline = fmt.Sprintf("Saved %d of %s to %s",
 				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), displayPath(ui.outDir))
 		}
-		printRecvSummary(f, headline, total, moved, kept, skippedSame, elapsed, ui.pathInfo)
+		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
 	}
 	// manifestErr is set by onManifest, which runs on this goroutine before we
 	// return, so no lock is needed. The transfer succeeded; the failure is only
@@ -512,13 +512,18 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 }
 
 // printRecvSummary renders the post-transfer outcome line. Kept-back files
-// make it a partial success: warn glyph, matching the E013 exit that follows.
-func printRecvSummary(f *flags, headline string, total, moved int64, kept, skippedSame int, elapsed time.Duration, path connpath.Info) {
+// make it a partial success: warn glyph, matching the E013 exit that follows —
+// unless the user chose to keep them at the prompt, which is their decision,
+// not a warning (info glyph, matching renderError's errKeptByChoice).
+func printRecvSummary(f *flags, headline string, total, moved int64, kept, skippedSame int, keptByChoice bool, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
 	glyph := uxlog.Check()
-	if kept > 0 {
+	switch {
+	case kept > 0 && keptByChoice:
+		glyph = uxlog.Info()
+	case kept > 0:
 		glyph = uxlog.Warn()
 	}
 	if headline == "" {
@@ -537,8 +542,11 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	if skippedSame > 0 {
 		parts = append(parts, fmt.Sprintf("%s up to date", uxlog.CountNoun(skippedSame, "file")))
 	}
+	// No "(use --overwrite)" here: the remedy already appears once — the
+	// upfront --yes warning or E013's action line — and after an explicit
+	// "n" at the prompt it must not appear at all.
 	if kept > 0 {
-		parts = append(parts, fmt.Sprintf("%s kept (use --overwrite)", uxlog.CountNoun(kept, "file")))
+		parts = append(parts, fmt.Sprintf("%s kept", uxlog.CountNoun(kept, "file")))
 	}
 	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)

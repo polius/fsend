@@ -1126,6 +1126,68 @@ func TestResolveOutDir(t *testing.T) {
 	})
 }
 
+// With zero bytes moved the elapsed figure is prompt dwell or connection
+// wall time, not a transfer duration — it must not render.
+func TestSummaryParts_ZeroMovedOmitsDuration(t *testing.T) {
+	parts := strings.Join(summaryParts(4096, 0, "sent", 5800*time.Millisecond, mustLANInfo()), "  ·  ")
+	if strings.Contains(parts, "5.8s") {
+		t.Errorf("0 B moved must not show a duration: %s", parts)
+	}
+	if !strings.Contains(parts, "4.1 KB (0 B sent)") {
+		t.Errorf("size clause changed shape: %s", parts)
+	}
+}
+
+// An all-skipped send (receiver already had everything) must mirror the
+// receiver's "Already up to date", not the self-contradictory
+// "Sent · (0 B sent)". Kept files still win over the up-to-date headline.
+func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
+	got := captureStderr(t, func() {
+		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
+	})
+	if !strings.Contains(got, "Already up to date") || !strings.Contains(got, "1 file unchanged") {
+		t.Errorf("all-skipped summary must read up to date, got %q", got)
+	}
+	if strings.Contains(got, "Sent") || strings.Contains(got, "0 B") {
+		t.Errorf("no byte counter on an up-to-date no-op: %q", got)
+	}
+
+	// Kept files: still the "Nothing sent" warning path.
+	got = captureStderr(t, func() {
+		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1, keptFiles: 1}, time.Millisecond, mustLANInfo())
+	})
+	if !strings.Contains(got, "Nothing sent") || !strings.Contains(got, "kept by receiver") {
+		t.Errorf("kept-file summary changed shape: %q", got)
+	}
+}
+
+// Kept files render as a count only — the --overwrite remedy already
+// appears once elsewhere (the --yes warning or E013's action line), and
+// after an explicit "n" it must not appear at all. The glyph tracks who
+// decided: warn for the silent auto-keep, info for the user's own "n".
+func TestPrintRecvSummary_KeptCarriesNoFlagAdvice(t *testing.T) {
+	autoKept := captureStderr(t, func() {
+		printRecvSummary(&flags{}, "Saved 0 of 1 file to /tmp", 0, 0, 1, 0, false, time.Second, mustLANInfo())
+	})
+	if strings.Contains(autoKept, "--overwrite") {
+		t.Errorf("summary must not repeat the --overwrite advice: %q", autoKept)
+	}
+	if !strings.Contains(autoKept, "1 file kept") || !strings.Contains(autoKept, uxlog.Warn()) {
+		t.Errorf("auto-kept summary must warn with a kept count: %q", autoKept)
+	}
+
+	byChoice := captureStderr(t, func() {
+		printRecvSummary(&flags{}, "Saved 0 of 1 file to /tmp", 0, 0, 1, 0, true, time.Second, mustLANInfo())
+	})
+	if strings.Contains(byChoice, "--overwrite") || !strings.Contains(byChoice, uxlog.Info()) {
+		t.Errorf("kept-by-choice must render as the user's decision: %q", byChoice)
+	}
+	// Prompt dwell must not masquerade as a transfer duration.
+	if strings.Contains(byChoice, "1s") {
+		t.Errorf("0 B moved must not show a duration: %q", byChoice)
+	}
+}
+
 // A stream's total is 0 until EOF; the summary must report the moved
 // bytes as the size, not "0 B".
 func TestSummaryParts_UnknownTotalUsesMoved(t *testing.T) {
