@@ -17,10 +17,19 @@ else
     PREFIX_EXPLICIT=0
 fi
 
-err()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
-info() { printf '\033[36m›\033[0m %s\n' "$*" >&2; }
-warn() { printf '\033[33m!\033[0m %s\n' "$*" >&2; }
-ok()   { printf '\033[32m✓\033[0m %s\n' "$*" >&2; }
+# Color only when stderr is a tty and NO_COLOR is unset/empty — the same
+# auto-detection the fsend binary applies (https://no-color.org).
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+    esc="$(printf '\033')"
+    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_RST="${esc}[0m"
+else
+    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_RST=''
+fi
+
+err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
+info() { printf '%s›%s %s\n' "$C_CYN" "$C_RST" "$*" >&2; }
+warn() { printf '%s!%s %s\n' "$C_YLW" "$C_RST" "$*" >&2; }
+ok()   { printf '%s✓%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
 
 usage() {
     cat <<'EOF'
@@ -35,8 +44,9 @@ Flags:
   -v VERSION    Version to install (default: latest)
   -h            Show this help and exit
 
-Environment variables (overridden by the matching flag):
-  PREFIX, FSEND_VERSION
+Environment variables:
+  PREFIX, FSEND_VERSION      Same as -p / -v (the flag wins)
+  FSEND_REQUIRE_SIGNATURE=1  Refuse to install unless cosign verifies the release signature
 
 Source: https://github.com/polius/fsend/blob/main/scripts/install.sh
 EOF
@@ -80,6 +90,11 @@ detect_arch() {
         x86_64|amd64)  echo "amd64" ;;
         arm64|aarch64) echo "arm64" ;;
         armv7*)        echo "armv7" ;;
+        # 32-bit userland on a 64-bit ARM kernel: the armv7 binary is the
+        # one that runs there. (aarch64 kernels reporting their native arch
+        # despite a 32-bit userland, and Rosetta-translated x86_64 shells,
+        # keep their native mapping.)
+        armv8l|armv9l) echo "armv7" ;;
         armv6*)        echo "armv6" ;;
         riscv64)       echo "riscv64" ;;
         i386|i686)     echo "386" ;;
@@ -271,7 +286,8 @@ install_binary() {
 
     info "$PREFIX is not writable, attempting elevation"
     if ! run_elevated mv "$src" "$dst"; then
-        err "could not move binary into $PREFIX (no sudo/doas available;\n  re-run as root, or set PREFIX=\$HOME/.local/bin)"
+        err "could not move binary into $PREFIX (no sudo/doas available;
+  re-run as root, or set PREFIX=\$HOME/.local/bin)"
     fi
     run_elevated chmod 755 "$dst" \
         || err "could not chmod $dst"
@@ -369,10 +385,17 @@ main() {
 
     ok "installed: $PREFIX/$bin_file"
 
-    if command -v "$BINARY" >/dev/null 2>&1 \
-       && [ "$(command -v "$BINARY")" = "$PREFIX/$bin_file" ]; then
+    found="$(command -v "$BINARY" 2>/dev/null || true)"
+    if [ "$found" = "$PREFIX/$bin_file" ]; then
         installed_version="$("$BINARY" --version 2>/dev/null | head -n1 || echo "?")"
         ok "verify: $installed_version"
+    elif [ -n "$found" ]; then
+        # A stale install earlier on PATH shadows the fresh one — a
+        # different problem than a missing PATH entry, so say which it is.
+        printf '\n'
+        warn "another fsend at $found takes precedence on your PATH. Put $PREFIX first with:"
+        print_path_hint
+        printf '\n  Then restart your shell, or run %s directly.\n' "$PREFIX/$bin_file"
     else
         printf '\n'
         warn "$PREFIX is not on your PATH. Add it with:"
