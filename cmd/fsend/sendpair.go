@@ -587,18 +587,24 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 				drainBoth(lanCh, serverCh, lanDone, serverDone)
 				return serverErr
 			}
-			// Any server-path failure (unreachable, rate-limited, bad
-			// password, 5xx) leaves the code working on the local network
-			// only — say so, or the sender waits forever on a code that
-			// cross-network receivers can't redeem. Skipped when the user
-			// explicitly forced the internet path with --mode=direct/relay:
-			// LAN is disabled, so the notice would be misleading. No
-			// E-coded line here: if the LAN path also fails, the final
-			// renderError prints the same catalog entry — once is enough.
+			// Any server-path failure leaves the code working on the local
+			// network only — say so, or the sender waits forever on a code
+			// that cross-network receivers can't redeem. The notice names
+			// the cause when the sender can act on it (password, rate
+			// limit); the LAN wait that follows never ends, so this line
+			// is the only place those causes can surface. Skipped when the
+			// user explicitly forced the internet path with
+			// --mode=direct/relay: LAN is disabled, so the notice would be
+			// misleading. No E-coded line here: if the LAN path also
+			// fails, the final renderError prints the catalog entry —
+			// once is enough.
+			if f.debug {
+				fmt.Fprintln(os.Stderr, "DEBUG: server pairing failed:", serverErr)
+			}
 			if !serverDownNoticed && !f.quiet && !lanDisabled {
 				serverDownNoticed = true
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unavailable — only receivers on your local network can connect.")
+				fmt.Fprintln(os.Stderr, uxlog.Warn(), serverPairNotice(serverErr))
 				waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 			}
 		}
@@ -810,6 +816,21 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 // transfer-side failure.
 func isServerDown(err error) bool {
 	return errors.Is(err, fserrors.ErrServerUnreachable)
+}
+
+// serverPairNotice renders the mid-wait warning for a failed server
+// path. 401 and 429 are the sender's own problem to fix — name them;
+// everything else (unreachable, 5xx) stays the generic "unavailable".
+func serverPairNotice(err error) string {
+	const lanOnly = "only receivers on your local network can connect."
+	switch {
+	case errors.Is(err, fserrors.ErrServerAuthRequired):
+		return "The server requires a password (fsend --connect <host:port>,<password>) — " + lanOnly
+	case errors.Is(err, fserrors.ErrRateLimited):
+		return "The server rate-limited this device; wait a minute and try again — until then " + lanOnly
+	default:
+		return "Server unavailable — " + lanOnly
+	}
 }
 
 // pickFinalSendError chooses which error to surface when both pair
