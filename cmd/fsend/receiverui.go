@@ -35,6 +35,8 @@ type receiverUI struct {
 	mu           sync.Mutex
 	hello        *wire.SenderHello
 	files        []string
+	names        map[uint32]string // index → sanitized name; multi-file only
+	curFile      uint32            // last index labelled on the bar
 	prev         map[uint32]uint64
 	total        int64 // bytes received this run (excludes resumed prefixes)
 	skipped      int64 // resumed prefixes already on disk
@@ -51,7 +53,10 @@ type receiverUI struct {
 }
 
 func newReceiverUI(ctx context.Context, f *flags, outDir string, sink bool, pathInfo connpath.Info) *receiverUI {
-	return &receiverUI{ctx: ctx, f: f, outDir: outDir, sink: sink, pathInfo: pathInfo, prev: make(map[uint32]uint64)}
+	// curFile starts at a sentinel no wire index uses, so file 0 still
+	// triggers the first bar label.
+	return &receiverUI{ctx: ctx, f: f, outDir: outDir, sink: sink, pathInfo: pathInfo,
+		prev: make(map[uint32]uint64), curFile: ^uint32(0)}
 }
 
 // resolveOutDir resolves --out: "-" selects sink (stdout); "" defaults to CWD.
@@ -128,6 +133,14 @@ func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummar
 	// upfront. The prompt path instead bumps the hint in confirmOverwrite.
 	if ui.f.overwrite {
 		ui.bytesHint += ui.diffBytes
+	}
+	// Current-file chip data: multi-file only. Names are peer-supplied, so
+	// sanitize here — the only place they enter the UI state.
+	if h.Mode == wire.ModeFiles && len(summary.Files) > 1 {
+		ui.names = make(map[uint32]string, len(summary.Files))
+		for _, e := range summary.Files {
+			ui.names[e.Index] = sanitizeForDisplay(e.RelativePath, 128)
+		}
 	}
 	ui.mu.Unlock()
 	return ui.promptAccept(h, summary)
@@ -258,7 +271,7 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 		ui.prev[fileIndex] = offset
 		ui.skipped += d
 		if ui.bar == nil && !ui.f.quiet {
-			ui.bar = uxlog.New(ui.bytesHint)
+			ui.bar = uxlog.New(ui.bytesHint, ui.names != nil)
 		}
 		ui.bar.Add(d)
 	}
@@ -315,7 +328,11 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 		ui.firstByte = time.Now()
 	}
 	if ui.bar == nil && !ui.f.quiet {
-		ui.bar = uxlog.New(ui.bytesHint)
+		ui.bar = uxlog.New(ui.bytesHint, ui.names != nil)
+	}
+	if name, ok := ui.names[fileIndex]; ok && fileIndex != ui.curFile {
+		ui.curFile = fileIndex
+		ui.bar.SetLabel(name)
 	}
 	d := bytesWritten - ui.prev[fileIndex]
 	ui.prev[fileIndex] = bytesWritten

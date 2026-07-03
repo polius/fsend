@@ -312,14 +312,35 @@ func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn fun
 	prev := make(map[uint32]uint64)
 	var s senderStats
 	var bar *uxlog.Progress
+	// Current-file chip: multi-file transfers only — a single file's name is
+	// already in the pre-transfer block. Names are our own local paths, so no
+	// display sanitization is needed (matches senderPreview).
+	var names map[uint32]string
+	if plan.mode == wire.ModeFiles && plan.totalFiles > 1 {
+		names = make(map[uint32]string, len(plan.sources))
+		for _, src := range plan.sources {
+			if src.Entry.Type != wire.EntryDir {
+				names[src.Entry.Index] = src.Entry.RelativePath
+			}
+		}
+	}
+	curFile := ^uint32(0)
+	setLabel := func(fi uint32) {
+		if names == nil || fi == curFile {
+			return
+		}
+		curFile = fi
+		bar.SetLabel(names[fi])
+	}
 	ensureBar := func() {
 		if bar == nil && !f.quiet {
-			bar = uxlog.New(int64(plan.totalBytes))
+			bar = uxlog.New(int64(plan.totalBytes), names != nil)
 		}
 	}
 	return func() { bar.Done() },
 		func(fi uint32, b uint64) {
 			ensureBar()
+			setLabel(fi)
 			d := b - prev[fi]
 			prev[fi] = b
 			bar.Add(int64(d))

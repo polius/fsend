@@ -31,7 +31,7 @@ func silenceStderr(t *testing.T) {
 // final Done() must return cleanly even when the bar reached 100 %.
 func TestProgress_KnownTotalLifecycle(t *testing.T) {
 	silenceStderr(t)
-	p := New(1000)
+	p := New(1000, false)
 	p.Add(400)
 	p.Add(600)
 	p.Done()
@@ -43,7 +43,7 @@ func TestProgress_KnownTotalLifecycle(t *testing.T) {
 // than waiting forever for an Increment that will never come.
 func TestProgress_AbortBeforeComplete(t *testing.T) {
 	silenceStderr(t)
-	p := New(1000)
+	p := New(1000, false)
 	p.Add(250) // partial — bar at 25 %
 	p.Done()   // must not hang
 }
@@ -55,7 +55,7 @@ func TestProgress_AbortBeforeComplete(t *testing.T) {
 // for the streaming-stdin work.
 func TestProgress_StreamingSetTotal(t *testing.T) {
 	silenceStderr(t)
-	p := New(0)
+	p := New(0, false)
 	p.Add(123)
 	p.Add(456)
 	p.SetTotal(579, true)
@@ -63,12 +63,14 @@ func TestProgress_StreamingSetTotal(t *testing.T) {
 }
 
 // TestProgress_NilSafety locks in the nil-receiver guards in Add /
-// SetTotal / Done. Callers (the CLI's --quiet path) rely on being able
-// to pass a nil *Progress without branching on it at every call site.
+// SetTotal / SetLabel / Done. Callers (the CLI's --quiet path) rely on
+// being able to pass a nil *Progress without branching on it at every
+// call site.
 func TestProgress_NilSafety(t *testing.T) {
 	var p *Progress
 	p.Add(100)
 	p.SetTotal(200, true)
+	p.SetLabel("file.txt")
 	p.Done()
 }
 
@@ -86,7 +88,7 @@ func TestProgress_PlainModeNoEscapes(t *testing.T) {
 	os.Stderr = f
 	t.Cleanup(func() { os.Stderr = orig; _ = f.Close() })
 
-	p := New(1000)
+	p := New(1000, false)
 	p.Add(400)
 	p.Add(600)
 	p.Done()
@@ -114,7 +116,7 @@ func TestProgress_PlainModePartialSilent(t *testing.T) {
 	os.Stderr = f
 	t.Cleanup(func() { os.Stderr = orig; _ = f.Close() })
 
-	p := New(1000)
+	p := New(1000, false)
 	p.Add(250)
 	p.Done()
 
@@ -148,5 +150,39 @@ func TestProgress_PlainModeUnknownTotalShowsRate(t *testing.T) {
 	p2.add(10 * 1000)
 	if out := buf.String(); strings.Contains(out, "/s") {
 		t.Errorf("sub-floor stream must not show a rate: %q", out)
+	}
+}
+
+// Plain mode carries the current-file chip in its throttled line — still
+// one line per print and zero ANSI (the caller sanitizes the name).
+func TestProgress_PlainModeLabelInLine(t *testing.T) {
+	var buf bytes.Buffer
+	p := &plainProgress{w: &buf, total: 1000, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second)}
+	p.setLabel("docs/report.pdf")
+	p.add(400)
+	out := buf.String()
+	if !strings.Contains(out, "  ·  docs/report.pdf") {
+		t.Errorf("plain line missing current-file chip: %q", out)
+	}
+	if bytes.ContainsRune(buf.Bytes(), 0x1b) {
+		t.Errorf("plain line with label emitted ANSI escapes: %q", out)
+	}
+	if strings.Count(out, "\n") != 1 {
+		t.Errorf("plain progress must print one line per update: %q", out)
+	}
+}
+
+// truncateName keeps the tail (extension) visible with a middle ellipsis
+// and leaves short names untouched.
+func TestTruncateName(t *testing.T) {
+	if got := truncateName("short.txt", 20); got != "short.txt" {
+		t.Errorf("short name changed: %q", got)
+	}
+	got := truncateName("a-very-long-directory/deeply/nested/file.tar.gz", 20)
+	if r := []rune(got); len(r) != 20 {
+		t.Errorf("truncated to %d runes, want 20: %q", len(r), got)
+	}
+	if !strings.HasSuffix(got, ".tar.gz") || !strings.Contains(got, "…") {
+		t.Errorf("truncation must keep the tail and show an ellipsis: %q", got)
 	}
 }
