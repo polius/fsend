@@ -205,6 +205,18 @@ func TestProgress_PlainModePercentClamped(t *testing.T) {
 	}
 }
 
+// A negative running total (a caller under-accounting) must clamp to 0%, not
+// print a "-N%" line.
+func TestProgress_PlainModePercentClampedLow(t *testing.T) {
+	var buf bytes.Buffer
+	p := &plainProgress{w: &buf, total: 1000, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second)}
+	p.add(-50)
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "0%") {
+		t.Errorf("negative progress must clamp to 0%%: %q", out)
+	}
+}
+
 // truncateName keeps the tail (extension) visible with a middle ellipsis
 // and leaves short names untouched.
 func TestTruncateName(t *testing.T) {
@@ -217,5 +229,12 @@ func TestTruncateName(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, ".tar.gz") || !strings.Contains(got, "…") {
 		t.Errorf("truncation must keep the tail and show an ellipsis: %q", got)
+	}
+	// Degenerate caps must not panic on the r[:max-tail-1] slice.
+	for _, max := range []int{-1, 0, 1, 2, 3} {
+		got := truncateName("abcdef", max) // len 6 > every max here, so it truncates
+		if r := []rune(got); len(r) > max && max > 0 {
+			t.Errorf("truncateName(_, %d) = %q (%d runes), exceeds cap", max, got, len(r))
+		}
 	}
 }

@@ -67,10 +67,10 @@ func (p *plainProgress) add(n int64) {
 	}
 	p.lastLine = time.Now()
 	if p.total > 0 {
-		// Clamp: a percentage past 100 is never correct output, whatever
-		// the caller's accounting did.
+		// Clamp to 0..100: a percentage outside that range is never correct
+		// output, whatever the caller's accounting did.
 		line := fmt.Sprintf("%d%%  %s / %s",
-			min(100, p.current*100/p.total), HumanBytes(p.current), HumanBytes(p.total))
+			max(0, min(100, p.current*100/p.total)), HumanBytes(p.current), HumanBytes(p.total))
 		if p.label != "" {
 			line += "  ·  " + p.label
 		}
@@ -250,6 +250,9 @@ func New(totalBytes int64, showNames bool) *Progress {
 		decor.Name("  "),
 		counters,
 	}
+	// The plain (un-dimmed) stalled marker; decor.Meta colors it below while
+	// mpb measures the bar width off this ANSI-free form.
+	const stalledChip = "  ·  stalled"
 	if showRate {
 		appendDecs = append(appendDecs,
 			// Rate: hidden when the figure would be misleading (start
@@ -258,23 +261,36 @@ func New(totalBytes int64, showNames bool) *Progress {
 			// This decorator also feeds the window each refresh frame.
 			// A stall says "stalled" rather than letting the windowed
 			// rate decay through fictional values.
-			decor.Any(func(s decor.Statistics) string {
-				if s.Completed || s.Aborted || s.Current == 0 {
-					return ""
-				}
-				now := time.Now()
-				r := win.observe(now, s.Current)
-				if s.Current < rateThreshold {
-					return ""
-				}
-				if win.stalled(now) {
-					return "  ·  " + Dim("stalled")
-				}
-				if r <= 0 {
-					return ""
-				}
-				return "  ·  " + HumanBytes(int64(r)) + "/s"
-			}),
+			decor.Meta(
+				decor.Any(func(s decor.Statistics) string {
+					if s.Completed || s.Aborted || s.Current == 0 {
+						return ""
+					}
+					now := time.Now()
+					r := win.observe(now, s.Current)
+					if s.Current < rateThreshold {
+						return ""
+					}
+					if win.stalled(now) {
+						return stalledChip
+					}
+					// Below 1 B/s the figure rounds to "0 B/s"; show nothing
+					// rather than a rate that reads as stalled.
+					if r < 1 {
+						return ""
+					}
+					return "  ·  " + HumanBytes(int64(r)) + "/s"
+				}),
+				// Dim only the stalled marker. Measuring width off the plain
+				// string above keeps mpb from counting the ANSI escapes — a
+				// colorized decor.Any costs ~6 columns of bar during a stall.
+				func(str string) string {
+					if str == stalledChip {
+						return Dim(str)
+					}
+					return str
+				},
+			),
 			// ETA: needs a known total, non-zero progress, and at least
 			// 1 s elapsed so the projection isn't dominated by handshake
 			// time. Hidden on completion and during a stall (a projection
@@ -379,6 +395,9 @@ func truncateName(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
 		return s
+	}
+	if max <= 0 {
+		return "" // nothing fits; avoids a negative slice bound below
 	}
 	tail := min(8, max/2)
 	return string(r[:max-tail-1]) + "…" + string(r[len(r)-tail:])
