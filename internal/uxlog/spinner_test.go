@@ -64,3 +64,30 @@ func TestSpinner_DrawFormatIncludesEraseLine(t *testing.T) {
 		t.Fatalf("draw output missing message: %q", out)
 	}
 }
+
+func TestSpinner_SetMessage(t *testing.T) {
+	// Nil-safe, like Stop.
+	var nilSpin *Spinner
+	nilSpin.SetMessage("x")
+
+	// Non-TTY: the new message is printed as a fresh static line so log
+	// readers see the state change; a same-message call prints nothing.
+	var buf bytes.Buffer
+	s := &Spinner{msg: "first", w: &buf}
+	s.SetMessage("second")
+	if got := buf.String(); !strings.Contains(got, "second") {
+		t.Errorf("non-TTY SetMessage should print the new line, got %q", got)
+	}
+	before := buf.Len()
+	s.SetMessage("second")
+	if buf.Len() != before {
+		t.Errorf("unchanged message must not reprint: %q", buf.String())
+	}
+
+	// The next draw uses the new message.
+	buf.Reset()
+	s.draw("⠋")
+	if got := buf.String(); !strings.Contains(got, "second") || strings.Contains(got, "first") {
+		t.Errorf("draw after SetMessage = %q", got)
+	}
+}

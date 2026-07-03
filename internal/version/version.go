@@ -7,6 +7,8 @@
 package version
 
 import (
+	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strings"
 )
@@ -31,23 +33,37 @@ func init() {
 	}
 }
 
+// pseudoVersion matches the timestamp-commit tail of a Go module
+// pseudo-version — "v1.9.1-0.20260703131912-cbe8109ecebb" or the
+// untagged "v0.0.0-20260703131912-cbe8109ecebb".
+var pseudoVersion = regexp.MustCompile(`[-.]\d{14}-[0-9a-f]{12}$`)
+
 // buildInfoVersion maps a build-info main-module version onto the
 // ldflags convention (goreleaser injects {{.Version}}, which has no
-// leading "v"). Returns "" when build info carries nothing usable —
-// `go build` from a checkout reports "(devel)".
+// leading "v"). Returns "" when build info carries nothing usable:
+// `go build` from a checkout reports "(devel)" on older Go, and a VCS
+// pseudo-version (possibly "+dirty") on current Go — both are dev
+// builds with no release to compare against, and must not unlock the
+// update check or --update.
 func buildInfoVersion(v string) string {
 	if v == "" || v == "(devel)" {
+		return ""
+	}
+	if strings.Contains(v, "+") || pseudoVersion.MatchString(v) {
 		return ""
 	}
 	return strings.TrimPrefix(v, "v")
 }
 
-// String returns "fsend X.Y.Z (build abc1234, 2026-06-01)" for release
-// builds. Dev builds (Commit/Date unset) collapse to "fsend dev" so the
-// parenthetical doesn't read "(build unknown, unknown)".
+// String returns "fsend X.Y.Z (build abc1234, 2026-06-01, linux/amd64)"
+// for release builds. Dev builds (Commit/Date unset) collapse to
+// "fsend dev (linux/amd64)" so the parenthetical doesn't read
+// "(build unknown, unknown)". The platform is always present: bug
+// reports and Rosetta/wrong-arch checks need it.
 func String() string {
+	plat := runtime.GOOS + "/" + runtime.GOARCH
 	if Commit == "" || Commit == "unknown" || Date == "" || Date == "unknown" {
-		return "fsend " + Version
+		return "fsend " + Version + " (" + plat + ")"
 	}
-	return "fsend " + Version + " (build " + Commit + ", " + Date + ")"
+	return "fsend " + Version + " (build " + Commit + ", " + Date + ", " + plat + ")"
 }

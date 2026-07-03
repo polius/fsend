@@ -50,7 +50,14 @@ func serverCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if healthCheckFlag {
 				// Used as a Docker HEALTHCHECK probe — see deploy/compose/.
-				return healthCheck()
+				// An unreachable server is the routine result a probe exists
+				// to detect, not an fsend bug: one line, exit 1 as documented
+				// — never the E099 "file an issue" catchall (exit 99).
+				if err := healthCheck(); err != nil {
+					fmt.Fprintln(os.Stderr, uxlog.Cross(), err)
+					os.Exit(1)
+				}
+				return nil
 			}
 			return runServer()
 		},
@@ -170,6 +177,9 @@ func runServer() error {
 	go func() { defer wg.Done(); drainRelay(shutdownCtx, relaySrv, logger) }()
 	wg.Wait()
 	cancel()
+	// Marks a clean drain: absent from the logs when SIGKILL (e.g. a too-low
+	// stop_grace_period) cut the shutdown short.
+	logger.Info("shutdown complete")
 	return nil
 }
 
@@ -259,7 +269,11 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 	if cfg.enableRelay, err = envBool(envRelayEnabled, defaultRelayEnabled); err != nil {
 		return cfg, err
 	}
-	switch strings.ToLower(os.Getenv(envLogLevel)) {
+	// A typo'd level fails loudly like every other FSEND_* var — silently
+	// running at info would hide the debug logs the operator asked for.
+	switch v := strings.TrimSpace(os.Getenv(envLogLevel)); strings.ToLower(v) {
+	case "", "info":
+		cfg.logLevel = slog.LevelInfo
 	case "debug":
 		cfg.logLevel = slog.LevelDebug
 	case "warn":
@@ -267,7 +281,7 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 	case "error":
 		cfg.logLevel = slog.LevelError
 	default:
-		cfg.logLevel = slog.LevelInfo
+		return cfg, fmt.Errorf("%s=%q: not a log level (use debug, info, warn, or error)", envLogLevel, v)
 	}
 	return cfg, nil
 }
@@ -447,8 +461,8 @@ func envBytes(name string, def uint64) (uint64, error) {
 }
 
 // healthCheck pings the local server's /health on the configured
-// HTTP address. Exits 0 on healthy, 1 on anything else. Designed for
-// Docker HEALTHCHECK.
+// HTTP address. Returns an error when unhealthy; the caller reports it
+// and exits 1 (the Docker HEALTHCHECK contract).
 func healthCheck() error {
 	addr := envOr(envServerAddr, defaultServerAddr)
 	if strings.HasPrefix(addr, ":") {

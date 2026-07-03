@@ -14,6 +14,7 @@ import (
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/signaling"
+	"github.com/polius/fsend/internal/uxlog"
 )
 
 // joinWithRetry must succeed when the sender Creates after the receiver
@@ -332,5 +333,49 @@ func TestJoinWithRetry_GivesUpOnClaimedAfterBudget(t *testing.T) {
 	_, err := joinWithRetry(ctx, signaling.New(baseURL, "test"), code, &flags{quiet: true}, nil)
 	if !errors.Is(err, fserrors.ErrCodeAlreadyClaimed) {
 		t.Errorf("expected ErrCodeAlreadyClaimed after budget, got %v", err)
+	}
+}
+
+// During the retry window the caller's "Connecting" spinner must be
+// retitled to say we're holding for the sender — 15 s of "Connecting"
+// reads as a network problem — and restored once the join succeeds.
+func TestJoinWithRetry_RetitlesCallerSpinner(t *testing.T) {
+	srv, baseURL := newSignalingTestServer(t)
+	_ = srv
+	senderClient := signaling.New(baseURL, "test")
+	receiverClient := signaling.New(baseURL, "test")
+	code := "abc-defg-jkm"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stderr := captureStderr(t, func() {
+		spin := uxlog.StartSpinner("Connecting")
+		defer spin.Stop()
+
+		var wg sync.WaitGroup
+		var joinErr error
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, joinErr = joinWithRetry(ctx, receiverClient, code, &flags{}, spin)
+		}()
+		time.Sleep(700 * time.Millisecond) // give the retry loop a cycle
+		if _, err := senderClient.Create(ctx, code); err != nil {
+			t.Errorf("Create: %v", err)
+		}
+		wg.Wait()
+		if joinErr != nil {
+			t.Errorf("join should succeed once sender Created, got %v", joinErr)
+		}
+	})
+
+	// Non-TTY spinner: each message shows up as its own static line.
+	waitIdx := strings.Index(stderr, "Waiting for the sender to publish this code")
+	if waitIdx < 0 {
+		t.Fatalf("spinner never retitled during retry window:\n%s", stderr)
+	}
+	if restored := strings.LastIndex(stderr, "Connecting"); restored < waitIdx {
+		t.Errorf("spinner not restored to Connecting after join:\n%s", stderr)
 	}
 }

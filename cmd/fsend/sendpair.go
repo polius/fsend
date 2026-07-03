@@ -25,6 +25,7 @@ import (
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
+	"github.com/polius/fsend/internal/wire"
 )
 
 // This file implements the parallel-pair sender. The high-level shape:
@@ -97,7 +98,9 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 		return nil, fmt.Errorf("%w: mDNS announce: %v", fserrors.ErrLANListenerFailed, err)
 	}
 	var stopMDNSOnce sync.Once
-	stopMDNS := func() { stopMDNSOnce.Do(func() { _ = mdnsConn.Close() }) }
+	// Bounded: a synchronous Close could wedge, hanging pairOverLAN and the
+	// coordinator draining lanCh. See landisc.StopAnnounce.
+	stopMDNS := func() { stopMDNSOnce.Do(func() { landisc.StopAnnounce(mdnsConn) }) }
 
 	// Keep accepting until the real receiver completes the handshake or the
 	// pairing window closes. A malicious LAN host can reach the deterministic
@@ -116,6 +119,11 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 				cleanup: func() {
 					stopMDNS()
 					_ = ln.Close()
+					// Closing the listener leaves an accepted conn open
+					// (quic-go), so close the paired one too — else the loser
+					// in a two-receiver race hangs. Idempotent with the
+					// winning transfer's own close.
+					res.Close()
 				},
 			}, nil
 		}
@@ -153,6 +161,11 @@ const firstAcceptTimeout = 60 * time.Second
 // real receiver arriving right after an impostor barely waits.
 const lanAcceptRetryDelay = 100 * time.Millisecond
 
+// sessionDeleteTimeout bounds best-effort session cleanup: it runs on the
+// drain path the winning transfer and Ctrl-C wait on, so an unreachable
+// server mustn't stall it up to the client's full request timeout.
+const sessionDeleteTimeout = 3 * time.Second
+
 // errPairedGone marks failures after a receiver claimed the code. The
 // LAN race can't recover from these — a receiver that joined via the
 // server already failed LAN discovery — so the coordinator aborts
@@ -176,10 +189,14 @@ func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Co
 	if err != nil {
 		return nil, err
 	}
-	// From here on we own a server-side session and must Delete it on
-	// every error path. We use a fresh ctx for Delete because the parent
-	// ctx may already be cancelled (e.g., the LAN path won the race).
-	deleteSession := func() { _ = client.Delete(context.Background(), created.SessionID, created.RoleToken) }
+	// Delete the session on every error path. Fresh ctx (the parent is often
+	// already cancelled, e.g. the LAN path won) but bounded — see
+	// sessionDeleteTimeout.
+	deleteSession := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), sessionDeleteTimeout)
+		defer cancel()
+		_ = client.Delete(ctx, created.SessionID, created.RoleToken)
+	}
 
 	waitResp, err := waitForReceiver(ctx, client, created.Code)
 	if err != nil {
@@ -428,14 +445,33 @@ func senderQUICAccept(ctx context.Context, pc net.PacketConn, code string) (*qui
 // Stdin/--text transfers can't replay their reader, so they fail as
 // before instead of re-pairing.
 func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
+	transferDropped := false
 	for {
 		err := runSendOnce(ctx, f, plan, code, cfg, waitSpin)
 		if err == nil || ctx.Err() != nil || plan.consumable() ||
 			(!errors.Is(err, fserrors.ErrTransientFailure) && !isReceiverClose(err)) {
+			// A re-pair round failing with "server unreachable" after a
+			// transfer already dropped is a mid-transfer connection loss,
+			// not a pairing failure: E001's copy suggests switching servers
+			// and omits that the receiver's partial is preserved. E020's
+			// resume framing is what actually happened.
+			if transferDropped && errors.Is(err, fserrors.ErrServerUnreachable) {
+				return fmt.Errorf("%w: %v", fserrors.ErrTransientFailure, err)
+			}
 			return err
 		}
+		transferDropped = true
 		if !f.quiet {
-			fmt.Fprintf(os.Stderr, "%s Receiver disconnected — waiting for them to reconnect.\n", uxlog.Info())
+			// A deliberate close (Ctrl-C, clean exit) may genuinely re-run
+			// and reconnect. A death (kill, crash, network gone) surfaces
+			// as exhausted retries — that process is never coming back, so
+			// "reconnect" would misdirect the user; what's true is that the
+			// code still works for a fresh `fsend <code>`.
+			msg := "Receiver disconnected — waiting for them to reconnect."
+			if !isReceiverClose(err) {
+				msg = "Lost contact with the receiver — waiting for a new connection on the same code."
+			}
+			fmt.Fprintf(os.Stderr, "%s %s\n", uxlog.Info(), msg)
 		}
 		waitSpin = startWaitSpinner(f, "Waiting for receiver")
 	}
@@ -446,9 +482,18 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 // receiver will never re-dial the current pairing, so the re-accept
 // grace would be a dead wait. Network drops and kills surface as idle
 // timeouts instead and keep the grace.
+//
+// A remote stream cancel is the same close seen earlier: the receiver's
+// teardown cancels its data-stream read (STOP_SENDING) just before the
+// connection close, and an in-flight chunk write can surface the stream
+// error before the connection-level one.
 func isReceiverClose(err error) bool {
 	var appErr *quic.ApplicationError
-	return errors.As(err, &appErr) && appErr.Remote
+	if errors.As(err, &appErr) && appErr.Remote {
+		return true
+	}
+	var streamErr *quic.StreamError
+	return errors.As(err, &streamErr) && streamErr.Remote
 }
 
 // runSendOnce runs one pair-then-transfer round. It races the two pair
@@ -561,19 +606,24 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 				drainBoth(lanCh, serverCh, lanDone, serverDone)
 				return serverErr
 			}
-			// Any server-path failure (unreachable, rate-limited, bad
-			// password, 5xx) leaves the code working on the local network
-			// only — say so, or the sender waits forever on a code that
-			// cross-network receivers can't redeem. Skipped when the user
-			// explicitly forced the internet path with --mode=direct/relay:
-			// LAN is disabled, so the notice would be misleading.
+			// Any server-path failure leaves the code working on the local
+			// network only — say so, or the sender waits forever on a code
+			// that cross-network receivers can't redeem. The notice names
+			// the cause when the sender can act on it (password, rate
+			// limit); the LAN wait that follows never ends, so this line
+			// is the only place those causes can surface. Skipped when the
+			// user explicitly forced the internet path with
+			// --mode=direct/relay: LAN is disabled, so the notice would be
+			// misleading. No E-coded line here: if the LAN path also
+			// fails, the final renderError prints the catalog entry —
+			// once is enough.
+			if f.debug {
+				fmt.Fprintln(os.Stderr, "DEBUG: server pairing failed:", serverErr)
+			}
 			if !serverDownNoticed && !f.quiet && !lanDisabled {
 				serverDownNoticed = true
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unavailable — only receivers on your local network can connect.")
-				if entry, known := fserrors.Lookup(serverErr); known {
-					fmt.Fprintf(os.Stderr, "  [%s] %s\n", entry.Code, entry.Message)
-				}
+				fmt.Fprintln(os.Stderr, uxlog.Warn(), serverPairNotice(serverErr))
 				waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 			}
 		}
@@ -698,9 +748,9 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	}
 	// An all-skipped transfer (receiver had everything) emits no bytes, so
 	// the skip is the only event that stops the accept spinner.
-	skip := func(fi uint32) {
+	skip := func(fi uint32, kept bool) {
 		spin.Stop()
-		onSkip(fi)
+		onSkip(fi, kept)
 	}
 	current := firstRes
 	opts := retry.Options{OnRetry: retryNoticeFor(f)}
@@ -766,7 +816,20 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// dropping to the sent bytes. The skipped-file count explains the gap and
 	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
 	s := stats()
-	printSendSummary(f, int64(plan.totalBytes), s.moved, s.skippedFiles, elapsed, pathInfo)
+	printSendSummary(f, int64(plan.totalBytes), s, elapsed, pathInfo)
+	ev := jsonDoneEvent{Ok: true, Role: "sender",
+		BytesMoved: ptr64(s.moved), DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
+	// A piped stdin stream has no known size; per the JSON contract an omitted
+	// bytes_total means "not known", so don't emit a bogus 0.
+	if plan.mode != wire.ModeStream || plan.isText {
+		ev.BytesTotal = ptr64(int64(plan.totalBytes))
+	}
+	if plan.mode == wire.ModeFiles {
+		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles)
+		ev.FilesSkipped = ptrInt(s.skippedFiles - s.keptFiles)
+		ev.FilesKept = ptrInt(s.keptFiles)
+	}
+	jsonEmitDone(ev)
 	return nil
 }
 
@@ -776,6 +839,21 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 // transfer-side failure.
 func isServerDown(err error) bool {
 	return errors.Is(err, fserrors.ErrServerUnreachable)
+}
+
+// serverPairNotice renders the mid-wait warning for a failed server
+// path. 401 and 429 are the sender's own problem to fix — name them;
+// everything else (unreachable, 5xx) stays the generic "unavailable".
+func serverPairNotice(err error) string {
+	const lanOnly = "only receivers on your local network can connect."
+	switch {
+	case errors.Is(err, fserrors.ErrServerAuthRequired):
+		return "The server requires a password (fsend --connect <host:port>,<password>) — " + lanOnly
+	case errors.Is(err, fserrors.ErrRateLimited):
+		return "The server rate-limited this device; wait a minute and try again — until then " + lanOnly
+	default:
+		return "Server unavailable — " + lanOnly
+	}
 }
 
 // pickFinalSendError chooses which error to surface when both pair

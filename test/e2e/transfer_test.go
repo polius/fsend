@@ -322,6 +322,49 @@ func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
+// A typo at the overwrite prompt must re-prompt, not silently count as
+// "keep" — a mistyped "yes" ("yws") followed by a real "y" still
+// overwrites. Regression for the prompt's old catch-all-means-no default.
+func TestReceive_OverwritePromptRepromptsOnTypo(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 16*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nyws\ny\n")
+	r.requireSuccess(t)
+	if !strings.Contains(r.receiverErr, "Please answer y or n") {
+		t.Errorf("typo did not re-prompt:\n%s", r.receiverErr)
+	}
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
+}
+
+// EOF at the overwrite prompt keeps the local copies and says so — the
+// old code fell into the silent catch-all.
+func TestReceive_OverwritePromptEOFKeepsAndExplains(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 16*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Stdin carries only the accept answer; it closes before the
+	// overwrite prompt reads.
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\n")
+	if r.receiverExitCode != 13 {
+		t.Errorf("receiver exit = %d, want 13 (kept conflict)\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
+	}
+	if !strings.Contains(r.receiverErr, "keeping your local copies") {
+		t.Errorf("EOF keep was silent:\n%s", r.receiverErr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
+		t.Errorf("EOF must keep the local copy, got %q", got)
+	}
+}
+
 // Interactive: receiver declines the transfer at the accept prompt. With
 // the single-prompt flow, a single-file collision is disclosed inline as
 // a chip on the artifact line — so "accept the transfer but decline the
@@ -368,9 +411,54 @@ func TestReceive_DifferingFileKept_ReceiverSeesE013(t *testing.T) {
 		t.Errorf("receiver exit = %d, want 13 (E013, conflict kept)\nstderr:\n%s",
 			r.receiverExitCode, r.receiverErr)
 	}
+	// The summary must agree with the exit code: warn glyph and a headline
+	// counting what was written, not a green "Saved 1 file" for a kept file.
+	if !strings.Contains(r.receiverErr, "Saved 0 of 1 file") {
+		t.Errorf("summary should say nothing was written:\nstderr:\n%s", r.receiverErr)
+	}
+	if strings.Contains(r.receiverErr, "[OK] Saved") {
+		t.Errorf("kept conflict must not render a success summary:\nstderr:\n%s", r.receiverErr)
+	}
 	if r.senderExitCode != 0 {
 		t.Errorf("sender exit = %d, want 0 (transfer completes; file skipped)\nstderr:\n%s",
 			r.senderExitCode, r.senderErr)
+	}
+	// The sender must tell the same story: its file was NOT delivered, so no
+	// green "Sent" — warn glyph, "Nothing sent", and the kept-by-receiver
+	// clause (wire.Decision.Kept flowing back).
+	if strings.Contains(r.senderErr, "[OK] Sent") {
+		t.Errorf("sender must not claim success when the receiver kept everything:\nstderr:\n%s", r.senderErr)
+	}
+	if !strings.Contains(r.senderErr, "Nothing sent") || !strings.Contains(r.senderErr, "1 file kept by receiver") {
+		t.Errorf("sender summary should say nothing was delivered and why:\nstderr:\n%s", r.senderErr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
+		t.Errorf("destination file was clobbered: %q", got)
+	}
+}
+
+// Answering "n" at the overwrite prompt is a decision, not a failure: the
+// exit stays 13 (scripts must see the partial) but the error line is the
+// neutral ℹ acknowledging the choice — not a red ✗ telling the user to pass
+// the --overwrite they just declined.
+func TestReceive_OverwriteDeclined_NeutralE013(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 64*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// "y" accepts the transfer, "n" answers the overwrite prompt.
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nn\n")
+	if r.receiverExitCode != 13 {
+		t.Errorf("receiver exit = %d, want 13\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
+	}
+	if !strings.Contains(r.receiverErr, "[i] [E013] Kept your local copies") {
+		t.Errorf("declined overwrite should render as the user's choice:\nstderr:\n%s", r.receiverErr)
+	}
+	if strings.Contains(r.receiverErr, "[FAIL] [E013]") || strings.Contains(r.receiverErr, "Use --overwrite") {
+		t.Errorf("declined overwrite must not scold with the advice the user declined:\nstderr:\n%s", r.receiverErr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
 		t.Errorf("destination file was clobbered: %q", got)
@@ -519,7 +607,7 @@ func TestDispatch_ForceReceive(t *testing.T) {
 }
 
 // TestPassword_NoBarCollisionOnPrompt drives the receiver's full
-// interactive flow when the sender used --pass and pins two related
+// interactive flow when the sender used --password and pins two related
 // UX properties:
 //
 //  1. Prompt ordering: the password prompt comes first, then the
@@ -529,7 +617,7 @@ func TestDispatch_ForceReceive(t *testing.T) {
 //  2. No progress-bar collision: the bar is materialized lazily on the
 //     first chunk, so mpb's stderr repaint can't overlap the password
 //     input line. A regression would re-introduce a garbled line like
-//     "Password required by sender:   0 % [---]   0.00 b" — what the
+//     "Password for this transfer:   0 % [---]   0.00 b" — what the
 //     original UX bug report flagged.
 func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	requireE2E(t)
@@ -542,7 +630,7 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	// Receiver stdin order matches the new prompt order: the password line
 	// first, then "Y" for the save confirmation.
 	r := h.runPair(t,
-		[]string{"--pass=swordfish", srcFile},
+		[]string{"--password=swordfish", srcFile},
 		dst,
 		nil, // no extra receiver flags — exercise the full interactive path
 		"swordfish\nY\n",
@@ -550,7 +638,7 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	r.requireSuccess(t)
 
 	saveIdx := strings.Index(r.receiverErr, "Save to")
-	passwordIdx := strings.Index(r.receiverErr, "Password required by sender:")
+	passwordIdx := strings.Index(r.receiverErr, "Password for this transfer:")
 	if saveIdx < 0 {
 		t.Fatalf("save prompt not found in receiver stderr:\n%s", r.receiverErr)
 	}
@@ -566,7 +654,7 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	// must not also contain progress-bar tokens. "% [" is the leading
 	// fragment mpb emits ("  X % [######...").
 	for _, line := range strings.Split(r.receiverErr, "\n") {
-		if strings.Contains(line, "Password required by sender:") && strings.Contains(line, "% [") {
+		if strings.Contains(line, "Password for this transfer:") && strings.Contains(line, "% [") {
 			t.Fatalf("progress bar rendered on password prompt line: %q", line)
 		}
 	}

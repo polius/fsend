@@ -76,7 +76,7 @@ func SetPathForTesting(p string) { pathMu.Lock(); pathOverride = p; pathMu.Unloc
 // Path returns the absolute path where the config file lives.
 //
 // Production: resolved via XDG (Linux $XDG_CONFIG_HOME, macOS Application
-// Support, Windows %AppData%).
+// Support, Windows %LOCALAPPDATA%).
 // Test: overridden via SetPathForTesting.
 //
 // Errors only on truly broken environments where the home directory cannot
@@ -125,16 +125,17 @@ func Load() (*Config, error) {
 		// Readable-but-denied (e.g. a chmod-000 or root-owned config)
 		// must not fall back to the public default *silently* — that
 		// would drop a user's custom server with no hint. Surface it as
-		// the same warn-and-default path corruption uses.
-		return &Config{}, fserrors.ErrConfigCorrupted
+		// the same warn-and-default path corruption uses. The wrapped
+		// cause names the file and why, so the E016 warning can show it.
+		return &Config{}, fmt.Errorf("%w: %v", fserrors.ErrConfigCorrupted, err)
 	}
 	var c Config
 	if err := json.Unmarshal(data, &c); err != nil {
-		return &Config{}, fserrors.ErrConfigCorrupted
+		return &Config{}, fmt.Errorf("%w: %s: not valid JSON", fserrors.ErrConfigCorrupted, p)
 	}
 	if c.SchemaVersion != SchemaVersion {
 		// Future schema or junk; ignore.
-		return &Config{}, fserrors.ErrConfigCorrupted
+		return &Config{}, fmt.Errorf("%w: %s: unsupported schema_version %d", fserrors.ErrConfigCorrupted, p, c.SchemaVersion)
 	}
 	return &c, nil
 }

@@ -20,10 +20,10 @@ package wire
 // the mismatch at HELLO and report a protocol error.
 const ProtocolVersion = 0x02
 
-// MaxControlFrameSize bounds gob payload size on control frames. One
-// FILE_INFO at a time is the largest control frame in flight, so a
-// modest limit is enough — and prevents a malicious peer from
-// allocating unbounded memory.
+// MaxControlFrameSize bounds gob payload size on control frames. A
+// listing batch (capped by maxListingBatchBytes) is the largest control
+// frame in flight, so a modest limit is enough — and prevents a malicious
+// peer from allocating unbounded memory.
 const MaxControlFrameSize = 64 * 1024 // 64 KiB
 
 // MaxChunkSize bounds the plaintext payload in a data CHUNK frame.
@@ -114,7 +114,7 @@ const (
 	// receiver's disk.
 	ErrCodeWriteFailed ErrorCode = 13
 	// ErrCodePasswordRequired — sender demanded a password but the
-	// receiver had none to offer (--quiet with no --pass / FSEND_PASS).
+	// receiver had none to offer (--quiet with no --password / FSEND_PASSWORD).
 	// Distinct from ErrCodeWrongPassword: no attempt was ever made.
 	ErrCodePasswordRequired ErrorCode = 14
 	// ErrCodeCancelled — the peer cancelled deliberately (Ctrl-C).
@@ -127,6 +127,10 @@ const (
 	// ErrCodeDeclined — the receiver declined at the accept prompt (after the
 	// listing, so it can't ride on HELLO_ACK like the stream-mode decline).
 	ErrCodeDeclined ErrorCode = 17
+	// ErrCodeReadFailed — sender hit a local filesystem error reading the
+	// source (open, read, hash). Terminal for the receiver: retrying won't
+	// fix the sender's disk. Mirror of ErrCodeWriteFailed.
+	ErrCodeReadFailed ErrorCode = 18
 )
 
 // Chunk-frame flag bits (frame-level).

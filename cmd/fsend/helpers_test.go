@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -61,6 +63,24 @@ func TestShortErr_TruncatesAndStripsNewlines(t *testing.T) {
 	}
 }
 
+// The retry notice rounds the jittered wait — "618.167744ms" is
+// debugging noise on a user-facing line.
+func TestRetryNoticeFor_RoundsWait(t *testing.T) {
+	notice := retryNoticeFor(&flags{})
+	got := captureStderr(t, func() {
+		notice(2, 618167744*time.Nanosecond, errors.New("idle timeout"))
+	})
+	if !strings.Contains(got, "retrying in 600ms (attempt 2/3)") {
+		t.Errorf("wait not rounded: %q", got)
+	}
+	got = captureStderr(t, func() {
+		notice(3, 2822002555*time.Nanosecond, errors.New("idle timeout"))
+	})
+	if !strings.Contains(got, "retrying in 2.8s (attempt 3/3)") {
+		t.Errorf("wait not rounded: %q", got)
+	}
+}
+
 func TestHostnameOrDefault(t *testing.T) {
 	if got := hostnameOrDefault("override"); got != "override" {
 		t.Errorf("override ignored: %q", got)
@@ -87,7 +107,7 @@ func TestSanitizeRemote(t *testing.T) {
 		{"only control → placeholder", "\x00\x01\x02", "peer"},
 		{"strips bidi override", "abc\u202edef", "abcdef"},
 		{"strips zero-width", "ab\u200bc\u200dd", "abcd"},
-		{"caps at 64 runes", strings.Repeat("x", 200), strings.Repeat("x", 64)},
+		{"caps at 64 runes, cut marked", strings.Repeat("x", 200), strings.Repeat("x", 47) + "…" + strings.Repeat("x", 16)},
 		{"tabs and DEL dropped", "ab\tc\x7Fd", "abcd"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +130,27 @@ func TestIsBidi(t *testing.T) {
 		if isBidi(r) {
 			t.Errorf("isBidi(%U) = true, want false", r)
 		}
+	}
+}
+
+// Over-long peer names truncate in the middle with a visible ellipsis:
+// the name is what the accept prompt asks consent for, so a cut must be
+// marked and the extension must stay in view.
+func TestSanitizeForDisplay_TruncatesMiddleKeepingExtension(t *testing.T) {
+	long := strings.Repeat("a", 150) + ".tar.gz"
+	got := sanitizeForDisplay(long, 128)
+	if n := len([]rune(got)); n != 128 {
+		t.Errorf("truncated length = %d runes, want 128", n)
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("truncation must be visible: %q", got)
+	}
+	if !strings.HasSuffix(got, ".tar.gz") {
+		t.Errorf("extension must survive truncation: %q", got)
+	}
+	// Short names stay byte-exact.
+	if got := sanitizeForDisplay("report.pdf", 128); got != "report.pdf" {
+		t.Errorf("short name changed: %q", got)
 	}
 }
 
@@ -226,9 +267,20 @@ func TestNormalizeServer(t *testing.T) {
 			t.Errorf("normalizeServer(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	for _, bad := range []string{"", "   ", ":443", "host:0", "host:99999", "host:abc", "http://", "https://"} {
+	for _, bad := range []string{
+		"", "   ", ":443", "host:0", "host:99999", "host:abc", "http://", "https://",
+		// Syntactically impossible hostnames must be rejected, not
+		// persisted with a resolve warning.
+		"not a host!", "host!", "a b.example.com", "host..double", "-lead.example.com", "trail-.example.com", "héllo.example.com",
+	} {
 		if _, err := normalizeServer(bad); err == nil {
 			t.Errorf("normalizeServer(%q) accepted bad input", bad)
+		}
+	}
+	// Unusual-but-real shapes stay accepted.
+	for _, ok := range []string{"my_host", "fs.example.com.", "xn--nxasmq6b.example"} {
+		if _, err := normalizeServer(ok); err != nil {
+			t.Errorf("normalizeServer(%q) rejected valid host: %v", ok, err)
 		}
 	}
 }
@@ -270,6 +322,61 @@ func TestRunConnect_PersistsServerAndPassword(t *testing.T) {
 	c, _ = config.Load()
 	if c.Server != "" || c.ServerPassword != "" {
 		t.Errorf("default did not clear: server=%q pw=%q", c.Server, c.ServerPassword)
+	}
+}
+
+// `--connect default` is E016's suggested fix, so it must rewrite a corrupt
+// config file — not short-circuit on "already default" (a corrupt file loads
+// as the zero-value config) and leave the warning to recur forever.
+func TestRunConnect_DefaultRewritesCorruptConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.json")
+	config.SetPathForTesting(cfgPath)
+	t.Cleanup(func() { config.SetPathForTesting("") })
+	if err := os.WriteFile(cfgPath, []byte("{garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr := captureStderr(t, func() {
+		if err := runConnect(&flags{connectArgsRaw: []string{"default"}}); err != nil {
+			t.Fatalf("runConnect default: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "Reverted to default server") {
+		t.Errorf("expected revert message, got:\n%s", stderr)
+	}
+	if _, err := config.Load(); err != nil {
+		t.Errorf("config still unusable after --connect default: %v", err)
+	}
+}
+
+// The show screen names the config file, and a corrupt file's warning says
+// which file was rejected and why.
+func TestRunConnect_ShowPrintsPathAndCorruptionDetail(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.json")
+	config.SetPathForTesting(cfgPath)
+	t.Cleanup(func() { config.SetPathForTesting("") })
+
+	stderr := captureStderr(t, func() {
+		if err := runConnect(&flags{connectArgsRaw: []string{connectShowSentinel}}); err != nil {
+			t.Fatalf("runConnect show: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "Config file: "+cfgPath) {
+		t.Errorf("show screen missing config path:\n%s", stderr)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte("{garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr = captureStderr(t, func() {
+		if err := runConnect(&flags{connectArgsRaw: []string{connectShowSentinel}}); err != nil {
+			t.Fatalf("runConnect show: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "E016") || !strings.Contains(stderr, cfgPath+": not valid JSON") {
+		t.Errorf("corruption warning missing file/cause detail:\n%s", stderr)
 	}
 }
 
@@ -338,7 +445,7 @@ func TestRenderError_UnsendableSymlink(t *testing.T) {
 	var code int
 	got := captureStderr(t, func() { code = renderError(err, false) })
 	for _, want := range []string{
-		"[E036] Cannot send a symlink: broken link proj/dangling → ../gone (target does not exist)",
+		"[E036] Cannot follow this symlink: broken link proj/dangling → ../gone (target does not exist)",
 		"Fix the link, or skip it with --exclude.",
 	} {
 		if !strings.Contains(got, want) {
@@ -347,6 +454,68 @@ func TestRenderError_UnsendableSymlink(t *testing.T) {
 	}
 	if code != 36 {
 		t.Errorf("exit code = %d, want 36", code)
+	}
+}
+
+// A Homebrew-managed refusal renders as E039 with the brew command on the
+// detail line and no contradictory "remove by hand"/"reinstall" boilerplate.
+func TestRenderError_HomebrewManaged(t *testing.T) {
+	err := fmt.Errorf("%w: uninstall it with: brew uninstall fsend", fserrors.ErrHomebrewManaged)
+	var code int
+	got := captureStderr(t, func() { code = renderError(err, false) })
+	if code != 39 {
+		t.Errorf("exit code = %d, want 39", code)
+	}
+	for _, want := range []string{
+		"[E039] This fsend is managed by Homebrew.",
+		"uninstall it with: brew uninstall fsend",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"Remove the binary by hand", "reinstall", "path is printed above"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("contradictory boilerplate %q leaked in:\n%s", unwanted, got)
+		}
+	}
+}
+
+// A broken pipe on a stdout payload path (`--preview | head`, `--out - | ...`)
+// exits silently with the shell convention 128+SIGPIPE.
+func TestRenderError_BrokenPipeExitsSilently141(t *testing.T) {
+	err := fmt.Errorf("write /dev/stdout: %w", syscall.EPIPE)
+	var code int
+	got := captureStderr(t, func() { code = renderError(err, true) })
+	if code != 141 {
+		t.Errorf("exit code = %d, want 141", code)
+	}
+	if got != "" {
+		t.Errorf("expected silent exit, got:\n%s", got)
+	}
+}
+
+// Usage errors never get a DEBUG wrap chain: the debug detail for a parse
+// failure is the parse error itself, and debugRequested scans raw os.Args —
+// possibly the very flag cobra just rejected (`fsend server --debug`).
+func TestRenderError_UsageSuppressesDebugChain(t *testing.T) {
+	err := fmt.Errorf("%w: unknown flag: --bogus", fserrors.ErrUsage)
+	got := captureStderr(t, func() { _ = renderError(err, true) })
+	if strings.Contains(got, "DEBUG:") {
+		t.Errorf("usage error must not print a DEBUG chain, got:\n%s", got)
+	}
+}
+
+// The DEBUG chain can carry a peer's ErrorFrame message, so it goes through
+// sanitizeForDisplay like every other displayed peer string.
+func TestRenderError_DebugChainSanitized(t *testing.T) {
+	err := fmt.Errorf("%w: peer says \x1b[31mred\u202ehidden", fserrors.ErrProtocolError)
+	got := captureStderr(t, func() { _ = renderError(err, true) })
+	if !strings.Contains(got, "DEBUG:") {
+		t.Fatalf("expected a DEBUG chain, got:\n%s", got)
+	}
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "\u202e") {
+		t.Errorf("DEBUG chain leaked control/bidi characters:\n%q", got)
 	}
 }
 
@@ -437,22 +606,53 @@ func TestDebugRequested(t *testing.T) {
 	}
 }
 
+// argsHaveFlag honours the bare and valued (--json=true) spellings, stops at
+// --, and — like pflag — lets the last occurrence win when a flag repeats.
+func TestArgsHaveFlag(t *testing.T) {
+	savedArgs := os.Args
+	t.Cleanup(func() { os.Args = savedArgs })
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"absent", []string{"fsend", "file.txt"}, false},
+		{"bare", []string{"fsend", "--json"}, true},
+		{"valued true", []string{"fsend", "--json=true"}, true},
+		{"valued 1", []string{"fsend", "--json=1"}, true},
+		{"valued false", []string{"fsend", "--json=false"}, false},
+		{"valued garbage", []string{"fsend", "--json=maybe"}, false},
+		{"past --", []string{"fsend", "--", "--json"}, false},
+		{"last wins false", []string{"fsend", "--json", "--json=false"}, false},
+		{"last wins true", []string{"fsend", "--json=false", "--json"}, true},
+		{"not a prefix match", []string{"fsend", "--jsonx"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			if got := argsHaveFlag("--json"); got != tc.want {
+				t.Errorf("argsHaveFlag(--json) with %v = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // root.go applyEnvFallbacks
 // ---------------------------------------------------------------------------
 
-func TestApplyEnvFallbacks_FSEND_PASS(t *testing.T) {
-	saved, had := os.LookupEnv("FSEND_PASS")
+func TestApplyEnvFallbacks_FSEND_PASSWORD(t *testing.T) {
+	saved, had := os.LookupEnv("FSEND_PASSWORD")
 	t.Cleanup(func() {
 		if had {
-			_ = os.Setenv("FSEND_PASS", saved)
+			_ = os.Setenv("FSEND_PASSWORD", saved)
 		} else {
-			_ = os.Unsetenv("FSEND_PASS")
+			_ = os.Unsetenv("FSEND_PASSWORD")
 		}
 	})
 
 	c := rootCmd()
-	_ = os.Setenv("FSEND_PASS", "from-env")
+	_ = os.Setenv("FSEND_PASSWORD", "from-env")
 	f := &flags{}
 	applyEnvFallbacks(f, c)
 	if f.passArg != "from-env" {
@@ -460,9 +660,9 @@ func TestApplyEnvFallbacks_FSEND_PASS(t *testing.T) {
 	}
 
 	// When the flag is already "changed", env is ignored — sender's
-	// explicit --pass must win.
+	// explicit --password must win.
 	c2 := rootCmd()
-	if err := c2.Flags().Set("pass", "from-flag"); err != nil {
+	if err := c2.Flags().Set("password", "from-flag"); err != nil {
 		t.Fatal(err)
 	}
 	f2 := &flags{passArg: "from-flag"}
@@ -740,7 +940,7 @@ func TestPromptAccept_HeadlineReconcilesOfferedAndNet(t *testing.T) {
 			},
 		})
 	})
-	for _, want := range []string{"307 MB of 1.2 GB", "1 differ"} {
+	for _, want := range []string{"307 MB of 1.2 GB", "1 differs"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("headline missing %q:\n%s", want, got)
 		}
@@ -748,6 +948,151 @@ func TestPromptAccept_HeadlineReconcilesOfferedAndNet(t *testing.T) {
 	// The old stacked breakdown line must be gone.
 	if strings.Contains(got, "3 new") || strings.Contains(got, "6 up to date") {
 		t.Errorf("stacked breakdown line should be removed:\n%s", got)
+	}
+}
+
+// A summary with kept-back files must not read as an unqualified success:
+// warn glyph, and the headline counts what was written, not what was offered.
+func TestFinishReceive_KeptFilesGetHonestSummary(t *testing.T) {
+	ui := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "2 files"}
+	ui.hello = &h
+	ui.kept = 1
+	ui.skippedSame = 1
+	got := captureStderr(t, func() {
+		if err := finishReceive(ui.f, ui, time.Second); !errors.Is(err, fserrors.ErrTargetExists) {
+			t.Errorf("finishReceive error = %v, want ErrTargetExists", err)
+		}
+	})
+	if want := uxlog.Warn() + " Saved 0 of 2 files to /tmp"; !strings.Contains(got, want) {
+		t.Errorf("summary missing %q:\n%s", want, got)
+	}
+	if strings.Contains(got, uxlog.Check()) {
+		t.Errorf("kept-back summary must not carry the success glyph:\n%s", got)
+	}
+}
+
+func TestDifferVerb(t *testing.T) {
+	if got := differVerb(1); got != "differs" {
+		t.Errorf("differVerb(1) = %q", got)
+	}
+	if got := differVerb(2); got != "differ" {
+		t.Errorf("differVerb(2) = %q", got)
+	}
+}
+
+// --yes answers the accept prompt only — differing files are still kept. The
+// accept line must say so upfront instead of leaving a surprise E013 exit.
+func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
+	differ := transfer.ClassifySummary{
+		Total: 2, Identical: 1, Differing: 1,
+		OfferedBytes: 2048, DifferingBytes: 1024,
+		Files: []transfer.SummaryEntry{
+			{RelativePath: "a.bin", Size: 1024, Status: "identical", Type: wire.EntryFile},
+			{RelativePath: "b.bin", Size: 1024, Status: "differs", Type: wire.EntryFile},
+		},
+	}
+	got := captureStderr(t, func() {
+		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
+		_ = ui.promptAccept(filesHello(), differ)
+	})
+	if want := "Keeping 1 differing file that would be overwritten — pass --overwrite to replace"; !strings.Contains(got, want) {
+		t.Errorf("--yes accept missing kept-differs warning %q:\n%s", want, got)
+	}
+
+	// With --overwrite the differing file transfers; no warning.
+	got = captureStderr(t, func() {
+		ui := newReceiverUI(context.Background(), &flags{yes: true, overwrite: true}, "/tmp", false, mustLANInfo())
+		_ = ui.promptAccept(filesHello(), differ)
+	})
+	if strings.Contains(got, "Keeping") {
+		t.Errorf("--yes --overwrite must not warn:\n%s", got)
+	}
+}
+
+// A text payload with no trailing newline must not let the stderr summary
+// butt against it when both streams share a sink (2>&1, CI logs) — the line
+// break goes to stderr, keeping the piped stdout bytes exact. When stderr is
+// a different sink (the terminal), that break would only render as a stray
+// blank line before the summary, so it must stay away.
+func TestPrintTextPayload_BreaksLineForSharedSinkOnly(t *testing.T) {
+	// Separate sinks: exact stdout bytes, silent stderr. Real files, not
+	// os.Pipe: Windows pipes carry no file IDs, so two distinct pipes
+	// compare as the same sink (see the sameSink comment).
+	dir := t.TempDir()
+	outF, err := os.Create(filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errF, err := os.Create(filepath.Join(dir, "err"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outF, errF
+	perr := printTextPayload("no-newline")
+	os.Stdout, os.Stderr = oldOut, oldErr
+	_ = outF.Close()
+	_ = errF.Close()
+	if perr != nil {
+		t.Fatalf("printTextPayload: %v", perr)
+	}
+	if b, _ := os.ReadFile(outF.Name()); string(b) != "no-newline" {
+		t.Errorf("piped stdout must carry the exact bytes, got %q", string(b))
+	}
+	if b, _ := os.ReadFile(errF.Name()); string(b) != "" {
+		t.Errorf("separate stderr must stay silent, got %q", string(b))
+	}
+
+	// Shared sink (2>&1): the break lands after the payload.
+	shared := filepath.Join(t.TempDir(), "sink")
+	f, err := os.OpenFile(shared, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr = os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = f, f
+	perr = printTextPayload("no-newline")
+	os.Stdout, os.Stderr = oldOut, oldErr
+	_ = f.Close()
+	if perr != nil {
+		t.Fatalf("printTextPayload: %v", perr)
+	}
+	b, err := os.ReadFile(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "no-newline\n" {
+		t.Errorf("shared sink must get the break, got %q", string(b))
+	}
+
+	// A newline-terminated payload needs no break anywhere.
+	stderr := captureStderr(t, func() {
+		_ = captureStdout(t, func() { _ = printTextPayload("clean\n") })
+	})
+	if stderr != "" {
+		t.Errorf("newline-terminated payload must not emit a break, got %q", stderr)
+	}
+}
+
+// The cancel hint fires only when bytes actually landed — a Ctrl-C at
+// the accept prompt has no partial to speak of — and stays out of --quiet.
+func TestPrintCancelKeptHint(t *testing.T) {
+	moved := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	moved.total = 1024
+	if got := captureStderr(t, func() { printCancelKeptHint(moved.f, moved) }); !strings.Contains(got, "Partial data kept") {
+		t.Errorf("expected resume hint after moved bytes, got %q", got)
+	}
+
+	idle := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	if got := captureStderr(t, func() { printCancelKeptHint(idle.f, idle) }); got != "" {
+		t.Errorf("no bytes moved must print nothing, got %q", got)
+	}
+
+	quiet := newReceiverUI(context.Background(), &flags{quiet: true}, "/tmp", false, mustLANInfo())
+	quiet.total = 1024
+	if got := captureStderr(t, func() { printCancelKeptHint(quiet.f, quiet) }); got != "" {
+		t.Errorf("--quiet must suppress the hint, got %q", got)
 	}
 }
 
@@ -829,5 +1174,120 @@ func TestPromptAccept_PathChipShown(t *testing.T) {
 		if !strings.Contains(got, "Incoming from") || !strings.Contains(got, c.want) {
 			t.Errorf("prompt missing path chip %q:\n%s", c.want, got)
 		}
+	}
+}
+
+// resolveOutDir creates a missing --out directory (mkdir -p), accepts an
+// existing one, and rejects a path that exists but isn't a directory.
+func TestResolveOutDir(t *testing.T) {
+	base := t.TempDir()
+
+	t.Run("creates_missing_nested", func(t *testing.T) {
+		want := filepath.Join(base, "a", "b", "c")
+		dir, sink, err := resolveOutDir(&flags{outDir: want})
+		if err != nil || sink {
+			t.Fatalf("got (%q, sink=%v, %v), want created dir", dir, sink, err)
+		}
+		if st, statErr := os.Stat(want); statErr != nil || !st.IsDir() {
+			t.Fatalf("--out dir was not created: %v", statErr)
+		}
+	})
+
+	t.Run("accepts_existing", func(t *testing.T) {
+		if _, _, err := resolveOutDir(&flags{outDir: base}); err != nil {
+			t.Fatalf("existing dir rejected: %v", err)
+		}
+	})
+
+	t.Run("rejects_file", func(t *testing.T) {
+		file := filepath.Join(base, "file.txt")
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := resolveOutDir(&flags{outDir: file})
+		if !errors.Is(err, fserrors.ErrUsage) || !strings.Contains(err.Error(), "not a directory") {
+			t.Fatalf("got %v, want ErrUsage 'not a directory'", err)
+		}
+	})
+
+	t.Run("stdout_sink", func(t *testing.T) {
+		_, sink, err := resolveOutDir(&flags{outDir: "-"})
+		if err != nil || !sink {
+			t.Fatalf("got (sink=%v, %v), want sink=true", sink, err)
+		}
+	})
+}
+
+// With zero bytes moved the elapsed figure is prompt dwell or connection
+// wall time, not a transfer duration — it must not render.
+func TestSummaryParts_ZeroMovedOmitsDuration(t *testing.T) {
+	parts := strings.Join(summaryParts(4096, 0, "sent", 5800*time.Millisecond, mustLANInfo()), "  ·  ")
+	if strings.Contains(parts, "5.8s") {
+		t.Errorf("0 B moved must not show a duration: %s", parts)
+	}
+	if !strings.Contains(parts, "4.1 KB (0 B sent)") {
+		t.Errorf("size clause changed shape: %s", parts)
+	}
+}
+
+// An all-skipped send (receiver already had everything) must mirror the
+// receiver's "Already up to date", not the self-contradictory
+// "Sent · (0 B sent)". Kept files still win over the up-to-date headline.
+func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
+	got := captureStderr(t, func() {
+		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
+	})
+	if !strings.Contains(got, "Already up to date") || !strings.Contains(got, "1 file unchanged") {
+		t.Errorf("all-skipped summary must read up to date, got %q", got)
+	}
+	if strings.Contains(got, "Sent") || strings.Contains(got, "0 B") {
+		t.Errorf("no byte counter on an up-to-date no-op: %q", got)
+	}
+
+	// Kept files: still the "Nothing sent" warning path.
+	got = captureStderr(t, func() {
+		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1, keptFiles: 1}, time.Millisecond, mustLANInfo())
+	})
+	if !strings.Contains(got, "Nothing sent") || !strings.Contains(got, "kept by receiver") {
+		t.Errorf("kept-file summary changed shape: %q", got)
+	}
+}
+
+// Kept files render as a count only — the --overwrite remedy already
+// appears once elsewhere (the --yes warning or E013's action line), and
+// after an explicit "n" it must not appear at all. The glyph tracks who
+// decided: warn for the silent auto-keep, info for the user's own "n".
+func TestPrintRecvSummary_KeptCarriesNoFlagAdvice(t *testing.T) {
+	autoKept := captureStderr(t, func() {
+		printRecvSummary(&flags{}, "Saved 0 of 1 file to /tmp", 0, 0, 1, 0, false, time.Second, mustLANInfo())
+	})
+	if strings.Contains(autoKept, "--overwrite") {
+		t.Errorf("summary must not repeat the --overwrite advice: %q", autoKept)
+	}
+	if !strings.Contains(autoKept, "1 file kept") || !strings.Contains(autoKept, uxlog.Warn()) {
+		t.Errorf("auto-kept summary must warn with a kept count: %q", autoKept)
+	}
+
+	byChoice := captureStderr(t, func() {
+		printRecvSummary(&flags{}, "Saved 0 of 1 file to /tmp", 0, 0, 1, 0, true, time.Second, mustLANInfo())
+	})
+	if strings.Contains(byChoice, "--overwrite") || !strings.Contains(byChoice, uxlog.Info()) {
+		t.Errorf("kept-by-choice must render as the user's decision: %q", byChoice)
+	}
+	// Prompt dwell must not masquerade as a transfer duration.
+	if strings.Contains(byChoice, "1s") {
+		t.Errorf("0 B moved must not show a duration: %q", byChoice)
+	}
+}
+
+// A stream's total is 0 until EOF; the summary must report the moved
+// bytes as the size, not "0 B".
+func TestSummaryParts_UnknownTotalUsesMoved(t *testing.T) {
+	parts := strings.Join(summaryParts(0, 15_000_000, "sent", 3*time.Second, mustLANInfo()), "  ·  ")
+	if !strings.Contains(parts, "15 MB") || strings.Contains(parts, "0 B") {
+		t.Errorf("stream summary should carry the moved size: %s", parts)
+	}
+	if strings.Contains(parts, "(") {
+		t.Errorf("no resume clause expected for a stream: %s", parts)
 	}
 }

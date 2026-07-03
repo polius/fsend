@@ -31,8 +31,8 @@ type Config struct {
 	AbandonedTTL         time.Duration // default 5m
 	PairedTTL            time.Duration // default 600s
 	LongPollTimeout      time.Duration // default 25s
-	MaxSessionsPerIP     int           // 0 = unlimited; unset default 5 applied by env layer
-	MaxNewSessionsPerMin int           // 0 = unlimited; unset default 30 applied by env layer
+	MaxSessionsPerIP     int           // 0 = unlimited (the default; the caps are opt-in)
+	MaxNewSessionsPerMin int           // 0 = unlimited (the default; the caps are opt-in)
 	Logger               *slog.Logger
 
 	// ServerPassword, when non-empty, gates every endpoint except
@@ -66,8 +66,9 @@ func (c *Config) Default() {
 		c.LongPollTimeout = 25 * time.Second
 	}
 	// MaxSessionsPerIP / MaxNewSessionsPerMin are not defaulted here: 0
-	// means unlimited, and the env layer supplies the unset defaults
-	// (5 / 30). Mapping 0→default here would make "unlimited" unreachable.
+	// means unlimited, which is also what the env layer passes for an
+	// unset var — the caps are opt-in (see docs/self-hosting.md). Mapping
+	// 0→a positive default here would make "unlimited" unreachable.
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
@@ -361,7 +362,7 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, RelayAllocateResponse{
 		RelayAddr:          s.relayAddrFor(r),
 		SessionToken:       relayTok.String(),
-		TTLSeconds:         600,
+		TTLSeconds:         int(s.cfg.PairedTTL.Seconds()),
 		ForwardingDisabled: !s.relayAllocator.Forwarding(),
 	})
 }
@@ -598,7 +599,7 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	// Same rate limit as create/join. Without it, /wait is an
 	// unthrottled existence oracle over the slot space (404 vs 204 for
 	// the same lookup join performs). The legitimate sender polls once
-	// per LongPollTimeout (~25s ≈ 2-3/min), far under the default
+	// per LongPollTimeout (~25s ≈ 2-3/min), far under the recommended
 	// 30/min budget — see TestWaitRateLimit_PollCadenceStaysUnderBudget.
 	if !s.allowNewSession(rateLimitKey(clientIP(r)), time.Now()) {
 		s.mu.Unlock()

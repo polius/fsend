@@ -103,7 +103,7 @@ FSEND_SERVER_ADDR=":18080" /tmp/fsend server --health-check
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `FSEND_SERVER_ADDR` | `:8080` | Signaling listener (TCP) |
 | `FSEND_RELAY_ADDR` | `:443` | Relay listener (UDP); also the STUN endpoint |
-| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `1GB` | Per-session relay cap (wire bytes, post-compression). |
+| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap (wire bytes, post-compression). |
 
 Full list: `/tmp/fsend server --help`. For deployment, ports, and all
 tunables, see [Self-hosting](self-hosting.md).

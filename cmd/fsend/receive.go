@@ -43,6 +43,10 @@ func runReceive(f *flags, c string) error {
 	if f.outDir == "-" && f.manifest != "" {
 		return fmt.Errorf("%w: --manifest has no effect with --out -", fserrors.ErrUsage)
 	}
+	// Sink mode gives stdout to the file bytes; NDJSON would corrupt them.
+	if f.outDir == "-" && f.json {
+		return fmt.Errorf("%w: --json cannot be combined with --out - (stdout carries the received bytes)", fserrors.ErrUsage)
+	}
 	// Validate --out before any network work: a missing directory would
 	// otherwise only fail at write time, after the sender's one-shot code
 	// has been consumed.
@@ -54,10 +58,10 @@ func runReceive(f *flags, c string) error {
 	// resolvePassword reads with echo off, and a default-disposition
 	// SIGINT inside that read would kill the process without restoring
 	// the terminal.
-	ctx, cancel := signalContext()
+	ctx, cancel := signalContext(f.quiet)
 	defer cancel()
 
-	// Bare --pass: hidden no-echo prompt. We're not the password's
+	// Bare --password: hidden no-echo prompt. We're not the password's
 	// author — we have to type what the sender configured — so there's
 	// no point offering a random default here.
 	if err := resolvePassword(ctx, f, false); err != nil {
@@ -71,9 +75,9 @@ func runReceive(f *flags, c string) error {
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
 		// LAN miss → internet path. A single "Connecting" spinner runs
-		// from here through Join + ICE/relay setup, replacing what used
-		// to be a sequence of brief flashes. runReceiveOverInternet
-		// owns its lifetime and stops it just before printPath.
+		// from here through Join + ICE/relay setup and classification,
+		// replacing what used to be a sequence of brief flashes.
+		// runReceiveOverInternet owns its lifetime.
 		cfg := loadConfig(f.quiet)
 		var spin *uxlog.Spinner
 		if !f.quiet {
@@ -118,6 +122,13 @@ func runReceive(f *flags, c string) error {
 	}
 
 	ui := newReceiverUI(ctx, f, outDir, sink, connpath.FromLAN())
+	// --checksum hashes the files already on disk before the accept prompt —
+	// a silence that scales with the existing data. Cover it with a spinner
+	// (stopped by the prompt). Without --checksum classification is stat-only
+	// and near-instant; a spinner would just flash.
+	if f.checksum && !f.quiet {
+		ui.spin = uxlog.StartSpinner("Checking existing files")
+	}
 	defer ui.close()
 
 	start := time.Now()
@@ -126,7 +137,7 @@ func runReceive(f *flags, c string) error {
 	// itself so a mid-stream drop can re-dial and resume from the
 	// receiver's partial. Sink mode gets one attempt: emitted bytes
 	// can't be reconciled, so a retry would duplicate output.
-	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	opts := retry.Options{OnRetry: ui.retryNotice()}
 	if sink {
 		opts.Attempts = 1
 	}
@@ -149,6 +160,7 @@ func runReceive(f *flags, c string) error {
 		// decline/target-exists error from the engine; report it as a
 		// cancellation (E026) rather than that incidental error.
 		if ctx.Err() != nil {
+			printCancelKeptHint(f, ui)
 			return ctx.Err()
 		}
 		return err
@@ -158,41 +170,51 @@ func runReceive(f *flags, c string) error {
 }
 
 // receiverPasswordPrompt returns a callback that reads a password from
-// stdin when the sender requires --pass but the receiver didn't supply
-// one via --pass / FSEND_PASS. Returns nil under --quiet so the transfer
+// stdin when the sender requires --password but the receiver didn't supply
+// one via --password / FSEND_PASSWORD. Returns nil under --quiet so the transfer
 // engine immediately fails with ErrWrongPassword instead of blocking on
 // a prompt that nobody will see.
 //
 // Input is read with no echo when stdin is a TTY (golang.org/x/term).
-// Non-interactive callers should pass --pass or FSEND_PASS so the
+// Non-interactive callers should pass --password or FSEND_PASSWORD so the
 // prompt never fires.
 //
 // Timing: the progress bar is constructed lazily on first byte (see
 // newReceiverProgress), so this prompt fires before any bar exists —
 // no risk of mpb rendering on top of the password input line.
-func receiverPasswordPrompt(ctx context.Context, f *flags) func() (string, error) {
+func receiverPasswordPrompt(ctx context.Context, f *flags) func(attempt int) (string, error) {
 	if f.quiet {
 		return nil
 	}
-	return func() (string, error) {
+	return func(attempt int) (string, error) {
 		fmt.Fprintln(os.Stderr)
-		return readPasswordHiddenCtx(ctx, "  Password required by sender: ")
+		if attempt > 1 {
+			return readPasswordHiddenCtx(ctx,
+				fmt.Sprintf("  Wrong password — try again (%d/%d): ", attempt, transfer.PasswordAttempts), f.quiet)
+		}
+		return readPasswordHiddenCtx(ctx, "  Password for this transfer: ", f.quiet)
 	}
 }
 
 // renderArtifact prints the indented artifact line and the classification
 // breakdown. The breakdown is how the user learns, before consenting, that
 // most files are already up to date and only a few will move.
-func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySummary) {
+func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySummary, sink bool) {
 	pwChip := ""
 	if h.HasPassword {
 		pwChip = "  " + uxlog.PasswordChip()
 	}
 	if h.Mode == wire.ModeStream {
-		if h.IsText {
+		switch {
+		case h.IsText:
 			_, _ = fmt.Fprintf(w, "      text%s\n", pwChip)
-		} else {
+		case sink:
 			_, _ = fmt.Fprintf(w, "      stdin stream  ·  size unknown%s\n", pwChip)
+		default:
+			// The name is peer-supplied; show exactly what will land on disk
+			// (same derivation as the engine) so consent covers the filename.
+			name := sanitizeForDisplay(transfer.StreamFileName(h.DisplayName), 128)
+			_, _ = fmt.Fprintf(w, "      stdin stream  ·  saves as %s  ·  size unknown%s\n", name, pwChip)
 		}
 		return
 	}
@@ -213,11 +235,20 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 	}
 	diff := ""
 	if summary.Differing > 0 {
-		diff = fmt.Sprintf("  ·  %d differ", summary.Differing)
+		diff = fmt.Sprintf("  ·  %d %s", summary.Differing, differVerb(summary.Differing))
 	}
 	_, _ = fmt.Fprintf(w, "      %s  ·  %s%s%s\n",
 		lead, receiverSizeClause(summary), diff, pwChip)
 	renderPreview(w, receiverPreview(summary.Files), 8)
+}
+
+// differVerb conjugates the "N differ(s)" clauses used by the incoming
+// header and the overwrite prompt.
+func differVerb(n int) string {
+	if n == 1 {
+		return "differs"
+	}
+	return "differ"
 }
 
 // receiverSizeClause renders the headline's size figure. The offered total
@@ -296,11 +327,15 @@ func sanitizeForDisplay(s string, maxLen int) string {
 			continue
 		}
 		out = append(out, r)
-		if len(out) >= maxLen {
-			break
-		}
 	}
-	return string(out)
+	if len(out) <= maxLen {
+		return string(out)
+	}
+	// Truncate in the middle with a visible ellipsis: this name is what
+	// the user consents to, so a cut must not masquerade as complete, and
+	// keeping the tail leaves the real extension in view.
+	const tail = 16
+	return string(out[:maxLen-tail-1]) + "…" + string(out[len(out)-tail:])
 }
 
 // sanitizeRemote sanitizes a peer-supplied hostname for display, then

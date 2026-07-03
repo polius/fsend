@@ -33,9 +33,10 @@ no accounts, end-to-end encrypted, self-hostable. The differences are in
   *plus* SPAKE2 bound to it). The other two rest on a single classical
   layer.
 - **Hardest codes to guess, by default.** fsend's codes carry ~45 bits
-  (matching croc), and the server rate-limits guesses. magic-wormhole
-  defaults to 16 bits with no rate limiting — its own threat model
-  documents a 1-in-65,536 guess chance.
+  (matching croc), and the server has built-in per-IP rate limiting of
+  guesses — on for the public server, opt-in when self-hosting.
+  magic-wormhole defaults to 16 bits with no rate limiting — its own
+  threat model documents a 1-in-65,536 guess chance.
 - **Works on a LAN with no internet.** fsend (mDNS) and croc (multicast)
   pair locally and transfer offline. magic-wormhole can't — it must reach
   its mailbox server to pair, even on the same Wi-Fi.
@@ -59,8 +60,8 @@ no accounts, end-to-end encrypted, self-hostable. The differences are in
 | MITM protection                   | **Automatic** (channel-bound)              | PAKE only                             | Manual `--verify`                           |
 | Post-quantum forward secrecy      | **✓ X25519 + ML-KEM-768**                  | ✗                                     | ✗                                           |
 | Default code entropy              | **~45 bits**                               | **~45 bits**                          | 16 bits (adjustable)                        |
-| Online-guess protection           | **Rate-limited 30/min + bounded TTL**      | None server-side                      | None (acknowledged in docs)                 |
-| Password on top of the code       | **✓ `--pass`**                             | ✗ (code is the secret)                | ✗ (code is the secret)                      |
+| Online-guess protection           | **✓ built-in per-IP rate limiting + bounded TTL** (on for the public server; opt-in self-hosted) | None server-side           | None (acknowledged in docs)                 |
+| Password on top of the code       | **✓ `--password`**                             | ✗ (code is the secret)                | ✗ (code is the secret)                      |
 | Choose your own code phrase       | ✗                                          | **✓ `--code`**                        | **✓ `--code`**                              |
 | Resume after interruption         | **✓ (BLAKE3 chunk-verified)**              | **✓ (chunk-based)**                   | ✗ (classic transit restarts)               |
 | Skip unchanged files on re-send   | **✓ (size+mtime; `--checksum` to hash)**   | **✓ (always hashes)**                 | ✗                                           |
@@ -205,21 +206,23 @@ X25519 + ML-KEM-768 hybrid is not.
 
 | | **fsend** | **croc** | **magic-wormhole** |
 |---|---|---|---|
-| Format | `abc-defg-jkm` (3-4-3 letters) | `1234-word-word-word-word` (PIN + 4 words) | `7-crossover-clockwork` (nameplate + words) |
-| Alphabet / wordlist | 23 letters (excludes `i`,`l`,`o`) | 4-digit PIN + 256-word mnemonic list | 256-word PGP word list |
+| Format | `abc-defg-jkm` (3-4-3 letters) | `1234-word-word-word` (PIN + 3 words) | `7-crossover-clockwork` (nameplate + words) |
+| Alphabet / wordlist | 23 letters (excludes `i`,`l`,`o`) | 4-digit PIN + 1,626-word mnemonicode list | 256-word PGP word list |
 | Default secret entropy | **~45 bits** | **~45 bits** (~13-bit PIN + ~32-bit words) | 16 bits (two words) |
 | Adjustable length | Fixed | Fixed (custom phrase via `--code`) | **`--code-length N`** (~8 bits/word) |
 | Custom code phrase | ✗ (system-generated) | **✓ `--code` (min 6 chars)** | **✓ `--code`** |
 | Receiver allocates the code | ✗ | ✗ | **✓ `--allocate`** |
 | One-shot | ✓ (can't be reused) | ✓ per session (reusable via `--code`) | ✓ nameplate single-use |
 | Server-side TTL | **1 h unclaimed / 10 min after pairing** | 3 h room TTL | Not specified in client docs |
-| Online-guess rate limiting | **30/min per source IP** | None server-side | None (acknowledged in docs) |
+| Rate limiting | **✓ built-in, per source IP** (on for the public server; opt-in via env when self-hosting) | None server-side | None (acknowledged in docs) |
 | Code reaches a server | **Never** — only an argon2id-stretched slot | The relay sees the room (SHA-256 of code prefix) | Words never; the (non-secret) nameplate does |
 
 fsend is strong by default, with nothing to configure. The code carries
 ~45 bits and never reaches the server (both peers register under a 64-MiB
-argon2id-stretched *slot* derived from it), and the public server
-rate-limits new sessions — so online brute force is infeasible.
+argon2id-stretched *slot* derived from it), and the server has per-IP
+rate limiting built in — on for the public server, opt-in via env when
+self-hosting (the other two have none to turn on) — so online brute
+force is infeasible.
 magic-wormhole's own
 [threat model](https://magic-wormhole.readthedocs.io/en/latest/attacks.html)
 is candid about the cost of its 16-bit default: an attacker on the
@@ -245,7 +248,7 @@ own code phrase, while fsend always picks it for you.
 | Skip unchanged files on re-send | **✓ (size+mtime; `--checksum`)** | **✓ (always hashes)** | ✗ |
 | Preview what you'd send | **✓ `--preview`** — list every file + size as CSV, locally, without sending | ✗ | ✗ |
 | Record of what was received | **✓ `--manifest`** — CSV of each file with its outcome (new / identical / overwritten / kept / resumed) | ✗ | ✗ |
-| Password on top of the code | **✓ `--pass`** | code phrase doubles as secret | ✗ (the code is the secret) |
+| Password on top of the code | **✓ `--password`** | code phrase doubles as secret | ✗ (the code is the secret) |
 | Exclude paths in a directory | **✓ `--exclude`** | **✓ `--exclude` (+ `--git`)** | ✗ |
 | Custom output dir / name | `--out` | `--out` | `--output-file` |
 | Compression | zstd (automatic; skips chunks it can't shrink) | DEFLATE (`--no-compress` to disable) | DEFLATE (folders only) |
@@ -308,12 +311,12 @@ it; or Python is already your path of least resistance.
   relay through a third party;
 - you transfer on a **LAN with no internet**: fsend pairs over mDNS with
   the server entirely offline; magic-wormhole can't pair at all;
-- you want **harder-to-brute-force codes by default** (rate-limited,
-  bounded TTL, code never sent to the server) without asking anyone to
-  lengthen anything;
+- you want **harder-to-brute-force codes by default** (per-IP rate
+  limiting on the public server, bounded TTL, code never sent to the
+  server) without asking anyone to lengthen anything;
 - you want **defense-in-depth** (SPAKE2 *over* TLS 1.3) and
   **post-quantum** forward secrecy — neither of the others has either;
-- you want **resume**, a separate **`--pass`** secret, a **`--preview`**
+- you want **resume**, a separate **`--password`** secret, a **`--preview`**
   of what you'd send, **multi-file** transfers, or **binary stdin/stdout**
   streaming;
 - you'd rather deploy **one static binary** than a Python environment.

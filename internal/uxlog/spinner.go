@@ -26,6 +26,7 @@ import (
 // Stop clears the spinner line so the next stderr write starts at column 0.
 // On non-TTY the static line stays in place — Stop is a no-op visually.
 type Spinner struct {
+	mu   sync.Mutex
 	msg  string
 	w    io.Writer
 	tty  bool
@@ -95,12 +96,32 @@ func (s *Spinner) run() {
 // glyphs; on a dark background it reads as "active wait" without
 // shouting like a yellow warn would.
 func (s *Spinner) draw(frame string) {
+	s.mu.Lock()
+	msg := s.msg
+	s.mu.Unlock()
 	// Stderr write failures inside the UX layer are non-actionable —
 	// the caller has bigger problems than an unrendered spinner.
 	if colorEnabled() {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s", colorCyan, frame, colorReset, s.msg)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s", colorCyan, frame, colorReset, msg)
 	} else {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s", frame, s.msg)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s", frame, msg)
+	}
+}
+
+// SetMessage swaps the spinner text; the next frame draws it. On non-TTY,
+// where the original message was already printed as a static line, the new
+// message is printed the same way so log readers see the state change.
+// Safe on a nil receiver.
+func (s *Spinner) SetMessage(msg string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	changed := msg != s.msg
+	s.msg = msg
+	s.mu.Unlock()
+	if !s.tty && changed {
+		_, _ = fmt.Fprintln(s.w, Marker(gSpin), msg)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
+
 	"github.com/polius/fsend/internal/fserrors"
 )
 
@@ -75,26 +77,18 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			"--connect default takes no password",
 		},
 		{
-			// Regression: `--pass=` skipped every password path, so the
+			// Regression: `--password=` skipped every password path, so the
 			// user believed the transfer was gated when it wasn't.
 			"pass_empty_value",
-			[]string{"--pass="},
-			"--pass requires a non-empty password",
+			[]string{"--password="},
+			"--password requires a non-empty password",
 		},
 		{
-			// Regression: a code-shaped --pass value with piped stdin
-			// silently opened a send session, code-as-password. (Space
-			// form `--pass <code>` is unaffected: NoOptDefVal keeps the
-			// code positional.)
-			"pass_code_value",
-			[]string{"--pass=abc-defg-jkm"},
-			"to receive with a password: fsend abc-defg-jkm --pass",
-		},
-		{
-			// LooksLikeCode near-miss (digit 1 for letter) gets the same hint.
-			"pass_mistyped_code_value",
-			[]string{"--pass=abc-defg-jk1"},
-			"to receive with a password: fsend abc-defg-jk1 --pass",
+			// A bare --password followed by a non-file, non-code word is very
+			// likely a misplaced inline password — point at the = form.
+			"pass_bare_then_nonfile",
+			[]string{"--password", "secret", "report.pdf"},
+			"if it's the password, use --password=secret",
 		},
 		{
 			// Same trap on --connect: the code would be persisted as the
@@ -114,9 +108,51 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			"--connect cannot be combined with --update",
 		},
 		{
+			// Regression: --checksum/--manifest/--preview were missing from
+			// the conflict list, so --connect persisted the server (a durable
+			// global mutation) while silently dropping them.
+			"connect_with_checksum",
+			[]string{"--connect=host:443", "--checksum"},
+			"--connect cannot be combined with --checksum",
+		},
+		{
+			"connect_with_manifest",
+			[]string{"--connect=host:443", "--manifest=m.csv"},
+			"--connect cannot be combined with --manifest",
+		},
+		{
+			"connect_with_preview",
+			[]string{"--connect=host:443", "--preview"},
+			"--connect cannot be combined with --preview",
+		},
+		{
 			"update_with_uninstall",
 			[]string{"--update", "--uninstall"},
 			"--update and --uninstall are mutually exclusive",
+		},
+		{
+			// Regression: `fsend report.pdf --update` ran the updater and
+			// silently dropped the file the user asked to send.
+			"update_with_positional",
+			[]string{"report.pdf", "--update"},
+			"--update cannot be combined with positional arguments",
+		},
+		{
+			"update_with_yes",
+			[]string{"--update", "--yes"},
+			"--update cannot be combined with --yes",
+		},
+		{
+			// Worst case of the same hole: `--uninstall --yes` in a mangled
+			// script deleted the binary when a transfer was intended.
+			"uninstall_with_positional",
+			[]string{"somefile", "--uninstall"},
+			"--uninstall cannot be combined with positional arguments",
+		},
+		{
+			"uninstall_with_out",
+			[]string{"--uninstall", "--out=/tmp"},
+			"--uninstall cannot be combined with --out",
 		},
 		{
 			// --preview is send-side; rejected when the arg is a code.
@@ -155,6 +191,48 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 				t.Errorf("got %q, want substring %q", err.Error(), c.wantSub)
 			}
 		})
+	}
+}
+
+// The misplaced-password hint ("…if it's the password, use --password=…") is
+// a guess for the ambiguous `fsend --password secret file` case. Under an
+// explicit --send the positional is unambiguously a path, so the guess must
+// be suppressed and the honest missing-file error stand.
+func TestRootCmd_PasswordHintSkippedUnderSend(t *testing.T) {
+	const hint = "if it's the password"
+
+	// Without --send the hint fires (the trap this guard exists for).
+	plain := rootCmd()
+	plain.SetArgs([]string{"--password", "secret", "report.pdf"})
+	plain.SetOut(io.Discard)
+	plain.SetErr(io.Discard)
+	if err := plain.Execute(); err == nil || !strings.Contains(err.Error(), hint) {
+		t.Fatalf("plain --password: got %v, want the misplaced-password hint", err)
+	}
+
+	// With --send the positional is a path: no hint, and still an ErrUsage.
+	forced := rootCmd()
+	forced.SetArgs([]string{"--send", "--password", "secret", "report.pdf"})
+	forced.SetOut(io.Discard)
+	forced.SetErr(io.Discard)
+	err := forced.Execute()
+	if err == nil || !errors.Is(err, fserrors.ErrUsage) {
+		t.Fatalf("--send --password: got %v, want an ErrUsage", err)
+	}
+	if strings.Contains(err.Error(), hint) {
+		t.Errorf("--send must not guess the positional is a password: %q", err.Error())
+	}
+}
+
+// --uninstall --yes is documented (skip the confirmation), so the guard
+// must exempt it — unlike --update, where --yes answers nothing.
+func TestMaintenanceGuard_AllowsYesForUninstall(t *testing.T) {
+	cmd := rootCmd()
+	if err := cmd.ParseFlags([]string{"--uninstall", "--yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenanceGuard(cmd, &flags{}, "--uninstall", true); err != nil {
+		t.Fatalf("--uninstall --yes must be allowed, got %v", err)
 	}
 }
 
@@ -259,4 +337,40 @@ func TestBoldHelpHeaders(t *testing.T) {
 			t.Error("template must be byte-for-byte unchanged when color is off")
 		}
 	})
+}
+
+// TestHelpTemplate_ListsEveryFlag guards against the hand-written help
+// drifting out of sync with the registered flags — every non-hidden flag
+// must appear in helpTemplate. (--password once had two spellings here.)
+func TestHelpTemplate_ListsEveryFlag(t *testing.T) {
+	rootCmd().Flags().VisitAll(func(f *pflag.Flag) {
+		if f.Hidden {
+			return
+		}
+		if !strings.Contains(helpTemplate, "--"+f.Name) {
+			t.Errorf("flag --%s is registered but missing from helpTemplate", f.Name)
+		}
+	})
+}
+
+// An explicit --receive must tolerate the same chat-app mangling
+// (auto-capitalized first letter, wrapped whitespace) that auto-detect
+// already fixes up — not fail E004 where the implicit path would work.
+// The probe uses --quiet without --yes: a code that survives validation
+// hits that usage guard (E024) before any network work, so E004-vs-E024
+// distinguishes "rejected by format" from "normalized and accepted".
+func TestStartReceive_NormalizesMangledCodes(t *testing.T) {
+	for _, mangled := range []string{"Abc-Defg-Jkm", "ABC-DEFG-JKM", " abc-defg-jkm\n"} {
+		err := startReceive(&flags{quiet: true}, mangled)
+		if errors.Is(err, fserrors.ErrInvalidCodeFormat) {
+			t.Errorf("startReceive(%q) rejected a normalizable code: %v", mangled, err)
+		}
+		if !errors.Is(err, fserrors.ErrUsage) {
+			t.Errorf("startReceive(%q) = %v, want the quiet-without-yes usage guard", mangled, err)
+		}
+	}
+	// Genuinely invalid stays E004.
+	if err := startReceive(&flags{quiet: true}, "Not-A-Code-At-All"); !errors.Is(err, fserrors.ErrInvalidCodeFormat) {
+		t.Errorf("invalid code should stay E004, got %v", err)
+	}
 }

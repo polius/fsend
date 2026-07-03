@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -126,6 +130,56 @@ func TestEngine_PreservesModTimeEnablingSkip(t *testing.T) {
 	}
 	if skipped != 1 {
 		t.Fatalf("re-send should skip on stat alone; skipped=%d", skipped)
+	}
+}
+
+// An empty file is written to disk, so it must fire OnFileDone (which backs
+// the receiver's files_saved count and the "Saved N of M" headline) just like
+// a non-empty file does.
+func TestEngine_EmptyFileFiresOnFileDone(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "empty.txt"), nil)
+
+	var done []string
+	se, re := fileTransfer(t, []string{filepath.Join(src, "empty.txt")}, dst, func(o *RecvOptions) {
+		o.OnFileDone = func(p string) { done = append(done, p) }
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "empty.txt")); err != nil {
+		t.Fatalf("empty file not written: %v", err)
+	}
+	if len(done) != 1 {
+		t.Fatalf("OnFileDone fired %d times for a saved empty file, want 1", len(done))
+	}
+}
+
+// A source that shrinks between the walk and the read must fail the transfer,
+// not hand the receiver a truncated file that hashes clean and lands as a
+// "success". The sender reports ErrReadFailed and nothing is written.
+func TestEngine_SourceShrinksMidSend(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	sp := filepath.Join(src, "growing.bin")
+	writeFile(t, sp, randBytes(3*wire.MaxChunkSize))
+	sources, err := Walk([]string{sp}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Truncate on disk after the walk recorded the larger size.
+	if err := os.Truncate(sp, wire.MaxChunkSize); err != nil {
+		t.Fatal(err)
+	}
+
+	se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources}, RecvOptions{TargetDir: dst})
+	if !errors.Is(se, fserrors.ErrReadFailed) {
+		t.Fatalf("send err = %v, want ErrReadFailed", se)
+	}
+	if !errors.Is(re, fserrors.ErrReadFailed) {
+		t.Fatalf("recv err = %v, want ErrReadFailed (sender reason relayed)", re)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "growing.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a truncated file must not land as success")
 	}
 }
 
@@ -305,6 +359,50 @@ func TestEngine_SkipIdenticalOnResend(t *testing.T) {
 	}
 }
 
+// A permission-only change (chmod +x) leaves content, size and mtime
+// untouched, so the file still classifies identical — but the new mode must
+// still land on the receiver's copy instead of being silently lost.
+func TestEngine_PermissionChangePropagatesOnIdenticalResend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits; the exec bit is meaningless there")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	sp := filepath.Join(src, "deploy.sh")
+	writeFile(t, sp, []byte("#!/bin/sh\necho hi\n"))
+	if err := os.Chmod(sp, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First transfer lands it non-executable.
+	if se, re := fileTransfer(t, []string{sp}, dst, nil); se != nil || re != nil {
+		t.Fatalf("seed send=%v recv=%v", se, re)
+	}
+	dp := filepath.Join(dst, "deploy.sh")
+	if st, _ := os.Stat(dp); st.Mode()&0o111 != 0 {
+		t.Fatal("precondition: dst should start non-executable")
+	}
+
+	// chmod +x on the source (content/size/mtime unchanged), re-send.
+	st, _ := os.Stat(sp)
+	if err := os.Chmod(sp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(sp, st.ModTime(), st.ModTime())
+
+	var skipped int
+	if se, re := fileTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+		o.OnSkip = func(uint32) { skipped++ }
+	}); se != nil || re != nil {
+		t.Fatalf("resend send=%v recv=%v", se, re)
+	}
+	if skipped != 1 {
+		t.Errorf("expected the file to skip the data transfer, got skipped=%d", skipped)
+	}
+	if st, _ := os.Stat(dp); st.Mode()&os.ModePerm != 0o755 {
+		t.Errorf("mode not propagated: dst is %o, want 0755", st.Mode()&os.ModePerm)
+	}
+}
+
 func TestEngine_DifferingFileProtectedWithoutOverwrite(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(src, "x.txt"), []byte("NEW CONTENT"))
@@ -459,5 +557,267 @@ func TestManifestStatus(t *testing.T) {
 		if got := manifestStatus(tc.disp, tc.act); got != tc.want {
 			t.Errorf("manifestStatus(%v, %v) = %q, want %q", tc.disp, tc.act, got, tc.want)
 		}
+	}
+}
+
+// A sender whose source vanishes between walk and send must tell the
+// receiver why. Without the ERROR frame the receiver saw only a bare
+// stream close, classified it transient, and burned retries on a
+// misleading "network" error.
+func TestEngine_SenderReadFailureReachesReceiver(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	p := filepath.Join(src, "gone.bin")
+	writeFile(t, p, randBytes(1024))
+	sources, err := Walk([]string{p}, nil)
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+
+	se, re := runTransfer(t,
+		SendOptions{Mode: wire.ModeFiles, Sources: sources},
+		RecvOptions{TargetDir: dst},
+	)
+	if !errors.Is(se, fserrors.ErrReadFailed) {
+		t.Fatalf("send: want ErrReadFailed, got %v", se)
+	}
+	if !errors.Is(re, fserrors.ErrReadFailed) {
+		t.Fatalf("recv: want the sender's ErrReadFailed, got %v", re)
+	}
+	if retry.IsTransient(re) {
+		t.Fatalf("receiver error must be terminal (no retry), got transient: %v", re)
+	}
+}
+
+// passwordTransfer runs a password-gated single-file transfer with the given
+// receiver password options.
+func passwordTransfer(t *testing.T, senderPass string, mutate func(*RecvOptions)) (dst string, sendErr, recvErr error) {
+	t.Helper()
+	src := t.TempDir()
+	dst = t.TempDir()
+	writeFile(t, filepath.Join(src, "gated.txt"), []byte("payload"))
+	sources, err := Walk([]string{filepath.Join(src, "gated.txt")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recvOpts := RecvOptions{TargetDir: dst}
+	mutate(&recvOpts)
+	sendErr, recvErr = runTransfer(t,
+		SendOptions{Mode: wire.ModeFiles, Sources: sources, Password: senderPass}, recvOpts)
+	return dst, sendErr, recvErr
+}
+
+// A typo at the prompt gets fresh challenges: two wrong tries then the right
+// one completes the transfer on the same session, without burning the code.
+func TestEngine_PasswordRetriesWithinCap(t *testing.T) {
+	tries := []string{"wrong1", "wrong2", "right"}
+	var attempts []int
+	dst, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
+		o.PromptPass = func(attempt int) (string, error) {
+			attempts = append(attempts, attempt)
+			return tries[attempt-1], nil
+		}
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	want := []int{1, 2, 3}
+	if len(attempts) != 3 || attempts[0] != want[0] || attempts[1] != want[1] || attempts[2] != want[2] {
+		t.Errorf("prompt attempts = %v, want %v", attempts, want)
+	}
+	if got := mustRead(t, filepath.Join(dst, "gated.txt")); string(got) != "payload" {
+		t.Errorf("file content = %q", got)
+	}
+}
+
+// PasswordAttempts wrong tries abort with ErrWrongPassword on both sides.
+func TestEngine_PasswordExhaustedAborts(t *testing.T) {
+	prompts := 0
+	dst, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
+		o.PromptPass = func(attempt int) (string, error) {
+			prompts++
+			return "wrong", nil
+		}
+	})
+	if !errors.Is(se, fserrors.ErrWrongPassword) || !errors.Is(re, fserrors.ErrWrongPassword) {
+		t.Fatalf("send=%v recv=%v, want ErrWrongPassword on both", se, re)
+	}
+	if prompts != PasswordAttempts {
+		t.Errorf("prompted %d times, want %d", prompts, PasswordAttempts)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "gated.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("no file must land on a failed password gate")
+	}
+}
+
+// A hostile sender that keeps re-challenging past its own PasswordAttempts cap
+// must not hold the receiver in an endless prompt: the receiver stops at the
+// same cap and returns ErrWrongPassword.
+func TestEngine_ReceiverPasswordPromptBounded(t *testing.T) {
+	ctrlA, ctrlB := net.Pipe()
+	dataA, dataB := net.Pipe()
+	sender := &Streams{Control: ctrlA, Data: dataA}
+	receiver := &Streams{Control: ctrlB, Data: dataB}
+
+	// Fake sender: HELLO with a password gate, then re-challenge forever,
+	// rejecting every response — never honouring the PasswordAttempts cap.
+	go func() {
+		defer sender.Close()
+		_ = wire.WriteControl(sender.Control, wire.TypeHello, &wire.SenderHello{
+			ProtocolVersion: wire.ProtocolVersion, HasPassword: true, Mode: wire.ModeFiles,
+		})
+		var rh wire.ReceiverHello
+		if _, err := wire.ReadControl(sender.Control, &rh); err != nil {
+			return
+		}
+		for {
+			var nonce [32]byte
+			if err := wire.WriteControl(sender.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
+				return
+			}
+			if _, _, err := wire.ReadControlRaw(sender.Control); err != nil {
+				return
+			}
+			if err := wire.WriteControl(sender.Control, wire.TypeError, &wire.ErrorFrame{
+				Code: wire.ErrCodeWrongPassword, Message: "wrong password",
+			}); err != nil {
+				return
+			}
+		}
+	}()
+
+	prompts := 0
+	re := Recv(context.Background(), receiver, RecvOptions{
+		TargetDir: t.TempDir(),
+		PromptPass: func(int) (string, error) {
+			prompts++
+			if prompts > PasswordAttempts+2 {
+				t.Fatalf("receiver kept prompting past the cap (%d)", prompts)
+			}
+			return "nope", nil
+		},
+	})
+	receiver.Close()
+	if !errors.Is(re, fserrors.ErrWrongPassword) {
+		t.Fatalf("recv err = %v, want ErrWrongPassword", re)
+	}
+	if prompts != PasswordAttempts {
+		t.Errorf("receiver prompted %d times, want %d (the cap)", prompts, PasswordAttempts)
+	}
+}
+
+// A fixed password (--password / FSEND_PASSWORD) can't change between tries,
+// so a mismatch aborts after one attempt on both sides.
+func TestEngine_PasswordFixedWrongSingleAttempt(t *testing.T) {
+	_, se, re := passwordTransfer(t, "right", func(o *RecvOptions) {
+		o.Password = "wrong"
+	})
+	if !errors.Is(se, fserrors.ErrWrongPassword) || !errors.Is(re, fserrors.ErrWrongPassword) {
+		t.Fatalf("send=%v recv=%v, want ErrWrongPassword on both", se, re)
+	}
+}
+
+// Directory modes are preserved on the receiver — including a restrictive
+// mode, which must be applied after the dir's children land (not before, or
+// writing them would fail).
+func TestEngine_DirModePreserved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix directory permission bits")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	// A 0750 dir and a read-only 0555 dir containing a file.
+	writeFile(t, filepath.Join(src, "tree", "priv", "keep.txt"), []byte("secret"))
+	writeFile(t, filepath.Join(src, "tree", "ro", "data.bin"), []byte("payload"))
+	if err := os.Chmod(filepath.Join(src, "tree", "priv"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(src, "tree", "ro"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// Loosen the read-only dirs on both trees so t.TempDir cleanup can remove them.
+	t.Cleanup(func() {
+		_ = os.Chmod(filepath.Join(src, "tree", "ro"), 0o755)
+		_ = os.Chmod(filepath.Join(dst, "tree", "ro"), 0o755)
+	})
+
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "tree")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+
+	for rel, want := range map[string]os.FileMode{"tree/priv": 0o750, "tree/ro": 0o555} {
+		st, err := os.Stat(filepath.Join(dst, rel))
+		if err != nil {
+			t.Fatalf("stat %s: %v", rel, err)
+		}
+		if got := st.Mode() & os.ModePerm; got != want {
+			t.Errorf("%s mode = %o, want %o", rel, got, want)
+		}
+	}
+	// The child under the read-only dir must still have landed (mode applied last).
+	if got := mustRead(t, filepath.Join(dst, "tree", "ro", "data.bin")); string(got) != "payload" {
+		t.Errorf("file under read-only dir did not land: %q", got)
+	}
+}
+
+// A receiver-side symlink standing where an incoming directory would go is a
+// kept conflict (no --overwrite): the transfer must leave it and, crucially,
+// must not chmod the link's target — which lives outside the receive tree and
+// carries a sender-controlled mode.
+func TestEngine_DirModeDoesNotFollowKeptSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix directory permission bits")
+	}
+	outside := t.TempDir()
+	if err := os.Chmod(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "d", "f.txt"), []byte("x"))
+	if err := os.Chmod(filepath.Join(src, "d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Receiver already has dst/d as its own symlink to a dir outside the tree.
+	if err := os.Symlink(outside, filepath.Join(dst, "d")); err != nil {
+		t.Fatal(err)
+	}
+
+	// No --overwrite, so the conflict is kept.
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "d")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+
+	if st, err := os.Lstat(filepath.Join(dst, "d")); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("receiver symlink not left intact: mode=%v err=%v", st.Mode(), err)
+	}
+	if st, _ := os.Stat(outside); st.Mode()&os.ModePerm != 0o755 {
+		t.Errorf("outside dir chmod'd through symlink: %o, want 0755", st.Mode()&os.ModePerm)
+	}
+}
+
+// A chmod on a source directory propagates on an identical re-send, matching
+// the file behavior — the dir is otherwise never re-created.
+func TestEngine_DirModePropagatesOnIdenticalResend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix directory permission bits")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "d", "f.txt"), []byte("x"))
+	if err := os.Chmod(filepath.Join(src, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "d")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("seed send=%v recv=%v", se, re)
+	}
+	// chmod the source dir and re-send (contents identical).
+	if err := os.Chmod(filepath.Join(src, "d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "d")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("resend send=%v recv=%v", se, re)
+	}
+	if st, _ := os.Stat(filepath.Join(dst, "d")); st.Mode()&os.ModePerm != 0o700 {
+		t.Errorf("dir mode not propagated: %o, want 0700", st.Mode()&os.ModePerm)
 	}
 }

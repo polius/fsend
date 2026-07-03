@@ -87,7 +87,9 @@ func LooksLikeCode(s string) bool {
 		return false
 	}
 	n := len(s) - strings.Count(s, "-")
-	return n >= Length-2 && n <= Length+2
+	// The lower bound covers a whole dropped 3-letter group ("abc-defg"),
+	// a plausible loss when codes are relayed verbally.
+	return n >= Length-4 && n <= Length+2
 }
 
 // format takes a 10-byte buffer of code letters and inserts hyphens.

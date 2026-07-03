@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -139,6 +140,30 @@ func TestPickFinalSendError(t *testing.T) {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// serverPairNotice must name the causes the sender can act on (401,
+// 429) — the LAN wait that follows never ends, so this notice is the
+// only place they surface — and keep the generic line for the rest.
+func TestServerPairNotice(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string // substring
+	}{
+		{fmt.Errorf("claim: %w", fserrors.ErrServerAuthRequired), "requires a password"},
+		{fmt.Errorf("claim: %w", fserrors.ErrRateLimited), "rate-limited"},
+		{fserrors.ErrServerUnreachable, "Server unavailable"},
+		{errors.New("http 503"), "Server unavailable"},
+	}
+	for _, tc := range cases {
+		got := serverPairNotice(tc.err)
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("serverPairNotice(%v) = %q, want substring %q", tc.err, got, tc.want)
+		}
+		if !strings.Contains(got, "local network") {
+			t.Errorf("notice %q must keep the LAN consolation", got)
+		}
 	}
 }
 
@@ -319,5 +344,17 @@ func TestIsReceiverClose(t *testing.T) {
 	}
 	if isReceiverClose(nil) {
 		t.Error("nil must not classify as receiver close")
+	}
+
+	// The receiver's teardown cancels its data-stream read (STOP_SENDING)
+	// just before the connection close; an in-flight chunk write can see
+	// the stream cancel first. Same deliberate close, same verdict —
+	// without this it escaped to the E099 catchall.
+	remoteStream := &quic.StreamError{StreamID: 3, ErrorCode: 0, Remote: true}
+	if !isReceiverClose(fmt.Errorf("wire: writing chunk payload: %w", remoteStream)) {
+		t.Error("remote stream cancel should classify as receiver close")
+	}
+	if isReceiverClose(&quic.StreamError{StreamID: 3, ErrorCode: 0, Remote: false}) {
+		t.Error("local stream cancel must not classify as receiver close")
 	}
 }

@@ -79,11 +79,12 @@ var joinRetryBudget = 15 * time.Second
 // controlled), fall back to relay on failure.
 //
 // connSpin, when non-nil, is the "Connecting" spinner the caller
-// started. We keep it animating through Join + ICE/relay setup and stop
-// it just before printPath — the first user-visible status line. This
-// replaces what used to be a sequence of brief spinner flashes that read
-// as glitchy. The deferred Stop covers error returns; Stop is idempotent
-// (sync.Once), so explicit stops before printPath don't double-close.
+// started. We keep it animating through Join + ICE/relay setup, then
+// hand it to runReceiverQUICOver, which retitles it for classification
+// and stops it at the accept prompt. This replaces what used to be a
+// sequence of brief spinner flashes that read as glitchy. The deferred
+// Stop covers error returns; Stop is idempotent (sync.Once), so the
+// earlier stops don't double-close.
 func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config, connSpin *uxlog.Spinner) error {
 	client, _ := signalingClient(cfg)
 	defer connSpin.Stop()
@@ -106,11 +107,11 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	}, false /* controlled */, f.debug)
 	if iceErr == nil {
 		defer func() { _ = iceConn.Close() }()
-		// Stop the spinner; the receive UX is owned by runReceiverQUICOver
-		// from here (no standalone path line — the prompt block carries
-		// path info as a chip and the summary names it again).
-		connSpin.Stop()
-		return runReceiverQUICOver(ctx, f, iceConn, c, icePath)
+		// Hand the spinner to runReceiverQUICOver: it keeps animating
+		// through classification and stops at the accept prompt (no
+		// standalone path line — the prompt block carries path info as a
+		// chip and the summary names it again).
+		return runReceiverQUICOver(ctx, f, iceConn, c, icePath, connSpin)
 	}
 	if f.debug {
 		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
@@ -135,9 +136,8 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}
 	defer func() { _ = relayConn.Close() }()
-	connSpin.Stop()
 	return classifyRelayDrop(ctx, client, joined.SessionID, joined.RoleToken,
-		runReceiverQUICOver(ctx, f, relayConn, c, connpath.FromRelay(alloc.RelayAddr)))
+		runReceiverQUICOver(ctx, f, relayConn, c, connpath.FromRelay(alloc.RelayAddr), connSpin))
 }
 
 // classifyRelayDrop probes the relay-status endpoint when a relay-path
@@ -190,10 +190,16 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID,
 // E003), not E017 — a mistyped code must not surface as "too many
 // attempts".
 func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags, existing *uxlog.Spinner) (*server.JoinSessionResponse, error) {
+	// The retry window can run the full budget (~15 s); a spinner stuck on
+	// the caller's "Connecting" for that long reads as a network problem.
+	// Say what we're actually doing — holding for the sender's Create.
+	const waitMsg = "Waiting for the sender to publish this code"
+
 	deadline := time.Now().Add(joinRetryBudget)
 	delay := 500 * time.Millisecond
 	var lastRetryable error
 	var spin *uxlog.Spinner
+	retitled := false
 	// Close over the variable so a spinner started inside the loop is
 	// still Stopped on return — a plain `defer spin.Stop()` would only
 	// stop the nil pointer captured at defer-time.
@@ -201,6 +207,11 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 	for {
 		joined, err := client.Join(ctx, code)
 		if err == nil {
+			if retitled {
+				// The caller's spinner keeps running through ICE/relay setup;
+				// hand it back with its original label.
+				existing.SetMessage("Connecting")
+			}
 			return joined, nil
 		}
 		if lastRetryable != nil && errors.Is(err, fserrors.ErrRateLimited) {
@@ -211,12 +222,17 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 			return nil, err
 		}
 		lastRetryable = err
-		// Animate a single line for the duration of the wait so the
-		// user knows we're holding for the sender rather than stuck.
-		// If the caller already gave us a running spinner, leave it
-		// alone — two spinners would fight each other on stderr.
-		if spin == nil && existing == nil && !f.quiet {
-			spin = uxlog.StartSpinner("Waiting for sender")
+		// Animate a single line for the duration of the wait so the user
+		// knows we're holding for the sender rather than stuck. A caller-
+		// owned spinner is retitled in place — starting a second one would
+		// fight it on stderr.
+		if !retitled && !f.quiet {
+			if existing != nil {
+				existing.SetMessage(waitMsg)
+			} else if spin == nil {
+				spin = uxlog.StartSpinner(waitMsg)
+			}
+			retitled = existing != nil
 		}
 		select {
 		case <-ctx.Done():
@@ -283,8 +299,8 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 				debugf("ICE local candidate: %s", cstr)
 				if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, []string{cstr}); err != nil {
 					// Best-effort: pion's ICE will keep going with whatever
-					// candidates have already crossed; surface in --debug only.
-					_ = err
+					// candidates have already crossed.
+					debugf("ICE push candidate failed: %v", err)
 				}
 			}
 		}
@@ -385,18 +401,26 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 		_ = rc.Close()
 		return nil, fmt.Errorf("relay bootstrap: %w", err)
 	}
+	// Resend the bootstrap until the relay forwards us a datagram: a single
+	// lost one would strand the passive sender (it only waits to be dialed).
+	rc.KeepBootstrapping(500*time.Millisecond, 20*time.Second)
 	return rc, nil
 }
 
 // runReceiverQUICOver runs the receiver's QUIC + transfer flow over an
 // already-established net.PacketConn.
 //
+// spin is the caller's "Connecting" spinner (nil under --quiet); it is
+// retitled and kept alive through classification — with --checksum the
+// pre-prompt hashing scales with the data already on disk — and stopped
+// by the accept prompt (or ui.close on error).
+//
 // Symmetric retry: a transient error tears down the current QUIC
 // session, sleeps, and re-Dials on the same PacketConn. The receiver's
 // .fsend-partial sidecar plus its imohash fingerprint let the next
 // attempt resume mid-file — the sender verifies the prefix, seeks past
 // it, and streams the remainder.
-func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string, pathInfo connpath.Info) error {
+func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string, pathInfo connpath.Info, spin *uxlog.Spinner) error {
 	tr := quicconn.NewTransport(pc)
 	defer func() { _ = tr.Close() }()
 
@@ -405,12 +429,14 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		return err
 	}
 	ui := newReceiverUI(ctx, f, outDir, sink, pathInfo)
+	spin.SetMessage("Checking existing files")
+	ui.spin = spin
 	defer ui.close()
 
 	start := time.Now()
 	// Sink mode gets one attempt: emitted bytes can't be reconciled, so
 	// a retry would duplicate output.
-	opts := retry.Options{OnRetry: retryNoticeFor(f)}
+	opts := retry.Options{OnRetry: ui.retryNotice()}
 	if sink {
 		opts.Attempts = 1
 	}
@@ -421,6 +447,7 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a
 		// decline/target-exists error; report it as a cancellation (E026).
 		if ctx.Err() != nil {
+			printCancelKeptHint(f, ui)
 			return ctx.Err()
 		}
 		return err
@@ -467,6 +494,9 @@ func retryNoticeFor(f *flags) func(attempt int, wait time.Duration, lastErr erro
 	// uxlog.Println coordinates with a live progress bar so the notice
 	// prints above it instead of colliding with the in-place redraw.
 	return func(attempt int, wait time.Duration, lastErr error) {
+		// The raw jittered duration ("618.167744ms") is debugging noise
+		// on a user-facing line.
+		wait = wait.Round(100 * time.Millisecond)
 		if f.debug {
 			uxlog.Println(fmt.Sprintf("  %s Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
 				uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts))

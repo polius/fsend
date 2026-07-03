@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polius/fsend/internal/wire"
 )
@@ -54,6 +55,48 @@ func TestEngine_ResumePartialMismatch(t *testing.T) {
 	}
 }
 
+// A stale partial next to an existing, differing target must not let resume
+// rename over the user's file without consent. Without --overwrite the file
+// is kept (conflict); with it, the fresh content lands.
+func TestEngine_ResumeDoesNotClobberExistingTarget(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	data := randBytes(3 * wire.MaxChunkSize)
+	writeFile(t, filepath.Join(src, "report.pdf"), data)
+
+	// A leftover partial from a crashed transfer...
+	writeFile(t, filepath.Join(dst, "report.pdf"+partialSuffix), data[:2*wire.MaxChunkSize])
+	// ...and the user's own, unrelated file at the same name.
+	userFile := []byte("MY OWN FILE")
+	writeFile(t, filepath.Join(dst, "report.pdf"), userFile)
+
+	// No overwrite: the user's file is kept and the conflict is signalled
+	// (the engine skips it; the E013 exit is the CLI layer's job).
+	var kept []string
+	_, re := fileTransfer(t, []string{filepath.Join(src, "report.pdf")}, dst, func(o *RecvOptions) {
+		o.OnConflictKept = func(rel string) { kept = append(kept, rel) }
+	})
+	if re != nil {
+		t.Fatalf("recv = %v, want nil (conflict kept, not an error)", re)
+	}
+	if len(kept) != 1 {
+		t.Fatalf("expected 1 kept conflict, got %v", kept)
+	}
+	if got := mustRead(t, filepath.Join(dst, "report.pdf")); !bytes.Equal(got, userFile) {
+		t.Fatalf("user's file was clobbered: %q", got)
+	}
+
+	// With overwrite: the transferred content lands (fresh, not resumed junk).
+	_, re = fileTransfer(t, []string{filepath.Join(src, "report.pdf")}, dst, func(o *RecvOptions) {
+		o.Overwrite = true
+	})
+	if re != nil {
+		t.Fatalf("overwrite recv = %v", re)
+	}
+	if got := mustRead(t, filepath.Join(dst, "report.pdf")); !bytes.Equal(got, data) {
+		t.Fatal("overwrite did not land the sent content")
+	}
+}
+
 func TestEngine_StreamToSink(t *testing.T) {
 	data := randBytes(3*wire.MaxChunkSize + 123)
 	var sink bytes.Buffer
@@ -66,6 +109,36 @@ func TestEngine_StreamToSink(t *testing.T) {
 	}
 	if !bytes.Equal(sink.Bytes(), data) {
 		t.Fatal("sink content mismatch")
+	}
+}
+
+// A zero-byte file to a sink (--out -) must complete promptly: the sender
+// skips the data phase for empty files, so the receiver must not block waiting
+// for a chunk that never comes (it used to hang until the idle timeout).
+func TestEngine_EmptyFileToSink(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "empty.bin"), nil)
+	sources, err := Walk([]string{filepath.Join(src, "empty.bin")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sink bytes.Buffer
+	done := make(chan [2]error, 1)
+	go func() {
+		se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources},
+			RecvOptions{TargetDir: t.TempDir(), Sink: &sink})
+		done <- [2]error{se, re}
+	}()
+	select {
+	case errs := <-done:
+		if errs[0] != nil || errs[1] != nil {
+			t.Fatalf("send=%v recv=%v", errs[0], errs[1])
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("empty file to sink hung (regression: deadlock waiting for a data chunk)")
+	}
+	if sink.Len() != 0 {
+		t.Errorf("empty file should yield no bytes, got %d", sink.Len())
 	}
 }
 

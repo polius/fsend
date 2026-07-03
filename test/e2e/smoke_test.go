@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,6 +93,33 @@ func TestServer_HealthCheck(t *testing.T) {
 	}
 }
 
+// An unreachable server is the routine result a health probe exists to
+// detect: exit 1 (the documented Docker HEALTHCHECK contract) with a
+// one-line reason — never the E099 "file an issue" catchall (exit 99).
+func TestServer_HealthCheckUnreachableExitsOne(t *testing.T) {
+	requireE2E(t)
+	cmd := exec.Command(h.fsendBin, "server", "--health-check")
+	// A port nothing listens on: bind+close to reserve a known-free one.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	cmd.Env = append(os.Environ(), "FSEND_SERVER_ADDR=127.0.0.1:"+strconv.Itoa(port))
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected a nonzero exit, got err=%v\n%s", err, out)
+	}
+	if code := exitErr.ExitCode(); code != 1 {
+		t.Errorf("exit = %d, want 1\n%s", code, out)
+	}
+	if strings.Contains(string(out), "E099") || strings.Contains(string(out), "issue") {
+		t.Errorf("routine probe failure must not route to the E099 catchall:\n%s", out)
+	}
+}
+
 // TestServer_PasswordGate spins up a second server process protected
 // with FSEND_SERVER_PASSWORD and confirms:
 //   - a client with no/wrong password gets exit 28 (E028) on Create
@@ -120,6 +149,9 @@ func TestServer_PasswordGate(t *testing.T) {
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE=10000",
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP=1000",
 	)
+	var out safeBuffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start guarded server: %v", err)
 	}
@@ -127,7 +159,7 @@ func TestServer_PasswordGate(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
-	if err := waitTCP("127.0.0.1:"+strconv.Itoa(httpPort), 5*time.Second); err != nil {
+	if err := waitServerReady("127.0.0.1:"+strconv.Itoa(httpPort), &out, 5*time.Second); err != nil {
 		t.Fatalf("guarded server not ready: %v", err)
 	}
 	addr := "127.0.0.1:" + strconv.Itoa(httpPort)

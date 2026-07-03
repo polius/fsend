@@ -118,6 +118,8 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 		{ErrUserCancelled, "E026", 130},
 		{ErrRelayIdleTimeout, "E029", 29},
 		{ErrRelayBudgetExhausted, "E037", 37},
+		{ErrManifestWriteFailed, "E038", 38},
+		{ErrHomebrewManaged, "E039", 39},
 	}
 	for _, c := range cases {
 		entry, ok := Lookup(c.err)
@@ -131,6 +133,39 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 		if entry.Exit != c.exit {
 			t.Errorf("%v: exit = %d, want %d", c.err, entry.Exit, c.exit)
 		}
+	}
+}
+
+// The Homebrew-managed entry carries no Action: the specific brew command
+// (upgrade vs uninstall) rides the wrapped detail, so a generic Action line
+// would only contradict it.
+func TestHomebrewManaged_NoAction(t *testing.T) {
+	entry, ok := Lookup(ErrHomebrewManaged)
+	if !ok {
+		t.Fatal("expected catalog match for ErrHomebrewManaged")
+	}
+	if entry.Action != "" {
+		t.Errorf("Action should be empty so the brew detail isn't contradicted, got %q", entry.Action)
+	}
+}
+
+// E010 originates on the sender and is mirrored to the receiver, so the base
+// (receiver) wording must point at the sender — the receiver can't check the
+// sender's file permissions — while ForSender keeps the direct imperative.
+func TestReadFailed_RoleSplitWording(t *testing.T) {
+	entry, ok := Lookup(ErrReadFailed)
+	if !ok {
+		t.Fatal("expected catalog match for ErrReadFailed")
+	}
+	if !strings.Contains(entry.Message, "sender") || !strings.Contains(entry.Action, "Ask them") {
+		t.Errorf("receiver wording should attribute the failure to the sender: %q / %q", entry.Message, entry.Action)
+	}
+	s := entry.ForSender()
+	if strings.Contains(s.Message, "sender") {
+		t.Errorf("sender wording should be direct, got %q", s.Message)
+	}
+	if s.Exit != 10 || entry.Exit != 10 {
+		t.Errorf("both roles must keep exit 10, got %d/%d", entry.Exit, s.Exit)
 	}
 }
 

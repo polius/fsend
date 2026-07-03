@@ -42,9 +42,9 @@ func (p *sendPlan) consumable() bool { return p.mode == wire.ModeStream }
 
 // runSend executes the send-side flow.
 func runSend(f *flags, paths []string) error {
-	errorRoleSender = true
+	errorRole = "sender"
 	if f.textArg != "" && len(paths) > 0 {
-		return fmt.Errorf("%w: --text cannot be combined with file arguments", fserrors.ErrUsage)
+		return fmt.Errorf("%w: --text cannot be combined with positional arguments", fserrors.ErrUsage)
 	}
 	if f.textArg == "" && len(paths) == 0 {
 		return fmt.Errorf("%w: nothing to send (provide a file, a directory, or --text)", fserrors.ErrUsage)
@@ -58,7 +58,7 @@ func runSend(f *flags, paths []string) error {
 		}
 	}
 
-	ctx, cancel := signalContext()
+	ctx, cancel := signalContext(f.quiet)
 	defer cancel()
 
 	if err := resolvePassword(ctx, f, true); err != nil {
@@ -74,6 +74,9 @@ func runSend(f *flags, paths []string) error {
 	if f.preview {
 		if plan.mode != wire.ModeFiles {
 			return fmt.Errorf("%w: --preview only applies to file or folder sends", fserrors.ErrUsage)
+		}
+		if f.json {
+			return fmt.Errorf("%w: --json does not apply to --preview (its CSV is already machine-readable)", fserrors.ErrUsage)
 		}
 		return writeSendPreview(os.Stdout, plan.sources)
 	}
@@ -187,6 +190,12 @@ func containsDirectory(paths []string) (bool, error) {
 		st, err := os.Stat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
+				// Stat follows symlinks, so a dangling link lands here even
+				// though the path exists. Leave it for Walk, which reports
+				// E036 with the link's target — not a false "no such file".
+				if _, lerr := os.Lstat(p); lerr == nil {
+					continue
+				}
 				return false, fmt.Errorf("%w: %s", fserrors.ErrSourceNotFound, p)
 			}
 			return false, fmt.Errorf("%w: %s: %v", fserrors.ErrReadFailed, p, err)
@@ -214,8 +223,13 @@ func shortRand() string {
 // printSendArtifact renders the receive-command block and starts the
 // "Waiting for receiver" spinner. --quiet emits just the code on stdout.
 func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
+	// Under --json the code event replaces --quiet's bare-code line —
+	// stdout must carry exactly one machine format.
+	jsonEmitCode(c)
 	if f.quiet {
-		_, _ = fmt.Fprintln(os.Stdout, c)
+		if !jsonEnabled() {
+			_, _ = fmt.Fprintln(os.Stdout, c)
+		}
 		return nil
 	}
 	fmt.Fprintln(os.Stderr)
@@ -231,6 +245,13 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 		}
 		fmt.Fprintf(os.Stderr, "  Sending %s%s  ·  %s\n",
 			name, uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))
+		// Directory-only sends (an empty folder) survive collectPlan's
+		// nothing-to-send guard because the dir entry itself is a source.
+		// Sending it is legitimate — but "0 files" is usually a mistake,
+		// so say what will actually happen.
+		if plan.totalFiles == 0 {
+			fmt.Fprintf(os.Stderr, "  %s No files here — only the empty directory will be created on the other side.\n", uxlog.Warn())
+		}
 		renderPreview(os.Stderr, senderPreview(plan.sources), 6)
 	}
 	fmt.Fprintln(os.Stderr)
@@ -285,25 +306,47 @@ func writeSendPreview(w io.Writer, sources []transfer.Source) error {
 // actually crossed the wire, so a partial send reads "Y (X sent)".
 type senderStats struct {
 	moved        int64 // bytes pushed on the wire this run
-	skippedFiles int   // whole files (non-dir) the receiver declined as identical
+	skippedFiles int   // whole files (non-dir) the receiver declined, keptFiles included
+	keptFiles    int   // subset of skippedFiles the receiver kept as differing copies
 }
 
 // newSenderProgress builds the progress callbacks driving a single overall
 // bar. Returns close, progress, onResume, onSkip, a stats getter, and
 // onStreamingEOF (latches the bar total once a stream EOFs). All callbacks
 // run on the single send-loop goroutine, so the counters need no locking.
-func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32), stats func() senderStats, onStreamingEOF func(uint32, uint64)) {
+func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32, bool), stats func() senderStats, onStreamingEOF func(uint32, uint64)) {
 	prev := make(map[uint32]uint64)
 	var s senderStats
 	var bar *uxlog.Progress
+	// Current-file chip: multi-file transfers only — a single file's name is
+	// already in the pre-transfer block. Names are our own local paths, so no
+	// display sanitization is needed (matches senderPreview).
+	var names map[uint32]string
+	if plan.mode == wire.ModeFiles && plan.totalFiles > 1 {
+		names = make(map[uint32]string, len(plan.sources))
+		for _, src := range plan.sources {
+			if src.Entry.Type != wire.EntryDir {
+				names[src.Entry.Index] = src.Entry.RelativePath
+			}
+		}
+	}
+	curFile := ^uint32(0)
+	setLabel := func(fi uint32) {
+		if names == nil || fi == curFile {
+			return
+		}
+		curFile = fi
+		bar.SetLabel(names[fi])
+	}
 	ensureBar := func() {
 		if bar == nil && !f.quiet {
-			bar = uxlog.New(int64(plan.totalBytes))
+			bar = uxlog.New(int64(plan.totalBytes), names != nil)
 		}
 	}
 	return func() { bar.Done() },
 		func(fi uint32, b uint64) {
 			ensureBar()
+			setLabel(fi)
 			d := b - prev[fi]
 			prev[fi] = b
 			bar.Add(int64(d))
@@ -323,7 +366,12 @@ func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn fun
 				uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
 			}
 		},
-		func(uint32) { s.skippedFiles++ },
+		func(_ uint32, kept bool) {
+			s.skippedFiles++
+			if kept {
+				s.keptFiles++
+			}
+		},
 		func() senderStats { return s },
 		func(_ uint32, finalBytes uint64) { bar.SetTotal(int64(finalBytes), true) }
 }
@@ -337,23 +385,42 @@ func resumeNotice(offset, total uint64) string {
 	return s
 }
 
-// printSendSummary renders the post-transfer success line. skippedFiles is the
-// count of (non-dir) entries the receiver declined; 0 omits the clause.
-func printSendSummary(f *flags, total, moved int64, skippedFiles int, elapsed time.Duration, path connpath.Info) {
+// printSendSummary renders the post-transfer outcome line. Files the receiver
+// kept (differing, no --overwrite there) make it a warning, not a success —
+// the sender must not read "✓ Sent" when nothing was delivered. Partial skips
+// without the kept flag stay the neutral "skipped": an old receiver doesn't
+// report the distinction (wire.Decision.Kept), so "up to date" would overclaim.
+func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
-	parts := summaryParts(total, moved, "sent", elapsed, path)
-	// The receiver may have declined files it already had. The sender can't
-	// tell an identical file from one the receiver kept a different version of
-	// (both arrive as DecisionSkip — see wire.DecisionAction), so it reports
-	// the neutral, always-true "skipped" count. That still reconciles with the
-	// receiver's precise "N up to date · M kept" breakdown by sum, and it's
-	// what explains a partial — or zero — "(X sent)" against the offered total.
-	if skippedFiles > 0 {
-		parts = append(parts, uxlog.CountNoun(skippedFiles, "file")+" skipped")
+	// Everything skipped, nothing kept: the receiver already had it all and
+	// says "Already up to date" — "Sent · (0 B sent)" would contradict
+	// itself. Mirror the receiver's headline.
+	if s.moved == 0 && s.keptFiles == 0 && s.skippedFiles > 0 {
+		fmt.Fprintf(os.Stderr, "%s Already up to date  ·  %s unchanged  ·  %s\n",
+			uxlog.Check(), uxlog.CountNoun(s.skippedFiles, "file"), path.Tag())
+		printUpdateNotice(f)
+		return
 	}
-	fmt.Fprintf(os.Stderr, "%s Sent  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
+	glyph, headline := uxlog.Check(), "Sent"
+	parts := summaryParts(total, s.moved, "sent", elapsed, path)
+	if s.keptFiles > 0 {
+		glyph = uxlog.Warn()
+		if s.moved == 0 {
+			// "Sent · 2.1 MB (0 B sent)" would contradict itself; name the
+			// outcome and drop the redundant moved clause.
+			headline = "Nothing sent"
+			parts[0] = uxlog.HumanBytes(total) + " offered"
+		}
+	}
+	if n := s.skippedFiles - s.keptFiles; n > 0 {
+		parts = append(parts, uxlog.CountNoun(n, "file")+" skipped")
+	}
+	if s.keptFiles > 0 {
+		parts = append(parts, uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver (needs --overwrite there)")
+	}
+	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
 }
 
@@ -361,11 +428,22 @@ func printSendSummary(f *flags, total, moved int64, skippedFiles int, elapsed ti
 // summaries. moved below total adds a "(X sent)" clause and bases the rate on
 // moved alone.
 func summaryParts(total, moved int64, verb string, elapsed time.Duration, path connpath.Info) []string {
+	// A stream's total is unknown up front (0); by summary time the moved
+	// count is the size — "Sent · 0 B" for a 15 MB pipe would be a lie.
+	if moved > total {
+		total = moved
+	}
 	size := uxlog.HumanBytes(total)
 	if moved < total {
 		size += " (" + uxlog.HumanBytes(moved) + " " + verb + ")"
 	}
-	parts := []string{size, uxlog.HumanDuration(elapsed)}
+	parts := []string{size}
+	// With zero bytes moved, elapsed is prompt dwell or connection wall
+	// time, not a transfer duration — "0 B · 5.8s" reads as a slow
+	// transfer. Omit it (HumanRate already suppresses the rate).
+	if moved > 0 {
+		parts = append(parts, uxlog.HumanDuration(elapsed))
+	}
 	if r := uxlog.HumanRate(moved, elapsed); r != "" {
 		parts = append(parts, r)
 	}
@@ -388,13 +466,21 @@ func displayPath(p string) string {
 }
 
 // signalContext wires Ctrl-C / SIGTERM to ctx cancellation; a second signal
-// reverts to the default disposition and terminates outright.
-func signalContext() (context.Context, context.CancelFunc) {
+// reverts to the default disposition and terminates outright. Teardown
+// (session delete, QUIC close) can take a few seconds, so the first
+// signal says so — otherwise the pause reads as a hang.
+func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
+		// Notice before cancel(), and via uxlog.Println: a live progress
+		// bar's next refresh frame would erase a raw stderr write, and
+		// cancel() races the bar's teardown.
+		if !quiet {
+			uxlog.Println(fmt.Sprintf("%s Cancelling — press Ctrl-C again to force quit.", uxlog.Info()))
+		}
 		cancel()
 		signal.Stop(ch)
 	}()

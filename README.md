@@ -31,7 +31,7 @@ fsend is a **command-line tool** that lets any two computers transfer files and 
 - **Send anything** — files, folders, multiple at once, stdin streams, or literal text
 - **Resumable** — a dropped transfer continues where it left off on the next send (with a fresh code), instead of starting over
 - **Skips what's already there** — re-send a folder and only the new or changed files transfer
-- **Password-protected** — gate any transfer with `--pass`; receiver supplies it to unlock
+- **Password-protected** — gate any transfer with `--password`; receiver supplies it to unlock
 - **Post-quantum** — X25519 + ML-KEM-768 (NIST); designed so future quantum computers can't decrypt today's transfers
 - **Self-hostable** — deploy your own pairing server + relay with Docker compose
 - **Runs anywhere** — single static binary on Linux, macOS, FreeBSD, Windows; x86 and ARM
@@ -71,6 +71,20 @@ Or grab a release binary from [the releases page](https://github.com/polius/fsen
 
 </details>
 
+<details>
+<summary>Tab-completion (optional)</summary>
+
+Add the line for your shell to its rc file (`$PROFILE` on PowerShell):
+
+```bash
+eval "$(fsend completion zsh)"                                 # zsh
+eval "$(fsend completion bash)"                                # bash
+fsend completion fish | source                                 # fish
+fsend completion powershell | Out-String | Invoke-Expression   # powershell
+```
+
+</details>
+
 ## Examples
 
 **Send** a file — fsend hands you a share code:
@@ -97,7 +111,7 @@ fsend ./project                    # a whole folder
 fsend a.txt b.txt c.txt            # several at once
 pg_dump mydb | fsend               # a stream from stdin
 fsend --text "wifi: hunter2"       # a literal string
-fsend report.pdf --pass            # gated behind a password
+fsend report.pdf --password        # gated behind a password
 ```
 
 …and to receive:

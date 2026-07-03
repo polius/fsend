@@ -120,10 +120,22 @@ func ReceiverTLSConfig() *tls.Config {
 
 // QuicConfig returns the shared quic-go config.
 func QuicConfig() *quic.Config {
+	idle := 30 * time.Second
+	// Undocumented test knob: peer-death detection latency equals the
+	// idle timeout, and the e2e suite can't wait 30 s per scenario.
+	if v := os.Getenv("FSEND_QUIC_IDLE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			idle = d
+		}
+	}
+	keepAlive := 10 * time.Second
+	if keepAlive > idle/2 {
+		keepAlive = idle / 2
+	}
 	return &quic.Config{
 		HandshakeIdleTimeout:           HandshakeTimeout,
-		MaxIdleTimeout:                 30 * time.Second,
-		KeepAlivePeriod:                10 * time.Second,
+		MaxIdleTimeout:                 idle,
+		KeepAlivePeriod:                keepAlive,
 		InitialStreamReceiveWindow:     512 * 1024,
 		MaxStreamReceiveWindow:         6 * 1024 * 1024,
 		InitialConnectionReceiveWindow: 1024 * 1024,

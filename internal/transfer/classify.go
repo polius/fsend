@@ -35,7 +35,7 @@ type entryPlan struct {
 	imohash      [ImohashSize]byte
 }
 
-// isConflict reports a destructive disagreement requiring --overwrite.
+// needsConsent reports a destructive disagreement requiring --overwrite.
 func (p *entryPlan) needsConsent() bool { return p.disp == dispDiffers || p.disp == dispConflict }
 
 // classifySummary is the breakdown shown in the accept prompt.
@@ -59,6 +59,7 @@ type classifySummary struct {
 // SummaryEntry is one regular file (or symlink) the receiver is offered, with
 // the per-entry status the preview annotates rows with.
 type SummaryEntry struct {
+	Index         uint32 // wire file index, keys the progress callbacks
 	RelativePath  string
 	Size          uint64
 	Status        string // "new" | "identical" | "differs" | "resume"
@@ -82,6 +83,13 @@ type Conflict struct {
 func classify(entries []wire.ListingEntry, targetDir string, checksum bool) ([]entryPlan, error) {
 	plans := make([]entryPlan, 0, len(entries))
 	for _, e := range entries {
+		// Reject peer symlinks: the honest sender dereferences them and never
+		// emits one (walk.go), so a symlink on the wire is a malicious sender
+		// planting a link that a later write traverses to escape targetDir —
+		// which the lexical path checks here can't see through.
+		if e.Type == wire.EntrySymlink {
+			return nil, fmt.Errorf("%w: peer sent a symlink (%q); fsend does not accept symlink entries", fserrors.ErrPathTraversal, e.RelativePath)
+		}
 		rel, err := SanitizeRelativePath(e.RelativePath)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
@@ -143,20 +151,9 @@ func classifyOne(e wire.ListingEntry, target, targetDir string, checksum bool) e
 		}
 		return p
 
-	case wire.EntrySymlink:
-		switch {
-		case !exists:
-			p.disp = dispNew
-		case st.Mode()&os.ModeSymlink != 0:
-			if tgt, err := os.Readlink(target); err == nil && tgt == e.SymlinkTarget {
-				p.disp = dispIdentical
-			} else {
-				p.disp = dispDiffers
-			}
-		default:
-			p.disp = dispConflict
-		}
-		return p
+	// No EntrySymlink case: classify() rejects peer symlinks outright before
+	// reaching here (a security boundary — the sender dereferences symlinks
+	// and never emits one).
 
 	default: // EntryFile
 		// Precedence: identical/verify target → resume → differ/conflict → new.
@@ -172,11 +169,17 @@ func classifyOne(e wire.ListingEntry, target, targetDir string, checksum bool) e
 				return p
 			}
 		}
-		if off, imo, ok := resumeCandidate(target+partialSuffix, e.Size); ok {
-			p.disp = dispResume
-			p.resumeOffset = off
-			p.imohash = imo
-			return p
+		// Resume only when the target is absent. An existing non-identical
+		// target is the user's file — resuming would rename over it with no
+		// consent, so fall through to differs/conflict (an approved
+		// overwrite re-sends fresh, truncating the stale partial).
+		if !exists {
+			if off, imo, ok := resumeCandidate(target+partialSuffix, e.Size); ok {
+				p.disp = dispResume
+				p.resumeOffset = off
+				p.imohash = imo
+				return p
+			}
 		}
 		switch {
 		case exists && (st.IsDir() || st.Mode()&os.ModeSymlink != 0):
@@ -242,6 +245,7 @@ func summarize(plans []entryPlan) classifySummary {
 		// so the preview's row count matches the headline's file count.
 		if p.entry.Type != wire.EntryDir {
 			s.Files = append(s.Files, SummaryEntry{
+				Index:         p.entry.Index,
 				RelativePath:  p.entry.RelativePath,
 				Size:          p.entry.Size,
 				Status:        dispStatus(p.disp),

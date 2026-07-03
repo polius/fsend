@@ -14,7 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
@@ -22,9 +25,11 @@ import (
 	"github.com/polius/fsend/internal/uxlog"
 )
 
-// errorRoleSender is set by runSend so renderError can pick sender-side
-// wording for errors mirrored from the receiver (E009, E013, E021).
-var errorRoleSender bool
+// errorRole is set by runSend ("sender") / runReceive ("receiver") so
+// renderError can pick sender-side wording for errors mirrored from the
+// receiver (E009, E013, E021) and stamp the --json done event. Empty until
+// a transfer path is entered — a flag-parse failure has no role.
+var errorRole string
 
 func main() {
 	// Normalise --connect arguments before cobra parses. We use
@@ -38,57 +43,22 @@ func main() {
 	//   fsend --connect host:port [password]  → set custom
 	os.Args = normalizeConnectArgs(os.Args)
 
-	// Same trick for --pass: NoOptDefVal would otherwise force
-	// `--pass=value` syntax and silently consume the natural
-	// `--pass value` form's value as a positional. Re-glue here so
-	// `fsend --pass swordfish report.pdf` does what users expect.
-	os.Args = normalizePassArgs(os.Args)
+	// Raw-args scan (like debugRequested): flag parsing itself can fail,
+	// and a script that asked for --json still deserves a JSON failure.
+	if argsHaveFlag("--json") {
+		jsonEnable()
+	}
+
+	// Without this the runtime kills us mid-write when a consumer closes
+	// our stdout (`--preview | head`, `--out - | ...`) — no deferred
+	// cleanup, and on some platforms an E099 render for routine SIGPIPE.
+	// Ignoring it makes the write return EPIPE, which renderError turns
+	// into a silent exit 141.
+	signal.Ignore(syscall.SIGPIPE)
 
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(renderError(err, debugRequested()))
 	}
-}
-
-// normalizePassArgs rewrites `--pass VALUE` to `--pass=VALUE` so the
-// value rides with the flag instead of falling through as a positional.
-// Without this rewrite, NoOptDefVal makes pflag swallow the bare flag
-// (firing the prompt sentinel) and read VALUE as the next positional —
-// which is what makes `fsend --pass swordfish report.pdf` mistakenly
-// prompt for a password and try to send "swordfish" alongside the file.
-//
-// Bare-flag spellings (--pass at end-of-args, or followed by another
-// flag) are left untouched so the prompt sentinel still fires.
-func normalizePassArgs(args []string) []string {
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		// Everything after the `--` end-of-flags marker is a positional,
-		// even if it spells a flag — copy the rest verbatim so a file
-		// literally named "--pass" survives `fsend -- --pass file`.
-		if a == "--" {
-			out = append(out, args[i:]...)
-			break
-		}
-		if a != "--pass" {
-			out = append(out, a)
-			continue
-		}
-		// Bare `--pass` at end → keep so NoOptDefVal fires (prompt).
-		if i+1 >= len(args) {
-			out = append(out, a)
-			continue
-		}
-		next := args[i+1]
-		// Next token is another flag → bare form intended.
-		if len(next) > 0 && next[0] == '-' {
-			out = append(out, a)
-			continue
-		}
-		// Consume the next positional as the password value.
-		out = append(out, a+"="+next)
-		i++
-	}
-	return out
 }
 
 // normalizeConnectArgs rewrites `--connect VALUE` to `--connect=VALUE` so
@@ -135,6 +105,12 @@ func normalizeConnectArgs(args []string) []string {
 // chain is appended after the user-facing message so bug reports
 // include the underlying technical details.
 func renderError(err error, debug bool) int {
+	// A consumer closing our stdout mid-payload (`fsend ... --preview |
+	// head`, `--out - | ...`) is routine SIGPIPE, not a failure worth
+	// narrating: exit silently with the shell convention 128+SIGPIPE.
+	if errors.Is(err, syscall.EPIPE) {
+		return 141
+	}
 	// Treat Ctrl-C / SIGTERM as a clean user cancel, not an "unexpected
 	// error". The signal handler in signalContext() cancels ctx, which
 	// propagates as context.Canceled through the call stack. Doing the
@@ -144,7 +120,7 @@ func renderError(err error, debug bool) int {
 		err = fserrors.ErrUserCancelled
 	}
 	entry, known := fserrors.Lookup(err)
-	if known && errorRoleSender {
+	if known && errorRole == "sender" {
 		entry = entry.ForSender()
 	}
 
@@ -166,7 +142,10 @@ func renderError(err error, debug bool) int {
 		errors.Is(err, fserrors.ErrRelayCapHit) ||
 		errors.Is(err, fserrors.ErrRelayIdleTimeout) ||
 		errors.Is(err, fserrors.ErrServerStartup) ||
-		errors.Is(err, fserrors.ErrUpdateFailed)) {
+		errors.Is(err, fserrors.ErrUpdateFailed) ||
+		errors.Is(err, fserrors.ErrUninstallFailed) ||
+		errors.Is(err, fserrors.ErrHomebrewManaged) ||
+		errors.Is(err, fserrors.ErrManifestWriteFailed)) {
 		if extra := extractDetail(err.Error()); extra != "" {
 			detail = extra
 		}
@@ -183,11 +162,17 @@ func renderError(err error, debug bool) int {
 	case entry.Exit == 0:
 		glyph = uxlog.Warn()
 	case errors.Is(err, fserrors.ErrUserCancelled),
-		!errorRoleSender && errors.Is(err, fserrors.ErrReceiverDeclined):
+		errors.Is(err, errKeptByChoice),
+		errorRole != "sender" && errors.Is(err, fserrors.ErrReceiverDeclined):
 		glyph = uxlog.Info()
 	}
 
 	switch {
+	case errors.Is(err, errKeptByChoice):
+		// The user answered "n" at the overwrite prompt — narrate their
+		// decision, not a failure, and skip the "Use --overwrite" advice
+		// they just declined. Exit stays 13 so scripts see the partial.
+		fmt.Fprintf(os.Stderr, "%s [%s] Kept your local copies — nothing was overwritten.\n", glyph, entry.Code)
 	case detail != "" && errors.Is(err, fserrors.ErrSourceNotFound):
 		// Inline the missing path into the message: the catalog message
 		// ends in "." which we strip so it reads as one sentence —
@@ -208,14 +193,18 @@ func renderError(err error, debug bool) int {
 			fmt.Fprintf(os.Stderr, "  For the fsend version, run: fsend --version\n")
 		case detail == "send" || detail == "receive":
 			fmt.Fprintf(os.Stderr, "  fsend has no %q subcommand — `fsend <file>` sends, `fsend <code>` receives.\n", detail)
+		case detail == "update" || detail == "uninstall":
+			fmt.Fprintf(os.Stderr, "  To %s fsend, run: fsend --%s\n", detail, detail)
 		}
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}
 	case detail != "" && errors.Is(err, fserrors.ErrUnsendableSymlink):
-		// Inline the offending link into the message — "[E036] Cannot send a
-		// symlink: broken link foo → ../gone (target does not exist)".
-		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, entry.Message, detail)
+		// Inline the offending link into the message (period stripped, as
+		// for E025) — "[E036] Cannot follow this symlink: broken link
+		// foo → ../gone (target does not exist)".
+		msg := strings.TrimSuffix(entry.Message, ".")
+		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, msg, detail)
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}
@@ -228,11 +217,18 @@ func renderError(err error, debug bool) int {
 		fmt.Fprintf(os.Stderr, "%s %s\n", glyph, entry.Render())
 	}
 
-	if debug {
+	// No chain for usage errors: the debug detail for a parse failure is
+	// the parse error itself — and debugRequested scans raw os.Args, so it
+	// can be reacting to the very flag cobra just rejected.
+	if debug && !errors.Is(err, fserrors.ErrUsage) {
 		for _, c := range fserrors.Chain(err) {
-			fmt.Fprintf(os.Stderr, "  DEBUG: %s\n", c)
+			// Sanitized: a peer's ErrorFrame message rides the chain, and
+			// untrusted text must not reach the terminal with ANSI/bidi.
+			fmt.Fprintf(os.Stderr, "  DEBUG: %s\n", sanitizeForDisplay(c, 512))
 		}
 	}
+	// No-op if the summary already emitted the rich done event.
+	jsonEmitDone(jsonDoneFromErr(err, entry.Exit, errorRole))
 	return entry.Exit
 }
 
@@ -260,16 +256,23 @@ func debugRequested() bool {
 	return argsHaveFlag("--debug")
 }
 
-// argsHaveFlag scans os.Args for a literal flag token. Used by the error
-// renderer, which runs after cobra state is gone.
+// argsHaveFlag reports whether a boolean flag is present and truthy on the
+// command line, honouring both the bare (--json) and valued (--json=true)
+// spellings. Used by the error renderer, which runs after cobra state is gone.
+// Last occurrence wins, matching pflag when a flag is repeated.
 func argsHaveFlag(name string) bool {
+	found := false
 	for _, a := range os.Args[1:] {
-		if a == name {
-			return true
-		}
 		if a == "--" {
 			break
 		}
+		switch {
+		case a == name:
+			found = true
+		case strings.HasPrefix(a, name+"="):
+			b, err := strconv.ParseBool(a[len(name)+1:])
+			found = err == nil && b
+		}
 	}
-	return false
+	return found
 }

@@ -16,8 +16,10 @@ package uxlog
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vbauerster/mpb/v8"
@@ -33,6 +35,7 @@ type Progress struct {
 	mp    *mpb.Progress
 	bar   *mpb.Bar
 	plain *plainProgress
+	label atomic.Value // string: current-file chip (see SetLabel)
 }
 
 // plainProgress renders progress as occasional complete lines — no
@@ -47,6 +50,8 @@ type plainProgress struct {
 	complete bool
 	closed   bool
 	lastLine time.Time
+	start    time.Time
+	label    string // current-file chip, "" when unset
 }
 
 // plainInterval throttles plain-mode lines. One line per second keeps
@@ -62,11 +67,30 @@ func (p *plainProgress) add(n int64) {
 	}
 	p.lastLine = time.Now()
 	if p.total > 0 {
-		_, _ = fmt.Fprintf(p.w, "  %d%%  %s / %s\n",
-			p.current*100/p.total, HumanBytes(p.current), HumanBytes(p.total))
+		// Clamp to 0..100: a percentage outside that range is never correct
+		// output, whatever the caller's accounting did.
+		line := fmt.Sprintf("%d%%  %s / %s",
+			max(0, min(100, p.current*100/p.total)), HumanBytes(p.current), HumanBytes(p.total))
+		if p.label != "" {
+			line += "  ·  " + p.label
+		}
+		_, _ = fmt.Fprintf(p.w, "  %s\n", line)
 		return
 	}
-	_, _ = fmt.Fprintf(p.w, "  %s\n", HumanBytes(p.current))
+	// Unknown total (stdin streams): a bare byte counter is all a long
+	// pipe would ever show — add throughput once it clears HumanRate's
+	// noise floor.
+	line := HumanBytes(p.current)
+	if r := HumanRate(p.current, time.Since(p.start)); r != "" {
+		line += "  ·  " + r
+	}
+	_, _ = fmt.Fprintf(p.w, "  %s\n", line)
+}
+
+func (p *plainProgress) setLabel(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.label = name
 }
 
 func (p *plainProgress) setTotal(total int64, complete bool) {
@@ -138,15 +162,32 @@ func setActive(p *Progress) {
 // totalBytes is the entire transfer's byte count. It must be known up
 // front; for stdin/text transfers we pass 0 and the bar renders without
 // a percentage, ETA, or rate chip.
-func New(totalBytes int64) *Progress {
+//
+// showNames reserves room for the current-file chip (SetLabel). Callers
+// pass true only for multi-file transfers — a single file's name is
+// already in the pre-transfer block, so the columns go to the bar instead.
+func New(totalBytes int64, showNames bool) *Progress {
 	// Plain mode for pipes/CI, and for terminals that report a 0×0
 	// window (some pty wrappers) — mpb discards every row at height 0.
 	width, _, sizeErr := term.GetSize(int(os.Stderr.Fd()))
 	if !renderTTY(os.Stderr) || sizeErr != nil || width <= 0 {
 		return &Progress{plain: &plainProgress{
-			w: os.Stderr, total: totalBytes, lastLine: time.Now(),
+			w: os.Stderr, total: totalBytes, lastLine: time.Now(), start: time.Now(),
 		}}
 	}
+	// The fixed width assumes ~55 columns of decorators around the bar; on
+	// narrower terminals the line would wrap and the in-place redraw only
+	// clears its last visual row, leaving stale fragments behind. The
+	// current-file chip widens that budget; terminals too narrow for both
+	// keep the bar and drop the chip (wrapping is worse than no name).
+	const nameCols = 20 // chip name budget; +5 for its "  ·  " separator
+	pad, labelCap := 55, 0
+	if showNames && width >= 55+10+nameCols+5 {
+		pad += nameCols + 5
+		labelCap = nameCols
+	}
+	bw := min(barWidth, max(10, width-pad))
+
 	p := &Progress{}
 	defer setActive(p)
 
@@ -155,16 +196,28 @@ func New(totalBytes int64) *Progress {
 		mpb.WithRefreshRate(100*time.Millisecond), // spec: ≥10 Hz
 	)
 
-	// The ━/╸/─ trio gives a calm, modern look without the "=====>"
-	// telegraph aesthetic the default style carries.
-	style := mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
-
-	// Track elapsed locally — decor.Statistics doesn't carry it, and we
-	// want the rate decor to use the same "since New()" baseline the
-	// summary line will use for "(<rate>)".
-	start := time.Now()
 	hasTotal := totalBytes > 0
-	showRate := totalBytes >= rateThreshold
+	// The ━/╸/─ trio gives a calm, modern look without the "=====>"
+	// telegraph aesthetic the default style carries. Unknown totals get
+	// no track at all: it could never fill, and a full-width ─ line at
+	// 0% reads as "stalled" — the counter/rate decorators carry the line.
+	var style mpb.BarFillerBuilder = mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	if !hasTotal {
+		style = mpb.NopStyle()
+	}
+
+	// Track elapsed locally — decor.Statistics doesn't carry it. Only the
+	// ETA's ≥1 s warm-up gate uses it; the rate itself comes from win, a
+	// sliding window, so it tracks current throughput instead of a lifetime
+	// mean skewed by a slow handshake or a mid-transfer speed change. The
+	// summary line still reports the lifetime figure — that one is correct.
+	start := time.Now()
+	win := &rateWindow{}
+	// Rate needs no total — a multi-GB stdin stream is exactly where the
+	// user wants throughput. HumanRate's own noise floor keeps it hidden
+	// until ~1 MB has moved, covering the small-stream case; ETA stays
+	// total-gated inside its decorator.
+	showRate := !hasTotal || totalBytes >= rateThreshold
 
 	// Percentage on the left. The completed bar is removed (see
 	// BarRemoveOnComplete below), so no terminal-state swap is needed.
@@ -197,34 +250,59 @@ func New(totalBytes int64) *Progress {
 		decor.Name("  "),
 		counters,
 	}
+	// The plain (un-dimmed) stalled marker; decor.Meta colors it below while
+	// mpb measures the bar width off this ANSI-free form.
+	const stalledChip = "  ·  stalled"
 	if showRate {
 		appendDecs = append(appendDecs,
 			// Rate: hidden when the figure would be misleading (start
-			// of transfer, zero elapsed, or on completion — the
-			// summary line carries the final figure).
-			decor.Any(func(s decor.Statistics) string {
-				if s.Completed || s.Aborted || s.Current == 0 {
-					return ""
-				}
-				elapsed := time.Since(start)
-				r := HumanRate(s.Current, elapsed)
-				if r == "" {
-					return ""
-				}
-				return "  ·  " + r
-			}),
+			// of transfer, sub-MB movement — HumanRate's noise floor —
+			// or on completion; the summary carries the final figure).
+			// This decorator also feeds the window each refresh frame.
+			// A stall says "stalled" rather than letting the windowed
+			// rate decay through fictional values.
+			decor.Meta(
+				decor.Any(func(s decor.Statistics) string {
+					if s.Completed || s.Aborted || s.Current == 0 {
+						return ""
+					}
+					now := time.Now()
+					r := win.observe(now, s.Current)
+					if s.Current < rateThreshold {
+						return ""
+					}
+					if win.stalled(now) {
+						return stalledChip
+					}
+					// Below 1 B/s the figure rounds to "0 B/s"; show nothing
+					// rather than a rate that reads as stalled.
+					if r < 1 {
+						return ""
+					}
+					return "  ·  " + HumanBytes(int64(r)) + "/s"
+				}),
+				// Dim only the stalled marker. Measuring width off the plain
+				// string above keeps mpb from counting the ANSI escapes — a
+				// colorized decor.Any costs ~6 columns of bar during a stall.
+				func(str string) string {
+					if str == stalledChip {
+						return Dim(str)
+					}
+					return str
+				},
+			),
 			// ETA: needs a known total, non-zero progress, and at least
 			// 1 s elapsed so the projection isn't dominated by handshake
-			// time. Hidden on completion.
+			// time. Hidden on completion and during a stall (a projection
+			// off a decaying rate only inflates).
 			decor.Any(func(s decor.Statistics) string {
 				if s.Completed || s.Aborted || s.Total <= 0 || s.Current == 0 {
 					return ""
 				}
-				elapsed := time.Since(start)
-				if elapsed < time.Second {
+				if time.Since(start) < time.Second || win.stalled(time.Now()) {
 					return ""
 				}
-				rate := float64(s.Current) / elapsed.Seconds()
+				rate := win.rate()
 				if rate <= 0 {
 					return ""
 				}
@@ -232,14 +310,26 @@ func New(totalBytes int64) *Progress {
 				if remainingSecs <= 0 {
 					return ""
 				}
-				return "  ·  ETA " + HumanDuration(time.Duration(remainingSecs*float64(time.Second)))
+				return "  ·  ETA " + etaLabel(remainingSecs)
 			}),
 		)
+	}
+	if labelCap > 0 {
+		// Current-file chip, last so its per-file width changes don't
+		// jiggle the rate/ETA chips. Kept on aborted bars: the frozen
+		// name records which file the transfer stopped in.
+		appendDecs = append(appendDecs, decor.Any(func(s decor.Statistics) string {
+			name, _ := p.label.Load().(string)
+			if name == "" {
+				return ""
+			}
+			return "  ·  " + truncateName(name, labelCap)
+		}))
 	}
 
 	p.bar = p.mp.New(totalBytes,
 		style,
-		mpb.BarWidth(barWidth),
+		mpb.BarWidth(bw),
 		// Progress is transient: a completed bar erases itself and the
 		// summary line that follows is the permanent record. Aborted
 		// (partial) bars stay — see Done().
@@ -248,6 +338,22 @@ func New(totalBytes int64) *Progress {
 		mpb.AppendDecorators(appendDecs...),
 	)
 	return p
+}
+
+// etaLabel renders an ETA projection, rounding up to whole seconds: at
+// 10 Hz refresh a sub-second projection would flicker millisecond values
+// ("ETA 943ms", "ETA 42ms") through the tail of a transfer. Sub-minute
+// values are formatted here rather than via HumanDuration, whose ms and
+// decimal precision is calibrated for measured elapsed times.
+func etaLabel(remainingSecs float64) string {
+	secs := int64(math.Ceil(remainingSecs))
+	if secs < 1 {
+		secs = 1
+	}
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	return HumanDuration(time.Duration(secs) * time.Second)
 }
 
 // Add increments the bar by n bytes.
@@ -265,6 +371,36 @@ func (p *Progress) Add(n int64) {
 	if p.bar != nil {
 		p.bar.IncrInt64(n)
 	}
+}
+
+// SetLabel sets the current-file chip rendered after the bar's other
+// decorators ("  ·  <name>"). Only shown when New was given showNames;
+// "" clears it. Callers pass display-safe names (peer-supplied strings
+// must be sanitized first) and should call only when the file changes.
+func (p *Progress) SetLabel(name string) {
+	if p == nil {
+		return
+	}
+	if p.plain != nil {
+		p.plain.setLabel(name)
+		return
+	}
+	p.label.Store(name)
+}
+
+// truncateName caps s at max runes, cutting in the middle so the tail —
+// where the extension lives — stays visible. Mirrors the consent-time
+// truncation in cmd/fsend's sanitizer.
+func truncateName(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 0 {
+		return "" // nothing fits; avoids a negative slice bound below
+	}
+	tail := min(8, max/2)
+	return string(r[:max-tail-1]) + "…" + string(r[len(r)-tail:])
 }
 
 // SetTotal updates the bar's total. Useful for stdin transfers where the

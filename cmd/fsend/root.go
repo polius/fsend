@@ -48,6 +48,7 @@ type flags struct {
 
 	// Misc
 	quiet     bool
+	json      bool // NDJSON events on stdout; human output stays on stderr
 	debug     bool
 	update    bool
 	uninstall bool
@@ -105,22 +106,23 @@ Examples:
 
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
-	c.Flags().StringVar(&f.passArg, "pass", "",
-		"password gate. Bare --pass prompts (sender: suggests a random default). Env: FSEND_PASS")
-	// Bare --pass (no value) collapses to this sentinel; the dispatch
+	c.Flags().StringVar(&f.passArg, "password", "",
+		"password gate. Bare --password prompts (sender: suggests a random default); inline: --password=SECRET. Env: FSEND_PASSWORD")
+	// Bare --password (no value) collapses to this sentinel; the dispatch
 	// layer treats it as "ask interactively, with input hidden." We
 	// blank DefValue so cobra's --help doesn't print the sentinel.
-	passFlag := c.Flags().Lookup("pass")
+	passFlag := c.Flags().Lookup("password")
 	passFlag.NoOptDefVal = passPromptSentinel
 	passFlag.DefValue = ""
-	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers")
-	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory")
+	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers (differing files still need --overwrite)")
+	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory, created if missing")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files that differ on receive")
 	c.Flags().BoolVar(&f.checksum, "checksum", false, "decide identical files by content hash, not size+mtime (like rsync -c)")
 	c.Flags().BoolVar(&f.preview, "preview", false, "list what would be sent (CSV: path,size) and exit; no transfer")
 	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status) of the received files to this path")
-	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress non-error output")
-	c.Flags().StringVar(&f.hostname, "name", "", "override the hostname shown to the peer")
+	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress all non-error output (send still prints the bare code to stdout)")
+	c.Flags().BoolVar(&f.json, "json", false, "emit NDJSON events (code, final summary) on stdout")
+	c.Flags().StringVar(&f.hostname, "name", "", "override the device name shown to the peer (default: hostname)")
 	c.Flags().StringSliceVar(&f.excludes, "exclude", nil,
 		"glob patterns to skip when bundling a directory (repeatable or comma-separated)")
 
@@ -129,7 +131,7 @@ Examples:
 	c.Flags().BoolVar(&f.forceReceive, "receive", false, "force receive mode (skip auto-detect)")
 
 	// Server selection. Bare --connect (no value) means "show current
-	// server" — same NoOptDefVal trick as --pass. The dispatcher
+	// server" — same NoOptDefVal trick as --password. The dispatcher
 	// recognises the sentinel and treats it as "no args".
 	c.Flags().StringSliceVar(&f.connectArgsRaw, "connect", nil, "set the server: <host[:port]>[,<password>] | 'default'")
 	connectFlag := c.Flags().Lookup("connect")
@@ -138,6 +140,8 @@ Examples:
 
 	// Misc
 	c.Flags().BoolVar(&f.debug, "debug", false, "verbose logging to stderr")
+	// Acted on before cobra parses (see main): the help template is built
+	// — and flag-parse errors render — before RunE ever runs.
 	c.Flags().BoolVar(&f.update, "update", false, "update fsend to the latest release")
 	c.Flags().BoolVar(&f.uninstall, "uninstall", false, "remove the fsend binary and config dir")
 
@@ -195,9 +199,10 @@ USAGE
   fsend completion <bash|zsh|fish|powershell>
 
 EXAMPLES
-  zsh:   eval "$(fsend completion zsh)"
-  bash:  eval "$(fsend completion bash)"
-  fish:  fsend completion fish | source
+  zsh:         eval "$(fsend completion zsh)"
+  bash:        eval "$(fsend completion bash)"
+  fish:        fsend completion fish | source
+  powershell:  fsend completion powershell | Out-String | Invoke-Expression
 
   Add the line to your shell's rc file to load it on every session.
 `
@@ -245,30 +250,29 @@ EXAMPLES
   Send a whole folder:
     fsend ./myproject
   Send with extra password protection:
-    fsend report.pdf --pass "shared-secret"
+    fsend report.pdf --password="shared-secret"
   Use a different server:
     fsend --connect relay.mycompany.com:443
 
 SENDING
-  --pass <password>      Require the receiver to enter a password.
-                         Bare --pass prompts interactively — sender side
-                         suggests a fresh random default (press Enter to
-                         accept). Env: FSEND_PASS.
+  --password             Require a password to receive. Bare --password prompts;
+                         inline --password=SECRET; env FSEND_PASSWORD.
   --exclude <glob,…>     Skip entries matching these globs in a directory
   --text "<string>"      Send a literal string instead of a file
                          (the receiver prints it — nothing is saved;
                          keep it with: fsend <code> > note.txt)
   --preview              List what would be sent (CSV: path,size) and exit —
                          no code, no transfer (pipe-friendly: --preview > out.csv)
-  --name <string>        Override the hostname shown to the peer
 
 RECEIVING
-  --yes                  Auto-accept incoming transfers (no prompt)
-  --out <dir>            Receive into this directory (default: current)
+  --yes                  Auto-accept incoming transfers (no prompt).
+                         Differing files are still kept unless --overwrite
+  --out <dir>            Receive into this directory, created if missing
+                         (default: current)
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
-  --pass <value>         Supply the sender's password up front, skipping the
-                         prompt (bare --pass prompts). Env: FSEND_PASS
+  --password             Supply the sender's password. Bare --password prompts;
+                         inline --password=SECRET; env FSEND_PASSWORD.
   --overwrite            Replace existing files that differ (identical files
                          are always skipped)
   --checksum             Decide identical files by content hash, not
@@ -277,20 +281,30 @@ RECEIVING
                          received files to <file>
 
 GENERAL
-  --quiet                Suppress all non-error output
+  --name <string>        Override the device name shown to the peer
+                         (default: hostname)
+  --quiet                Suppress all non-error output (send still prints
+                         the bare code to stdout)
+  --json                 NDJSON events on stdout: the code when issued, and
+                         a final summary (see docs/usage.md for the schema)
   --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
   --help, -h             Show this help
   --version, -v          Show version
 
 ADVANCED
   --connect              Show current server
-  --connect <host:port>  Set the server (persisted)
-  --connect <host:port>,<password>
+  --connect <host[:port]>
+                         Set the server (persisted)
+  --connect <host[:port]>,<password>
                          Set the server + shared password
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
   --update               Update fsend to the latest release
   --uninstall            Remove the fsend binary and its config dir
+  fsend server           Run your own pairing/relay server (--help for env vars)
+  fsend completion <shell>
+                         Print a tab-completion script (bash, zsh, fish,
+                         powershell)
 
 LEARN MORE
   https://github.com/polius/fsend
@@ -331,10 +345,10 @@ func isHelpHeader(line string) bool {
 }
 
 // passPromptSentinel is the value cobra hands us when the user passes
-// bare --pass with no argument. The dispatch layer translates this into
+// bare --password with no argument. The dispatch layer translates this into
 // an interactive no-echo prompt before any send/receive work begins.
 //
-// Note: a user who explicitly passes --pass=":prompt:" gets the same
+// Note: a user who explicitly passes --password=":prompt:" gets the same
 // hidden prompt — surprising-but-fine, since they typed the literal
 // sentinel themselves.
 const passPromptSentinel = ":prompt:"
@@ -346,15 +360,37 @@ const passPromptSentinel = ":prompt:"
 // user.
 const connectShowSentinel = ":show:"
 
+// maintenanceGuard rejects transfer flags and positionals alongside a
+// maintenance flag (--update / --uninstall): anything else on the command
+// line would silently not run. allowYes exempts --yes, which --uninstall
+// documents as skipping its confirmation prompt.
+func maintenanceGuard(cmd *cobra.Command, f *flags, name string, allowYes bool) error {
+	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "checksum", "manifest", "preview", "json"} {
+		if conflict == "yes" && allowYes {
+			continue
+		}
+		if cmd.Flags().Changed(conflict) {
+			return fmt.Errorf("%w: %s cannot be combined with --%s", fserrors.ErrUsage, name, conflict)
+		}
+	}
+	if len(f.posArgs) > 0 {
+		return fmt.Errorf("%w: %s cannot be combined with positional arguments (got %q)", fserrors.ErrUsage, name, f.posArgs[0])
+	}
+	return nil
+}
+
 // dispatch implements the CLI dispatch rules documented on the main.go
 // package comment.
 func dispatch(cmd *cobra.Command, f *flags) error {
+	if f.json {
+		jsonEnable()
+	}
 	// Handle --connect (server configuration) before anything else.
 	// Reject pairings with transfer-mode flags so the user can't be
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "pass", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "uninstall"} {
+		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "uninstall", "checksum", "manifest", "preview", "json"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}
@@ -378,14 +414,23 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	}
 
 	// --update / --uninstall are maintenance commands; never combine
-	// with transfer or with each other.
+	// with transfer flags, positionals, or each other. Same rationale as
+	// --connect above: `fsend report.pdf --update` would otherwise run
+	// the updater and silently drop the file the user asked to send.
 	if f.update && f.uninstall {
 		return fmt.Errorf("%w: --update and --uninstall are mutually exclusive", fserrors.ErrUsage)
 	}
 	if f.update {
+		if err := maintenanceGuard(cmd, f, "--update", false); err != nil {
+			return err
+		}
 		return runUpdate()
 	}
 	if f.uninstall {
+		// --yes stays allowed: it skips the uninstall confirmation.
+		if err := maintenanceGuard(cmd, f, "--uninstall", true); err != nil {
+			return err
+		}
 		return runUninstall(f)
 	}
 
@@ -403,40 +448,40 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		}
 	}
 
-	// `--pass=` (explicitly empty): the user asked for a password gate but
+	// `--password=` (explicitly empty): the user asked for a password gate but
 	// supplied none — proceeding would run the transfer unprotected.
-	if cmd.Flags().Changed("pass") && f.passArg == "" {
-		return fmt.Errorf("%w: --pass requires a non-empty password (bare --pass prompts interactively)",
+	if cmd.Flags().Changed("password") && f.passArg == "" {
+		return fmt.Errorf("%w: --password requires a non-empty password (bare --password prompts interactively)",
 			fserrors.ErrUsage)
 	}
 
-	// `fsend --pass file.pdf`: the value rides with the flag, so the file
-	// is consumed as the password — and with piped stdin that silently
-	// opens a session sending the wrong content. If the flag's value
-	// names an existing file and nothing is left to send, it was almost
-	// certainly a misplaced path.
-	if cmd.Flags().Changed("pass") && f.passArg != "" && f.passArg != passPromptSentinel &&
-		len(f.posArgs) == 0 && !cmd.Flags().Changed("text") {
-		if st, err := os.Stat(f.passArg); err == nil && !st.IsDir() {
-			return fmt.Errorf("%w: --pass consumed %q as the password; to send that file: fsend %s --pass",
-				fserrors.ErrUsage, f.passArg, f.passArg)
-		}
-		// Same trap with a (possibly mistyped) receive code as the value:
-		// with piped stdin it would silently stream stdin, code-as-password.
-		if code.IsCode(f.passArg) || code.LooksLikeCode(f.passArg) {
-			return fmt.Errorf("%w: --pass consumed %q as the password; to receive with a password: fsend %s --pass",
-				fserrors.ErrUsage, f.passArg, f.passArg)
+	// An inline password now rides the flag as `--password=secret`, so a bare
+	// --password followed by a non-file, non-code word is very likely a misplaced
+	// inline password (`fsend --password secret file`). Point at the = form rather
+	// than failing later with a bare "no such file". With explicit --send the
+	// positional is unambiguously a path, so skip the guess and let the real
+	// error (the missing source, or the bare-password prompt) stand.
+	if cmd.Flags().Changed("password") && f.passArg == passPromptSentinel &&
+		!cmd.Flags().Changed("text") && !f.forceReceive && !f.forceSend {
+		for _, a := range f.posArgs {
+			if a == "-" || code.IsCode(a) || code.LooksLikeCode(a) {
+				continue
+			}
+			if _, err := os.Stat(a); os.IsNotExist(err) {
+				return fmt.Errorf("%w: %q is not a file; if it's the password, use --password=%s (bare --password prompts)",
+					fserrors.ErrUsage, a, a)
+			}
 		}
 	}
 
-	// Env-var fallback for the password (FSEND_PASS). Passing a secret via
+	// Env-var fallback for the password (FSEND_PASSWORD). Passing a secret via
 	// flag leaks it through /proc/<pid>/cmdline and `ps -ef`; the env var
 	// lets users keep it out of argv. We only consult it when the flag
 	// wasn't explicitly given, so scripts that set both keep the flag's
 	// value (matching every other CLI's override convention).
 	applyEnvFallbacks(f, cmd)
 
-	// Bare --pass (no value) is resolved inside runSend / runReceive so
+	// Bare --password (no value) is resolved inside runSend / runReceive so
 	// each role can show the right prompt: the sender gets a random
 	// 16-char suggestion, the receiver gets a hidden no-echo prompt.
 
@@ -474,7 +519,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		// Don't silently drop files the user also listed; runSend's own
 		// guard never sees them otherwise (we'd pass nil).
 		if len(f.posArgs) > 0 {
-			return fmt.Errorf("%w: --text cannot be combined with file arguments", fserrors.ErrUsage)
+			return fmt.Errorf("%w: --text cannot be combined with positional arguments", fserrors.ErrUsage)
 		}
 		return runSend(f, nil)
 	}
@@ -545,16 +590,21 @@ func wrappedCode(arg string) (string, bool) {
 // user did not pass the corresponding flag. Used for secrets we'd
 // rather not see on argv.
 //
-// Bare --pass (collapsed to passPromptSentinel) counts as "the user said
+// Bare --password (collapsed to passPromptSentinel) counts as "the user said
 // they want a password, but didn't supply one" — so we still consult
-// FSEND_PASS. Doing it the other way around (env wins only when the
-// flag is absent entirely) silently ignored FSEND_PASS for users who
-// typed `--pass` to opt in.
+// FSEND_PASSWORD. Doing it the other way around (env wins only when the
+// flag is absent entirely) silently ignored FSEND_PASSWORD for users who
+// typed `--password` to opt in.
 func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
 	bare := f.passArg == passPromptSentinel
-	if !cmd.Flags().Changed("pass") || bare {
-		if v := os.Getenv("FSEND_PASS"); v != "" {
+	if !cmd.Flags().Changed("password") || bare {
+		if v := os.Getenv("FSEND_PASSWORD"); v != "" {
 			f.passArg = v
+			// The user who typed bare --password expects a prompt; say why
+			// none appears rather than silently pre-empting it.
+			if bare && !f.quiet {
+				fmt.Fprintln(os.Stderr, uxlog.Info(), "Using FSEND_PASSWORD from the environment — skipping the prompt.")
+			}
 		}
 	}
 }
@@ -563,11 +613,18 @@ func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
 // so `fsend <code> --exclude '*.log'` fails fast instead of silently
 // ignoring the flag.
 func startReceive(f *flags, c string) error {
+	errorRole = "receiver"
 	if len(f.excludes) > 0 {
 		return errExcludeMisuse()
 	}
 	if f.preview {
 		return fmt.Errorf("%w: --preview is a send-side flag and has no effect when receiving", fserrors.ErrUsage)
+	}
+	// An explicit --receive deserves the same tolerance auto-detect has
+	// for chat-app mangling (auto-capitalized first letter, copied
+	// whitespace) — the more explicit user must not get the worse E004.
+	if t := strings.ToLower(strings.TrimSpace(c)); t != c && code.IsCode(t) {
+		c = t
 	}
 	return runReceive(f, c)
 }
@@ -593,7 +650,7 @@ func promptCodeOrPath(f *flags, arg string) error {
 func askCodeOrPath(br *bufio.Reader, arg string) (send bool, err error) {
 	fmt.Fprintf(os.Stderr, "\n  %q matches a code AND is a local file.\n", arg)
 	for {
-		fmt.Fprintf(os.Stderr, "  [s]end this file, or [r]eceive with this code? (r): ")
+		fmt.Fprint(os.Stderr, "  Send this file, or receive with this code? [s/R] ")
 		resp, eof := readLineFrom(br)
 		if eof {
 			fmt.Fprintln(os.Stderr)

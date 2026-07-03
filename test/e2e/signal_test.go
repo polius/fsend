@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -54,18 +55,20 @@ func TestSignal_SenderSIGINTMidTransfer(t *testing.T) {
 	s.wait(t, 5*time.Second)
 
 	// Generous bound: the receiver may walk its full retry budget
-	// (3 × 10s QUIC handshake) when SIGINT lands at certain stream
-	// positions before giving up. We only care that it eventually
-	// surfaces a non-zero exit; the duration is bounded by retry config.
+	// (3 × 10s QUIC handshake plus backoff waits ≈ 33s) when SIGINT
+	// lands at certain stream positions before giving up — already past
+	// a 30s bound before any runner load, which is why 30s flaked on
+	// loaded CI. We only care that it eventually surfaces a non-zero
+	// exit; the duration is bounded by retry config.
 	select {
 	case err := <-rDone:
 		if err == nil {
 			t.Fatalf("receiver returned 0 after sender SIGINT — should be non-zero")
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(60 * time.Second):
 		_ = rCmd.Process.Kill()
 		<-rDone
-		t.Fatalf("receiver did not exit within 30s")
+		t.Fatalf("receiver did not exit within 60s")
 	}
 
 	if fi, err := os.Stat(filepath.Join(dst, "big.bin")); err == nil {
@@ -291,8 +294,20 @@ func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
 	}
 	_ = r1.Wait()
 
-	// The sender must go back to waiting rather than exit.
-	if !waitForStderr(s, "Receiver disconnected", 15*time.Second) {
+	// The interrupt must explain itself: the force-quit escape hatch and
+	// the fact that the partial survives for the resume exercised below.
+	if !strings.Contains(r1Err.String(), "press Ctrl-C again to force quit") {
+		t.Errorf("no force-quit hint on first SIGINT\n--- recv1 stderr ---\n%s", r1Err.String())
+	}
+	if !strings.Contains(r1Err.String(), "Partial data kept") {
+		t.Errorf("no partial-kept resume hint after mid-transfer SIGINT\n--- recv1 stderr ---\n%s", r1Err.String())
+	}
+
+	// The sender must go back to waiting rather than exit. 60s: a pure
+	// upper bound costs nothing when healthy, and 30s flaked on loaded
+	// runners (the sender can sit in a QUIC handshake attempt before
+	// classifying the drop).
+	if !waitForStderr(s, "Receiver disconnected", 60*time.Second) {
 		t.Fatalf("sender never re-entered pairing\n--- sender stderr ---\n%s", s.stderr.String())
 	}
 
@@ -341,3 +356,76 @@ func waitForStderr(s *senderProc, substr string, budget time.Duration) bool {
 	}
 	return false
 }
+
+// A receiver that dies uncleanly (SIGKILL — crash, power loss, network
+// gone) must not strand the sender: after the QUIC idle timeout and the
+// bounded re-accept retries, the sender reports the lost contact
+// honestly (no "reconnect" from a dead process) and returns to waiting —
+// and the same code must still complete a transfer with a fresh
+// receiver. FSEND_QUIC_IDLE_TIMEOUT shrinks the 30 s death-detection
+// window so the test doesn't wait a minute per run.
+func TestSignal_ReceiverKilledCodeStaysLive(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 256*1024)
+
+	xdg := h.newXDG(t)
+	s := &senderProc{cmd: h.fsendCmd(xdg, srcFile), stdout: &safeBuffer{}, stderr: &safeBuffer{}}
+	s.cmd.Env = append(s.cmd.Env, "FSEND_QUIC_IDLE_TIMEOUT=2s")
+	s.cmd.Stdout, s.cmd.Stderr = s.stdout, s.stderr
+	if err := s.cmd.Start(); err != nil {
+		t.Fatalf("start sender: %v", err)
+	}
+	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
+	code := s.waitForCode(t, 5*time.Second)
+
+	// Receiver 1 pairs (no --yes: it parks at the accept prompt, held
+	// open by a pipe we never write to) and is then hard-killed. An
+	// os.Pipe passes the fd straight through, so Wait doesn't hang on
+	// an exec stdin-copy goroutine after the Kill.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pr.Close(); _ = pw.Close() }()
+	r1 := h.fsendCmd(xdg, code)
+	r1.Dir = dst
+	r1.Stdin = pr
+	var r1Err bytes.Buffer
+	r1.Stderr = &r1Err
+	if err := r1.Start(); err != nil {
+		t.Fatalf("start recv1: %v", err)
+	}
+	if !waitForStderr(s, "Receiver connected", 10*time.Second) {
+		t.Fatalf("receiver never paired\n--- sender stderr ---\n%s", s.stderr.String())
+	}
+	if err := r1.Process.Kill(); err != nil {
+		t.Fatalf("kill recv1: %v", err)
+	}
+	_ = r1.Wait()
+
+	// Idle timeout (2 s) + two bounded re-accepts (15 s each) + backoff.
+	if !waitForStderr(s, "Lost contact with the receiver", 60*time.Second) {
+		t.Fatalf("sender never reported the lost receiver\n--- sender stderr ---\n%s", s.stderr.String())
+	}
+	// The user-facing retry notice must carry a rounded wait, not the raw
+	// jittered duration ("618.167744ms").
+	if rawDuration.MatchString(s.stderr.String()) {
+		t.Errorf("retry notice leaked a raw duration\n--- sender stderr ---\n%s", s.stderr.String())
+	}
+
+	// The code is still live: a fresh receiver completes the transfer.
+	rOut, rErr, exit := h.runFsendIn(t, xdg, dst, "--yes", code)
+	if exit != 0 {
+		t.Fatalf("fresh receiver exit %d\n%s\n%s\n--- sender stderr ---\n%s", exit, rOut, rErr, s.stderr.String())
+	}
+	if got := s.wait(t, 10*time.Second); got != 0 {
+		t.Fatalf("sender exit = %d\n--- sender stderr ---\n%s", got, s.stderr.String())
+	}
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
+}
+
+// rawDuration matches Go's un-rounded Duration rendering (5+ decimals),
+// e.g. "618.167744ms" — what the retry notice must never show.
+var rawDuration = regexp.MustCompile(`[0-9]+\.[0-9]{5,}m?s`)

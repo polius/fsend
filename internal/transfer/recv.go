@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -35,8 +34,11 @@ type RecvOptions struct {
 	// Overwrite is false and there is a terminal to ask.
 	ConfirmOverwrite func(conflicts []Conflict) bool
 
-	Password   string
-	PromptPass func() (string, error)
+	Password string
+	// PromptPass asks the user for the sender's password. attempt starts at
+	// 1 and grows when the sender rejects a try (up to PasswordAttempts),
+	// so the prompt can say "wrong password — try again".
+	PromptPass func(attempt int) (string, error)
 
 	ProgressFn func(index uint32, bytesWritten uint64)
 	OnResume   func(index uint32, offset, total uint64)
@@ -164,13 +166,19 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 		p := &plans[i]
 		byIndex[p.entry.Index] = p
 		if decisions[i].Action == wire.DecisionSkip {
+			// An identical file skips the data transfer, but a permission-only
+			// change (chmod +x) leaves size+mtime untouched — repair the mode
+			// locally or it never propagates. Kept conflicts stay as-is.
+			if p.disp == dispIdentical {
+				repairIdenticalMode(p)
+			}
 			continue
 		}
 		if p.entry.Type == wire.EntryFile && p.entry.Size > 0 {
 			expected++
 			continue
 		}
-		if err := materialize(s, p, opts.TargetDir, approveOverwrite); err != nil {
+		if err := materialize(s, p, approveOverwrite, opts); err != nil {
 			return err
 		}
 	}
@@ -178,6 +186,7 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 	if err := receiveData(ctx, s, byIndex, decisions, plans, expected, opts); err != nil {
 		return err
 	}
+	restoreDirModes(plans)
 	if err := finishRecv(s); err != nil {
 		return err
 	}
@@ -231,12 +240,16 @@ func recvFilesToSink(ctx context.Context, s *Streams, hello *wire.SenderHello, e
 	if err := sendDecisions(s.Control, []wire.Decision{{Index: 0, Action: wire.DecisionSend}}); err != nil {
 		return fmt.Errorf("recv: decisions: %w", err)
 	}
-	if err := streamPayload(ctx, s, opts.Sink, func(n uint64) {
-		if opts.ProgressFn != nil {
-			opts.ProgressFn(0, n)
+	// A zero-byte file carries no data phase (the sender skips it), so waiting
+	// on streamPayload would hang until the idle timeout. Nothing to write.
+	if entries[0].Size > 0 {
+		if err := streamPayload(ctx, s, opts.Sink, func(n uint64) {
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(0, n)
+			}
+		}); err != nil {
+			return err
 		}
-	}); err != nil {
-		return err
 	}
 	return finishRecv(s)
 }
@@ -570,7 +583,7 @@ func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error 
 }
 
 // materialize creates a structural entry (dir / symlink / empty file).
-func materialize(s *Streams, p *entryPlan, targetDir string, approveOverwrite bool) error {
+func materialize(s *Streams, p *entryPlan, approveOverwrite bool, opts RecvOptions) error {
 	target := p.target
 	if p.needsConsent() && approveOverwrite {
 		_ = os.RemoveAll(target) // clear the slot (approved)
@@ -583,19 +596,11 @@ func materialize(s *Streams, p *entryPlan, targetDir string, approveOverwrite bo
 		}
 		return nil
 	case wire.EntrySymlink:
-		if symlinkEscapes(targetDir, p.entry.RelativePath, p.entry.SymlinkTarget) {
-			declineTransfer(s, wire.ErrCodeProtocolError, "symlink escapes target dir")
-			return fserrors.ErrPathTraversal
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir parent")
-			return fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
-		}
-		_ = os.Remove(target)
-		if err := os.Symlink(p.entry.SymlinkTarget, target); err != nil && runtime.GOOS != "windows" {
-			return fmt.Errorf("%w: symlink: %v", fserrors.ErrWriteFailed, err)
-		}
-		return nil
+		// Defense in depth: classify already rejects peer symlinks. Never
+		// create one from peer input — a planted link lets a later write
+		// traverse out of the receive dir. Fail closed.
+		declineTransfer(s, wire.ErrCodeProtocolError, "symlink entries are not accepted")
+		return fmt.Errorf("%w: symlink entry %q", fserrors.ErrPathTraversal, p.entry.RelativePath)
 	default: // empty regular file
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir parent")
@@ -611,7 +616,50 @@ func materialize(s *Streams, p *entryPlan, targetDir string, approveOverwrite bo
 			t := time.Unix(p.entry.ModTimeSec, 0)
 			_ = os.Chtimes(target, t, t)
 		}
+		// An empty file is a saved file too — fire OnFileDone like finalize
+		// does for non-empty ones, so it's counted in the receiver's saved-file
+		// tally (files_saved / the "Saved N of M" headline).
+		if opts.OnFileDone != nil {
+			opts.OnFileDone(target)
+		}
 		return nil
+	}
+}
+
+// restoreDirModes sets each received directory to the sender's mode, after
+// its children are written. Dirs are created writable (Mode|0o700) during
+// the transfer and an identical dir is never re-created, so without this a
+// restrictive or changed dir mode would never land. Applied last, deepest
+// first, so a read-only mode can't block writing the dir's own children.
+func restoreDirModes(plans []entryPlan) {
+	for i := len(plans) - 1; i >= 0; i-- {
+		p := &plans[i]
+		if p.entry.Type != wire.EntryDir {
+			continue
+		}
+		want := os.FileMode(p.entry.Mode) & os.ModePerm
+		// Lstat, not Stat: if a receiver-side symlink sits in the slot (a kept
+		// dir↔symlink conflict), Stat would follow it and chmod the link's
+		// target anywhere on disk. Lstat reports the link itself, so IsDir is
+		// false and we skip it — we only ever chmod a real directory we own.
+		if st, err := os.Lstat(p.target); err == nil && st.IsDir() && st.Mode()&os.ModePerm != want {
+			_ = os.Chmod(p.target, want)
+		}
+	}
+}
+
+// repairIdenticalMode propagates a permission-only change onto an
+// already-identical regular file, whose unchanged size+mtime (or content
+// hash under --checksum) would otherwise skip it and never pick up the new
+// mode. Best-effort; a chmod failure isn't worth failing the transfer.
+func repairIdenticalMode(p *entryPlan) {
+	if p.entry.Type != wire.EntryFile {
+		return
+	}
+	want := os.FileMode(p.entry.Mode) & os.ModePerm
+	// Lstat, not Stat: never chmod through a symlink swapped into the slot.
+	if st, err := os.Lstat(p.target); err == nil && st.Mode().IsRegular() && st.Mode()&os.ModePerm != want {
+		_ = os.Chmod(p.target, want)
 	}
 }
 
@@ -639,12 +687,29 @@ func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.
 			d.Action = wire.DecisionSend
 		} else {
 			d.Action = wire.DecisionSkip
+			d.Kept = true
 			if opts.OnConflictKept != nil {
 				opts.OnConflictKept(p.entry.RelativePath)
 			}
 		}
 	}
 	return d
+}
+
+// StreamFileName is the filename a ModeStream payload lands under: the
+// sanitized base of the peer-supplied display name, or a fixed fallback.
+// Exported so the CLI accept prompt can show the exact name recvStream
+// will write.
+func StreamFileName(displayName string) string {
+	name, err := SanitizeRelativePath(displayName)
+	if err != nil {
+		return "fsend-received"
+	}
+	base := filepath.Base(name)
+	if base == "." || base == string(filepath.Separator) {
+		return "fsend-received"
+	}
+	return base
 }
 
 // recvStream receives one ModeStream payload (stdin/--text) to a sink or a
@@ -666,11 +731,18 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 	var target string
 	var f *os.File
 	if w == nil {
-		name, err := SanitizeRelativePath(hello.DisplayName)
-		if err != nil || name == "" {
-			name = "fsend-received"
+		base := StreamFileName(hello.DisplayName)
+		target = filepath.Join(opts.TargetDir, base)
+		// An honest sender names streams with a random suffix, so an existing
+		// target means a crafted DisplayName (or a freak collision) — refuse
+		// to clobber it unless the user opted in with --overwrite.
+		if !opts.Overwrite {
+			if _, lerr := os.Lstat(target); lerr == nil {
+				declineTransfer(s, wire.ErrCodeTargetExists, base)
+				return fmt.Errorf("%w: %s (use --overwrite to replace it)", fserrors.ErrTargetExists, base)
+			}
 		}
-		target = filepath.Join(opts.TargetDir, filepath.Base(name))
+		var err error
 		f, err = os.OpenFile(target+partialSuffix, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			declineTransfer(s, wire.ErrCodeWriteFailed, "create: "+err.Error())
@@ -781,7 +853,9 @@ func classifyWriteErr(op string, err error) error {
 	if errors.Is(err, syscall.ENOSPC) {
 		base = fserrors.ErrDiskFull
 	}
-	return fmt.Errorf("%w: %s: %v", base, op, err)
+	// err stays wrapped so the CLI can spot EPIPE on the stdout sink
+	// (`--out -`) and exit 141 instead of rendering E009.
+	return fmt.Errorf("%w: %s: %w", base, op, err)
 }
 
 // declineTransfer posts an ERROR frame and runs the symmetric shutdown. The
@@ -825,6 +899,8 @@ func mapPeerError(ef wire.ErrorFrame) error {
 		return fserrors.ErrReceiverDeclined
 	case wire.ErrCodeWriteFailed:
 		return fmt.Errorf("%w: receiver: %s", fserrors.ErrWriteFailed, ef.Message)
+	case wire.ErrCodeReadFailed:
+		return fmt.Errorf("%w: sender: %s", fserrors.ErrReadFailed, ef.Message)
 	case wire.ErrCodeCancelled:
 		return fserrors.ErrPeerCancelled
 	default:
@@ -832,47 +908,66 @@ func mapPeerError(ef wire.ErrorFrame) error {
 	}
 }
 
-// receiverPasswordHandshake answers the sender's --pass challenge.
+// receiverPasswordHandshake answers the sender's --password challenge. On a
+// mismatch the sender issues a fresh challenge (up to PasswordAttempts), so
+// an interactively-prompted receiver can retry a typo without burning the
+// one-shot code. A fixed password (--password / FSEND_PASSWORD) gets one
+// try — resending the same value can't succeed. The loop is bounded by the
+// same PasswordAttempts cap the sender enforces, so a hostile sender can't
+// hold the receiver in an endless password prompt.
 func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
-	var ch wire.PasswordChallenge
-	ft, err := wire.ReadControl(s.Control, &ch)
-	if err != nil {
-		return fmt.Errorf("recv: read password challenge: %w", err)
-	}
-	if ft != wire.TypePasswordChallenge {
-		return fmt.Errorf("%w: expected PASSWORD_CHALLENGE, got %v", fserrors.ErrProtocolError, ft)
-	}
-	password := opts.Password
-	if password == "" {
-		if opts.PromptPass == nil {
-			declineTransfer(s, wire.ErrCodePasswordRequired, "receiver has no password to offer")
-			return fserrors.ErrPasswordRequired
-		}
-		password, err = opts.PromptPass()
+	for attempt := 1; attempt <= PasswordAttempts; attempt++ {
+		var ch wire.PasswordChallenge
+		ft, err := wire.ReadControl(s.Control, &ch)
 		if err != nil {
-			return fmt.Errorf("recv: read password: %w", err)
+			// An old sender closes the stream after one mismatch instead of
+			// re-challenging; the honest error is still the password.
+			if attempt > 1 {
+				return fserrors.ErrWrongPassword
+			}
+			return fmt.Errorf("recv: read password challenge: %w", err)
 		}
-	}
-	mac := hmacPassword(password, ch.Nonce[:])
-	var resp wire.PasswordResponse
-	copy(resp.HMAC[:], mac)
-	if err := wire.WriteControl(s.Control, wire.TypePasswordResponse, &resp); err != nil {
-		return fmt.Errorf("recv: write password response: %w", err)
-	}
-	var ef wire.ErrorFrame
-	ft, err = wire.ReadControl(s.Control, &ef)
-	if err != nil {
-		return fmt.Errorf("recv: read password verdict: %w", err)
-	}
-	switch ft {
-	case wire.TypePasswordVerified:
-		return nil
-	case wire.TypeError:
-		if ef.Code == wire.ErrCodeWrongPassword {
+		if ft != wire.TypePasswordChallenge {
+			return fmt.Errorf("%w: expected PASSWORD_CHALLENGE, got %v", fserrors.ErrProtocolError, ft)
+		}
+		password := opts.Password
+		if password == "" {
+			if opts.PromptPass == nil {
+				declineTransfer(s, wire.ErrCodePasswordRequired, "receiver has no password to offer")
+				return fserrors.ErrPasswordRequired
+			}
+			password, err = opts.PromptPass(attempt)
+			if err != nil {
+				return fmt.Errorf("recv: read password: %w", err)
+			}
+		}
+		mac := hmacPassword(password, ch.Nonce[:])
+		var resp wire.PasswordResponse
+		copy(resp.HMAC[:], mac)
+		if err := wire.WriteControl(s.Control, wire.TypePasswordResponse, &resp); err != nil {
+			return fmt.Errorf("recv: write password response: %w", err)
+		}
+		var ef wire.ErrorFrame
+		ft, err = wire.ReadControl(s.Control, &ef)
+		if err != nil {
+			return fmt.Errorf("recv: read password verdict: %w", err)
+		}
+		switch ft {
+		case wire.TypePasswordVerified:
+			return nil
+		case wire.TypeError:
+			if ef.Code != wire.ErrCodeWrongPassword {
+				return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
+			}
+			if opts.Password == "" && opts.PromptPass != nil {
+				continue // loop back for the sender's next challenge
+			}
 			return fserrors.ErrWrongPassword
+		default:
+			return fmt.Errorf("%w: expected PASSWORD_VERIFIED, got %v", fserrors.ErrProtocolError, ft)
 		}
-		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
-	default:
-		return fmt.Errorf("%w: expected PASSWORD_VERIFIED, got %v", fserrors.ErrProtocolError, ft)
 	}
+	// Exhausted the attempt cap without a verified verdict (a sender that keeps
+	// re-challenging past its own limit): the honest outcome is a bad password.
+	return fserrors.ErrWrongPassword
 }

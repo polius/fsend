@@ -36,24 +36,33 @@ type SendOptions struct {
 
 	Password string
 
-	ProgressFn     func(index uint32, bytesSent uint64)
-	OnResume       func(index uint32, offset, total uint64)
-	OnSkip         func(index uint32)
+	ProgressFn func(index uint32, bytesSent uint64)
+	OnResume   func(index uint32, offset, total uint64)
+	// OnSkip fires per receiver-declined entry. kept is true when the
+	// receiver reported keeping a differing copy; false also means
+	// "unknown" (old receivers don't send the flag).
+	OnSkip         func(index uint32, kept bool)
 	OnStreamingEOF func(index uint32, finalBytes uint64)
 }
 
 // Send executes the full sender-side protocol over the supplied streams.
 func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	err := send(ctx, s, opts)
-	if errors.Is(err, context.Canceled) {
-		notifyCancel(s)
+	switch {
+	case errors.Is(err, context.Canceled):
+		notifyPeer(s, wire.ErrCodeCancelled, "sender cancelled")
+	case errors.Is(err, fserrors.ErrReadFailed):
+		// A local source failure (unreadable, vanished, shrunk) otherwise
+		// surfaces on the receiver as a bare stream close — a "network"
+		// error it would burn retries on. Post the real reason instead.
+		notifyPeer(s, wire.ErrCodeReadFailed, err.Error())
 	}
 	return err
 }
 
 func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	// Bind the streams to ctx so a Ctrl-C parked in a blocked QUIC write
-	// unblocks promptly instead of waiting out the idle timeout. notifyCancel
+	// unblocks promptly instead of waiting out the idle timeout. notifyPeer
 	// (called by the outer Send with the raw, unwrapped streams) is unaffected.
 	s, stop := bindCtx(ctx, s)
 	defer stop()
@@ -125,7 +134,7 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 			// Mirror the receiver (recv.go): directories aren't user-facing
 			// "files", so a skipped dir mustn't inflate the unchanged count.
 			if ok && opts.OnSkip != nil && src.Entry.Type != wire.EntryDir {
-				opts.OnSkip(src.Entry.Index)
+				opts.OnSkip(src.Entry.Index, d.Kept)
 			}
 			continue
 		}
@@ -289,6 +298,12 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 			}
 		}
 		if rerr == io.EOF {
+			// EOF before the declared size means the source shrank since the
+			// walk. Finishing here would hand the receiver a truncated file
+			// that hashes clean and lands as a "success"; fail instead.
+			if sent < src.Entry.Size {
+				return fmt.Errorf("%w: %s shrank during send (%d of %d bytes)", fserrors.ErrReadFailed, src.AbsPath, sent, src.Entry.Size)
+			}
 			break
 		}
 		if rerr != nil {
@@ -345,11 +360,14 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 	}
 	var r [32]byte
 	copy(r[:], root.Sum(nil))
+	// endFile/flush are where a short stream's write actually hits the wire,
+	// so a receiver decline (e.g. target exists) surfaces here — check for
+	// its posted reason like appendBytes does.
 	if err := packer.endFile(0, r); err != nil {
-		return err
+		return sendChunkErr(s, err)
 	}
 	if err := packer.flush(); err != nil {
-		return err
+		return sendChunkErr(s, err)
 	}
 	if opts.OnStreamingEOF != nil {
 		opts.OnStreamingEOF(0, sent)
@@ -372,14 +390,16 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 	return nil
 }
 
-// notifyCancel posts a cancel ERROR so the peer can tell a deliberate Ctrl-C
-// from a network drop. Bounded so a wedged peer can't hold the cancel hostage.
-func notifyCancel(s *Streams) {
+// notifyPeer posts a terminal ERROR so the peer can tell the real cause
+// (cancel, unreadable source, …) from a network drop. Data closes first so
+// a receiver blocked mid-chunk unblocks and reads the reason. Bounded so a
+// wedged peer can't hold the sender hostage.
+func notifyPeer(s *Streams, code wire.ErrorCode, msg string) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_ = s.Data.Close()
-		declineTransfer(s, wire.ErrCodeCancelled, "sender cancelled")
+		declineTransfer(s, code, msg)
 	}()
 	select {
 	case <-done:
@@ -394,42 +414,61 @@ func peerError(body []byte) error {
 	return mapPeerError(ef)
 }
 
-// senderPasswordHandshake runs the challenge/response that gates --pass.
+// PasswordAttempts is how many password tries the sender allows per session
+// before aborting the transfer. A typo at the receiver's no-echo prompt
+// shouldn't burn the one-shot code.
+const PasswordAttempts = 3
+
+// senderPasswordHandshake runs the challenge/response that gates --password.
+// Each mismatch below the attempt cap answers with a WrongPassword error and
+// a fresh challenge; the final mismatch closes the stream as before.
 func senderPasswordHandshake(s *Streams, password string) error {
-	var nonce [32]byte
-	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
-		return fmt.Errorf("send: password nonce: %w", err)
-	}
-	if err := wire.WriteControl(s.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
-		return fmt.Errorf("send: password challenge: %w", err)
-	}
-	ft, body, err := wire.ReadControlRaw(s.Control)
-	if err != nil {
-		return fmt.Errorf("send: read password response: %w", err)
-	}
-	if ft == wire.TypeError {
-		return peerError(body)
-	}
-	if ft != wire.TypePasswordResponse {
-		return fmt.Errorf("%w: expected PASSWORD_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
-	}
-	var resp wire.PasswordResponse
-	if err := wire.Decode(body, &resp); err != nil {
-		return fmt.Errorf("send: decode password response: %w", err)
-	}
-	expected := hmacPassword(password, nonce[:])
-	if subtle.ConstantTimeCompare(expected, resp.HMAC[:]) != 1 {
+	for attempt := 1; ; attempt++ {
+		var nonce [32]byte
+		if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+			return fmt.Errorf("send: password nonce: %w", err)
+		}
+		if err := wire.WriteControl(s.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
+			// A receiver that can't retry (fixed password, old fsend) hangs
+			// up after its mismatch; the honest error is still the password.
+			if attempt > 1 {
+				return fserrors.ErrWrongPassword
+			}
+			return fmt.Errorf("send: password challenge: %w", err)
+		}
+		ft, body, err := wire.ReadControlRaw(s.Control)
+		if err != nil {
+			if attempt > 1 {
+				return fserrors.ErrWrongPassword
+			}
+			return fmt.Errorf("send: read password response: %w", err)
+		}
+		if ft == wire.TypeError {
+			return peerError(body)
+		}
+		if ft != wire.TypePasswordResponse {
+			return fmt.Errorf("%w: expected PASSWORD_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
+		}
+		var resp wire.PasswordResponse
+		if err := wire.Decode(body, &resp); err != nil {
+			return fmt.Errorf("send: decode password response: %w", err)
+		}
+		expected := hmacPassword(password, nonce[:])
+		if subtle.ConstantTimeCompare(expected, resp.HMAC[:]) == 1 {
+			if err := wire.WriteControl(s.Control, wire.TypePasswordVerified, nil); err != nil {
+				return fmt.Errorf("send: password verified: %w", err)
+			}
+			return nil
+		}
 		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
 			Code: wire.ErrCodeWrongPassword, Message: "wrong password",
 		})
-		_ = s.Control.Close()
-		_, _ = io.Copy(io.Discard, s.Control)
-		return fserrors.ErrWrongPassword
+		if attempt == PasswordAttempts {
+			_ = s.Control.Close()
+			_, _ = io.Copy(io.Discard, s.Control)
+			return fserrors.ErrWrongPassword
+		}
 	}
-	if err := wire.WriteControl(s.Control, wire.TypePasswordVerified, nil); err != nil {
-		return fmt.Errorf("send: password verified: %w", err)
-	}
-	return nil
 }
 
 // hmacPassword is the shared response tag; argon2id stretches the password

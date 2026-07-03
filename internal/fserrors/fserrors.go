@@ -9,7 +9,7 @@
 //   - First line says what failed in user terms.
 //   - Second line gives an actionable next step.
 //   - Never blame the user.
-//   - Exit codes are stable from v0.1.0 onward.
+//   - Exit codes are stable from v1.0.0 onward.
 package fserrors
 
 import (
@@ -63,7 +63,7 @@ var (
 	// E020 — transfer was interrupted but is recoverable; surfaced when
 	// retries are exhausted.
 	ErrTransientFailure = errors.New("transient transfer failure")
-	// E021 — receiver did not match the sender's --pass challenge.
+	// E021 — receiver did not match the sender's --password challenge.
 	ErrWrongPassword = errors.New("wrong password")
 	// E022 — peers did not agree on the short code (or someone in the
 	// middle tried to MITM): SPAKE2-derived key + TLS exporter mismatch.
@@ -104,7 +104,7 @@ var (
 	// not route through the E099 "file an issue" catchall.
 	ErrServerStartup = errors.New("server failed to start")
 	// E031 — the sender requires a password and the receiver had none to
-	// offer (--quiet with no --pass / FSEND_PASS), so the challenge was
+	// offer (--quiet with no --password / FSEND_PASSWORD), so the challenge was
 	// never answered. Distinct from E021: no password was entered at all.
 	ErrPasswordRequired = errors.New("password required")
 	// E032 — the peer deliberately cancelled (Ctrl-C) mid-transfer.
@@ -128,6 +128,16 @@ var (
 	// pointed-to content, so an unresolvable link is a hard stop (with the
 	// path, so the user can fix or --exclude it).
 	ErrUnsendableSymlink = errors.New("unsendable symlink")
+	// E038 — the transfer succeeded but the --manifest record could not be
+	// written. Distinct from E009 (a failed *file* write): the data landed,
+	// only the sidecar CSV is missing, so the fix is the manifest path —
+	// not --out.
+	ErrManifestWriteFailed = errors.New("manifest write failed")
+	// E039 — `fsend --update`/`--uninstall` on a Homebrew-managed binary.
+	// A deliberate refusal (brew owns the binary, so self-modifying it would
+	// fight the next `brew` run), not a failure — distinct from E033/E035 so
+	// the message points at brew instead of "reinstall"/"remove by hand".
+	ErrHomebrewManaged = errors.New("managed by Homebrew")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -184,7 +194,7 @@ func (e Entry) Render() string {
 // Exit codes are kept in lockstep with the Exxx number (E001 → exit 1,
 // E024 → exit 24, etc.) so scripts can match on either. The only
 // exceptions are E016 (a non-fatal warning, exit 0) and E026 (Ctrl-C,
-// exit 130 by shell convention). Codes are stable from v0.1.0 onward.
+// exit 130 by shell convention). Codes are stable from v1.0.0 onward.
 //
 // Placeholders like {addr}, {code}, {path} are filled in by the caller via
 // fmt.Sprintf when known; we use plain text so unknown contexts still render.
@@ -205,7 +215,8 @@ var catalog = map[error]Entry{
 	ErrCodeNotFound: {
 		Code: "E002", Exit: 2,
 		Message: "That code was not found.",
-		Action:  "Double-check the code with the sender and make sure their fsend is still running.",
+		Action: "Double-check the code with the sender and make sure their fsend is\n" +
+			"  still running — or another receiver may have already claimed this code.",
 	},
 	ErrCodeAlreadyClaimed: {
 		Code: "E003", Exit: 3,
@@ -243,8 +254,12 @@ var catalog = map[error]Entry{
 	},
 	ErrReadFailed: {
 		Code: "E010", Exit: 10,
-		Message: "Could not read the source file.",
-		Action:  "Check the file permissions and try again.",
+		// Base wording is receiver-side (the error is mirrored across the
+		// wire): the receiver can't check the sender's permissions.
+		Message:       "The sender could not read the source file.",
+		Action:        "Ask them to check its permissions and run fsend again.",
+		SenderMessage: "Could not read the source file.",
+		SenderAction:  "Check the file permissions and try again.",
 	},
 	ErrHashMismatch: {
 		Code: "E011", Exit: 11,
@@ -284,7 +299,7 @@ var catalog = map[error]Entry{
 	},
 	ErrConfigCorrupted: {
 		Code: "E016", Exit: 0, // warning, not fatal
-		Message: "Your config file is invalid. Falling back to defaults.",
+		Message: "Your config file could not be used. Falling back to defaults.",
 		Action:  "To reset:  fsend --connect default",
 	},
 	ErrRateLimited: {
@@ -311,11 +326,13 @@ var catalog = map[error]Entry{
 	ErrTransientFailure: {
 		Code: "E020", Exit: 20,
 		Message: "Transfer was interrupted and retries did not recover.",
-		// Receiver wording: share codes are one-shot, so rerunning the
-		// same `fsend <code>` yields E002 — resume needs a fresh code
-		// from the sender.
-		Action: "Ask the sender to run fsend again, then use the new code — the\n" +
-			"  transfer will resume in this same directory.",
+		// Receiver wording: while the sender's fsend is still up it re-enters
+		// pairing and re-registers the same code, so rerunning the same
+		// `fsend <code>` resumes. Once the sender is gone the code is dead
+		// (one-shot) and resume needs a fresh one.
+		Action: "If the sender is still running, run the same fsend command again to\n" +
+			"  resume. Otherwise ask the sender to run fsend again, then use the new\n" +
+			"  code — the transfer will resume in this same directory.",
 		SenderAction: "Check your network connection and try again — fsend will resume\n" +
 			"  from where it left off.",
 	},
@@ -360,6 +377,7 @@ var catalog = map[error]Entry{
 	ErrSourceNotFound: {
 		Code: "E025", Exit: 25,
 		Message: "No such file or directory.",
+		Action:  "Check the path for typos, and quote it if it contains spaces.",
 	},
 	ErrUserCancelled: {
 		Code: "E026", Exit: 130,
@@ -393,10 +411,10 @@ var catalog = map[error]Entry{
 	ErrPasswordRequired: {
 		Code: "E031", Exit: 31,
 		Message:       "This transfer requires a password.",
-		Action:        "Rerun with --pass <password> (or set FSEND_PASS).",
+		Action:        "Rerun with --password=<password> (or set FSEND_PASSWORD).",
 		SenderMessage: "The receiver couldn't supply the password.",
 		SenderAction: "Run fsend again to issue a fresh code, and ask them to rerun with\n" +
-			"  --pass <password> (or FSEND_PASS).",
+			"  --password=<password> (or FSEND_PASSWORD).",
 	},
 	ErrPeerCancelled: {
 		Code: "E032", Exit: 32,
@@ -426,8 +444,21 @@ var catalog = map[error]Entry{
 	},
 	ErrUnsendableSymlink: {
 		Code: "E036", Exit: 36,
-		Message: "Cannot send a symlink",
+		// fsend follows symlinks; only a link it can't resolve to real
+		// content (broken, unreadable, cyclic) is a hard stop.
+		Message: "Cannot follow this symlink.",
 		Action:  "Fix the link, or skip it with --exclude.",
+	},
+	ErrManifestWriteFailed: {
+		Code: "E038", Exit: 38,
+		Message: "Files received, but the --manifest record could not be written.",
+		Action:  "Check that the --manifest path is writable.",
+	},
+	// The specific brew command rides the wrapped detail (upgrade vs
+	// uninstall), so the Action is left empty rather than contradicting it.
+	ErrHomebrewManaged: {
+		Code: "E039", Exit: 39,
+		Message: "This fsend is managed by Homebrew.",
 	},
 }
 

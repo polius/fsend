@@ -10,12 +10,22 @@ two machines. See [Security](security.md) for the details.
 
 ## Connecting
 
-### "Server unavailable — only receivers on your local network can connect" (`E001`)
+### "Server unavailable — only receivers on your local network can connect"
 
-fsend couldn't reach the pairing server. **Same-Wi-Fi transfers still
-work** — they use the local network directly and don't need the server.
-Only *cross-network* receivers (someone on a different network) can't
-connect right now.
+fsend couldn't reach the pairing server. This sender-side warning isn't
+fatal: **same-Wi-Fi transfers still work** — they use the local network
+directly and don't need the server. Only *cross-network* receivers
+(someone on a different network) can't connect right now.
+
+When the server can't be reached at all — no local-network fallback in
+play — the run ends with `E001`: "Could not reach the server (timeout)."
+
+Two variants of this warning name a cause you can fix yourself:
+
+- "The server requires a password" — set it with
+  `fsend --connect <host:port>,<password>` (ask the server operator).
+- "The server rate-limited this device" — wait a minute and run
+  fsend again.
 
 What to try:
 
@@ -30,7 +40,7 @@ What to try:
 | Code | Meaning | Fix |
 |---|---|---|
 | `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. |
-| `E002` | No such code on the server | It expired, was mistyped, or the sender stopped. Have the sender run again for a fresh code. |
+| `E002` | No such code on the server | It expired, was mistyped, the sender stopped, or another receiver already claimed it. Have the sender run again for a fresh code. |
 | `E003` | Someone already claimed this code | Codes are one-shot. Have the sender run again and share the new code. |
 
 Codes can't be reused — a new send always produces a new code to share.
@@ -73,11 +83,11 @@ stopped.
 
 | Code | Situation | Fix |
 |---|---|---|
-| `E021` | Wrong **transfer** password | Re-enter the sender's `--pass` value, or set `FSEND_PASS`. |
-| `E031` | The transfer needs a password you didn't supply | The sender used `--pass`; receive with `--pass` (or `FSEND_PASS`). |
+| `E021` | Wrong **transfer** password | Re-enter the sender's `--password` value, or set `FSEND_PASSWORD`. |
+| `E031` | The transfer needs a password you didn't supply | The sender used `--password`; receive with `--password` (or `FSEND_PASSWORD`). |
 | `E028` | The **server** needs a password | Connect with `fsend --connect host:443,<password>`. See [Self-hosting](self-hosting.md#require-a-password-optional). |
 
-Note the two are different: `--pass` protects a *transfer*; the server
+Note the two are different: `--password` protects a *transfer*; the server
 password gates a *self-hosted server*.
 
 ## Files
@@ -93,6 +103,11 @@ rest of the transfer completed.
   you confirm; `--manifest <file>` records the exact per-file outcome.
 - Byte-identical files are always skipped silently — this only fires on
   real differences.
+- If you answered `n` at the overwrite prompt yourself, the line renders as
+  the neutral "Kept your local copies" instead of an error — the exit code
+  stays 13 either way so scripts can detect the partial.
+- The sender sees the same outcome: "N files kept by receiver", and
+  "Nothing sent" with a warning glyph when no bytes moved at all.
 
 ### "File arrived corrupted" / "source file changed" (`E011`, `E019`)
 

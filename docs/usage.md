@@ -44,7 +44,7 @@ sending and what, then asks before writing anything:
 $ fsend abc-defg-jkm
   Incoming from mbp.local  ·  direct
 
-      report.pdf  ·  1 item  ·  2.4 MB
+      report.pdf  ·  1 file  ·  2.4 MB
 
   Save to ./? [Y/n] y
   Saved report.pdf to ./
@@ -66,9 +66,8 @@ without a positional argument.
 | Flag | Purpose |
 |---|---|
 | `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. To keep it: `fsend <code> > note.txt`. |
-| `--pass <password>` | Require the receiver to supply this password. Bare `--pass` prompts interactively with a random default. Also `FSEND_PASS`. |
+| `--password[=<password>]` | Require the receiver to supply this password. Bare `--password` prompts interactively with a random default; supply it inline as `--password=<password>`. Also `FSEND_PASSWORD`. |
 | `--exclude <glob,…>` | Skip entries when bundling a directory. |
-| `--name <hostname>` | Override the hostname shown to the peer. |
 | `--preview` | List what would be sent as CSV (`path,size`) and exit — no code, no transfer. Redirect with `> files.csv` to inspect. |
 
 ```sh
@@ -76,7 +75,7 @@ fsend report.pdf
 fsend ./project --exclude 'node_modules,*.log,.git'
 tar c ./build | fsend
 fsend --text "the wifi password is hunter2"
-fsend ./secret.tar.gz --pass         # prompts with a random default
+fsend ./secret.tar.gz --password         # prompts with a random default
 ```
 
 ### Symlinks
@@ -109,19 +108,28 @@ sending, then confirms. Pass `--yes` to skip.
 | Flag | Purpose |
 |---|---|
 | `--yes` | Auto-accept. |
-| `--out <dir>` | Receive into this directory (must already exist). Default: cwd. |
+| `--out <dir>` | Receive into this directory (created if missing, like `mkdir -p`). Default: cwd. |
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files whose contents **differ**. Without it they're kept and the receiver exits `E013`. (Identical files are skipped either way.) |
 | `--manifest <file>` | After receiving, write a CSV record (`path,size,status`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `kept` / `resumed`). |
 | `--checksum` | Decide what's already present by hashing **contents** (BLAKE3) instead of comparing size + mtime — like rsync's `-c`. See [below](#when-a-file-already-exists). |
-| `--pass <password>` | Supply the sender's password non-interactively. Also `FSEND_PASS`. |
+| `--password[=<password>]` | Supply the sender's password non-interactively as `--password=<password>`. Also `FSEND_PASSWORD`. |
 
 ```sh
 fsend abc-defg-jkm
 fsend --yes --out ~/Downloads abc-defg-jkm
 fsend --yes --out - abc-defg-jkm > dump.sql   # pipe-to-pipe with the sender's `… | fsend`
-FSEND_PASS=swordfish fsend --yes abc-defg-jkm
+FSEND_PASSWORD=swordfish fsend --yes abc-defg-jkm
 ```
+
+### Password attempts
+
+When the sender required a password and the receiver didn't supply one,
+the receiver is prompted interactively and gets **3 attempts**. A wrong
+password supplied non-interactively (`--password=<password>` or
+`FSEND_PASSWORD`) aborts the transfer **on the first try** and burns the
+code — with no human present to retry, failing fast beats hanging a
+script. The sender has to run again for a fresh code.
 
 ### When a file already exists
 
@@ -148,8 +156,10 @@ If a transfer is interrupted, fsend keeps what it already received in a
 `.fsend-partial` file and continues from there next time — only the
 missing bytes transfer.
 
-Share codes are **one-shot**, so resuming isn't "rerun with the same
-code." It's a fresh send with a new code:
+While the sender's fsend is **still running**, just rerun the same
+`fsend <code>` — the sender re-registers the code and the transfer
+resumes. Once the sender has exited, codes are **one-shot** and resuming
+is a fresh send with a new code:
 
 1. **Sender** runs the original command again. fsend issues a *new* code.
 2. **Share the new code** with the receiver (the old one no longer works).
@@ -170,11 +180,48 @@ fsend file1.txt --quiet > code.txt    # prints the code, then waits
 ```
 
 On receive, pair `--quiet` with `--yes` (nothing else can answer the
-prompt) and pass any password via `FSEND_PASS`:
+prompt) and pass any password via `FSEND_PASSWORD`:
 
 ```sh
-FSEND_PASS=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
+FSEND_PASSWORD=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
 ```
+
+### JSON output (`--json`)
+
+`--json` turns stdout into NDJSON — one JSON object per line, nothing
+else. Human output (progress, prompts, summaries) stays on stderr, so
+`--json` composes with or without `--quiet`. Exit codes are unchanged.
+
+Two events exist. The **sender** emits the share code as soon as it is
+issued, then a final summary; the **receiver** emits only the summary:
+
+```json
+{"v":1,"event":"code","code":"abc-defg-jkm"}
+{"v":1,"event":"done","ok":true,"role":"sender","exit":0,"bytes_total":2100000,"bytes_moved":2100000,"files_sent":1,"files_skipped":0,"files_kept":0,"duration_ms":312,"route":"local"}
+```
+
+Fields of `done`:
+
+| Field | Meaning |
+| --- | --- |
+| `ok` / `error` / `exit` | Outcome; `error` is the catalog code (e.g. `"E013"`) and matches the exit code table below |
+| `role` | `"sender"` or `"receiver"`; omitted when the command fails before either path is entered (e.g. a flag-parse error) |
+| `bytes_total` | Per role: the sender reports the full offered size; the receiver reports the bytes it accepted for writing (up-to-date and kept files count 0) — the two sides can differ for the same session |
+| `bytes_moved` | Bytes that crossed the wire this run (a re-send of unchanged files moves 0) |
+| `files_sent`, `files_skipped`, `files_kept` | Sender counts (`files_skipped` = receiver-declined for an unknown reason — old receivers don't report the distinction) |
+| `files_saved`, `files_up_to_date`, `files_kept` | Receiver counts |
+| `duration_ms`, `route` | Timed from the first byte; `route` is `local`, `direct`, or `relay` |
+| `dir` | Receiver: absolute directory files landed in |
+| `text` | Receiver: a `--text` payload rides here instead of raw stdout |
+
+On a failure before any summary exists (bad code, unreachable server),
+the `done` event carries only `ok`/`error`/`exit` — plus `role` when the
+failure happened after a send or receive path was entered. Fields are
+only ever **added** to this schema; `v` bumps on the first breaking
+change.
+
+`--json` is rejected with `--preview` (already CSV) and with `--out -`
+(stdout carries the received bytes).
 
 ## Chaining through a middle machine
 
@@ -217,6 +264,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | Flag | Purpose |
 |---|---|
 | `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
+| `--name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming from …` line, the receiver's name in the sender's `Receiver connected` line. |
 | `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
@@ -228,9 +276,12 @@ Config is at `~/.config/fsend/config.json` (Linux),
 
 | Variable | Equivalent flag | Purpose |
 |---|---|---|
-| `FSEND_PASS` | `--pass` | Supply the transfer password out-of-band. |
+| `FSEND_PASSWORD` | `--password` | Supply the transfer password out-of-band. |
 | `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
 | `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
+| `NO_COLOR` | — | Set to any non-empty value to disable ANSI colors ([no-color.org](https://no-color.org)). |
+| `FORCE_COLOR` | — | Set to `1` (any value except `0`/`false`) to force ANSI colors on, even when output isn't a terminal. Colors only — spinners and progress bars still require a terminal. |
+| `TERM` | — | `TERM=dumb` disables all ANSI escapes: colors, spinners, progress rendering. |
 
 Flags always win when both are set.
 
@@ -304,13 +355,18 @@ failure. For what to *do* about a given error, see
 | `28`  | `E028` — pairing server requires a password (missing or wrong). |
 | `29`  | `E029` — server closed the connection because no data was flowing. |
 | `30`  | `E030` — `fsend server` could not start (port in use or no permission to bind). |
-| `31`  | `E031` — transfer requires a password the receiver didn't have (`--pass` / `FSEND_PASS`). |
+| `31`  | `E031` — transfer requires a password the receiver didn't have (`--password` / `FSEND_PASSWORD`). |
 | `32`  | `E032` — the other side cancelled the transfer. |
 | `33`  | `E033` — `fsend --update` could not complete. |
 | `34`  | `E034` — the other device is running an incompatible fsend version. |
 | `35`  | `E035` — `fsend --uninstall` could not remove the binary. |
+| `36`  | `E036` — a symlink in the send set can't be followed (missing or unreadable target, or a link cycle). |
+| `37`  | `E037` — the server's relay spent its daily byte budget; forwarding is paused until 00:00 UTC. |
+| `38`  | `E038` — files received, but the `--manifest` record could not be written. |
+| `39`  | `E039` — `fsend --update`/`--uninstall` on a Homebrew-managed binary; use `brew upgrade`/`brew uninstall fsend`. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
+| `141` | The output pipe closed early (e.g. `fsend <code> --out - \| head`). Shell convention (128+SIGPIPE); nothing is printed. |
 
 `5` is unused. `16` isn't in this list because `E016` (corrupt config) is
 a non-fatal warning that exits `0` — see the `0` row above.
@@ -321,6 +377,6 @@ Codes look like `abc-defg-jkm` — three groups (3-4-3) from a 23-letter
 alphabet (`i`, `l`, `o` are excluded for legibility). One-shot,
 system-generated, server-side TTL.
 
-To require a password before the receiver can download, add `--pass`
+To require a password before the receiver can download, add `--password`
 when sending. For the full model — entropy, TTL, rate-limiting, channel
 binding — see [Security → Share codes](security.md#share-codes).

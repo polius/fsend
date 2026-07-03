@@ -28,6 +28,12 @@ func warnIfConfigCorrupted(err error, quiet bool) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s [%s] %s\n", uxlog.Warn(), entry.Code, entry.Message)
+	// Load wraps the sentinel with the file and cause ("<path>: not valid
+	// JSON", "open <path>: permission denied") — show it so the user knows
+	// which file to fix and why it was rejected.
+	if detail := strings.TrimPrefix(err.Error(), fserrors.ErrConfigCorrupted.Error()+": "); detail != err.Error() {
+		fmt.Fprintf(os.Stderr, "  %s\n", detail)
+	}
 	if entry.Action != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 	}
@@ -79,7 +85,11 @@ func runConnect(f *flags) error {
 		if len(args) > 1 {
 			return fmt.Errorf("%w: --connect default takes no password", fserrors.ErrUsage)
 		}
-		if cfg.IsDefault() {
+		// "Already default" short-circuits only when the file also loaded
+		// cleanly. A corrupt file loads as the zero-value (default) config,
+		// and this command is E016's suggested fix — it must rewrite the
+		// file, or the warning recurs forever.
+		if cfg.IsDefault() && loadErr == nil {
 			fmt.Fprintln(os.Stderr, uxlog.Info(), "Already on the default server:", config.DefaultServer)
 			return nil
 		}
@@ -178,7 +188,36 @@ func normalizeServer(s string) (string, error) {
 	if strings.TrimSpace(host) == "" {
 		return "", fmt.Errorf("host part is empty in %q", s)
 	}
+	if !validHost(host) {
+		return "", fmt.Errorf("invalid server hostname %q", host)
+	}
 	return net.JoinHostPort(host, port), nil
+}
+
+// validHost reports whether host is an IP literal or a plausible DNS name.
+// Persisting a syntactically impossible host ("not a host!") would break
+// every later transfer as E001, so it must be rejected here — unlike a
+// well-formed name that merely fails to resolve, which only warns (the
+// user may be offline or on another network).
+func validHost(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	host = strings.TrimSuffix(host, ".") // tolerate a FQDN's trailing dot
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			case r == '-', r == '_': // '_' is invalid DNS but common on LANs
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // defaultPortForHost returns the implicit port for an address where the
@@ -211,6 +250,9 @@ func printCurrentServer(cfg *config.Config) {
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  Revert to the default:  fsend --connect default")
 		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host[:port]>[,<password>]")
+	}
+	if p, err := config.Path(); err == nil {
+		fmt.Fprintln(os.Stderr, "  Config file:", p)
 	}
 	fmt.Fprintln(os.Stderr)
 }

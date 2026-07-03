@@ -1,23 +1,27 @@
 package version
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 // String shapes the user-visible header on --version and --help. Dev
-// builds collapse to "fsend dev" because Commit/Date are unset; release
-// builds carry the full "(build SHA, DATE)" parenthetical.
+// builds collapse to "fsend dev (os/arch)" because Commit/Date are unset;
+// release builds carry the full "(build SHA, DATE, os/arch)" parenthetical.
 func TestString(t *testing.T) {
 	orig := struct{ Ver, Commit, Date string }{Version, Commit, Date}
 	t.Cleanup(func() { Version, Commit, Date = orig.Ver, orig.Commit, orig.Date })
 
+	plat := runtime.GOOS + "/" + runtime.GOARCH
 	cases := []struct {
 		name                  string
 		version, commit, date string
 		want                  string
 	}{
-		{"dev_default", "dev", "unknown", "unknown", "fsend dev"},
-		{"dev_empty_commit", "dev", "", "2026-06-01", "fsend dev"},
-		{"dev_empty_date", "dev", "abc1234", "", "fsend dev"},
-		{"release", "0.1.0", "abc1234", "2026-06-01", "fsend 0.1.0 (build abc1234, 2026-06-01)"},
+		{"dev_default", "dev", "unknown", "unknown", "fsend dev (" + plat + ")"},
+		{"dev_empty_commit", "dev", "", "2026-06-01", "fsend dev (" + plat + ")"},
+		{"dev_empty_date", "dev", "abc1234", "", "fsend dev (" + plat + ")"},
+		{"release", "0.1.0", "abc1234", "2026-06-01", "fsend 0.1.0 (build abc1234, 2026-06-01, " + plat + ")"},
 	}
 	for _, c := range cases {
 		Version, Commit, Date = c.version, c.commit, c.date
@@ -27,13 +31,18 @@ func TestString(t *testing.T) {
 	}
 }
 
-// buildInfoVersion feeds the `go install` fallback: module versions are
-// v-prefixed and must match the ldflags convention (no "v"), while a
-// plain `go build` reports "(devel)" and must stay "dev".
+// buildInfoVersion feeds the `go install` fallback: exact module
+// versions are v-prefixed and must match the ldflags convention (no
+// "v"). Everything a dev checkout can produce — "(devel)", a VCS
+// pseudo-version, "+dirty" — must stay "dev", or the binary would
+// treat itself as a release and self-update over the developer's WIP.
 func TestBuildInfoVersion(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"v1.0.0", "1.0.0"},
-		{"v1.0.1-0.20260611000000-abcdef123456", "1.0.1-0.20260611000000-abcdef123456"},
+		{"v1.0.1-rc.1", "1.0.1-rc.1"},
+		{"v1.0.1-0.20260611000000-abcdef123456", ""},
+		{"v1.9.1-0.20260703131912-cbe8109ecebb+dirty", ""},
+		{"v1.0.0+dirty", ""},
 		{"(devel)", ""},
 		{"", ""},
 	}
