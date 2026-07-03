@@ -144,7 +144,10 @@ Connecting without it — or with the wrong one — fails with `E028`.
   IPs, no share codes.
 - **Update.** `docker compose pull && docker compose up -d`. The image
   tracks the floating `poliuscorp/fsend:latest` tag; pin a version tag if
-  you want immutable, reproducible upgrades.
+  you want immutable, reproducible upgrades. On stop the server drains
+  in-flight transfers and long-polls for up to 30s; the compose file sets
+  `stop_grace_period: 35s` so an upgrade doesn't cut them short (keep it if
+  you edit the file — Docker's 10s default would SIGKILL mid-drain).
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
   within an hour; certificates live in the `caddy_data` volume, and Caddy
   reissues them automatically if you lose it.

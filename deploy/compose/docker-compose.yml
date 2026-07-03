@@ -15,6 +15,7 @@ services:
     container_name: fsend
     command: ["server"]
     restart: unless-stopped
+    stop_grace_period: 35s   # cover the server's 30s shutdown drain
     ports:
       - "443:443/udp"
     # See `fsend server --help` for all settings.
