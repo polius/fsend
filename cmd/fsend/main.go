@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
@@ -43,6 +45,13 @@ func main() {
 	if argsHaveFlag("--json") {
 		jsonEnable()
 	}
+
+	// Without this the runtime kills us mid-write when a consumer closes
+	// our stdout (`--preview | head`, `--out - | ...`) — no deferred
+	// cleanup, and on some platforms an E099 render for routine SIGPIPE.
+	// Ignoring it makes the write return EPIPE, which renderError turns
+	// into a silent exit 141.
+	signal.Ignore(syscall.SIGPIPE)
 
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(renderError(err, debugRequested()))
@@ -93,6 +102,12 @@ func normalizeConnectArgs(args []string) []string {
 // chain is appended after the user-facing message so bug reports
 // include the underlying technical details.
 func renderError(err error, debug bool) int {
+	// A consumer closing our stdout mid-payload (`fsend ... --preview |
+	// head`, `--out - | ...`) is routine SIGPIPE, not a failure worth
+	// narrating: exit silently with the shell convention 128+SIGPIPE.
+	if errors.Is(err, syscall.EPIPE) {
+		return 141
+	}
 	// Treat Ctrl-C / SIGTERM as a clean user cancel, not an "unexpected
 	// error". The signal handler in signalContext() cancels ctx, which
 	// propagates as context.Canceled through the call stack. Doing the
@@ -179,9 +194,11 @@ func renderError(err error, debug bool) int {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}
 	case detail != "" && errors.Is(err, fserrors.ErrUnsendableSymlink):
-		// Inline the offending link into the message — "[E036] Cannot send a
-		// symlink: broken link foo → ../gone (target does not exist)".
-		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, entry.Message, detail)
+		// Inline the offending link into the message (period stripped, as
+		// for E025) — "[E036] Cannot follow this symlink: broken link
+		// foo → ../gone (target does not exist)".
+		msg := strings.TrimSuffix(entry.Message, ".")
+		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, msg, detail)
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}
@@ -194,9 +211,14 @@ func renderError(err error, debug bool) int {
 		fmt.Fprintf(os.Stderr, "%s %s\n", glyph, entry.Render())
 	}
 
-	if debug {
+	// No chain for usage errors: the debug detail for a parse failure is
+	// the parse error itself — and debugRequested scans raw os.Args, so it
+	// can be reacting to the very flag cobra just rejected.
+	if debug && !errors.Is(err, fserrors.ErrUsage) {
 		for _, c := range fserrors.Chain(err) {
-			fmt.Fprintf(os.Stderr, "  DEBUG: %s\n", c)
+			// Sanitized: a peer's ErrorFrame message rides the chain, and
+			// untrusted text must not reach the terminal with ANSI/bidi.
+			fmt.Fprintf(os.Stderr, "  DEBUG: %s\n", sanitizeForDisplay(c, 512))
 		}
 	}
 	// No-op if the summary already emitted the rich done event.

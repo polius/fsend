@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -444,7 +445,7 @@ func TestRenderError_UnsendableSymlink(t *testing.T) {
 	var code int
 	got := captureStderr(t, func() { code = renderError(err, false) })
 	for _, want := range []string{
-		"[E036] Cannot send a symlink: broken link proj/dangling → ../gone (target does not exist)",
+		"[E036] Cannot follow this symlink: broken link proj/dangling → ../gone (target does not exist)",
 		"Fix the link, or skip it with --exclude.",
 	} {
 		if !strings.Contains(got, want) {
@@ -453,6 +454,44 @@ func TestRenderError_UnsendableSymlink(t *testing.T) {
 	}
 	if code != 36 {
 		t.Errorf("exit code = %d, want 36", code)
+	}
+}
+
+// A broken pipe on a stdout payload path (`--preview | head`, `--out - | ...`)
+// exits silently with the shell convention 128+SIGPIPE.
+func TestRenderError_BrokenPipeExitsSilently141(t *testing.T) {
+	err := fmt.Errorf("write /dev/stdout: %w", syscall.EPIPE)
+	var code int
+	got := captureStderr(t, func() { code = renderError(err, true) })
+	if code != 141 {
+		t.Errorf("exit code = %d, want 141", code)
+	}
+	if got != "" {
+		t.Errorf("expected silent exit, got:\n%s", got)
+	}
+}
+
+// Usage errors never get a DEBUG wrap chain: the debug detail for a parse
+// failure is the parse error itself, and debugRequested scans raw os.Args —
+// possibly the very flag cobra just rejected (`fsend server --debug`).
+func TestRenderError_UsageSuppressesDebugChain(t *testing.T) {
+	err := fmt.Errorf("%w: unknown flag: --bogus", fserrors.ErrUsage)
+	got := captureStderr(t, func() { _ = renderError(err, true) })
+	if strings.Contains(got, "DEBUG:") {
+		t.Errorf("usage error must not print a DEBUG chain, got:\n%s", got)
+	}
+}
+
+// The DEBUG chain can carry a peer's ErrorFrame message, so it goes through
+// sanitizeForDisplay like every other displayed peer string.
+func TestRenderError_DebugChainSanitized(t *testing.T) {
+	err := fmt.Errorf("%w: peer says \x1b[31mred‮hidden", fserrors.ErrProtocolError)
+	got := captureStderr(t, func() { _ = renderError(err, true) })
+	if !strings.Contains(got, "DEBUG:") {
+		t.Fatalf("expected a DEBUG chain, got:\n%s", got)
+	}
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "‮") {
+		t.Errorf("DEBUG chain leaked control/bidi characters:\n%q", got)
 	}
 }
 
