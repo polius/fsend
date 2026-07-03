@@ -58,6 +58,8 @@ irm https://getfsend.alzina.dev/windows | iex
 
 All three verify the release's SHA-256 checksum before installing.
 
+Install somewhere else: pipe into `PREFIX=~/.local/bin sh` instead of `sh`, or set `$env:FSEND_PREFIX` before the `irm` line.
+
 <details>
 <summary>Other install methods</summary>
 
@@ -74,10 +76,13 @@ Or grab a release binary from [the releases page](https://github.com/polius/fsen
 <details>
 <summary>Tab-completion (optional)</summary>
 
-For bash, zsh, fish, or powershell — add to your shell's rc file:
+Add the line for your shell to its rc file (`$PROFILE` on PowerShell):
 
 ```bash
-eval "$(fsend completion zsh)"
+eval "$(fsend completion zsh)"                                 # zsh
+eval "$(fsend completion bash)"                                # bash
+fsend completion fish | source                                 # fish
+fsend completion powershell | Out-String | Invoke-Expression   # powershell
 ```
 
 </details>
@@ -108,7 +113,7 @@ fsend ./project                    # a whole folder
 fsend a.txt b.txt c.txt            # several at once
 pg_dump mydb | fsend               # a stream from stdin
 fsend --text "wifi: hunter2"       # a literal string
-fsend report.pdf --password            # gated behind a password
+fsend report.pdf --password        # gated behind a password
 ```
 
 …and to receive:

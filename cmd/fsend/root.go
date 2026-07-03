@@ -199,9 +199,10 @@ USAGE
   fsend completion <bash|zsh|fish|powershell>
 
 EXAMPLES
-  zsh:   eval "$(fsend completion zsh)"
-  bash:  eval "$(fsend completion bash)"
-  fish:  fsend completion fish | source
+  zsh:         eval "$(fsend completion zsh)"
+  bash:        eval "$(fsend completion bash)"
+  fish:        fsend completion fish | source
+  powershell:  fsend completion powershell | Out-String | Invoke-Expression
 
   Add the line to your shell's rc file to load it on every session.
 `
@@ -292,8 +293,9 @@ GENERAL
 
 ADVANCED
   --connect              Show current server
-  --connect <host:port>  Set the server (persisted)
-  --connect <host:port>,<password>
+  --connect <host[:port]>
+                         Set the server (persisted)
+  --connect <host[:port]>,<password>
                          Set the server + shared password
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
