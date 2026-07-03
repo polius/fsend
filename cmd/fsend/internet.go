@@ -401,6 +401,9 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 		_ = rc.Close()
 		return nil, fmt.Errorf("relay bootstrap: %w", err)
 	}
+	// Resend the bootstrap until the relay forwards us a datagram: a single
+	// lost one would strand the passive sender (it only waits to be dialed).
+	rc.KeepBootstrapping(500*time.Millisecond, 20*time.Second)
 	return rc, nil
 }
 

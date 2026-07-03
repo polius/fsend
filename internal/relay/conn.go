@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,10 @@ type Conn struct {
 	relayAddr  *net.UDPAddr
 	token      Token
 
+	gotInbound atomic.Bool   // set once the relay forwards us a datagram
+	stop       chan struct{} // closed by Close to stop the bootstrap resender
+	stopOnce   sync.Once
+
 	mu     sync.Mutex
 	closed bool
 }
@@ -42,7 +47,39 @@ func NewClient(underlying net.PacketConn, relayAddr *net.UDPAddr, token Token) *
 		underlying: underlying,
 		relayAddr:  relayAddr,
 		token:      token,
+		stop:       make(chan struct{}),
 	}
+}
+
+// KeepBootstrapping resends the one-byte bootstrap datagram every interval
+// (up to max) until the relay forwards us our first datagram, or the conn
+// closes. The bootstrap is how the relay learns our address; after it, the
+// sender is passive (it waits to be dialed), so a single lost bootstrap
+// would strand the pairing. Harmless for the receiver — it dials QUIC
+// immediately, so its first inbound arrives fast and the resender stops.
+func (c *Conn) KeepBootstrapping(interval, max time.Duration) {
+	go func() {
+		deadline := time.Now().Add(max)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-c.stop:
+				return
+			case <-t.C:
+				// Recheck stop: a Close racing the tick shouldn't send.
+				select {
+				case <-c.stop:
+					return
+				default:
+				}
+				if c.gotInbound.Load() || time.Now().After(deadline) {
+					return
+				}
+				_, _ = c.WriteTo([]byte{0}, nil)
+			}
+		}
+	}()
 }
 
 // LocalAddr returns the underlying socket's local address.
@@ -65,6 +102,7 @@ func (c *Conn) Close() error {
 		return nil
 	}
 	c.closed = true
+	c.stopOnce.Do(func() { close(c.stop) })
 	return c.underlying.Close()
 }
 
@@ -87,6 +125,9 @@ func (c *Conn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 		if token != c.token {
 			continue
 		}
+		// The relay only forwards once both peers are registered, so any
+		// inbound datagram means our address is known — stop resending.
+		c.gotInbound.Store(true)
 		n = copy(p, payload)
 		return n, syntheticPeer, nil
 	}
