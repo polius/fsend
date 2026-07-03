@@ -135,6 +135,26 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 	}
 }
 
+// E010 originates on the sender and is mirrored to the receiver, so the base
+// (receiver) wording must point at the sender — the receiver can't check the
+// sender's file permissions — while ForSender keeps the direct imperative.
+func TestReadFailed_RoleSplitWording(t *testing.T) {
+	entry, ok := Lookup(ErrReadFailed)
+	if !ok {
+		t.Fatal("expected catalog match for ErrReadFailed")
+	}
+	if !strings.Contains(entry.Message, "sender") || !strings.Contains(entry.Action, "Ask them") {
+		t.Errorf("receiver wording should attribute the failure to the sender: %q / %q", entry.Message, entry.Action)
+	}
+	s := entry.ForSender()
+	if strings.Contains(s.Message, "sender") {
+		t.Errorf("sender wording should be direct, got %q", s.Message)
+	}
+	if s.Exit != 10 || entry.Exit != 10 {
+		t.Errorf("both roles must keep exit 10, got %d/%d", entry.Exit, s.Exit)
+	}
+}
+
 func TestChain_WalksWrappers(t *testing.T) {
 	wrapped := fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", ErrUsage))
 	got := Chain(wrapped)

@@ -134,6 +134,22 @@ func TestWalk_BrokenSymlinkErrors(t *testing.T) {
 	}
 }
 
+// A dangling symlink passed directly as an argument gets the same E036 (with
+// link and target named) as one found inside a folder — not a false E025.
+func TestWalk_DanglingSymlinkArgErrors(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "bad.lnk")
+	mkSymlink(t, "/nope/gone", link)
+
+	_, err := Walk([]string{link}, nil)
+	if !errors.Is(err, fserrors.ErrUnsendableSymlink) {
+		t.Fatalf("want ErrUnsendableSymlink, got %v", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "bad.lnk") || !strings.Contains(got, "/nope/gone") {
+		t.Errorf("error should name the link and target: %q", got)
+	}
+}
+
 // A symlink that points back into an ancestor directory must be reported as a
 // cycle rather than recursing forever.
 func TestWalk_CycleErrors(t *testing.T) {
