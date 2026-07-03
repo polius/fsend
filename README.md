@@ -58,8 +58,6 @@ irm https://getfsend.alzina.dev/windows | iex
 
 All three verify the release's SHA-256 checksum before installing.
 
-Install somewhere else: pipe into `PREFIX=~/.local/bin sh` instead of `sh`, or set `$env:FSEND_PREFIX` before the `irm` line.
-
 <details>
 <summary>Other install methods</summary>
 
