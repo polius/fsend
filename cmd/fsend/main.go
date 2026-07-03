@@ -137,11 +137,17 @@ func renderError(err error, debug bool) int {
 	case entry.Exit == 0:
 		glyph = uxlog.Warn()
 	case errors.Is(err, fserrors.ErrUserCancelled),
+		errors.Is(err, errKeptByChoice),
 		!errorRoleSender && errors.Is(err, fserrors.ErrReceiverDeclined):
 		glyph = uxlog.Info()
 	}
 
 	switch {
+	case errors.Is(err, errKeptByChoice):
+		// The user answered "n" at the overwrite prompt — narrate their
+		// decision, not a failure, and skip the "Use --overwrite" advice
+		// they just declined. Exit stays 13 so scripts see the partial.
+		fmt.Fprintf(os.Stderr, "%s [%s] Kept your local copies — nothing was overwritten.\n", glyph, entry.Code)
 	case detail != "" && errors.Is(err, fserrors.ErrSourceNotFound):
 		// Inline the missing path into the message: the catalog message
 		// ends in "." which we strip so it reads as one sentence —

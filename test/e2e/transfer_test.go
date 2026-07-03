@@ -423,6 +423,43 @@ func TestReceive_DifferingFileKept_ReceiverSeesE013(t *testing.T) {
 		t.Errorf("sender exit = %d, want 0 (transfer completes; file skipped)\nstderr:\n%s",
 			r.senderExitCode, r.senderErr)
 	}
+	// The sender must tell the same story: its file was NOT delivered, so no
+	// green "Sent" — warn glyph, "Nothing sent", and the kept-by-receiver
+	// clause (wire.Decision.Kept flowing back).
+	if strings.Contains(r.senderErr, "[OK] Sent") {
+		t.Errorf("sender must not claim success when the receiver kept everything:\nstderr:\n%s", r.senderErr)
+	}
+	if !strings.Contains(r.senderErr, "Nothing sent") || !strings.Contains(r.senderErr, "1 file kept by receiver") {
+		t.Errorf("sender summary should say nothing was delivered and why:\nstderr:\n%s", r.senderErr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
+		t.Errorf("destination file was clobbered: %q", got)
+	}
+}
+
+// Answering "n" at the overwrite prompt is a decision, not a failure: the
+// exit stays 13 (scripts must see the partial) but the error line is the
+// neutral ℹ acknowledging the choice — not a red ✗ telling the user to pass
+// the --overwrite they just declined.
+func TestReceive_OverwriteDeclined_NeutralE013(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 64*1024)
+	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// "y" accepts the transfer, "n" answers the overwrite prompt.
+	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nn\n")
+	if r.receiverExitCode != 13 {
+		t.Errorf("receiver exit = %d, want 13\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
+	}
+	if !strings.Contains(r.receiverErr, "[i] [E013] Kept your local copies") {
+		t.Errorf("declined overwrite should render as the user's choice:\nstderr:\n%s", r.receiverErr)
+	}
+	if strings.Contains(r.receiverErr, "[FAIL] [E013]") || strings.Contains(r.receiverErr, "Use --overwrite") {
+		t.Errorf("declined overwrite must not scold with the advice the user declined:\nstderr:\n%s", r.receiverErr)
+	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
 		t.Errorf("destination file was clobbered: %q", got)
 	}

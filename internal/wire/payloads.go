@@ -68,6 +68,12 @@ type Decision struct {
 	Action         DecisionAction
 	ResumeOffset   uint64
 	PartialImohash [16]byte
+	// Kept marks a DecisionSkip of a differing/conflicting entry the
+	// receiver kept, as opposed to an identical one. Gob keeps this
+	// compatible across versions: old peers ignore the field, and a zero
+	// value from an old receiver reads as "unknown" — the sender then
+	// falls back to the neutral "skipped" wording.
+	Kept bool
 }
 
 // FileHash carries one file's BLAKE3 root, sent by the sender in a

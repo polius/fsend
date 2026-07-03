@@ -93,6 +93,11 @@ rest of the transfer completed.
   you confirm; `--manifest <file>` records the exact per-file outcome.
 - Byte-identical files are always skipped silently — this only fires on
   real differences.
+- If you answered `n` at the overwrite prompt yourself, the line renders as
+  the neutral "Kept your local copies" instead of an error — the exit code
+  stays 13 either way so scripts can detect the partial.
+- The sender sees the same outcome: "N files kept by receiver", and
+  "Nothing sent" with a warning glyph when no bytes moved at all.
 
 ### "File arrived corrupted" / "source file changed" (`E011`, `E019`)
 

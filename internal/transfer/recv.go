@@ -676,6 +676,7 @@ func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.
 			d.Action = wire.DecisionSend
 		} else {
 			d.Action = wire.DecisionSkip
+			d.Kept = true
 			if opts.OnConflictKept != nil {
 				opts.OnConflictKept(p.entry.RelativePath)
 			}

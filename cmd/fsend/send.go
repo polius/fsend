@@ -292,14 +292,15 @@ func writeSendPreview(w io.Writer, sources []transfer.Source) error {
 // actually crossed the wire, so a partial send reads "Y (X sent)".
 type senderStats struct {
 	moved        int64 // bytes pushed on the wire this run
-	skippedFiles int   // whole files (non-dir) the receiver declined as identical
+	skippedFiles int   // whole files (non-dir) the receiver declined, keptFiles included
+	keptFiles    int   // subset of skippedFiles the receiver kept as differing copies
 }
 
 // newSenderProgress builds the progress callbacks driving a single overall
 // bar. Returns close, progress, onResume, onSkip, a stats getter, and
 // onStreamingEOF (latches the bar total once a stream EOFs). All callbacks
 // run on the single send-loop goroutine, so the counters need no locking.
-func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32), stats func() senderStats, onStreamingEOF func(uint32, uint64)) {
+func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32, bool), stats func() senderStats, onStreamingEOF func(uint32, uint64)) {
 	prev := make(map[uint32]uint64)
 	var s senderStats
 	var bar *uxlog.Progress
@@ -330,7 +331,12 @@ func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn fun
 				uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
 			}
 		},
-		func(uint32) { s.skippedFiles++ },
+		func(_ uint32, kept bool) {
+			s.skippedFiles++
+			if kept {
+				s.keptFiles++
+			}
+		},
 		func() senderStats { return s },
 		func(_ uint32, finalBytes uint64) { bar.SetTotal(int64(finalBytes), true) }
 }
@@ -344,23 +350,33 @@ func resumeNotice(offset, total uint64) string {
 	return s
 }
 
-// printSendSummary renders the post-transfer success line. skippedFiles is the
-// count of (non-dir) entries the receiver declined; 0 omits the clause.
-func printSendSummary(f *flags, total, moved int64, skippedFiles int, elapsed time.Duration, path connpath.Info) {
+// printSendSummary renders the post-transfer outcome line. Files the receiver
+// kept (differing, no --overwrite there) make it a warning, not a success —
+// the sender must not read "✓ Sent" when nothing was delivered. Skips without
+// the kept flag stay the neutral "skipped": an old receiver doesn't report
+// the distinction (wire.Decision.Kept), so "up to date" would overclaim.
+func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
-	parts := summaryParts(total, moved, "sent", elapsed, path)
-	// The receiver may have declined files it already had. The sender can't
-	// tell an identical file from one the receiver kept a different version of
-	// (both arrive as DecisionSkip — see wire.DecisionAction), so it reports
-	// the neutral, always-true "skipped" count. That still reconciles with the
-	// receiver's precise "N up to date · M kept" breakdown by sum, and it's
-	// what explains a partial — or zero — "(X sent)" against the offered total.
-	if skippedFiles > 0 {
-		parts = append(parts, uxlog.CountNoun(skippedFiles, "file")+" skipped")
+	glyph, headline := uxlog.Check(), "Sent"
+	parts := summaryParts(total, s.moved, "sent", elapsed, path)
+	if s.keptFiles > 0 {
+		glyph = uxlog.Warn()
+		if s.moved == 0 {
+			// "Sent · 2.1 MB (0 B sent)" would contradict itself; name the
+			// outcome and drop the redundant moved clause.
+			headline = "Nothing sent"
+			parts[0] = uxlog.HumanBytes(total) + " offered"
+		}
 	}
-	fmt.Fprintf(os.Stderr, "%s Sent  ·  %s\n", uxlog.Check(), strings.Join(parts, "  ·  "))
+	if n := s.skippedFiles - s.keptFiles; n > 0 {
+		parts = append(parts, uxlog.CountNoun(n, "file")+" skipped")
+	}
+	if s.keptFiles > 0 {
+		parts = append(parts, uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver (needs --overwrite there)")
+	}
+	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
 	printUpdateNotice(f)
 }
 

@@ -36,9 +36,12 @@ type SendOptions struct {
 
 	Password string
 
-	ProgressFn     func(index uint32, bytesSent uint64)
-	OnResume       func(index uint32, offset, total uint64)
-	OnSkip         func(index uint32)
+	ProgressFn func(index uint32, bytesSent uint64)
+	OnResume   func(index uint32, offset, total uint64)
+	// OnSkip fires per receiver-declined entry. kept is true when the
+	// receiver reported keeping a differing copy; false also means
+	// "unknown" (old receivers don't send the flag).
+	OnSkip         func(index uint32, kept bool)
 	OnStreamingEOF func(index uint32, finalBytes uint64)
 }
 
@@ -131,7 +134,7 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 			// Mirror the receiver (recv.go): directories aren't user-facing
 			// "files", so a skipped dir mustn't inflate the unchanged count.
 			if ok && opts.OnSkip != nil && src.Entry.Type != wire.EntryDir {
-				opts.OnSkip(src.Entry.Index)
+				opts.OnSkip(src.Entry.Index, d.Kept)
 			}
 			continue
 		}

@@ -53,3 +53,29 @@ func TestSummarize_PopulatesFiles(t *testing.T) {
 		t.Errorf("BytesToRecv = %d, want 350", s.BytesToRecv)
 	}
 }
+
+// The Kept flag must mark exactly the skips of differing/conflicting entries
+// the receiver kept — it's what lets the sender report "kept by receiver"
+// instead of a false "✓ Sent" when nothing was delivered.
+func TestPlanToDecision_KeptFlag(t *testing.T) {
+	for _, tc := range []struct {
+		disp     disposition
+		approve  bool
+		wantAct  wire.DecisionAction
+		wantKept bool
+	}{
+		{dispNew, false, wire.DecisionSend, false},
+		{dispIdentical, false, wire.DecisionSkip, false},
+		{dispDiffers, false, wire.DecisionSkip, true},
+		{dispConflict, false, wire.DecisionSkip, true},
+		{dispDiffers, true, wire.DecisionSend, false},
+		{dispConflict, true, wire.DecisionSend, false},
+	} {
+		p := entryPlan{entry: wire.ListingEntry{Type: wire.EntryFile}, disp: tc.disp}
+		d := planToDecision(&p, tc.approve, RecvOptions{})
+		if d.Action != tc.wantAct || d.Kept != tc.wantKept {
+			t.Errorf("planToDecision(%v, approve=%v) = {Action:%v Kept:%v}, want {%v %v}",
+				tc.disp, tc.approve, d.Action, d.Kept, tc.wantAct, tc.wantKept)
+		}
+	}
+}

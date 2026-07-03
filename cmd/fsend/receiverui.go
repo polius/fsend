@@ -32,19 +32,20 @@ type receiverUI struct {
 	sink     bool
 	pathInfo connpath.Info
 
-	mu          sync.Mutex
-	hello       *wire.SenderHello
-	files       []string
-	prev        map[uint32]uint64
-	total       int64 // bytes received this run (excludes resumed prefixes)
-	skipped     int64 // resumed prefixes already on disk
-	skippedSame int   // files skipped because they were identical
-	kept        int   // differing/conflicting entries left untouched
-	bar         *uxlog.Progress
-	firstByte   time.Time
-	bytesHint   int64
-	diffBytes   int64 // bytes that move only if overwrite is approved
-	manifestErr error // a --manifest write failure, surfaced after the transfer
+	mu           sync.Mutex
+	hello        *wire.SenderHello
+	files        []string
+	prev         map[uint32]uint64
+	total        int64 // bytes received this run (excludes resumed prefixes)
+	skipped      int64 // resumed prefixes already on disk
+	skippedSame  int   // files skipped because they were identical
+	kept         int   // differing/conflicting entries left untouched
+	keptByChoice bool  // kept because the user answered the overwrite prompt with "n"
+	bar          *uxlog.Progress
+	firstByte    time.Time
+	bytesHint    int64
+	diffBytes    int64 // bytes that move only if overwrite is approved
+	manifestErr  error // a --manifest write failure, surfaced after the transfer
 
 	closeOnce sync.Once
 }
@@ -224,6 +225,11 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 			ui.mu.Unlock()
 			return true
 		case "", "n", "no":
+			// An answered prompt is a choice, not a failure — finishReceive
+			// reports it with errKeptByChoice instead of a bare E013.
+			ui.mu.Lock()
+			ui.keptByChoice = true
+			ui.mu.Unlock()
 			return false
 		case "l", "list":
 			for _, c := range conflicts {
@@ -357,6 +363,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	files := append([]string(nil), ui.files...)
 	firstByte := ui.firstByte
 	kept := ui.kept
+	keptByChoice := ui.keptByChoice
 	skippedSame := ui.skippedSame
 	ui.mu.Unlock()
 
@@ -388,10 +395,18 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		return ui.manifestErr
 	}
 	if kept > 0 {
+		if keptByChoice {
+			return errKeptByChoice
+		}
 		return fserrors.ErrTargetExists
 	}
 	return nil
 }
+
+// errKeptByChoice is ErrTargetExists after the user answered "n" at the
+// overwrite prompt: same E013 exit so scripts see the partial, but rendered
+// as their decision (ℹ, no "use --overwrite" advice they just declined).
+var errKeptByChoice = fmt.Errorf("%w: kept by choice", fserrors.ErrTargetExists)
 
 func printTextPayload(files []string) error {
 	if len(files) == 0 {
