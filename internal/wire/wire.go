@@ -20,10 +20,10 @@ package wire
 // the mismatch at HELLO and report a protocol error.
 const ProtocolVersion = 0x02
 
-// MaxControlFrameSize bounds gob payload size on control frames. One
-// FILE_INFO at a time is the largest control frame in flight, so a
-// modest limit is enough — and prevents a malicious peer from
-// allocating unbounded memory.
+// MaxControlFrameSize bounds gob payload size on control frames. A
+// listing batch (capped by maxListingBatchBytes) is the largest control
+// frame in flight, so a modest limit is enough — and prevents a malicious
+// peer from allocating unbounded memory.
 const MaxControlFrameSize = 64 * 1024 // 64 KiB
 
 // MaxChunkSize bounds the plaintext payload in a data CHUNK frame.

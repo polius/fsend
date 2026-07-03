@@ -619,7 +619,6 @@ func materialize(s *Streams, p *entryPlan, approveOverwrite bool) error {
 	}
 }
 
-// planToDecision maps a plan to its wire decision and fires receiver-side
 // repairIdenticalMode propagates a permission-only change onto an
 // already-identical regular file, whose unchanged size+mtime (or content
 // hash under --checksum) would otherwise skip it and never pick up the new
@@ -634,6 +633,7 @@ func repairIdenticalMode(p *entryPlan) {
 	}
 }
 
+// planToDecision maps a plan to its wire decision and fires receiver-side
 // notifications (skip / conflict-kept).
 func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.Decision {
 	d := wire.Decision{Index: p.entry.Index}

@@ -85,9 +85,9 @@ func ReadControl(r io.Reader, payloadPtr any) (FrameType, error) {
 
 // ReadControlRaw reads one control frame from r and returns its type
 // and the still-gob-encoded body. Callers that need to dispatch on
-// FrameType before decoding (e.g. the sender's FILE_INFO loop, which
-// may receive FILE_ACCEPT or ERROR) use this to avoid a wasted decode
-// against the wrong target type.
+// FrameType before decoding (e.g. a negotiate loop that may receive a
+// data frame or an ERROR) use this to avoid a wasted decode against the
+// wrong target type.
 func ReadControlRaw(r io.Reader) (FrameType, []byte, error) {
 	var header [controlHeaderSize]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
