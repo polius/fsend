@@ -194,6 +194,36 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 	}
 }
 
+// The misplaced-password hint ("…if it's the password, use --password=…") is
+// a guess for the ambiguous `fsend --password secret file` case. Under an
+// explicit --send the positional is unambiguously a path, so the guess must
+// be suppressed and the honest missing-file error stand.
+func TestRootCmd_PasswordHintSkippedUnderSend(t *testing.T) {
+	const hint = "if it's the password"
+
+	// Without --send the hint fires (the trap this guard exists for).
+	plain := rootCmd()
+	plain.SetArgs([]string{"--password", "secret", "report.pdf"})
+	plain.SetOut(io.Discard)
+	plain.SetErr(io.Discard)
+	if err := plain.Execute(); err == nil || !strings.Contains(err.Error(), hint) {
+		t.Fatalf("plain --password: got %v, want the misplaced-password hint", err)
+	}
+
+	// With --send the positional is a path: no hint, and still an ErrUsage.
+	forced := rootCmd()
+	forced.SetArgs([]string{"--send", "--password", "secret", "report.pdf"})
+	forced.SetOut(io.Discard)
+	forced.SetErr(io.Discard)
+	err := forced.Execute()
+	if err == nil || !errors.Is(err, fserrors.ErrUsage) {
+		t.Fatalf("--send --password: got %v, want an ErrUsage", err)
+	}
+	if strings.Contains(err.Error(), hint) {
+		t.Errorf("--send must not guess the positional is a password: %q", err.Error())
+	}
+}
+
 // --uninstall --yes is documented (skip the confirmation), so the guard
 // must exempt it — unlike --update, where --yes answers nothing.
 func TestMaintenanceGuard_AllowsYesForUninstall(t *testing.T) {

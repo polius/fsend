@@ -458,9 +458,11 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// An inline password now rides the flag as `--password=secret`, so a bare
 	// --password followed by a non-file, non-code word is very likely a misplaced
 	// inline password (`fsend --password secret file`). Point at the = form rather
-	// than failing later with a bare "no such file".
+	// than failing later with a bare "no such file". With explicit --send the
+	// positional is unambiguously a path, so skip the guess and let the real
+	// error (the missing source, or the bare-password prompt) stand.
 	if cmd.Flags().Changed("password") && f.passArg == passPromptSentinel &&
-		!cmd.Flags().Changed("text") && !f.forceReceive {
+		!cmd.Flags().Changed("text") && !f.forceReceive && !f.forceSend {
 		for _, a := range f.posArgs {
 			if a == "-" || code.IsCode(a) || code.LooksLikeCode(a) {
 				continue
