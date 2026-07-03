@@ -821,7 +821,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		BytesMoved: ptr64(s.moved), DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
 	// A piped stdin stream has no known size; per the JSON contract an omitted
 	// bytes_total means "not known", so don't emit a bogus 0.
-	if !(plan.mode == wire.ModeStream && !plan.isText) {
+	if plan.mode != wire.ModeStream || plan.isText {
 		ev.BytesTotal = ptr64(int64(plan.totalBytes))
 	}
 	if plan.mode == wire.ModeFiles {
