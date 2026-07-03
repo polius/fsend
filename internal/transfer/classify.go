@@ -59,6 +59,7 @@ type classifySummary struct {
 // SummaryEntry is one regular file (or symlink) the receiver is offered, with
 // the per-entry status the preview annotates rows with.
 type SummaryEntry struct {
+	Index         uint32 // wire file index, keys the progress callbacks
 	RelativePath  string
 	Size          uint64
 	Status        string // "new" | "identical" | "differs" | "resume"
@@ -244,6 +245,7 @@ func summarize(plans []entryPlan) classifySummary {
 		// so the preview's row count matches the headline's file count.
 		if p.entry.Type != wire.EntryDir {
 			s.Files = append(s.Files, SummaryEntry{
+				Index:         p.entry.Index,
 				RelativePath:  p.entry.RelativePath,
 				Size:          p.entry.Size,
 				Status:        dispStatus(p.disp),
