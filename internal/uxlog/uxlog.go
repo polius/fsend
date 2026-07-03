@@ -67,8 +67,10 @@ func (p *plainProgress) add(n int64) {
 	}
 	p.lastLine = time.Now()
 	if p.total > 0 {
+		// Clamp: a percentage past 100 is never correct output, whatever
+		// the caller's accounting did.
 		line := fmt.Sprintf("%d%%  %s / %s",
-			p.current*100/p.total, HumanBytes(p.current), HumanBytes(p.total))
+			min(100, p.current*100/p.total), HumanBytes(p.current), HumanBytes(p.total))
 		if p.label != "" {
 			line += "  ·  " + p.label
 		}

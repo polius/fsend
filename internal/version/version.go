@@ -7,6 +7,7 @@
 package version
 
 import (
+	"regexp"
 	"runtime/debug"
 	"strings"
 )
@@ -31,12 +32,23 @@ func init() {
 	}
 }
 
+// pseudoVersion matches the timestamp-commit tail of a Go module
+// pseudo-version — "v1.9.1-0.20260703131912-cbe8109ecebb" or the
+// untagged "v0.0.0-20260703131912-cbe8109ecebb".
+var pseudoVersion = regexp.MustCompile(`[-.]\d{14}-[0-9a-f]{12}$`)
+
 // buildInfoVersion maps a build-info main-module version onto the
 // ldflags convention (goreleaser injects {{.Version}}, which has no
-// leading "v"). Returns "" when build info carries nothing usable —
-// `go build` from a checkout reports "(devel)".
+// leading "v"). Returns "" when build info carries nothing usable:
+// `go build` from a checkout reports "(devel)" on older Go, and a VCS
+// pseudo-version (possibly "+dirty") on current Go — both are dev
+// builds with no release to compare against, and must not unlock the
+// update check or --update.
 func buildInfoVersion(v string) string {
 	if v == "" || v == "(devel)" {
+		return ""
+	}
+	if strings.Contains(v, "+") || pseudoVersion.MatchString(v) {
 		return ""
 	}
 	return strings.TrimPrefix(v, "v")

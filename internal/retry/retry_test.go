@@ -156,6 +156,15 @@ func TestIsTransient_Classification(t *testing.T) {
 		{"quic_application_error_with_message_transient",
 			errors.New("Application error 0x100 (remote): peer left"), true},
 
+		// The peer's teardown cancels its data-stream read (STOP_SENDING)
+		// just before the connection close; an in-flight write can surface
+		// the stream cancel instead of the application error above. Same
+		// abrupt close, same verdict. This is the exact field string.
+		{"quic_stream_cancel_remote_transient",
+			errors.New("wire: writing chunk payload: stream 3 canceled by remote with error code 0"), true},
+		{"quic_stream_cancel_local_not_transient",
+			errors.New("stream 3 canceled by local with error code 0"), false},
+
 		// pion/ice STUN-demux false positive: a QUIC datagram's encrypted
 		// bytes 4..7 randomly matched the STUN magic cookie, so
 		// ice.Conn.Write rejected it. Never a real network fault; a re-dial

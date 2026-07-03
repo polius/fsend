@@ -187,6 +187,12 @@ func IsTransient(err error) bool {
 	// QUIC stream tears down, so they're already caught by the terminal
 	// sentinel check above and never reach this fallback.
 	//
+	// "canceled by remote" is quic-go's StreamError: the peer's teardown
+	// cancels its data-stream read (STOP_SENDING) just before the
+	// connection close, and an in-flight write can surface the stream
+	// cancel instead of the "Application error" above — same abrupt
+	// close, same transient verdict.
+	//
 	// "failed to write STUN message to ICE connection" is pion/ice's
 	// sentinel from its STUN/data demux guard: ice.Conn.Write refuses any
 	// app packet that stun.IsMessage flags (len>=20 && bytes[4:8]==magic
@@ -199,6 +205,7 @@ func IsTransient(err error) bool {
 		strings.Contains(s, "connection reset by peer") ||
 		strings.Contains(s, "use of closed network connection") ||
 		strings.Contains(s, "Application error 0x") ||
+		strings.Contains(s, "canceled by remote") ||
 		strings.Contains(s, "failed to write STUN message to ICE connection") {
 		return true
 	}

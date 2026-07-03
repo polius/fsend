@@ -8,10 +8,10 @@
   on Windows 10/11) is the only requirement — no Git Bash needed.
 
   Quick install:
-    irm https://getfsend.alzina.dev/install.ps1 | iex
+    irm https://getfsend.alzina.dev/windows | iex
 
   With options, set env vars before piping:
-    $env:FSEND_VERSION='1.2.3'; irm https://getfsend.alzina.dev/install.ps1 | iex
+    $env:FSEND_VERSION='1.2.3'; irm https://getfsend.alzina.dev/windows | iex
 
   Or download and run with parameters:
     .\install.ps1 -Prefix C:\tools\bin -Version 1.2.3
@@ -57,7 +57,7 @@ function Show-Usage {
 fsend installer (Windows / PowerShell)
 
 Usage:
-  irm https://getfsend.alzina.dev/install.ps1 | iex
+  irm https://getfsend.alzina.dev/windows | iex
   .\install.ps1 [-Prefix DIR] [-Version VERSION]
 
 Parameters (or matching env var):
