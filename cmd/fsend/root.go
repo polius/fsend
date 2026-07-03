@@ -199,9 +199,10 @@ USAGE
   fsend completion <bash|zsh|fish|powershell>
 
 EXAMPLES
-  zsh:   eval "$(fsend completion zsh)"
-  bash:  eval "$(fsend completion bash)"
-  fish:  fsend completion fish | source
+  zsh:         eval "$(fsend completion zsh)"
+  bash:        eval "$(fsend completion bash)"
+  fish:        fsend completion fish | source
+  powershell:  fsend completion powershell | Out-String | Invoke-Expression
 
   Add the line to your shell's rc file to load it on every session.
 `
@@ -292,8 +293,9 @@ GENERAL
 
 ADVANCED
   --connect              Show current server
-  --connect <host:port>  Set the server (persisted)
-  --connect <host:port>,<password>
+  --connect <host[:port]>
+                         Set the server (persisted)
+  --connect <host[:port]>,<password>
                          Set the server + shared password
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
@@ -645,7 +647,7 @@ func promptCodeOrPath(f *flags, arg string) error {
 func askCodeOrPath(br *bufio.Reader, arg string) (send bool, err error) {
 	fmt.Fprintf(os.Stderr, "\n  %q matches a code AND is a local file.\n", arg)
 	for {
-		fmt.Fprintf(os.Stderr, "  [s]end this file, or [r]eceive with this code? (r): ")
+		fmt.Fprint(os.Stderr, "  Send this file, or receive with this code? [s/R] ")
 		resp, eof := readLineFrom(br)
 		if eof {
 			fmt.Fprintln(os.Stderr)

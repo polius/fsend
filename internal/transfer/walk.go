@@ -80,6 +80,27 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 			}
 			continue
 		}
+		// A named argument must be sendable content. A fifo/socket/device
+		// found inside a folder is skipped silently (addEntry), but one the
+		// user pointed at directly deserves an honest refusal — the silent
+		// skip would misreport it as an empty folder. A symlink argument is
+		// resolved by addEntry, which already errors if its target is
+		// unsendable.
+		if mode := st.Mode(); !mode.IsDir() && !mode.IsRegular() && mode&os.ModeSymlink == 0 {
+			return nil, fmt.Errorf("%w: cannot send %s — not a regular file (%s)", fserrors.ErrUsage, raw, fileKind(mode))
+		}
+		// Preflight an unreadable file now, before a code is issued —
+		// otherwise the E010 fires only after a receiver accepts, wasting
+		// the round-trip. Top-level arguments only: opening every file of a
+		// large tree here would double the syscall bill for a rare failure,
+		// so files inside directories keep failing at send time.
+		if st.Mode().IsRegular() {
+			f, err := os.Open(abs)
+			if err != nil {
+				return nil, fmt.Errorf("walk: %s: %w", raw, err)
+			}
+			_ = f.Close()
+		}
 		root := filepath.Base(abs)
 		if prev, ok := roots[strings.ToLower(root)]; ok {
 			return nil, fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, raw, root)
@@ -194,6 +215,20 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, srcPre
 			return fmt.Errorf("%w: %s → %s is not a regular file", fserrors.ErrUnsendableSymlink, rel, linkTarget)
 		}
 		return nil
+	}
+}
+
+// fileKind names a non-regular file mode for the "cannot send" usage error.
+func fileKind(m os.FileMode) string {
+	switch {
+	case m&os.ModeNamedPipe != 0:
+		return "fifo"
+	case m&os.ModeSocket != 0:
+		return "socket"
+	case m&os.ModeDevice != 0:
+		return "device"
+	default:
+		return "special file"
 	}
 }
 

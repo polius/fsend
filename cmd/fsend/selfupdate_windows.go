@@ -23,7 +23,7 @@ func runInstaller(binPath string) error {
 	}
 
 	cmd := exec.Command("powershell", "-NoProfile", "-Command",
-		"irm https://getfsend.alzina.dev/install.ps1 | iex")
+		"irm https://getfsend.alzina.dev/windows | iex")
 	cmd.Env = append(os.Environ(), "FSEND_PREFIX="+filepath.Dir(binPath))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

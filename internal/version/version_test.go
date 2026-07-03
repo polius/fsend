@@ -31,13 +31,18 @@ func TestString(t *testing.T) {
 	}
 }
 
-// buildInfoVersion feeds the `go install` fallback: module versions are
-// v-prefixed and must match the ldflags convention (no "v"), while a
-// plain `go build` reports "(devel)" and must stay "dev".
+// buildInfoVersion feeds the `go install` fallback: exact module
+// versions are v-prefixed and must match the ldflags convention (no
+// "v"). Everything a dev checkout can produce — "(devel)", a VCS
+// pseudo-version, "+dirty" — must stay "dev", or the binary would
+// treat itself as a release and self-update over the developer's WIP.
 func TestBuildInfoVersion(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"v1.0.0", "1.0.0"},
-		{"v1.0.1-0.20260611000000-abcdef123456", "1.0.1-0.20260611000000-abcdef123456"},
+		{"v1.0.1-rc.1", "1.0.1-rc.1"},
+		{"v1.0.1-0.20260611000000-abcdef123456", ""},
+		{"v1.9.1-0.20260703131912-cbe8109ecebb+dirty", ""},
+		{"v1.0.0+dirty", ""},
 		{"(devel)", ""},
 		{"", ""},
 	}

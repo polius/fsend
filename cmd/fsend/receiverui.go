@@ -215,11 +215,17 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	for _, c := range conflicts[:shown] {
 		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
 	}
-	if more := len(conflicts) - shown; more > 0 {
-		fmt.Fprintf(os.Stderr, "    %s\n", uxlog.Dim(fmt.Sprintf("… and %d more", more)))
+	// Offer "l" only when the preview was truncated — with the full list
+	// already on screen, listing again adds nothing.
+	truncated := len(conflicts) > shown
+	prompt, hint := "  Overwrite all? [y/N] ", "  Please answer y or n."
+	if truncated {
+		fmt.Fprintf(os.Stderr, "    %s\n",
+			uxlog.Dim(fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts))))
+		prompt, hint = "  Overwrite all? [y/N/l] ", "  Please answer y or n (or l to list all)."
 	}
 	for {
-		fmt.Fprint(os.Stderr, "  Overwrite all? [y / N / l = list all] ")
+		fmt.Fprint(os.Stderr, prompt)
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
@@ -245,12 +251,13 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 			ui.mu.Unlock()
 			return false
 		case "l", "list":
+			// Still honored when not advertised (harmless reprint).
 			for _, c := range conflicts {
 				fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
 			}
 			continue
 		}
-		fmt.Fprintln(os.Stderr, "  Please answer y or n (or l to list all).")
+		fmt.Fprintln(os.Stderr, hint)
 	}
 }
 
@@ -270,8 +277,16 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 		d := int64(offset - ui.prev[fileIndex])
 		ui.prev[fileIndex] = offset
 		ui.skipped += d
+		// bytesHint counts only bytes still to receive (classify deducts
+		// the partial's aligned offset), but the bar's numerator counts the
+		// resumed prefix too — grow the total by the same delta or the bar
+		// reads past 100%. Both sides then show absolute-over-full-size,
+		// matching the sender.
+		ui.bytesHint += d
 		if ui.bar == nil && !ui.f.quiet {
 			ui.bar = uxlog.New(ui.bytesHint, ui.names != nil)
+		} else {
+			ui.bar.SetTotal(ui.bytesHint, false)
 		}
 		ui.bar.Add(d)
 	}

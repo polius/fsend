@@ -190,6 +190,12 @@ func containsDirectory(paths []string) (bool, error) {
 		st, err := os.Stat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
+				// Stat follows symlinks, so a dangling link lands here even
+				// though the path exists. Leave it for Walk, which reports
+				// E036 with the link's target — not a false "no such file".
+				if _, lerr := os.Lstat(p); lerr == nil {
+					continue
+				}
 				return false, fmt.Errorf("%w: %s", fserrors.ErrSourceNotFound, p)
 			}
 			return false, fmt.Errorf("%w: %s: %v", fserrors.ErrReadFailed, p, err)
