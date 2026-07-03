@@ -44,7 +44,7 @@ func (p *sendPlan) consumable() bool { return p.mode == wire.ModeStream }
 func runSend(f *flags, paths []string) error {
 	errorRoleSender = true
 	if f.textArg != "" && len(paths) > 0 {
-		return fmt.Errorf("%w: --text cannot be combined with file arguments", fserrors.ErrUsage)
+		return fmt.Errorf("%w: --text cannot be combined with positional arguments", fserrors.ErrUsage)
 	}
 	if f.textArg == "" && len(paths) == 0 {
 		return fmt.Errorf("%w: nothing to send (provide a file, a directory, or --text)", fserrors.ErrUsage)

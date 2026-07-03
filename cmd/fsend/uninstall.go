@@ -30,9 +30,8 @@ func runUninstall(f *flags) error {
 		}
 	}
 
-	if !confirmUninstall(f) {
-		fmt.Fprintln(os.Stderr, "  Uninstall cancelled.")
-		return nil
+	if err := confirmUninstall(f); err != nil {
+		return err
 	}
 
 	cfgPath, _ := config.Path()
@@ -91,10 +90,15 @@ func runUninstall(f *flags) error {
 	return nil
 }
 
-func confirmUninstall(f *flags) bool {
+// confirmUninstall asks before anything is removed. Decline, EOF, and
+// Ctrl-C all return ErrUserCancelled so scripts see the same E026 / exit
+// 130 as every other cancel path.
+func confirmUninstall(f *flags) error {
 	if f.yes {
-		return true
+		return nil
 	}
+	ctx, cancel := signalContext(f.quiet)
+	defer cancel()
 	// Resolve concrete paths so the user can see what's about to go.
 	binPath, _ := os.Executable()
 	if resolved, err := filepath.EvalSymlinks(binPath); err == nil && binPath != "" {
@@ -114,12 +118,22 @@ func confirmUninstall(f *flags) bool {
 	if cfgDir != "" {
 		fmt.Fprintf(os.Stderr, "    - config dir: %s\n", cfgDir)
 	}
-	fmt.Fprint(os.Stderr, "  Continue? [y/N] ")
-	line, _ := readLine(os.Stdin)
-	switch line {
-	case "y", "yes":
-		return true
-	default:
-		return false
+	for {
+		fmt.Fprint(os.Stderr, "  Continue? [y/N] ")
+		line, eof, ok := readLineCtx(ctx)
+		if !ok {
+			return fserrors.ErrUserCancelled
+		}
+		if eof {
+			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — not uninstalling.\n", uxlog.Info())
+			return fserrors.ErrUserCancelled
+		}
+		switch line {
+		case "y", "yes":
+			return nil
+		case "", "n", "no":
+			return fserrors.ErrUserCancelled
+		}
+		fmt.Fprintln(os.Stderr, "  Please answer y or n.")
 	}
 }
