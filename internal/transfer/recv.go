@@ -842,7 +842,9 @@ func classifyWriteErr(op string, err error) error {
 	if errors.Is(err, syscall.ENOSPC) {
 		base = fserrors.ErrDiskFull
 	}
-	return fmt.Errorf("%w: %s: %v", base, op, err)
+	// err stays wrapped so the CLI can spot EPIPE on the stdout sink
+	// (`--out -`) and exit 141 instead of rendering E009.
+	return fmt.Errorf("%w: %s: %w", base, op, err)
 }
 
 // declineTransfer posts an ERROR frame and runs the symmetric shutdown. The

@@ -299,8 +299,8 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 				debugf("ICE local candidate: %s", cstr)
 				if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, []string{cstr}); err != nil {
 					// Best-effort: pion's ICE will keep going with whatever
-					// candidates have already crossed; surface in --debug only.
-					_ = err
+					// candidates have already crossed.
+					debugf("ICE push candidate failed: %v", err)
 				}
 			}
 		}

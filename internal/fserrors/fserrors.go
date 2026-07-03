@@ -365,6 +365,7 @@ var catalog = map[error]Entry{
 	ErrSourceNotFound: {
 		Code: "E025", Exit: 25,
 		Message: "No such file or directory.",
+		Action:  "Check the path for typos, and quote it if it contains spaces.",
 	},
 	ErrUserCancelled: {
 		Code: "E026", Exit: 130,
@@ -431,7 +432,9 @@ var catalog = map[error]Entry{
 	},
 	ErrUnsendableSymlink: {
 		Code: "E036", Exit: 36,
-		Message: "Cannot send a symlink",
+		// fsend follows symlinks; only a link it can't resolve to real
+		// content (broken, unreadable, cyclic) is a hard stop.
+		Message: "Cannot follow this symlink.",
 		Action:  "Fix the link, or skip it with --exclude.",
 	},
 	ErrManifestWriteFailed: {

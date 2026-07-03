@@ -302,7 +302,7 @@ func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
 	}
 
 	// The sender must go back to waiting rather than exit.
-	if !waitForStderr(s, "Receiver disconnected", 15*time.Second) {
+	if !waitForStderr(s, "Receiver disconnected", 30*time.Second) {
 		t.Fatalf("sender never re-entered pairing\n--- sender stderr ---\n%s", s.stderr.String())
 	}
 

@@ -290,7 +290,13 @@ func (ui *receiverUI) onManifest(entries []transfer.ManifestEntry) {
 		ui.manifestErr = fmt.Errorf("%w: %v", fserrors.ErrManifestWriteFailed, err)
 		return
 	}
-	defer func() { _ = f.Close() }()
+	// A flush-time write failure can surface only at Close; swallowing it
+	// would evade E038.
+	defer func() {
+		if cerr := f.Close(); cerr != nil && ui.manifestErr == nil {
+			ui.manifestErr = fmt.Errorf("%w: %s: %v", fserrors.ErrManifestWriteFailed, ui.f.manifest, cerr)
+		}
+	}()
 	cw := csv.NewWriter(f)
 	_ = cw.Write([]string{"path", "size", "status"})
 	for _, e := range entries {

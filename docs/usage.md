@@ -347,6 +347,7 @@ failure. For what to *do* about a given error, see
 | `38`  | `E038` — files received, but the `--manifest` record could not be written. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
+| `141` | The output pipe closed early (e.g. `fsend <code> --out - \| head`). Shell convention (128+SIGPIPE); nothing is printed. |
 
 `5` is unused. `16` isn't in this list because `E016` (corrupt config) is
 a non-fatal warning that exits `0` — see the `0` row above.

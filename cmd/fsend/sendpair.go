@@ -592,14 +592,13 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 			// only — say so, or the sender waits forever on a code that
 			// cross-network receivers can't redeem. Skipped when the user
 			// explicitly forced the internet path with --mode=direct/relay:
-			// LAN is disabled, so the notice would be misleading.
+			// LAN is disabled, so the notice would be misleading. No
+			// E-coded line here: if the LAN path also fails, the final
+			// renderError prints the same catalog entry — once is enough.
 			if !serverDownNoticed && !f.quiet && !lanDisabled {
 				serverDownNoticed = true
 				waitSpin.Stop()
 				fmt.Fprintln(os.Stderr, uxlog.Warn(), "Server unavailable — only receivers on your local network can connect.")
-				if entry, known := fserrors.Lookup(serverErr); known {
-					fmt.Fprintf(os.Stderr, "  [%s] %s\n", entry.Code, entry.Message)
-				}
 				waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 			}
 		}
