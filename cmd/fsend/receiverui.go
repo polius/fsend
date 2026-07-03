@@ -355,12 +355,14 @@ func (ui *receiverUI) bytes() (total, moved int64) {
 // printCancelKeptHint tells a Ctrl-C'd receiver that its partial data
 // survives and how the transfer resumes. E026 itself is context-free
 // ("Cancelled.") — only the UI knows whether bytes had already landed.
+// Self-service leads: the still-running sender re-registers the same
+// code, so the receiver can resume without involving the other person.
 func printCancelKeptHint(f *flags, ui *receiverUI) {
 	if f.quiet {
 		return
 	}
 	if _, moved := ui.bytes(); moved > 0 {
-		fmt.Fprintf(os.Stderr, "%s Partial data kept — when the sender runs fsend again, the transfer resumes here.\n", uxlog.Info())
+		fmt.Fprintf(os.Stderr, "%s Partial data kept — run the same fsend <code> again to resume while the sender is still waiting.\n", uxlog.Info())
 	}
 }
 

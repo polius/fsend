@@ -156,8 +156,10 @@ If a transfer is interrupted, fsend keeps what it already received in a
 `.fsend-partial` file and continues from there next time — only the
 missing bytes transfer.
 
-Share codes are **one-shot**, so resuming isn't "rerun with the same
-code." It's a fresh send with a new code:
+While the sender's fsend is **still running**, just rerun the same
+`fsend <code>` — the sender re-registers the code and the transfer
+resumes. Once the sender has exited, codes are **one-shot** and resuming
+is a fresh send with a new code:
 
 1. **Sender** runs the original command again. fsend issues a *new* code.
 2. **Share the new code** with the receiver (the old one no longer works).

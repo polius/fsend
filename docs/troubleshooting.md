@@ -33,7 +33,7 @@ What to try:
 | Code | Meaning | Fix |
 |---|---|---|
 | `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. |
-| `E002` | No such code on the server | It expired, was mistyped, or the sender stopped. Have the sender run again for a fresh code. |
+| `E002` | No such code on the server | It expired, was mistyped, the sender stopped, or another receiver already claimed it. Have the sender run again for a fresh code. |
 | `E003` | Someone already claimed this code | Codes are one-shot. Have the sender run again and share the new code. |
 
 Codes can't be reused — a new send always produces a new code to share.
