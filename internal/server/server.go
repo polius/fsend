@@ -359,7 +359,7 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, RelayAllocateResponse{
 		RelayAddr:          s.relayAddrFor(r),
 		SessionToken:       relayTok.String(),
-		TTLSeconds:         600,
+		TTLSeconds:         int(s.cfg.PairedTTL.Seconds()),
 		ForwardingDisabled: !s.relayAllocator.Forwarding(),
 	})
 }

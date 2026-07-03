@@ -35,7 +35,7 @@ type entryPlan struct {
 	imohash      [ImohashSize]byte
 }
 
-// isConflict reports a destructive disagreement requiring --overwrite.
+// needsConsent reports a destructive disagreement requiring --overwrite.
 func (p *entryPlan) needsConsent() bool { return p.disp == dispDiffers || p.disp == dispConflict }
 
 // classifySummary is the breakdown shown in the accept prompt.
@@ -150,20 +150,9 @@ func classifyOne(e wire.ListingEntry, target, targetDir string, checksum bool) e
 		}
 		return p
 
-	case wire.EntrySymlink:
-		switch {
-		case !exists:
-			p.disp = dispNew
-		case st.Mode()&os.ModeSymlink != 0:
-			if tgt, err := os.Readlink(target); err == nil && tgt == e.SymlinkTarget {
-				p.disp = dispIdentical
-			} else {
-				p.disp = dispDiffers
-			}
-		default:
-			p.disp = dispConflict
-		}
-		return p
+	// No EntrySymlink case: classify() rejects peer symlinks outright before
+	// reaching here (a security boundary — the sender dereferences symlinks
+	// and never emits one).
 
 	default: // EntryFile
 		// Precedence: identical/verify target → resume → differ/conflict → new.
