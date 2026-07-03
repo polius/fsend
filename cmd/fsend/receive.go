@@ -183,9 +183,9 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func(attempt int) (st
 		fmt.Fprintln(os.Stderr)
 		if attempt > 1 {
 			return readPasswordHiddenCtx(ctx,
-				fmt.Sprintf("  Wrong password — try again (%d/%d): ", attempt, transfer.PasswordAttempts))
+				fmt.Sprintf("  Wrong password — try again (%d/%d): ", attempt, transfer.PasswordAttempts), f.quiet)
 		}
-		return readPasswordHiddenCtx(ctx, "  Password for this transfer: ")
+		return readPasswordHiddenCtx(ctx, "  Password for this transfer: ", f.quiet)
 	}
 }
 

@@ -645,7 +645,7 @@ func promptCodeOrPath(f *flags, arg string) error {
 func askCodeOrPath(br *bufio.Reader, arg string) (send bool, err error) {
 	fmt.Fprintf(os.Stderr, "\n  %q matches a code AND is a local file.\n", arg)
 	for {
-		fmt.Fprintf(os.Stderr, "  [s]end this file, or [r]eceive with this code? (r): ")
+		fmt.Fprint(os.Stderr, "  Send this file, or receive with this code? [s/R] ")
 		resp, eof := readLineFrom(br)
 		if eof {
 			fmt.Fprintln(os.Stderr)
