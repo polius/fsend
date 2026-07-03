@@ -620,16 +620,19 @@ func TestKeepBootstrapping_StopsOnInbound(t *testing.T) {
 	}
 }
 
-// Close stops the resender promptly.
+// Close stops the resender: after it, the write count settles (one tick may
+// already be in flight when Close lands) and then stops growing.
 func TestKeepBootstrapping_StopsOnClose(t *testing.T) {
 	u := newCountingConn()
 	c := NewClient(u, &net.UDPAddr{}, Token{})
 	c.KeepBootstrapping(10*time.Millisecond, 5*time.Second)
 	time.Sleep(30 * time.Millisecond)
 	_ = c.Close()
+	// Let any in-flight tick land and the goroutine observe the close.
+	time.Sleep(50 * time.Millisecond)
 	settled := u.writes.Load()
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(80 * time.Millisecond)
 	if u.writes.Load() != settled {
-		t.Errorf("resends continued after Close: %d → %d", settled, u.writes.Load())
+		t.Errorf("resends continued after Close settled: %d → %d", settled, u.writes.Load())
 	}
 }

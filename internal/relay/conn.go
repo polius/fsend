@@ -67,6 +67,12 @@ func (c *Conn) KeepBootstrapping(interval, max time.Duration) {
 			case <-c.stop:
 				return
 			case <-t.C:
+				// Recheck stop: a Close racing the tick shouldn't send.
+				select {
+				case <-c.stop:
+					return
+				default:
+				}
 				if c.gotInbound.Load() || time.Now().After(deadline) {
 					return
 				}
