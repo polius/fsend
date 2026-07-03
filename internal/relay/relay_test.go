@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -571,5 +572,64 @@ func TestServer_ActiveAllocationsCountsLiveSessions(t *testing.T) {
 	// in-flight for drain purposes.
 	if n := srv.ActiveAllocations(); n != 1 {
 		t.Fatalf("active = %d, want 1", n)
+	}
+}
+
+// countingConn is a minimal net.PacketConn that counts WriteTo calls and
+// blocks ReadFrom until closed. It lets the bootstrap-resend loop run
+// without a real relay.
+type countingConn struct {
+	writes atomic.Int64
+	done   chan struct{}
+	once   sync.Once
+}
+
+func newCountingConn() *countingConn { return &countingConn{done: make(chan struct{})} }
+func (c *countingConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	c.writes.Add(1)
+	return len(p), nil
+}
+func (c *countingConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	<-c.done
+	return 0, nil, net.ErrClosed
+}
+func (c *countingConn) Close() error                     { c.once.Do(func() { close(c.done) }); return nil }
+func (c *countingConn) LocalAddr() net.Addr              { return &net.UDPAddr{} }
+func (c *countingConn) SetDeadline(time.Time) error      { return nil }
+func (c *countingConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *countingConn) SetWriteDeadline(time.Time) error { return nil }
+
+// The bootstrap resender keeps sending until an inbound datagram arrives,
+// then stops — so a passive sender recovers from a lost bootstrap.
+func TestKeepBootstrapping_StopsOnInbound(t *testing.T) {
+	u := newCountingConn()
+	c := NewClient(u, &net.UDPAddr{}, Token{})
+	c.KeepBootstrapping(10*time.Millisecond, 5*time.Second)
+
+	time.Sleep(60 * time.Millisecond) // several resends
+	if got := u.writes.Load(); got < 2 {
+		t.Fatalf("expected repeated bootstraps, got %d writes", got)
+	}
+	// Simulate the relay forwarding us a datagram (what ReadFrom sets).
+	c.gotInbound.Store(true)
+	time.Sleep(40 * time.Millisecond)
+	settled := u.writes.Load()
+	time.Sleep(60 * time.Millisecond)
+	if u.writes.Load() != settled {
+		t.Errorf("resends did not stop after inbound: %d → %d", settled, u.writes.Load())
+	}
+}
+
+// Close stops the resender promptly.
+func TestKeepBootstrapping_StopsOnClose(t *testing.T) {
+	u := newCountingConn()
+	c := NewClient(u, &net.UDPAddr{}, Token{})
+	c.KeepBootstrapping(10*time.Millisecond, 5*time.Second)
+	time.Sleep(30 * time.Millisecond)
+	_ = c.Close()
+	settled := u.writes.Load()
+	time.Sleep(60 * time.Millisecond)
+	if u.writes.Load() != settled {
+		t.Errorf("resends continued after Close: %d → %d", settled, u.writes.Load())
 	}
 }
