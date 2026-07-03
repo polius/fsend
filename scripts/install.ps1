@@ -114,12 +114,19 @@ function Verify-Signature($sums, $base, $dir) {
     $pem = Join-Path $dir 'checksums.txt.pem'
     Download "$base/checksums.txt.sig" $sig
     Download "$base/checksums.txt.pem" $pem
+    # Windows PowerShell 5.1 turns a native command's redirected stderr into a
+    # terminating error under EAP=Stop — and cosign prints "Verified OK" to
+    # stderr even on success, which would abort a good verification. Relax EAP
+    # just for this call; correctness is judged by $LASTEXITCODE, not stderr.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & cosign verify-blob `
         --certificate $pem `
         --signature $sig `
         --certificate-identity-regexp $CosignIdentityRegexp `
         --certificate-oidc-issuer $CosignIssuer `
         $sums 2>$null | Out-Null
+    $ErrorActionPreference = $prevEAP
     if ($LASTEXITCODE -ne 0) {
         Err 'cosign signature verification failed for checksums.txt - refusing to install'
     }
