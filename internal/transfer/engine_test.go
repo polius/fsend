@@ -133,6 +133,28 @@ func TestEngine_PreservesModTimeEnablingSkip(t *testing.T) {
 	}
 }
 
+// An empty file is written to disk, so it must fire OnFileDone (which backs
+// the receiver's files_saved count and the "Saved N of M" headline) just like
+// a non-empty file does.
+func TestEngine_EmptyFileFiresOnFileDone(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "empty.txt"), nil)
+
+	var done []string
+	se, re := fileTransfer(t, []string{filepath.Join(src, "empty.txt")}, dst, func(o *RecvOptions) {
+		o.OnFileDone = func(p string) { done = append(done, p) }
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "empty.txt")); err != nil {
+		t.Fatalf("empty file not written: %v", err)
+	}
+	if len(done) != 1 {
+		t.Fatalf("OnFileDone fired %d times for a saved empty file, want 1", len(done))
+	}
+}
+
 func TestEngine_Directory(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	files := map[string][]byte{
