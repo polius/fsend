@@ -190,6 +190,12 @@ func containsDirectory(paths []string) (bool, error) {
 		st, err := os.Stat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
+				// Stat follows symlinks, so a dangling link lands here even
+				// though the path exists. Leave it for Walk, which reports
+				// E036 with the link's target — not a false "no such file".
+				if _, lerr := os.Lstat(p); lerr == nil {
+					continue
+				}
 				return false, fmt.Errorf("%w: %s", fserrors.ErrSourceNotFound, p)
 			}
 			return false, fmt.Errorf("%w: %s: %v", fserrors.ErrReadFailed, p, err)
@@ -469,10 +475,13 @@ func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
-		cancel()
+		// Notice before cancel(), and via uxlog.Println: a live progress
+		// bar's next refresh frame would erase a raw stderr write, and
+		// cancel() races the bar's teardown.
 		if !quiet {
-			fmt.Fprintf(os.Stderr, "\n%s Cancelling — press Ctrl-C again to force quit.\n", uxlog.Info())
+			uxlog.Println(fmt.Sprintf("%s Cancelling — press Ctrl-C again to force quit.", uxlog.Info()))
 		}
+		cancel()
 		signal.Stop(ch)
 	}()
 	return ctx, cancel

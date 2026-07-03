@@ -20,6 +20,13 @@ directly and don't need the server. Only *cross-network* receivers
 When the server can't be reached at all — no local-network fallback in
 play — the run ends with `E001`: "Could not reach the server (timeout)."
 
+Two variants of this warning name a cause you can fix yourself:
+
+- "The server requires a password" — set it with
+  `fsend --connect <host:port>,<password>` (ask the server operator).
+- "The server rate-limited this device" — wait a minute and run
+  fsend again.
+
 What to try:
 
 - Check your internet connection.

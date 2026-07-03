@@ -29,6 +29,7 @@ func TestManagedByHomebrew(t *testing.T) {
 	for _, managed := range []string{
 		"/opt/homebrew/Cellar/fsend/1.9.1/bin/fsend",
 		"/usr/local/Cellar/fsend/1.9.1/bin/fsend",
+		"/usr/local/Caskroom/fsend/1.9.1/fsend", // cask on Intel: no Cellar, no /homebrew/
 		"/home/linuxbrew/.linuxbrew/bin/fsend",
 	} {
 		if !managedByHomebrew(managed) {

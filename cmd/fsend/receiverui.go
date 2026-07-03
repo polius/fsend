@@ -228,11 +228,17 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	for _, c := range conflicts[:shown] {
 		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
 	}
-	if more := len(conflicts) - shown; more > 0 {
-		fmt.Fprintf(os.Stderr, "    %s\n", uxlog.Dim(fmt.Sprintf("… and %d more", more)))
+	// Offer "l" only when the preview was truncated — with the full list
+	// already on screen, listing again adds nothing.
+	truncated := len(conflicts) > shown
+	prompt, hint := "  Overwrite all? [y/N] ", "  Please answer y or n."
+	if truncated {
+		fmt.Fprintf(os.Stderr, "    %s\n",
+			uxlog.Dim(fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts))))
+		prompt, hint = "  Overwrite all? [y/N/l] ", "  Please answer y or n (or l to list all)."
 	}
 	for {
-		fmt.Fprint(os.Stderr, "  Overwrite all? [y / N / l = list all] ")
+		fmt.Fprint(os.Stderr, prompt)
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
@@ -258,12 +264,13 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 			ui.mu.Unlock()
 			return false
 		case "l", "list":
+			// Still honored when not advertised (harmless reprint).
 			for _, c := range conflicts {
 				fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
 			}
 			continue
 		}
-		fmt.Fprintln(os.Stderr, "  Please answer y or n (or l to list all).")
+		fmt.Fprintln(os.Stderr, hint)
 	}
 }
 
@@ -283,8 +290,16 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 		d := int64(offset - ui.prev[fileIndex])
 		ui.prev[fileIndex] = offset
 		ui.skipped += d
+		// bytesHint counts only bytes still to receive (classify deducts
+		// the partial's aligned offset), but the bar's numerator counts the
+		// resumed prefix too — grow the total by the same delta or the bar
+		// reads past 100%. Both sides then show absolute-over-full-size,
+		// matching the sender.
+		ui.bytesHint += d
 		if ui.bar == nil && !ui.f.quiet {
 			ui.bar = uxlog.New(ui.bytesHint, ui.names != nil)
+		} else {
+			ui.bar.SetTotal(ui.bytesHint, false)
 		}
 		ui.bar.Add(d)
 	}
@@ -375,7 +390,10 @@ func printCancelKeptHint(f *flags, ui *receiverUI) {
 		return
 	}
 	if _, moved := ui.bytes(); moved > 0 {
-		fmt.Fprintf(os.Stderr, "%s Partial data kept — run the same fsend <code> again to resume while the sender is still waiting.\n", uxlog.Info())
+		// Via uxlog.Println: the aborted bar is still live here (ui.close
+		// runs on a defer), and its next refresh frame would erase a raw
+		// stderr write.
+		uxlog.Println(fmt.Sprintf("%s Partial data kept — run the same fsend <code> again to resume while the sender is still waiting.", uxlog.Info()))
 	}
 }
 
@@ -408,6 +426,15 @@ func (ui *receiverUI) retryNotice() func(int, time.Duration, error) {
 // kept (no consent) it returns E013 so scripts get a non-zero exit, after
 // showing the summary; a --manifest write failure surfaces the same way.
 func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
+	// Unknown-total bars (stream/text: bytesHint 0) never reach Completed on
+	// their own, so Done() would keep them — the keep-the-bar policy is meant
+	// for aborts, and this is the success path. Latch the total so the bar
+	// erases itself, mirroring the sender's onStreamingEOF.
+	ui.mu.Lock()
+	if ui.bar != nil && ui.bytesHint == 0 {
+		ui.bar.SetTotal(ui.total+ui.skipped, true)
+	}
+	ui.mu.Unlock()
 	ui.close()
 
 	ui.mu.Lock()

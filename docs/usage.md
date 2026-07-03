@@ -192,7 +192,7 @@ FSEND_PASSWORD=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
 else. Human output (progress, prompts, summaries) stays on stderr, so
 `--json` composes with or without `--quiet`. Exit codes are unchanged.
 
-Two events exist. The **sender** emits the pairing code as soon as it is
+Two events exist. The **sender** emits the share code as soon as it is
 issued, then a final summary; the **receiver** emits only the summary:
 
 ```json

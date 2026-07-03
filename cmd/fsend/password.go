@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -53,7 +54,7 @@ func readPasswordHidden(prompt string) (string, error) {
 // cancellation (Ctrl-C at the prompt), returning context.Canceled. The
 // abandoned ReadPassword goroutine cannot run its own deferred terminal
 // restore, so we capture the terminal state up front and restore it here.
-func readPasswordHiddenCtx(ctx context.Context, prompt string) (string, error) {
+func readPasswordHiddenCtx(ctx context.Context, prompt string, quiet bool) (string, error) {
 	fd := int(os.Stdin.Fd())
 	var oldState *term.State
 	if term.IsTerminal(fd) {
@@ -72,6 +73,11 @@ func readPasswordHiddenCtx(ctx context.Context, prompt string) (string, error) {
 	case <-ctx.Done():
 		if oldState != nil {
 			_ = term.Restore(fd, oldState)
+		}
+		// signalContext's Cancelling notice already broke the prompt line;
+		// another newline here showed up as a stray blank line. --quiet
+		// suppresses that notice, so break the line ourselves then.
+		if quiet {
 			fmt.Fprintln(os.Stderr)
 		}
 		return "", context.Canceled
@@ -109,14 +115,14 @@ func resolvePassword(ctx context.Context, f *flags, sender bool) error {
 		return fmt.Errorf("%w: bare --password needs a terminal; use --password=<value> or FSEND_PASSWORD", fserrors.ErrUsage)
 	}
 	if sender {
-		pw, err := promptPasswordWithSuggestionCtx(ctx)
+		pw, err := promptPasswordWithSuggestionCtx(ctx, f.quiet)
 		if err != nil {
 			return err
 		}
 		f.passArg = pw
 		return nil
 	}
-	pw, err := readPasswordHiddenCtx(ctx, "Password for this transfer: ")
+	pw, err := readPasswordHiddenCtx(ctx, "  Password for this transfer: ", f.quiet)
 	if err != nil {
 		return err
 	}
@@ -128,19 +134,23 @@ func resolvePassword(ctx context.Context, f *flags, sender bool) error {
 // aborts on ctx cancellation (Ctrl-C at the prompt). The prompt echoes
 // normally, so unlike the hidden reader there is no terminal state to
 // restore — just move off the prompt line.
-func promptPasswordWithSuggestionCtx(ctx context.Context) (string, error) {
+func promptPasswordWithSuggestionCtx(ctx context.Context, quiet bool) (string, error) {
 	type result struct {
 		pw  string
 		err error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		pw, err := promptPasswordWithSuggestion()
+		pw, err := promptPasswordWithSuggestion(stdinReader())
 		ch <- result{pw, err}
 	}()
 	select {
 	case <-ctx.Done():
-		fmt.Fprintln(os.Stderr)
+		// As in readPasswordHiddenCtx: signalContext already broke the
+		// line unless --quiet suppressed its notice.
+		if quiet {
+			fmt.Fprintln(os.Stderr)
+		}
 		return "", context.Canceled
 	case r := <-ch:
 		return r.pw, r.err
@@ -151,7 +161,7 @@ func promptPasswordWithSuggestionCtx(ctx context.Context) (string, error) {
 // as the default. The suggestion is printed visibly (the sender needs to
 // see it to share it out-of-band) and a bare <enter> accepts it. Any
 // non-empty typed input replaces the suggestion.
-func promptPasswordWithSuggestion() (string, error) {
+func promptPasswordWithSuggestion(br *bufio.Reader) (string, error) {
 	suggested, err := generateRandomPassword(16)
 	if err != nil {
 		return "", fmt.Errorf("generating suggested password: %w", err)
@@ -159,7 +169,7 @@ func promptPasswordWithSuggestion() (string, error) {
 	fmt.Fprintf(os.Stderr, "  Suggested password: %s\n", suggested)
 	fmt.Fprint(os.Stderr, "  Press Enter to use it, or type your own: ")
 
-	line, err := stdinReader().ReadString('\n')
+	line, err := br.ReadString('\n')
 	if err != nil && line == "" {
 		// EOF on a piped stdin with no data: the caller can't interact.
 		// Be explicit rather than silently accepting the suggested
@@ -170,8 +180,10 @@ func promptPasswordWithSuggestion() (string, error) {
 		}
 		return "", err
 	}
+	// Trim only the line terminator: every other password path (hidden
+	// read, --password=VALUE, FSEND_PASSWORD) takes the value verbatim,
+	// so a trailing space typed here must stay part of the secret too.
 	typed := strings.TrimRight(line, "\r\n")
-	typed = strings.TrimSpace(typed)
 	if typed == "" {
 		return suggested, nil
 	}

@@ -249,8 +249,12 @@ var catalog = map[error]Entry{
 	},
 	ErrReadFailed: {
 		Code: "E010", Exit: 10,
-		Message: "Could not read the source file.",
-		Action:  "Check the file permissions and try again.",
+		// Base wording is receiver-side (the error is mirrored across the
+		// wire): the receiver can't check the sender's permissions.
+		Message:       "The sender could not read the source file.",
+		Action:        "Ask them to check its permissions and run fsend again.",
+		SenderMessage: "Could not read the source file.",
+		SenderAction:  "Check the file permissions and try again.",
 	},
 	ErrHashMismatch: {
 		Code: "E011", Exit: 11,
