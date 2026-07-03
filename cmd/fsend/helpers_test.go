@@ -920,14 +920,10 @@ func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
 // butt against it when both streams share a sink (2>&1, CI logs) — the line
 // break goes to stderr, keeping the piped stdout bytes exact.
 func TestPrintTextPayload_BreaksLineForPipedStdout(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "payload")
-	if err := os.WriteFile(path, []byte("no-newline"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	var stdout string
 	stderr := captureStderr(t, func() {
 		stdout = captureStdout(t, func() {
-			if err := printTextPayload([]string{path}); err != nil {
+			if err := printTextPayload("no-newline"); err != nil {
 				t.Errorf("printTextPayload: %v", err)
 			}
 		})
@@ -940,11 +936,8 @@ func TestPrintTextPayload_BreaksLineForPipedStdout(t *testing.T) {
 	}
 
 	// A newline-terminated payload needs no break.
-	if err := os.WriteFile(path, []byte("clean\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	stderr = captureStderr(t, func() {
-		_ = captureStdout(t, func() { _ = printTextPayload([]string{path}) })
+		_ = captureStdout(t, func() { _ = printTextPayload("clean\n") })
 	})
 	if stderr != "" {
 		t.Errorf("newline-terminated payload must not emit a break, got %q", stderr)

@@ -48,6 +48,7 @@ type flags struct {
 
 	// Misc
 	quiet     bool
+	json      bool // NDJSON events on stdout; human output stays on stderr
 	debug     bool
 	update    bool
 	uninstall bool
@@ -120,6 +121,7 @@ Examples:
 	c.Flags().BoolVar(&f.preview, "preview", false, "list what would be sent (CSV: path,size) and exit; no transfer")
 	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status) of the received files to this path")
 	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress non-error output")
+	c.Flags().BoolVar(&f.json, "json", false, "emit NDJSON events (code, final summary) on stdout")
 	c.Flags().StringVar(&f.hostname, "name", "", "override the hostname shown to the peer")
 	c.Flags().StringSliceVar(&f.excludes, "exclude", nil,
 		"glob patterns to skip when bundling a directory (repeatable or comma-separated)")
@@ -278,6 +280,8 @@ RECEIVING
 
 GENERAL
   --quiet                Suppress all non-error output
+  --json                 NDJSON events on stdout: the code when issued, and
+                         a final summary (see docs/usage.md for the schema)
   --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
   --help, -h             Show this help
   --version, -v          Show version
@@ -351,7 +355,7 @@ const connectShowSentinel = ":show:"
 // line would silently not run. allowYes exempts --yes, which --uninstall
 // documents as skipping its confirmation prompt.
 func maintenanceGuard(cmd *cobra.Command, f *flags, name string, allowYes bool) error {
-	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "checksum", "manifest", "preview"} {
+	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "checksum", "manifest", "preview", "json"} {
 		if conflict == "yes" && allowYes {
 			continue
 		}
@@ -368,12 +372,15 @@ func maintenanceGuard(cmd *cobra.Command, f *flags, name string, allowYes bool) 
 // dispatch implements the CLI dispatch rules documented on the main.go
 // package comment.
 func dispatch(cmd *cobra.Command, f *flags) error {
+	if f.json {
+		jsonEnable()
+	}
 	// Handle --connect (server configuration) before anything else.
 	// Reject pairings with transfer-mode flags so the user can't be
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "uninstall", "checksum", "manifest", "preview"} {
+		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "uninstall", "checksum", "manifest", "preview", "json"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}

@@ -371,36 +371,60 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		elapsed = time.Since(firstByte)
 	}
 
-	if h != nil && h.Mode == wire.ModeStream && h.IsText && !ui.sink {
-		if err := printTextPayload(files); err != nil {
+	total, moved := ui.bytes()
+	text := ""
+	isText := h != nil && h.Mode == wire.ModeStream && h.IsText && !ui.sink
+	if isText {
+		payload, err := readTextPayload(files)
+		if err != nil {
 			return err
 		}
-		total, moved := ui.bytes()
+		text = payload
+		// Under --json the payload rides in the done event instead of
+		// raw stdout, which must stay pure NDJSON.
+		if !jsonEnabled() {
+			if err := printTextPayload(text); err != nil {
+				return err
+			}
+		}
 		printRecvSummary(f, "Received text", total, moved, kept, 0, elapsed, ui.pathInfo)
-		return nil
+	} else {
+		headline := ui.headline(h, files)
+		// With kept-back files the peer-supplied display name ("2 files") would
+		// overcount what actually landed — say how many of the offer were written.
+		if kept > 0 && !ui.sink {
+			headline = fmt.Sprintf("Saved %d of %s to %s",
+				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), displayPath(ui.outDir))
+		}
+		printRecvSummary(f, headline, total, moved, kept, skippedSame, elapsed, ui.pathInfo)
 	}
-	total, moved := ui.bytes()
-	headline := ui.headline(h, files)
-	// With kept-back files the peer-supplied display name ("2 files") would
-	// overcount what actually landed — say how many of the offer were written.
-	if kept > 0 && !ui.sink {
-		headline = fmt.Sprintf("Saved %d of %s to %s",
-			len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), displayPath(ui.outDir))
-	}
-	printRecvSummary(f, headline, total, moved, kept, skippedSame, elapsed, ui.pathInfo)
 	// manifestErr is set by onManifest, which runs on this goroutine before we
 	// return, so no lock is needed. The transfer succeeded; the failure is only
 	// that --manifest couldn't be written.
-	if ui.manifestErr != nil {
-		return ui.manifestErr
+	var retErr error
+	switch {
+	case ui.manifestErr != nil:
+		retErr = ui.manifestErr
+	case kept > 0 && keptByChoice:
+		retErr = errKeptByChoice
+	case kept > 0:
+		retErr = fserrors.ErrTargetExists
 	}
-	if kept > 0 {
-		if keptByChoice {
-			return errKeptByChoice
+	ev := jsonDoneEvent{Ok: retErr == nil, Role: "receiver",
+		BytesTotal: ptr64(total), BytesMoved: ptr64(moved),
+		DurationMS: msPtr(elapsed), Route: jsonRoute(ui.pathInfo.Kind), Text: text}
+	if retErr != nil {
+		entry, _ := fserrors.Lookup(retErr)
+		ev.Error, ev.Exit = entry.Code, entry.Exit
+	}
+	if !isText {
+		ev.FilesSaved, ev.FilesSame, ev.FilesKept = ptrInt(len(files)), ptrInt(skippedSame), ptrInt(kept)
+		if !ui.sink {
+			ev.Dir = ui.outDir
 		}
-		return fserrors.ErrTargetExists
 	}
-	return nil
+	jsonEmitDone(ev)
+	return retErr
 }
 
 // errKeptByChoice is ErrTargetExists after the user answered "n" at the
@@ -408,19 +432,28 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 // as their decision (ℹ, no "use --overwrite" advice they just declined).
 var errKeptByChoice = fmt.Errorf("%w: kept by choice", fserrors.ErrTargetExists)
 
-func printTextPayload(files []string) error {
+// readTextPayload lifts the text payload off disk (it was staged as a file)
+// and removes the staging file.
+func readTextPayload(files []string) (string, error) {
 	if len(files) == 0 {
-		return nil
+		return "", nil
 	}
 	b, err := os.ReadFile(files[0])
 	if err != nil {
-		return fmt.Errorf("%w: text payload: %v", fserrors.ErrReadFailed, err)
+		return "", fmt.Errorf("%w: text payload: %v", fserrors.ErrReadFailed, err)
 	}
 	_ = os.Remove(files[0])
-	if _, err := os.Stdout.Write(b); err != nil {
+	return string(b), nil
+}
+
+func printTextPayload(text string) error {
+	if text == "" {
+		return nil
+	}
+	if _, err := os.Stdout.WriteString(text); err != nil {
 		return err
 	}
-	if len(b) > 0 && b[len(b)-1] != '\n' {
+	if text[len(text)-1] != '\n' {
 		if term.IsTerminal(int(os.Stdout.Fd())) {
 			fmt.Println()
 		} else {
