@@ -243,10 +243,10 @@ func TestServerLoadConfigRejectsBadValues(t *testing.T) {
 
 func TestServerLoadConfigLogLevels(t *testing.T) {
 	cases := map[string]slog.Level{
-		"debug":   slog.LevelDebug,
-		"DEBUG":   slog.LevelDebug,
-		"warn":    slog.LevelWarn,
-		"WARN":    slog.LevelWarn,
+		"debug": slog.LevelDebug,
+		"DEBUG": slog.LevelDebug,
+		"warn":  slog.LevelWarn,
+		"WARN":  slog.LevelWarn,
 		"error": slog.LevelError,
 		"info":  slog.LevelInfo,
 		"INFO":  slog.LevelInfo,
