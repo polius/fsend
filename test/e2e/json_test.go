@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // jsonLines parses stdout as NDJSON, failing on any non-JSON line — the
@@ -124,5 +125,55 @@ func TestJSON_UsageErrorEmitsDone(t *testing.T) {
 	ev := jsonLines(t, stdout)
 	if len(ev) != 1 || ev[0]["event"] != "done" || ev[0]["ok"] != false || ev[0]["error"] != "E024" {
 		t.Errorf("usage failure should emit a done event: %v", ev)
+	}
+}
+
+// The guaranteed done-event on a cobra parse error (cobra state is gone, so
+// the emitter falls back to scanning os.Args) must fire for the --json=true
+// spelling too, not only the bare --json token. An unknown flag forces the
+// parse-error path.
+func TestJSON_ParseErrorEmitsDoneValuedFlag(t *testing.T) {
+	requireE2E(t)
+	src := t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 1024)
+	stdout, _, exit := h.runFsend(t, h.newXDG(t), srcFile, "--json=true", "--frobnicate")
+	if exit != 24 {
+		t.Fatalf("exit = %d, want 24", exit)
+	}
+	ev := jsonLines(t, stdout)
+	if len(ev) != 1 || ev[0]["event"] != "done" || ev[0]["ok"] != false || ev[0]["error"] != "E024" {
+		t.Errorf("--json=true parse error should still emit a done event: %v", ev)
+	}
+}
+
+// A piped stdin stream has no known size, so its done event must omit
+// bytes_total (the "not known" signal) rather than report a bogus 0, while
+// still reporting the bytes it moved.
+func TestJSON_StdinStreamOmitsBytesTotal(t *testing.T) {
+	requireE2E(t)
+	dst := t.TempDir()
+	xdg := h.newXDG(t)
+
+	s := h.startSenderStdin(t, xdg, "streamed-over-stdin\n", "--json", "-")
+	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
+	code := s.waitForCode(t, 5*time.Second)
+
+	_, _, exit := h.runFsendIn(t, xdg, dst, "--yes", code)
+	s.wait(t, 5*time.Second)
+	if exit != 0 {
+		t.Fatalf("receiver exit = %d", exit)
+	}
+
+	ev := jsonLines(t, s.stdout.String())
+	done := ev[len(ev)-1]
+	if done["event"] != "done" || done["ok"] != true || done["role"] != "sender" {
+		t.Fatalf("last sender event is not a successful done: %v", done)
+	}
+	if _, present := done["bytes_total"]; present {
+		t.Errorf("stdin stream must omit bytes_total, got %v", done["bytes_total"])
+	}
+	if bm, ok := done["bytes_moved"].(float64); !ok || bm == 0 {
+		t.Errorf("stdin stream should still report bytes_moved, got %v", done["bytes_moved"])
 	}
 }

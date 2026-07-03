@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -254,16 +255,23 @@ func debugRequested() bool {
 	return argsHaveFlag("--debug")
 }
 
-// argsHaveFlag scans os.Args for a literal flag token. Used by the error
-// renderer, which runs after cobra state is gone.
+// argsHaveFlag reports whether a boolean flag is present and truthy on the
+// command line, honouring both the bare (--json) and valued (--json=true)
+// spellings. Used by the error renderer, which runs after cobra state is gone.
+// Last occurrence wins, matching pflag when a flag is repeated.
 func argsHaveFlag(name string) bool {
+	found := false
 	for _, a := range os.Args[1:] {
-		if a == name {
-			return true
-		}
 		if a == "--" {
 			break
 		}
+		switch {
+		case a == name:
+			found = true
+		case strings.HasPrefix(a, name+"="):
+			b, err := strconv.ParseBool(a[len(name)+1:])
+			found = err == nil && b
+		}
 	}
-	return false
+	return found
 }

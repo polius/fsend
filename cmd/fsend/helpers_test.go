@@ -582,6 +582,37 @@ func TestDebugRequested(t *testing.T) {
 	}
 }
 
+// argsHaveFlag honours the bare and valued (--json=true) spellings, stops at
+// --, and — like pflag — lets the last occurrence win when a flag repeats.
+func TestArgsHaveFlag(t *testing.T) {
+	savedArgs := os.Args
+	t.Cleanup(func() { os.Args = savedArgs })
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"absent", []string{"fsend", "file.txt"}, false},
+		{"bare", []string{"fsend", "--json"}, true},
+		{"valued true", []string{"fsend", "--json=true"}, true},
+		{"valued 1", []string{"fsend", "--json=1"}, true},
+		{"valued false", []string{"fsend", "--json=false"}, false},
+		{"valued garbage", []string{"fsend", "--json=maybe"}, false},
+		{"past --", []string{"fsend", "--", "--json"}, false},
+		{"last wins false", []string{"fsend", "--json", "--json=false"}, false},
+		{"last wins true", []string{"fsend", "--json=false", "--json"}, true},
+		{"not a prefix match", []string{"fsend", "--jsonx"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			if got := argsHaveFlag("--json"); got != tc.want {
+				t.Errorf("argsHaveFlag(--json) with %v = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // root.go applyEnvFallbacks
 // ---------------------------------------------------------------------------

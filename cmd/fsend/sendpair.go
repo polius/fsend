@@ -818,8 +818,12 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	s := stats()
 	printSendSummary(f, int64(plan.totalBytes), s, elapsed, pathInfo)
 	ev := jsonDoneEvent{Ok: true, Role: "sender",
-		BytesTotal: ptr64(int64(plan.totalBytes)), BytesMoved: ptr64(s.moved),
-		DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
+		BytesMoved: ptr64(s.moved), DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
+	// A piped stdin stream has no known size; per the JSON contract an omitted
+	// bytes_total means "not known", so don't emit a bogus 0.
+	if plan.mode != wire.ModeStream || plan.isText {
+		ev.BytesTotal = ptr64(int64(plan.totalBytes))
+	}
 	if plan.mode == wire.ModeFiles {
 		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles)
 		ev.FilesSkipped = ptrInt(s.skippedFiles - s.keptFiles)
