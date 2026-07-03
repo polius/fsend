@@ -612,3 +612,71 @@ func TestEngine_PasswordFixedWrongSingleAttempt(t *testing.T) {
 		t.Fatalf("send=%v recv=%v, want ErrWrongPassword on both", se, re)
 	}
 }
+
+// Directory modes are preserved on the receiver — including a restrictive
+// mode, which must be applied after the dir's children land (not before, or
+// writing them would fail).
+func TestEngine_DirModePreserved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix directory permission bits")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	// A 0750 dir and a read-only 0555 dir containing a file.
+	writeFile(t, filepath.Join(src, "tree", "priv", "keep.txt"), []byte("secret"))
+	writeFile(t, filepath.Join(src, "tree", "ro", "data.bin"), []byte("payload"))
+	if err := os.Chmod(filepath.Join(src, "tree", "priv"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(src, "tree", "ro"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// Loosen the read-only dirs on both trees so t.TempDir cleanup can remove them.
+	t.Cleanup(func() {
+		_ = os.Chmod(filepath.Join(src, "tree", "ro"), 0o755)
+		_ = os.Chmod(filepath.Join(dst, "tree", "ro"), 0o755)
+	})
+
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "tree")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+
+	for rel, want := range map[string]os.FileMode{"tree/priv": 0o750, "tree/ro": 0o555} {
+		st, err := os.Stat(filepath.Join(dst, rel))
+		if err != nil {
+			t.Fatalf("stat %s: %v", rel, err)
+		}
+		if got := st.Mode() & os.ModePerm; got != want {
+			t.Errorf("%s mode = %o, want %o", rel, got, want)
+		}
+	}
+	// The child under the read-only dir must still have landed (mode applied last).
+	if got := mustRead(t, filepath.Join(dst, "tree", "ro", "data.bin")); string(got) != "payload" {
+		t.Errorf("file under read-only dir did not land: %q", got)
+	}
+}
+
+// A chmod on a source directory propagates on an identical re-send, matching
+// the file behavior — the dir is otherwise never re-created.
+func TestEngine_DirModePropagatesOnIdenticalResend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix directory permission bits")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "d", "f.txt"), []byte("x"))
+	if err := os.Chmod(filepath.Join(src, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "d")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("seed send=%v recv=%v", se, re)
+	}
+	// chmod the source dir and re-send (contents identical).
+	if err := os.Chmod(filepath.Join(src, "d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "d")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("resend send=%v recv=%v", se, re)
+	}
+	if st, _ := os.Stat(filepath.Join(dst, "d")); st.Mode()&os.ModePerm != 0o700 {
+		t.Errorf("dir mode not propagated: %o, want 0700", st.Mode()&os.ModePerm)
+	}
+}
