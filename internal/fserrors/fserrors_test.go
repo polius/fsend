@@ -119,6 +119,7 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 		{ErrRelayIdleTimeout, "E029", 29},
 		{ErrRelayBudgetExhausted, "E037", 37},
 		{ErrManifestWriteFailed, "E038", 38},
+		{ErrHomebrewManaged, "E039", 39},
 	}
 	for _, c := range cases {
 		entry, ok := Lookup(c.err)
@@ -132,6 +133,19 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 		if entry.Exit != c.exit {
 			t.Errorf("%v: exit = %d, want %d", c.err, entry.Exit, c.exit)
 		}
+	}
+}
+
+// The Homebrew-managed entry carries no Action: the specific brew command
+// (upgrade vs uninstall) rides the wrapped detail, so a generic Action line
+// would only contradict it.
+func TestHomebrewManaged_NoAction(t *testing.T) {
+	entry, ok := Lookup(ErrHomebrewManaged)
+	if !ok {
+		t.Fatal("expected catalog match for ErrHomebrewManaged")
+	}
+	if entry.Action != "" {
+		t.Errorf("Action should be empty so the brew detail isn't contradicted, got %q", entry.Action)
 	}
 }
 
