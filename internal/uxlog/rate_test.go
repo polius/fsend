@@ -43,6 +43,32 @@ func TestRateWindow_StallDecaysToZero(t *testing.T) {
 	}
 }
 
+// TestRateWindow_Stalled: the stall marker trips only after stallThreshold
+// with no byte advance, never before the first sample, and recovers as
+// soon as bytes move again.
+func TestRateWindow_Stalled(t *testing.T) {
+	w := &rateWindow{}
+	t0 := time.Now()
+	if w.stalled(t0) {
+		t.Error("stalled before any sample")
+	}
+	w.observe(t0, 1000)
+	if w.stalled(t0.Add(stallThreshold - time.Second)) {
+		t.Error("stalled before the threshold elapsed")
+	}
+	// Frames keep arriving with the same cumulative count (a real stall):
+	// they must not reset the clock.
+	w.observe(t0.Add(2*time.Second), 1000)
+	if !w.stalled(t0.Add(stallThreshold + time.Second)) {
+		t.Error("not stalled after threshold with no byte advance")
+	}
+	// Bytes move again: recovered.
+	w.observe(t0.Add(stallThreshold+2*time.Second), 2000)
+	if w.stalled(t0.Add(stallThreshold + 2*time.Second)) {
+		t.Error("still stalled after bytes advanced")
+	}
+}
+
 // TestRateWindow_NoDivideByZero: empty and degenerate windows must return
 // 0, never divide by a zero span.
 func TestRateWindow_NoDivideByZero(t *testing.T) {

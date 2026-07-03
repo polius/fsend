@@ -360,7 +360,10 @@ func printCancelKeptHint(f *flags, ui *receiverUI) {
 		return
 	}
 	if _, moved := ui.bytes(); moved > 0 {
-		fmt.Fprintf(os.Stderr, "%s Partial data kept — when the sender runs fsend again, the transfer resumes here.\n", uxlog.Info())
+		// Via uxlog.Println: the aborted bar is still live here (ui.close
+		// runs on a defer), and its next refresh frame would erase a raw
+		// stderr write.
+		uxlog.Println(fmt.Sprintf("%s Partial data kept — when the sender runs fsend again, the transfer resumes here.", uxlog.Info()))
 	}
 }
 
@@ -379,6 +382,15 @@ func (ui *receiverUI) close() {
 // kept (no consent) it returns E013 so scripts get a non-zero exit, after
 // showing the summary; a --manifest write failure surfaces the same way.
 func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
+	// Unknown-total bars (stream/text: bytesHint 0) never reach Completed on
+	// their own, so Done() would keep them — the keep-the-bar policy is meant
+	// for aborts, and this is the success path. Latch the total so the bar
+	// erases itself, mirroring the sender's onStreamingEOF.
+	ui.mu.Lock()
+	if ui.bar != nil && ui.bytesHint == 0 {
+		ui.bar.SetTotal(ui.total+ui.skipped, true)
+	}
+	ui.mu.Unlock()
 	ui.close()
 
 	ui.mu.Lock()
