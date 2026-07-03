@@ -270,8 +270,16 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 		d := int64(offset - ui.prev[fileIndex])
 		ui.prev[fileIndex] = offset
 		ui.skipped += d
+		// bytesHint counts only bytes still to receive (classify deducts
+		// the partial's aligned offset), but the bar's numerator counts the
+		// resumed prefix too — grow the total by the same delta or the bar
+		// reads past 100%. Both sides then show absolute-over-full-size,
+		// matching the sender.
+		ui.bytesHint += d
 		if ui.bar == nil && !ui.f.quiet {
 			ui.bar = uxlog.New(ui.bytesHint, ui.names != nil)
+		} else {
+			ui.bar.SetTotal(ui.bytesHint, false)
 		}
 		ui.bar.Add(d)
 	}
