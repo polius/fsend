@@ -485,12 +485,12 @@ func TestRenderError_UsageSuppressesDebugChain(t *testing.T) {
 // The DEBUG chain can carry a peer's ErrorFrame message, so it goes through
 // sanitizeForDisplay like every other displayed peer string.
 func TestRenderError_DebugChainSanitized(t *testing.T) {
-	err := fmt.Errorf("%w: peer says \x1b[31mred‮hidden", fserrors.ErrProtocolError)
+	err := fmt.Errorf("%w: peer says \x1b[31mred\u202ehidden", fserrors.ErrProtocolError)
 	got := captureStderr(t, func() { _ = renderError(err, true) })
 	if !strings.Contains(got, "DEBUG:") {
 		t.Fatalf("expected a DEBUG chain, got:\n%s", got)
 	}
-	if strings.Contains(got, "\x1b") || strings.Contains(got, "‮") {
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "\u202e") {
 		t.Errorf("DEBUG chain leaked control/bidi characters:\n%q", got)
 	}
 }
