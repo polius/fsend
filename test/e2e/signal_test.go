@@ -55,18 +55,20 @@ func TestSignal_SenderSIGINTMidTransfer(t *testing.T) {
 	s.wait(t, 5*time.Second)
 
 	// Generous bound: the receiver may walk its full retry budget
-	// (3 × 10s QUIC handshake) when SIGINT lands at certain stream
-	// positions before giving up. We only care that it eventually
-	// surfaces a non-zero exit; the duration is bounded by retry config.
+	// (3 × 10s QUIC handshake plus backoff waits ≈ 33s) when SIGINT
+	// lands at certain stream positions before giving up — already past
+	// a 30s bound before any runner load, which is why 30s flaked on
+	// loaded CI. We only care that it eventually surfaces a non-zero
+	// exit; the duration is bounded by retry config.
 	select {
 	case err := <-rDone:
 		if err == nil {
 			t.Fatalf("receiver returned 0 after sender SIGINT — should be non-zero")
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(60 * time.Second):
 		_ = rCmd.Process.Kill()
 		<-rDone
-		t.Fatalf("receiver did not exit within 30s")
+		t.Fatalf("receiver did not exit within 60s")
 	}
 
 	if fi, err := os.Stat(filepath.Join(dst, "big.bin")); err == nil {
@@ -301,8 +303,11 @@ func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
 		t.Errorf("no partial-kept resume hint after mid-transfer SIGINT\n--- recv1 stderr ---\n%s", r1Err.String())
 	}
 
-	// The sender must go back to waiting rather than exit.
-	if !waitForStderr(s, "Receiver disconnected", 30*time.Second) {
+	// The sender must go back to waiting rather than exit. 60s: a pure
+	// upper bound costs nothing when healthy, and 30s flaked on loaded
+	// runners (the sender can sit in a QUIC handshake attempt before
+	// classifying the drop).
+	if !waitForStderr(s, "Receiver disconnected", 60*time.Second) {
 		t.Fatalf("sender never re-entered pairing\n--- sender stderr ---\n%s", s.stderr.String())
 	}
 
