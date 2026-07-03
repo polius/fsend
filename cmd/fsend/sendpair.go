@@ -445,12 +445,22 @@ func senderQUICAccept(ctx context.Context, pc net.PacketConn, code string) (*qui
 // Stdin/--text transfers can't replay their reader, so they fail as
 // before instead of re-pairing.
 func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
+	transferDropped := false
 	for {
 		err := runSendOnce(ctx, f, plan, code, cfg, waitSpin)
 		if err == nil || ctx.Err() != nil || plan.consumable() ||
 			(!errors.Is(err, fserrors.ErrTransientFailure) && !isReceiverClose(err)) {
+			// A re-pair round failing with "server unreachable" after a
+			// transfer already dropped is a mid-transfer connection loss,
+			// not a pairing failure: E001's copy suggests switching servers
+			// and omits that the receiver's partial is preserved. E020's
+			// resume framing is what actually happened.
+			if transferDropped && errors.Is(err, fserrors.ErrServerUnreachable) {
+				return fmt.Errorf("%w: %v", fserrors.ErrTransientFailure, err)
+			}
 			return err
 		}
+		transferDropped = true
 		if !f.quiet {
 			// A deliberate close (Ctrl-C, clean exit) may genuinely re-run
 			// and reconnect. A death (kill, crash, network gone) surfaces
@@ -472,9 +482,18 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 // receiver will never re-dial the current pairing, so the re-accept
 // grace would be a dead wait. Network drops and kills surface as idle
 // timeouts instead and keep the grace.
+//
+// A remote stream cancel is the same close seen earlier: the receiver's
+// teardown cancels its data-stream read (STOP_SENDING) just before the
+// connection close, and an in-flight chunk write can surface the stream
+// error before the connection-level one.
 func isReceiverClose(err error) bool {
 	var appErr *quic.ApplicationError
-	return errors.As(err, &appErr) && appErr.Remote
+	if errors.As(err, &appErr) && appErr.Remote {
+		return true
+	}
+	var streamErr *quic.StreamError
+	return errors.As(err, &streamErr) && streamErr.Remote
 }
 
 // runSendOnce runs one pair-then-transfer round. It races the two pair

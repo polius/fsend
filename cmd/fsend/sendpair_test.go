@@ -345,4 +345,16 @@ func TestIsReceiverClose(t *testing.T) {
 	if isReceiverClose(nil) {
 		t.Error("nil must not classify as receiver close")
 	}
+
+	// The receiver's teardown cancels its data-stream read (STOP_SENDING)
+	// just before the connection close; an in-flight chunk write can see
+	// the stream cancel first. Same deliberate close, same verdict —
+	// without this it escaped to the E099 catchall.
+	remoteStream := &quic.StreamError{StreamID: 3, ErrorCode: 0, Remote: true}
+	if !isReceiverClose(fmt.Errorf("wire: writing chunk payload: %w", remoteStream)) {
+		t.Error("remote stream cancel should classify as receiver close")
+	}
+	if isReceiverClose(&quic.StreamError{StreamID: 3, ErrorCode: 0, Remote: false}) {
+		t.Error("local stream cancel must not classify as receiver close")
+	}
 }
