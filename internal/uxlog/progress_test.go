@@ -172,6 +172,18 @@ func TestProgress_PlainModeLabelInLine(t *testing.T) {
 	}
 }
 
+// A caller whose accounting overshoots the total must never see a
+// percentage past 100 — the raw counters still expose the mismatch.
+func TestProgress_PlainModePercentClamped(t *testing.T) {
+	var buf bytes.Buffer
+	p := &plainProgress{w: &buf, total: 1000, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second)}
+	p.add(1180)
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "100%") {
+		t.Errorf("overshot progress must clamp to 100%%: %q", out)
+	}
+}
+
 // truncateName keeps the tail (extension) visible with a middle ellipsis
 // and leaves short names untouched.
 func TestTruncateName(t *testing.T) {
