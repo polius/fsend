@@ -957,8 +957,11 @@ func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
 
 // A text payload with no trailing newline must not let the stderr summary
 // butt against it when both streams share a sink (2>&1, CI logs) — the line
-// break goes to stderr, keeping the piped stdout bytes exact.
-func TestPrintTextPayload_BreaksLineForPipedStdout(t *testing.T) {
+// break goes to stderr, keeping the piped stdout bytes exact. When stderr is
+// a different sink (the terminal), that break would only render as a stray
+// blank line before the summary, so it must stay away.
+func TestPrintTextPayload_BreaksLineForSharedSinkOnly(t *testing.T) {
+	// Separate sinks: exact stdout bytes, silent stderr.
 	var stdout string
 	stderr := captureStderr(t, func() {
 		stdout = captureStdout(t, func() {
@@ -970,11 +973,33 @@ func TestPrintTextPayload_BreaksLineForPipedStdout(t *testing.T) {
 	if stdout != "no-newline" {
 		t.Errorf("piped stdout must carry the exact bytes, got %q", stdout)
 	}
-	if stderr != "\n" {
-		t.Errorf("expected a line break on stderr, got %q", stderr)
+	if stderr != "" {
+		t.Errorf("separate stderr must stay silent, got %q", stderr)
 	}
 
-	// A newline-terminated payload needs no break.
+	// Shared sink (2>&1): the break lands after the payload.
+	shared := filepath.Join(t.TempDir(), "sink")
+	f, err := os.OpenFile(shared, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = f, f
+	perr := printTextPayload("no-newline")
+	os.Stdout, os.Stderr = oldOut, oldErr
+	_ = f.Close()
+	if perr != nil {
+		t.Fatalf("printTextPayload: %v", perr)
+	}
+	b, err := os.ReadFile(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "no-newline\n" {
+		t.Errorf("shared sink must get the break, got %q", string(b))
+	}
+
+	// A newline-terminated payload needs no break anywhere.
 	stderr = captureStderr(t, func() {
 		_ = captureStdout(t, func() { _ = printTextPayload("clean\n") })
 	})

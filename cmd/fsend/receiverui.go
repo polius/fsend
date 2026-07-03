@@ -31,6 +31,10 @@ type receiverUI struct {
 	outDir   string
 	sink     bool
 	pathInfo connpath.Info
+	// spin animates the pre-prompt phase (connect/classify); set before the
+	// transfer starts, stopped by the first prompt or close(). Stop is
+	// idempotent and nil-safe.
+	spin *uxlog.Spinner
 
 	mu           sync.Mutex
 	hello        *wire.SenderHello
@@ -101,12 +105,19 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 		Checksum:       ui.f.checksum,
 		Accept:         ui.accept,
 		Password:       ui.f.passArg,
-		PromptPass:     receiverPasswordPrompt(ui.ctx, ui.f),
 		ProgressFn:     ui.progress,
 		OnResume:       ui.onResume,
 		OnSkip:         ui.onSkip,
 		OnFileDone:     ui.onFileDone,
 		OnConflictKept: ui.onConflictKept,
+	}
+	// The password prompt fires before classification; the spinner must not
+	// animate under the hidden-input line.
+	if pp := receiverPasswordPrompt(ui.ctx, ui.f); pp != nil {
+		o.PromptPass = func(attempt int) (string, error) {
+			ui.spin.Stop()
+			return pp(attempt)
+		}
 	}
 	if ui.sink {
 		o.Sink = os.Stdout
@@ -124,6 +135,8 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 
 // accept records the HELLO, then runs the accept prompt with the breakdown.
 func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummary) bool {
+	// Classification is done — the prompt block owns the terminal from here.
+	ui.spin.Stop()
 	ui.mu.Lock()
 	cp := h
 	ui.hello = &cp
@@ -368,6 +381,7 @@ func printCancelKeptHint(f *flags, ui *receiverUI) {
 
 func (ui *receiverUI) close() {
 	ui.closeOnce.Do(func() {
+		ui.spin.Stop()
 		ui.mu.Lock()
 		bar := ui.bar
 		ui.mu.Unlock()
@@ -375,6 +389,19 @@ func (ui *receiverUI) close() {
 			bar.Done()
 		}
 	})
+}
+
+// retryNotice wraps retryNoticeFor so the pre-prompt spinner is stopped
+// before a notice prints — otherwise the spinner's redraw garbles the line.
+func (ui *receiverUI) retryNotice() func(int, time.Duration, error) {
+	notice := retryNoticeFor(ui.f)
+	if notice == nil {
+		return nil
+	}
+	return func(attempt int, wait time.Duration, lastErr error) {
+		ui.spin.Stop()
+		notice(attempt, wait, lastErr)
+	}
 }
 
 // finishReceive runs the post-transfer epilogue. When differing files were
@@ -481,14 +508,24 @@ func printTextPayload(text string) error {
 	if text[len(text)-1] != '\n' {
 		if term.IsTerminal(int(os.Stdout.Fd())) {
 			fmt.Println()
-		} else {
+		} else if sameSink(os.Stdout, os.Stderr) {
 			// stdout is piped, so its bytes must stay exact — but when
 			// stderr shares the sink (2>&1, CI logs) the summary line would
 			// butt against the payload. Break the line on stderr instead.
+			// When stderr is elsewhere (the terminal), this newline would
+			// only render as a stray blank line before the summary.
 			fmt.Fprintln(os.Stderr)
 		}
 	}
 	return nil
+}
+
+// sameSink reports whether two files point at the same underlying sink
+// (same dev+inode), e.g. stdout and stderr under 2>&1.
+func sameSink(a, b *os.File) bool {
+	ai, err1 := a.Stat()
+	bi, err2 := b.Stat()
+	return err1 == nil && err2 == nil && os.SameFile(ai, bi)
 }
 
 // headline names what landed where for the summary line.
