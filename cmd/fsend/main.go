@@ -258,18 +258,20 @@ func debugRequested() bool {
 // argsHaveFlag reports whether a boolean flag is present and truthy on the
 // command line, honouring both the bare (--json) and valued (--json=true)
 // spellings. Used by the error renderer, which runs after cobra state is gone.
+// Last occurrence wins, matching pflag when a flag is repeated.
 func argsHaveFlag(name string) bool {
+	found := false
 	for _, a := range os.Args[1:] {
 		if a == "--" {
 			break
 		}
-		if a == name {
-			return true
-		}
-		if v, ok := strings.CutPrefix(a, name+"="); ok {
-			b, err := strconv.ParseBool(v)
-			return err == nil && b
+		switch {
+		case a == name:
+			found = true
+		case strings.HasPrefix(a, name+"="):
+			b, err := strconv.ParseBool(a[len(name)+1:])
+			found = err == nil && b
 		}
 	}
-	return false
+	return found
 }
