@@ -43,6 +43,10 @@ func runReceive(f *flags, c string) error {
 	if f.outDir == "-" && f.manifest != "" {
 		return fmt.Errorf("%w: --manifest has no effect with --out -", fserrors.ErrUsage)
 	}
+	// Sink mode gives stdout to the file bytes; NDJSON would corrupt them.
+	if f.outDir == "-" && f.json {
+		return fmt.Errorf("%w: --json cannot be combined with --out - (stdout carries the received bytes)", fserrors.ErrUsage)
+	}
 	// Validate --out before any network work: a missing directory would
 	// otherwise only fail at write time, after the sender's one-shot code
 	// has been consumed.

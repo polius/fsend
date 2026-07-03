@@ -25,6 +25,7 @@ import (
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
+	"github.com/polius/fsend/internal/wire"
 )
 
 // This file implements the parallel-pair sender. The high-level shape:
@@ -790,7 +791,17 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// down to a full skip ("0 B sent") — reconciles instead of silently
 	// dropping to the sent bytes. The skipped-file count explains the gap and
 	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
-	printSendSummary(f, int64(plan.totalBytes), stats(), elapsed, pathInfo)
+	s := stats()
+	printSendSummary(f, int64(plan.totalBytes), s, elapsed, pathInfo)
+	ev := jsonDoneEvent{Ok: true, Role: "sender",
+		BytesTotal: ptr64(int64(plan.totalBytes)), BytesMoved: ptr64(s.moved),
+		DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
+	if plan.mode == wire.ModeFiles {
+		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles)
+		ev.FilesSkipped = ptrInt(s.skippedFiles - s.keptFiles)
+		ev.FilesKept = ptrInt(s.keptFiles)
+	}
+	jsonEmitDone(ev)
 	return nil
 }
 
