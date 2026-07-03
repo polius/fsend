@@ -62,7 +62,7 @@ func runUpdate() error {
 // and the project ships a brew tap so it's the real-world case — the
 // curl script, go install, and hand-placed binaries stay self-managed.
 func managedByHomebrew(binPath string) bool {
-	for _, marker := range []string{"/Cellar/", "/homebrew/", "/linuxbrew/"} {
+	for _, marker := range []string{"/Cellar/", "/Caskroom/", "/homebrew/", "/linuxbrew/"} {
 		if strings.Contains(binPath, marker) {
 			return true
 		}
