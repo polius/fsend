@@ -33,6 +33,11 @@ type entryPlan struct {
 	disp         disposition
 	resumeOffset uint64
 	imohash      [ImohashSize]byte
+	// blockedAncestor marks a target reachable only by traversing a
+	// receiver-side symlink in its path. Such an entry is kept untouched (never
+	// sent, materialized, or chmod'd) even under --overwrite, so a write or
+	// mode change can't escape the receive tree through the link.
+	blockedAncestor bool
 }
 
 // needsConsent reports a destructive disagreement requiring --overwrite.
@@ -101,9 +106,39 @@ func classify(entries []wire.ListingEntry, targetDir string, checksum bool) ([]e
 				return nil, fserrors.ErrPathTraversal
 			}
 		}
-		plans = append(plans, classifyOne(e, target, targetDir, checksum))
+		p := classifyOne(e, target, targetDir, checksum)
+		p.blockedAncestor = symlinkAncestor(target, targetDir)
+		plans = append(plans, p)
 	}
 	return plans, nil
+}
+
+// symlinkAncestor reports whether any path component of target between
+// targetDir (exclusive) and target (exclusive) is a symlink. Lstat on the full
+// target only inspects the leaf — an intermediate link is silently followed —
+// so each ancestor is Lstat'd in turn, where it is itself the leaf. A
+// receiver-planted link on the path would let a later write or chmod traverse
+// out of the receive tree; callers must refuse to act on such a target.
+func symlinkAncestor(target, targetDir string) bool {
+	rootAbs, err := filepath.Abs(targetDir)
+	if err != nil {
+		return false
+	}
+	cur, err := filepath.Abs(filepath.Dir(target))
+	if err != nil {
+		return false
+	}
+	for cur != rootAbs {
+		if st, err := os.Lstat(cur); err == nil && st.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break // reached the filesystem root without meeting targetDir
+		}
+		cur = parent
+	}
+	return false
 }
 
 // ancestorBlocked reports whether target can't be placed because the nearest
@@ -238,8 +273,13 @@ func summarize(plans []entryPlan) classifySummary {
 				s.BytesToRecv += p.entry.Size - p.resumeOffset
 			}
 		case dispDiffers, dispConflict:
-			s.Differing++
-			s.DifferingBytes += p.entry.Size
+			// A directory isn't a user-facing "file"; excluding it keeps the
+			// "N differ" header and the --overwrite warning agreeing with the
+			// per-file row count and the sender's kept tally.
+			if p.entry.Type != wire.EntryDir {
+				s.Differing++
+				s.DifferingBytes += p.entry.Size
+			}
 		}
 		// Directories aren't files the user thinks about; mirror CountFiles
 		// so the preview's row count matches the headline's file count.

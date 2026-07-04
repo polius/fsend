@@ -314,7 +314,7 @@ type senderStats struct {
 // bar. Returns close, progress, onResume, onSkip, a stats getter, and
 // onStreamingEOF (latches the bar total once a stream EOFs). All callbacks
 // run on the single send-loop goroutine, so the counters need no locking.
-func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32, bool), stats func() senderStats, onStreamingEOF func(uint32, uint64)) {
+func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32, bool), stats func() senderStats, onStreamingEOF func(uint32, uint64), resetCounts func()) {
 	prev := make(map[uint32]uint64)
 	var s senderStats
 	var bar *uxlog.Progress
@@ -373,7 +373,14 @@ func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn fun
 			}
 		},
 		func() senderStats { return s },
-		func(_ uint32, finalBytes uint64) { bar.SetTotal(int64(finalBytes), true) }
+		func(_ uint32, finalBytes uint64) { bar.SetTotal(int64(finalBytes), true) },
+		func() {
+			// A retry reclassifies against the receiver and re-fires onSkip, so
+			// the file tallies must start fresh; moved bytes are keyed per file
+			// (prev map) and self-correct, so they persist.
+			s.skippedFiles = 0
+			s.keptFiles = 0
+		}
 }
 
 // resumeNotice renders the "Resuming from 141 MB (71%)" clause.

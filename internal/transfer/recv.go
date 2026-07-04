@@ -634,7 +634,7 @@ func materialize(s *Streams, p *entryPlan, approveOverwrite bool, opts RecvOptio
 func restoreDirModes(plans []entryPlan) {
 	for i := len(plans) - 1; i >= 0; i-- {
 		p := &plans[i]
-		if p.entry.Type != wire.EntryDir {
+		if p.entry.Type != wire.EntryDir || p.blockedAncestor {
 			continue
 		}
 		want := os.FileMode(p.entry.Mode) & os.ModePerm
@@ -653,7 +653,7 @@ func restoreDirModes(plans []entryPlan) {
 // hash under --checksum) would otherwise skip it and never pick up the new
 // mode. Best-effort; a chmod failure isn't worth failing the transfer.
 func repairIdenticalMode(p *entryPlan) {
-	if p.entry.Type != wire.EntryFile {
+	if p.entry.Type != wire.EntryFile || p.blockedAncestor {
 		return
 	}
 	want := os.FileMode(p.entry.Mode) & os.ModePerm
@@ -667,6 +667,17 @@ func repairIdenticalMode(p *entryPlan) {
 // notifications (skip / conflict-kept).
 func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.Decision {
 	d := wire.Decision{Index: p.entry.Index}
+	// A target reachable only through a receiver-side symlink is kept untouched
+	// regardless of overwrite — sending or materializing it would write through
+	// the link, out of the receive tree.
+	if p.blockedAncestor {
+		d.Action = wire.DecisionSkip
+		d.Kept = true
+		if opts.OnConflictKept != nil && p.entry.Type != wire.EntryDir {
+			opts.OnConflictKept(p.entry.RelativePath)
+		}
+		return d
+	}
 	switch p.disp {
 	case dispIdentical:
 		d.Action = wire.DecisionSkip
@@ -688,7 +699,10 @@ func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.
 		} else {
 			d.Action = wire.DecisionSkip
 			d.Kept = true
-			if opts.OnConflictKept != nil {
+			// Count only files/symlinks as kept — a kept directory isn't a
+			// user-facing file, and counting it would inflate the tally past
+			// the sender's (which excludes dirs the same way).
+			if opts.OnConflictKept != nil && p.entry.Type != wire.EntryDir {
 				opts.OnConflictKept(p.entry.RelativePath)
 			}
 		}

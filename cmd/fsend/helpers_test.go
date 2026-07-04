@@ -972,6 +972,43 @@ func TestFinishReceive_KeptFilesGetHonestSummary(t *testing.T) {
 	}
 }
 
+// A transient drop mid-transfer retries with the same receiverUI. The retry
+// reclassifies against disk and re-fires the tally callbacks, so without a
+// reset the counts accumulate across attempts and the headline lies ("Saved 3
+// of 7" for a 4-file offer). resetAttemptCounts must leave the final attempt's
+// view as the whole truth.
+func TestFinishReceive_CountsResetAcrossRetry(t *testing.T) {
+	ui := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "4 files"}
+	ui.hello = &h
+
+	// Attempt 1: two files land, one differing file kept, then a drop.
+	ui.onFileDone("a.bin")
+	ui.onFileDone("e.txt")
+	ui.onConflictKept("c.bin")
+
+	// Retry: the loop resets before re-running the transfer.
+	ui.resetAttemptCounts()
+
+	// Attempt 2 (succeeds): the two already-landed files are now identical, the
+	// interrupted one lands, the differing one is kept again.
+	ui.onSkip(0)
+	ui.onSkip(1)
+	ui.onFileDone("zz.bin")
+	ui.onConflictKept("c.bin")
+
+	got := captureStderr(t, func() {
+		if err := finishReceive(ui.f, ui, time.Second); !errors.Is(err, fserrors.ErrTargetExists) {
+			t.Errorf("finishReceive error = %v, want ErrTargetExists", err)
+		}
+	})
+	// 1 saved this attempt, of 4 total (1 saved + 2 identical + 1 kept) — not
+	// the accumulated "1 of 7".
+	if want := "Saved 1 of 4 files"; !strings.Contains(got, want) {
+		t.Errorf("summary missing %q:\n%s", want, got)
+	}
+}
+
 func TestDifferVerb(t *testing.T) {
 	if got := differVerb(1); got != "differs" {
 		t.Errorf("differVerb(1) = %q", got)

@@ -144,6 +144,9 @@ func runReceive(f *flags, c string) error {
 	current := first
 	if err := retry.WithBackoff(ctx, opts, nil,
 		func(attempt int) error {
+			if attempt > 1 {
+				ui.resetAttemptCounts()
+			}
 			if current == nil {
 				res, err := quicconn.Dial(ctx, addr, c)
 				if err != nil {
