@@ -794,6 +794,81 @@ func TestEngine_DirModeDoesNotFollowKeptSymlink(t *testing.T) {
 	if st, _ := os.Stat(outside); st.Mode()&os.ModePerm != 0o755 {
 		t.Errorf("outside dir chmod'd through symlink: %o, want 0755", st.Mode()&os.ModePerm)
 	}
+	// The child must not have been written through the link either.
+	if _, err := os.Lstat(filepath.Join(outside, "f.txt")); err == nil {
+		t.Errorf("child file escaped through the kept symlink into %s", outside)
+	}
+}
+
+// Like the kept-symlink case above, but the receiver's symlink is an ancestor
+// of the incoming files rather than the entry itself. Lstat on the full target
+// follows an intermediate link, so guarding only the leaf leaves an escape:
+// content written and dir modes chmod'd outside the receive tree.
+func TestEngine_NoWriteThroughAncestorSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix symlink/permission semantics")
+	}
+	run := func(t *testing.T, overwrite bool) {
+		outside := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(outside, "b"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		src, dst := t.TempDir(), t.TempDir()
+		writeFile(t, filepath.Join(src, "a", "b", "f.txt"), []byte("payload"))
+		if err := os.Chmod(filepath.Join(src, "a", "b"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// Receiver's own symlink sits where the incoming "a" directory would go.
+		if err := os.Symlink(outside, filepath.Join(dst, "a")); err != nil {
+			t.Fatal(err)
+		}
+		mutate := func(o *RecvOptions) {
+			if overwrite {
+				o.Overwrite = true
+			}
+		}
+		if se, re := fileTransfer(t, []string{filepath.Join(src, "a")}, dst, mutate); se != nil || re != nil {
+			t.Fatalf("send=%v recv=%v", se, re)
+		}
+		if _, err := os.Lstat(filepath.Join(outside, "b", "f.txt")); err == nil {
+			t.Errorf("overwrite=%v: file materialized outside the receive tree", overwrite)
+		}
+		if st, _ := os.Stat(filepath.Join(outside, "b")); st != nil && st.Mode()&os.ModePerm != 0o755 {
+			t.Errorf("overwrite=%v: outside/b chmod'd through ancestor symlink: %o, want 0755", overwrite, st.Mode()&os.ModePerm)
+		}
+		// Without overwrite the link is kept as-is; with overwrite it's the
+		// conflicting entry itself, so it may be replaced by the real directory
+		// (the link is removed, never followed) — either way nothing escapes.
+		if !overwrite {
+			if st, err := os.Lstat(filepath.Join(dst, "a")); err != nil || st.Mode()&os.ModeSymlink == 0 {
+				t.Errorf("receiver symlink not left intact: mode=%v err=%v", st.Mode(), err)
+			}
+		}
+	}
+	t.Run("kept", func(t *testing.T) { run(t, false) })
+	t.Run("overwrite", func(t *testing.T) { run(t, true) })
+}
+
+// A directory that conflicts with a receiver-side non-directory is kept, but a
+// directory isn't a user-facing "file": it must not be counted in the kept
+// tally, matching the sender (send.go) and the identical-skip path.
+func TestEngine_KeptDirNotCountedAsFile(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "d", "f.txt"), []byte("hi"))
+	// Receiver has a plain file where the incoming directory "d" would go.
+	writeFile(t, filepath.Join(dst, "d"), []byte("occupied"))
+
+	var keptPaths []string
+	_, re := fileTransfer(t, []string{filepath.Join(src, "d")}, dst, func(o *RecvOptions) {
+		o.OnConflictKept = func(p string) { keptPaths = append(keptPaths, p) }
+	})
+	if re != nil {
+		t.Fatalf("recv=%v", re)
+	}
+	// Only the blocked child file is a kept "file"; the directory entry is not.
+	if len(keptPaths) != 1 || keptPaths[0] == "d" {
+		t.Errorf("kept files = %v, want just the child file (not the directory)", keptPaths)
+	}
 }
 
 // A chmod on a source directory propagates on an identical re-send, matching

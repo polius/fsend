@@ -442,6 +442,9 @@ func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code 
 	}
 	if err := retry.WithBackoff(ctx, opts, nil,
 		func(attempt int) error {
+			if attempt > 1 {
+				ui.resetAttemptCounts()
+			}
 			return runReceiverOneAttempt(ctx, tr, f, ui, code)
 		}); err != nil {
 		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a

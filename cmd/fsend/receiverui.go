@@ -374,6 +374,19 @@ func (ui *receiverUI) onFileDone(path string) {
 	ui.mu.Unlock()
 }
 
+// resetAttemptCounts drops the file tallies before a retry re-runs the
+// transfer. A fresh attempt reclassifies against disk and re-fires these
+// callbacks, so keeping the prior attempt's counts would double them (a file
+// saved then reclassified as identical would show as both). Byte counters
+// (prev/total/skipped) are keyed per file and self-correct, so they persist.
+func (ui *receiverUI) resetAttemptCounts() {
+	ui.mu.Lock()
+	ui.files = ui.files[:0]
+	ui.skippedSame = 0
+	ui.kept = 0
+	ui.mu.Unlock()
+}
+
 func (ui *receiverUI) bytes() (total, moved int64) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
