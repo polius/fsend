@@ -219,11 +219,9 @@ verify_signature() {
         warn "  install cosign for full authenticity, or set FSEND_REQUIRE_SIGNATURE=1 to require it."
         return 0
     fi
-    download "${_base}/checksums.txt.sig" "${_dir}/checksums.txt.sig"
-    download "${_base}/checksums.txt.pem" "${_dir}/checksums.txt.pem"
+    download "${_base}/checksums.txt.bundle" "${_dir}/checksums.txt.bundle"
     cosign verify-blob \
-        --certificate "${_dir}/checksums.txt.pem" \
-        --signature "${_dir}/checksums.txt.sig" \
+        --bundle "${_dir}/checksums.txt.bundle" \
         --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
         --certificate-oidc-issuer "$COSIGN_ISSUER" \
         "$_sums" >/dev/null 2>&1 \

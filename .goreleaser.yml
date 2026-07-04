@@ -97,16 +97,18 @@ checksum:
   algorithm: sha256
 
 signs:
+  # cosign 3.x dropped the detached --output-signature/--output-certificate in
+  # favour of a single Sigstore bundle (sig + cert + tlog proof). install.sh /
+  # install.ps1 verify it with `cosign verify-blob --bundle`.
   - cmd: cosign
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.bundle"
     args:
       - sign-blob
       - "--yes"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
+      - "--bundle=${signature}"
       - "${artifact}"
     artifacts: checksum
+    output: true
 
 snapshot:
   version_template: '{{ incpatch .Version }}-snapshot'
