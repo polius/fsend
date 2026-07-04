@@ -41,6 +41,13 @@ jobs:
           go-version: "1.26"
           cache: true
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign binary to v2: our goreleaser sign-blob config emits
+          # detached .sig/.pem (which install.sh/install.ps1 verify), and
+          # cosign 3.x's sign-blob switched to bundles. The v4 installer
+          # otherwise defaults to cosign 3.x. Migrating to v3 is a separate,
+          # deliberate change to both the signing config and the verify side.
+          cosign-release: v2.5.2
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
