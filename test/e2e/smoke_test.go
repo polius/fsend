@@ -135,7 +135,7 @@ func TestServer_PasswordGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pick http port: %v", err)
 	}
-	udpPort, err := freePort()
+	udpPort, err := freeUDPPort()
 	if err != nil {
 		t.Fatalf("pick udp port: %v", err)
 	}

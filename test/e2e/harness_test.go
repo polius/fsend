@@ -99,7 +99,7 @@ func startHarness() (*harness, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pick http port: %w", err)
 	}
-	hh.udpPort, err = freePort()
+	hh.udpPort, err = freeUDPPort()
 	if err != nil {
 		return nil, fmt.Errorf("pick udp port: %w", err)
 	}
@@ -197,6 +197,20 @@ func freePort() (int, error) {
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
+	return port, nil
+}
+
+// freeUDPPort is freePort for UDP listeners. Windows keeps separate
+// (Hyper-V/WinNAT) excluded port ranges per protocol, so a TCP-free
+// port can be UDP-forbidden (WSAEACCES) — probe with the protocol the
+// port will actually serve.
+func freeUDPPort() (int, error) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	_ = pc.Close()
 	return port, nil
 }
 
