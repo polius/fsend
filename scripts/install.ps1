@@ -110,10 +110,8 @@ function Verify-Signature($sums, $base, $dir) {
         Write-Host '  install cosign for full authenticity, or set FSEND_REQUIRE_SIGNATURE=1 to require it.' -ForegroundColor Yellow
         return
     }
-    $sig = Join-Path $dir 'checksums.txt.sig'
-    $pem = Join-Path $dir 'checksums.txt.pem'
-    Download "$base/checksums.txt.sig" $sig
-    Download "$base/checksums.txt.pem" $pem
+    $bundle = Join-Path $dir 'checksums.txt.bundle'
+    Download "$base/checksums.txt.bundle" $bundle
     # Windows PowerShell 5.1 turns a native command's redirected stderr into a
     # terminating error under EAP=Stop — and cosign prints "Verified OK" to
     # stderr even on success, which would abort a good verification. Relax EAP
@@ -121,8 +119,7 @@ function Verify-Signature($sums, $base, $dir) {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     & cosign verify-blob `
-        --certificate $pem `
-        --signature $sig `
+        --bundle $bundle `
         --certificate-identity-regexp $CosignIdentityRegexp `
         --certificate-oidc-issuer $CosignIssuer `
         $sums 2>$null | Out-Null
