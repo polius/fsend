@@ -63,12 +63,12 @@ func isLocalAddr(addr string) bool {
 }
 
 // joinRetryBudget caps how long the receiver waits for the sender to
-// register the code on the pairing server. With the sender's short
-// LAN-only window (~5s) plus a Create round-trip, the sender should
-// always be registered within a couple of seconds of starting. But the
-// human is in the loop — the receiver may have typed the code while
-// the sender is still in its LAN window, so we give Join a budget to
-// outlast that race instead of failing instantly with E002.
+// register the code on the pairing server. The sender Creates its
+// session the moment it starts (LAN and internet pairing run in
+// parallel), so the code is normally registered long before a human
+// can type it. The budget covers the races around that: a receiver
+// beating a slow Create, or re-joining a stale claimed slot the sender
+// is about to recycle — so neither fails instantly with E002.
 //
 // Var (not const) so tests can shrink it.
 var joinRetryBudget = 15 * time.Second

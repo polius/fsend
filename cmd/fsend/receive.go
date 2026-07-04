@@ -70,8 +70,9 @@ func runReceive(f *flags, c string) error {
 
 	// LAN discovery is a 300 ms probe — short enough that showing a
 	// spinner only flashes a line that immediately gets cleared on miss,
-	// which reads as glitchy. Stay silent through the probe; only show a
-	// spinner once we know we're going down the longer internet path.
+	// which reads as glitchy. Stay silent through the probe; a spinner
+	// starts once we know we're on a longer path (the LAN dial below, or
+	// the internet fallback).
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
 		// LAN miss → internet path. A single "Connecting" spinner runs
@@ -97,37 +98,49 @@ func runReceive(f *flags, c string) error {
 		return err
 	}
 
-	// First LAN dial sits outside the retry loop. If it fails before
-	// pairing, mDNS responded (cached, stale, or racing the sender's
-	// de-announce) but the sender's LAN listener is gone — almost
-	// always because the sender's internet path won the pair race or
-	// the LAN listener was never really up. Fall through to the
-	// internet path instead of reporting E003, which used to mislead
-	// users in single-receiver scenarios and produced a flaky
-	// TestReceive_Overwrite under -race.
-	first, err := quicconn.Dial(ctx, addr, c)
+	// First LAN dial sits outside the retry loop. A failure means mDNS
+	// responded but the listener is unreachable — a stale announce, or a
+	// firewall silently dropping the port (Windows Defender blocks the
+	// listener by default while its built-in 5353 rule lets discovery
+	// work). Fall through to the internet path instead of reporting E003.
+	//
+	// RTT-scale budget, not the 10 s HandshakeTimeout: a real same-LAN
+	// handshake takes milliseconds, and a false timeout just reaches the
+	// same host↔host pair via ICE.
+	const lanFirstDialTimeout = 2 * time.Second
+
+	// The dial is user-visible wait; on miss runReceiveOverInternet
+	// takes ownership of the spinner.
+	var spin *uxlog.Spinner
+	if !f.quiet {
+		spin = uxlog.StartSpinner("Connecting")
+	}
+	dialCtx, cancelDial := context.WithTimeout(ctx, lanFirstDialTimeout)
+	first, err := quicconn.Dial(dialCtx, addr, c)
+	cancelDial()
 	if err != nil {
 		// Debug-only: the transfer may still end up "Direct on local
-		// network" via the server-paired race, so surfacing this notice
-		// by default reads as the tool contradicting itself.
+		// network" via ICE, so this notice by default reads as the tool
+		// contradicting itself. Spinner restart keeps the line clean.
 		if f.debug && !f.quiet {
+			spin.Stop()
 			fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server.")
+			spin = uxlog.StartSpinner("Connecting")
 		}
 		cfg := loadConfig(f.quiet)
-		var connSpin *uxlog.Spinner
-		if !f.quiet {
-			connSpin = uxlog.StartSpinner("Connecting")
-		}
-		return runReceiveOverInternet(ctx, f, c, cfg, connSpin)
+		return runReceiveOverInternet(ctx, f, c, cfg, spin)
 	}
 
 	ui := newReceiverUI(ctx, f, outDir, sink, connpath.FromLAN())
 	// --checksum hashes the files already on disk before the accept prompt —
-	// a silence that scales with the existing data. Cover it with a spinner
-	// (stopped by the prompt). Without --checksum classification is stat-only
-	// and near-instant; a spinner would just flash.
+	// a silence that scales with the existing data. Keep the spinner alive
+	// for it (stopped by the prompt); otherwise classification is stat-only
+	// and near-instant.
 	if f.checksum && !f.quiet {
-		ui.spin = uxlog.StartSpinner("Checking existing files")
+		spin.SetMessage("Checking existing files")
+		ui.spin = spin
+	} else {
+		spin.Stop()
 	}
 	defer ui.close()
 
