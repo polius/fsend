@@ -13,7 +13,7 @@ import (
 )
 
 // TestServerLifecycle boots the real server in-process, verifies
-// /v1/health responds 200 (both directly and via healthCheck()), then
+// /health responds 200 (both directly and via healthCheck()), then
 // triggers a graceful SIGTERM shutdown and waits for runServer() to
 // return.
 //
@@ -47,13 +47,13 @@ func TestServerLifecycle(t *testing.T) {
 
 	srvWaitForPort(t, httpAddr, 5*time.Second)
 
-	resp, err := http.Get("http://" + httpAddr + "/v1/health")
+	resp, err := http.Get("http://" + httpAddr + "/health")
 	if err != nil {
-		t.Fatalf("GET /v1/health: %v", err)
+		t.Fatalf("GET /health: %v", err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/v1/health: status %d", resp.StatusCode)
+		t.Fatalf("/health: status %d", resp.StatusCode)
 	}
 
 	if err := healthCheck(); err != nil {

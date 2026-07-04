@@ -298,7 +298,7 @@ environment variables.
 
 ```text
 fsend server                 Run the server
-fsend server --health-check  Probe /v1/health (exit 0 if healthy)
+fsend server --health-check  Probe /health (exit 0 if healthy)
 fsend server --help          Show help
 ```
 

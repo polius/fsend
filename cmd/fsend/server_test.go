@@ -360,7 +360,7 @@ func TestServerHealthCheckOK(t *testing.T) {
 	}
 }
 
-// startStubHealth boots a minimal HTTP server that answers /v1/health with
+// startStubHealth boots a minimal HTTP server that answers /health with
 // the given status + body, and shuts it down when the test ends. Returns
 // the host:port the test should set as FSEND_SERVER_ADDR.
 func startStubHealth(t *testing.T, status int, body []byte) string {
@@ -368,7 +368,7 @@ func startStubHealth(t *testing.T, status int, body []byte) string {
 	port := srvFreePortTCP(t)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(status)
 		if len(body) > 0 {
 			_, _ = w.Write(body)

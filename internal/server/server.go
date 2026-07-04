@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -35,7 +36,7 @@ type Config struct {
 	Logger               *slog.Logger
 
 	// ServerPassword, when non-empty, gates every endpoint except
-	// /v1/health behind a constant-time match on the X-Fsend-Auth
+	// /health behind a constant-time match on the X-Fsend-Auth
 	// header. Empty leaves the server open (the default for the public
 	// fsend.alzina.dev pairing server and for the canonical Docker stack).
 	ServerPassword string
@@ -117,7 +118,7 @@ type Server struct {
 	met serverMetrics
 }
 
-// serverMetrics holds aggregate counters for /v1/metrics (cumulative
+// serverMetrics holds aggregate counters for /metrics (cumulative
 // since boot). sessions_active is read from the live map at scrape time.
 type serverMetrics struct {
 	sessionsCreated atomic.Uint64
@@ -214,8 +215,8 @@ func (b *rateBucket) allow(now time.Time, limit int, window time.Duration) bool 
 const AuthHeader = "X-Fsend-Auth"
 
 // Handler returns the HTTP handler the server should expose. When
-// Config.ServerPassword is set, every endpoint except /v1/health is
-// wrapped in a constant-time password check; /v1/health stays open so
+// Config.ServerPassword is set, every endpoint except /health is
+// wrapped in a constant-time password check; /health stays open so
 // Docker HEALTHCHECK and monitoring don't need to share the secret.
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
@@ -227,8 +228,10 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("DELETE /v1/session/{id}", s.deleteSession)
 	m.HandleFunc("POST /v1/relay/allocate", s.allocateRelay)
 	m.HandleFunc("GET /v1/relay/status", s.relayStatus)
-	m.HandleFunc("GET /v1/health", s.health)
-	m.HandleFunc("GET /v1/metrics", s.metrics)
+	m.HandleFunc("GET /health", s.health)
+	m.HandleFunc("GET /metrics", s.metrics)
+	// {$} matches exactly "/" so unknown paths still 404.
+	m.HandleFunc("GET /{$}", s.root)
 	if s.cfg.ServerPassword == "" {
 		return m
 	}
@@ -236,12 +239,12 @@ func (s *Server) Handler() http.Handler {
 }
 
 // withServerAuth wraps inner with a header check that constant-time
-// compares X-Fsend-Auth against the configured password. /v1/health
+// compares X-Fsend-Auth against the configured password. /health
 // passes through unconditionally.
 func (s *Server) withServerAuth(inner http.Handler) http.Handler {
 	want := []byte(s.cfg.ServerPassword)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/health" {
+		if r.URL.Path == "/health" || r.URL.Path == "/" {
 			inner.ServeHTTP(w, r)
 			return
 		}
@@ -437,6 +440,13 @@ func (s *Server) evict(now time.Time) {
 	}
 }
 
+// root is a human-friendly liveness banner for browsers hitting "/".
+// Machine clients use /health; this stays plain text and version-free.
+func (s *Server) root(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, "fsend server is up and running\n")
+}
+
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	status, code := "ok", http.StatusOK
 	// If a relay is wired and its read loop has died, report the degradation
@@ -445,11 +455,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	if h, ok := s.relayAllocator.(interface{ Healthy() bool }); ok && !h.Healthy() {
 		status, code = "degraded", http.StatusServiceUnavailable
 	}
-	writeJSON(w, code, HealthResponse{
-		Status:        status,
-		Version:       s.cfg.ServerVersion,
-		UptimeSeconds: int64(time.Since(s.started).Seconds()),
-	})
+	writeJSON(w, code, HealthResponse{Status: status})
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {

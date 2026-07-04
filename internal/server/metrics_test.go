@@ -43,7 +43,7 @@ func TestMetrics_Shape(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	var raw map[string]any
-	getJSON(t, srv.URL+"/v1/metrics", &raw)
+	getJSON(t, srv.URL+"/metrics", &raw)
 
 	top := map[string]bool{
 		"version": true, "uptime_seconds": true, "sessions_active": true,
@@ -99,7 +99,7 @@ func TestMetrics_Counters(t *testing.T) {
 	}
 
 	var m MetricsResponse
-	getJSON(t, srv.URL+"/v1/metrics", &m)
+	getJSON(t, srv.URL+"/metrics", &m)
 	if m.SessionsCreatedTotal != 1 {
 		t.Errorf("sessions_created_total = %d, want 1", m.SessionsCreatedTotal)
 	}
@@ -111,7 +111,7 @@ func TestMetrics_Counters(t *testing.T) {
 	}
 }
 
-// With a server password set, /v1/metrics is gated like any other endpoint
+// With a server password set, /metrics is gated like any other endpoint
 // (an open server, tested above, serves it publicly for transparency).
 func TestMetrics_GatedByPassword(t *testing.T) {
 	cfg := metricsConfig()
@@ -121,7 +121,7 @@ func TestMetrics_GatedByPassword(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	// No password → 401, and that rejection is counted.
-	resp, err := http.Get(srv.URL + "/v1/metrics")
+	resp, err := http.Get(srv.URL + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestMetrics_GatedByPassword(t *testing.T) {
 	}
 
 	// With the password → 200, and the snapshot reports that one rejection.
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/metrics", nil)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/metrics", nil)
 	req.Header.Set(AuthHeader, "secret")
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -156,7 +156,7 @@ func TestMetrics_OmitsRelayWhenAbsent(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	var raw map[string]any
-	getJSON(t, srv.URL+"/v1/metrics", &raw)
+	getJSON(t, srv.URL+"/metrics", &raw)
 	if _, ok := raw["relay"]; ok {
 		t.Error("relay block must be omitted when no relay is wired")
 	}

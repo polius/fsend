@@ -64,7 +64,7 @@ func serverCmd() *cobra.Command {
 	}
 
 	c.Flags().BoolVar(&healthCheckFlag, "health-check", false,
-		"probe /v1/health and exit 0 if healthy (for Docker)")
+		"probe /health and exit 0 if healthy (for Docker)")
 
 	sht := boldHelpHeaders(serverHelpTemplate)
 	c.SetHelpTemplate(sht)
@@ -460,7 +460,7 @@ func envBytes(name string, def uint64) (uint64, error) {
 	return uint64(n * mul), nil
 }
 
-// healthCheck pings the local server's /v1/health on the configured
+// healthCheck pings the local server's /health on the configured
 // HTTP address. Returns an error when unhealthy; the caller reports it
 // and exits 1 (the Docker HEALTHCHECK contract).
 func healthCheck() error {
@@ -468,7 +468,7 @@ func healthCheck() error {
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}
-	resp, err := http.Get("http://" + addr + "/v1/health")
+	resp, err := http.Get("http://" + addr + "/health")
 	if err != nil {
 		return fmt.Errorf("health: %w", err)
 	}
@@ -486,7 +486,7 @@ const serverHelpTemplate = `fsend server — pairing + relay server for fsend
 
 USAGE
   fsend server                 Run the server (config via env vars)
-  fsend server --health-check  Probe /v1/health and exit 0 if healthy
+  fsend server --health-check  Probe /health and exit 0 if healthy
   fsend server --help          Show this help
 
 EXAMPLE
@@ -504,7 +504,7 @@ CONFIGURATION (environment variables — all optional)
   Server-wide:
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
     FSEND_SERVER_PASSWORD             Optional shared secret. When set, all
-                                      endpoints except /v1/health require the
+                                      endpoints except /health require the
                                       X-Fsend-Auth header. Connect with
                                       fsend --connect <host:port>,<password>.
 

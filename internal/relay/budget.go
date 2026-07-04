@@ -56,7 +56,7 @@ func (b *dayBudget) exhausted(now time.Time) bool {
 	return b.used >= b.limit
 }
 
-// usedToday returns bytes forwarded in the current window, for /v1/metrics.
+// usedToday returns bytes forwarded in the current window, for /metrics.
 func (b *dayBudget) usedToday(now time.Time) uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()

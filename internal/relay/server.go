@@ -43,7 +43,7 @@ type Server struct {
 
 	// healthy is true while the read loop is forwarding; it flips false if
 	// Run exits on a real socket error (not a graceful ctx cancel) so the
-	// signaling layer's /v1/health can report the zombie instead of lying.
+	// signaling layer's /health can report the zombie instead of lying.
 	healthy atomic.Bool
 	// draining rejects new allocations during graceful shutdown so the drain
 	// can converge while in-flight sessions finish.
@@ -53,14 +53,14 @@ type Server struct {
 	// circuit breaker). Zero limit = unlimited.
 	budget dayBudget
 
-	// Aggregate counters for /v1/metrics (cumulative since boot).
+	// Aggregate counters for /metrics (cumulative since boot).
 	bytesForwarded    atomic.Uint64
 	peakTransferBytes atomic.Uint64 // most any single transfer has forwarded
 	transfersCapped   atomic.Uint64 // transfers cut off for exceeding the per-session byte cap
 	transfersTotal    atomic.Uint64 // transfers that forwarded ≥1 byte; vs paired sessions = relay-fallback rate
 }
 
-// Metrics is an aggregate snapshot of relay activity for /v1/metrics.
+// Metrics is an aggregate snapshot of relay activity for /metrics.
 type Metrics struct {
 	Forwarding           bool   `json:"forwarding"`
 	Healthy              bool   `json:"healthy"`
@@ -180,7 +180,7 @@ func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 }
 
 // Healthy reports whether the relay read loop is still forwarding. It flips
-// false only when Run exits on a real socket error, so /v1/health can surface
+// false only when Run exits on a real socket error, so /health can surface
 // a dead relay rather than reporting a healthy zombie.
 func (s *Server) Healthy() bool { return s.healthy.Load() }
 
@@ -289,7 +289,7 @@ func (s *Server) Run(ctx context.Context) error {
 				return nil
 			}
 			// Other read errors (e.g. socket closed): the relay is dead.
-			// Flag it so /v1/health stops reporting a healthy zombie.
+			// Flag it so /health stops reporting a healthy zombie.
 			s.healthy.Store(false)
 			return fmt.Errorf("relay: read: %w", err)
 		}

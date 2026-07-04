@@ -92,9 +92,13 @@ indefinitely after that — there's no manual cert handling, ever.
 ### 3. Verify
 
 ```sh
-curl https://fs.example.com/v1/health
-# {"status":"ok",…}
+curl https://fs.example.com/health
+# {"status":"ok"}
 ```
+
+Or open `https://fs.example.com/` in a browser — the root path returns a
+plain-text "fsend server is up and running" banner. Both `/` and `/health`
+stay reachable without the password, so monitoring never needs the secret.
 
 No OK response? See [Troubleshooting](#troubleshooting).
 
@@ -127,7 +131,7 @@ and restart:
 docker compose up -d
 ```
 
-Now every endpoint except `/v1/health` requires the password, and clients
+Now every endpoint except `/` and `/health` requires the password, and clients
 append it to `--connect`, comma-separated:
 
 ```sh
@@ -156,7 +160,7 @@ Connecting without it — or with the wrong one — fails with `E028`.
 
 ## Metrics
 
-`GET /v1/metrics` returns a small JSON snapshot for monitoring:
+`GET /metrics` returns a small JSON snapshot for monitoring:
 
 ```json
 {
@@ -194,7 +198,7 @@ so anyone can verify the server holds nothing sensitive.
 | `sessions_rejected_total.concurrency_limit` | Sessions refused by the per-IP concurrency cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP`). |
 | `sessions_rejected_total.unauthorized` | Wrong/missing `FSEND_SERVER_PASSWORD` — brute-force or misconfigured clients (always `0` on an open server). |
 | `relay.forwarding` | Whether the relay carries data (`false` in pairing + STUN-only mode). |
-| `relay.healthy` | Relay read loop alive — mirrors `/v1/health`'s 503 signal. |
+| `relay.healthy` | Relay read loop alive — mirrors `/health`'s 503 signal. |
 | `relay.transfers_active` | Relay transfers moving bytes right now. |
 | `relay.transfers_total` | Relay transfers that actually forwarded data since boot. Divide by `sessions_paired_total` for your relay-fallback rate; the rest connected directly (P2P). A climbing ratio means hole-punching is failing more often. |
 | `relay.transfers_capped_total` | Transfers cut off for hitting the per-session byte cap — raise the cap if this climbs. |
@@ -204,20 +208,20 @@ so anyone can verify the server holds nothing sensitive.
 
 The `relay` block is omitted when the server runs without a relay.
 
-**Access.** `/v1/metrics` inherits the server's own openness, like every
-endpoint except `/v1/health`:
+**Access.** `/metrics` inherits the server's own openness, like every
+endpoint except `/` and `/health`:
 
 - **Open server (no `FSEND_SERVER_PASSWORD`)** — public, no credentials:
 
   ```sh
-  curl https://fs.example.com/v1/metrics
+  curl https://fs.example.com/metrics
   ```
 
 - **Password-protected server** — pass the password in the `X-Fsend-Auth`
   header (the same one clients use):
 
   ```sh
-  curl -H "X-Fsend-Auth: your-secret" https://fs.example.com/v1/metrics
+  curl -H "X-Fsend-Auth: your-secret" https://fs.example.com/metrics
   ```
 
   Without it you get `401`. Note a **web browser can't open this URL**
@@ -234,7 +238,7 @@ one keeps its metrics to whoever holds the password.
 |---|---|
 | `docker compose up` errors out asking for `FSEND_DOMAIN` | You forgot `export FSEND_DOMAIN=…`. Set it and rerun. |
 | Caddy logs show "obtain certificate failed" (ACME error) | DNS A-record not yet pointing at this host, or `80/tcp` blocked at the firewall. |
-| `curl` to `/v1/health` works but clients hit `E001` on cross-network transfers | `443/udp` blocked at the firewall — many setups open TCP only and forget UDP. |
+| `curl` to `/health` works but clients hit `E001` on cross-network transfers | `443/udp` blocked at the firewall — many setups open TCP only and forget UDP. |
 | Pairing starts but the transfer hangs or drops | A reverse proxy in front of fsend (not the bundled Caddy) is buffering long-poll signaling. Caddy is configured for 30s read/write; nginx/Traefik need the same. |
 | Clients hit `E028` ("pairing server requires a password") | You set `FSEND_SERVER_PASSWORD` on the server. Clients must connect with `fsend --connect host:443,<password>`. |
 
@@ -269,7 +273,7 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 | Variable | Default | Notes |
 |---|---|---|
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable. |
-| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/v1/health` — see [Require a password](#require-a-password-optional). |
+| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/` and `/health` — see [Require a password](#require-a-password-optional). |
 | `FSEND_SERVER_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP` | `0` (unlimited) | **Concurrency cap** — how many sessions one source IP may have **alive at once**. A session gates relay allocation too, so this caps relay access as well. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` | `0` (unlimited) | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |

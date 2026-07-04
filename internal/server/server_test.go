@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -304,7 +305,7 @@ func TestWaitRateLimit_PollCadenceStaysUnderBudget(t *testing.T) {
 
 func TestHealth(t *testing.T) {
 	srv := newTestServer(t)
-	resp, err := http.Get(srv.URL + "/v1/health")
+	resp, err := http.Get(srv.URL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,10 +313,46 @@ func TestHealth(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("health status = %d", resp.StatusCode)
 	}
-	var h HealthResponse
-	_ = json.NewDecoder(resp.Body).Decode(&h)
-	if h.Status != "ok" {
-		t.Errorf("status = %q", h.Status)
+	// Decode into a raw map: /health must expose status only — no version
+	// or uptime, so an unauthenticated caller can't fingerprint the build.
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw["status"] != "ok" {
+		t.Errorf("status = %q", raw["status"])
+	}
+	for _, leaked := range []string{"version", "uptime_seconds"} {
+		if _, ok := raw[leaked]; ok {
+			t.Errorf("/health leaked %q: %v", leaked, raw)
+		}
+	}
+}
+
+func TestRoot(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Errorf("root status = %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "up and running") {
+		t.Errorf("root body = %q", body)
+	}
+
+	// {$} must not turn into a catch-all: unknown paths still 404.
+	resp404, err := http.Get(srv.URL + "/nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp404.Body.Close() }()
+	if resp404.StatusCode != 404 {
+		t.Errorf("unknown path status = %d, want 404", resp404.StatusCode)
 	}
 }
 
@@ -463,7 +500,7 @@ func TestDeleteSession(t *testing.T) {
 
 // TestServerPassword_Gate verifies that the password-gated handler
 // rejects unauthenticated requests with 401, accepts the configured
-// password, and always leaves /v1/health open so monitoring works
+// password, and always leaves /health open so monitoring works
 // without the secret.
 func TestServerPassword_Gate(t *testing.T) {
 	s := New(Config{
@@ -502,8 +539,8 @@ func TestServerPassword_Gate(t *testing.T) {
 		t.Errorf("correct password: status = %d, want 200", got)
 	}
 
-	// /v1/health is always open — monitoring must not need the secret.
-	resp, err := http.Get(srv.URL + "/v1/health")
+	// /health is always open — monitoring must not need the secret.
+	resp, err := http.Get(srv.URL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +590,7 @@ func (f *fakeRelay) Metrics() relay.Metrics {
 	return relay.Metrics{Forwarding: !f.noForward, Healthy: !f.dead}
 }
 
-// /v1/health must flip to 503/degraded once the relay read loop has died,
+// /health must flip to 503/degraded once the relay read loop has died,
 // so an orchestrator restarts the container instead of trusting a zombie.
 func TestHealth_DegradedWhenRelayDead(t *testing.T) {
 	s := New(Config{ServerVersion: "0.0.0-test"})
@@ -561,7 +598,7 @@ func TestHealth_DegradedWhenRelayDead(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/v1/health")
+	resp, err := http.Get(srv.URL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
