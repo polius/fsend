@@ -5,7 +5,7 @@
 .DESCRIPTION
   Downloads the latest fsend release, verifies its SHA-256 checksum, and
   installs fsend.exe into a directory on your PATH. PowerShell 5.1+ (in-box
-  on Windows 10/11) is the only requirement — no Git Bash needed.
+  on Windows 10/11) is the only requirement - no Git Bash needed.
 
   Quick install:
     irm https://getfsend.alzina.dev/windows | iex
@@ -43,14 +43,17 @@ $Binary = 'fsend.exe'
 $CosignIdentityRegexp = "^https://github.com/$Repo/.github/workflows/release.yml@refs/tags/v.*$"
 $CosignIssuer = 'https://token.actions.githubusercontent.com'
 
-function Info($m) { Write-Host "› $m" -ForegroundColor Cyan }
-function Ok($m)   { Write-Host "✓ $m" -ForegroundColor Green }
+# ASCII markers only: PowerShell 5.1 mangles Unicode on both delivery
+# paths (`irm` decodes the charset-less release asset as ISO-8859-1;
+# a BOM-less .ps1 file parses as ANSI), printing glyphs as mojibake.
+function Info($m) { Write-Host "> $m" -ForegroundColor Cyan }
+function Ok($m)   { Write-Host "OK $m" -ForegroundColor Green }
 
 # throw, not exit: the install one-liner runs via `irm ... | iex` *in the
 # user's own session*, so `exit` would close their terminal. throw halts,
 # shows the message in red, leaves an interactive window open, and still
 # yields a non-zero exit code under `powershell -File install.ps1`.
-function Err($m)  { Write-Host "✗ $m" -ForegroundColor Red; throw }
+function Err($m)  { Write-Host "x $m" -ForegroundColor Red; throw }
 
 function Show-Usage {
     Write-Host @'
@@ -75,7 +78,7 @@ Source: https://github.com/polius/fsend/blob/main/scripts/install.ps1
 if ($Help) { Show-Usage; return }
 
 # Windows releases cover amd64/arm64/386 only. PROCESSOR_ARCHITECTURE reports
-# the *process* arch, so a 32-bit PowerShell on 64-bit Windows would read x86 —
+# the *process* arch, so a 32-bit PowerShell on 64-bit Windows would read x86 -
 # PROCESSOR_ARCHITEW6432 carries the true machine arch in that case.
 function Get-Arch {
     $a = $env:PROCESSOR_ARCHITECTURE
@@ -113,7 +116,7 @@ function Verify-Signature($sums, $base, $dir) {
     $bundle = Join-Path $dir 'checksums.txt.bundle'
     Download "$base/checksums.txt.bundle" $bundle
     # Windows PowerShell 5.1 turns a native command's redirected stderr into a
-    # terminating error under EAP=Stop — and cosign prints "Verified OK" to
+    # terminating error under EAP=Stop - and cosign prints "Verified OK" to
     # stderr even on success, which would abort a good verification. Relax EAP
     # just for this call; correctness is judged by $LASTEXITCODE, not stderr.
     $prevEAP = $ErrorActionPreference
@@ -145,7 +148,7 @@ try {
         # Resolve "latest" through the release-asset redirect, not the GitHub
         # API (unauthenticated API is capped at 60/hr per IP). checksums.txt is
         # needed anyway, and the version is recovered from the archive names in
-        # it — tags are always v-prefixed.
+        # it - tags are always v-prefixed.
         Info 'looking up latest release...'
         Download "https://github.com/$Repo/releases/latest/download/checksums.txt" $checksums
         $line = Get-Content $checksums | Where-Object { $_ -match 'fsend_([^_]+)_' } | Select-Object -First 1
@@ -159,7 +162,7 @@ try {
         Download "https://github.com/$Repo/releases/download/$Version/checksums.txt" $checksums
     }
 
-    # %LOCALAPPDATA%\Programs (per-user, no admin) — deliberately NOT under
+    # %LOCALAPPDATA%\Programs (per-user, no admin) - deliberately NOT under
     # %LOCALAPPDATA%\fsend, which is the config dir: `fsend --uninstall`
     # RemoveAll's the config dir, and Windows can't delete a running .exe
     # nested inside it ("Access is denied"). Keep the two trees separate.
