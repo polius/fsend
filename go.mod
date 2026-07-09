@@ -16,7 +16,7 @@ require (
 	github.com/vbauerster/mpb/v8 v8.12.1
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.54.0
-	golang.org/x/net v0.56.0
+	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	salsa.debian.org/vasudev/gospake2 v0.0.0-20210510093858-d91629950ad1
