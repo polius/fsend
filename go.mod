@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/adrg/xdg v0.5.3
 	github.com/kalafut/imohash v1.1.1
-	github.com/klauspost/compress v1.19.0
+	github.com/klauspost/compress v1.19.1
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pion/ice/v4 v4.3.0
 	github.com/pion/mdns/v2 v2.1.0
@@ -13,7 +13,7 @@ require (
 	github.com/quic-go/quic-go v0.60.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	github.com/vbauerster/mpb/v8 v8.12.1
+	github.com/vbauerster/mpb/v8 v8.13.0
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
