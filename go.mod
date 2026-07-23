@@ -6,7 +6,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.19.1
-	github.com/oklog/ulid/v2 v2.1.1
+	github.com/oklog/ulid/v2 v2.1.2
 	github.com/pion/ice/v4 v4.3.0
 	github.com/pion/mdns/v2 v2.1.0
 	github.com/pion/stun/v3 v3.1.6
