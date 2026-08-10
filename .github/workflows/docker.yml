@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-      - uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: poliuscorp
           password: ${{ secrets.DOCKER_ACCESS_TOKEN }}
@@ -54,7 +54,7 @@ jobs:
           labels: ${{ steps.tags.outputs.labels }}
           cache-from: type=gha,scope=${{ env.IMAGE }}
           cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}
-      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: index.docker.io/${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
