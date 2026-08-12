@@ -13,7 +13,7 @@ require (
 	github.com/quic-go/quic-go v0.61.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	github.com/vbauerster/mpb/v8 v8.15.1
+	github.com/vbauerster/mpb/v8 v8.15.2
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
