@@ -13,7 +13,7 @@ require (
 	github.com/quic-go/quic-go v0.61.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	github.com/vbauerster/mpb/v8 v8.15.2
+	github.com/vbauerster/mpb/v8 v8.16.0
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
@@ -29,7 +29,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/mattn/go-runewidth v0.0.27 // indirect
+	github.com/mattn/go-runewidth v0.0.28 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
