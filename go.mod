@@ -8,7 +8,7 @@ require (
 	github.com/klauspost/compress v1.19.2
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/pion/ice/v4 v4.4.1
-	github.com/pion/mdns/v2 v2.1.0
+	github.com/pion/mdns/v2 v2.2.0
 	github.com/pion/stun/v3 v3.1.7
 	github.com/quic-go/quic-go v0.62.0
 	github.com/spf13/cobra v1.10.2
