@@ -5,19 +5,19 @@ go 1.26.4
 require (
 	github.com/adrg/xdg v0.5.3
 	github.com/kalafut/imohash v1.1.1
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.0
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/pion/ice/v4 v4.4.1
-	github.com/pion/mdns/v2 v2.1.0
+	github.com/pion/ice/v4 v4.4.2
+	github.com/pion/mdns/v2 v2.2.0
 	github.com/pion/stun/v3 v3.1.7
 	github.com/quic-go/quic-go v0.62.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/vbauerster/mpb/v8 v8.16.1
 	github.com/zeebo/blake3 v0.2.4
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/net v0.58.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.45.0
 	salsa.debian.org/vasudev/gospake2 v0.0.0-20210510093858-d91629950ad1
 )
@@ -30,11 +30,12 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mattn/go-runewidth v0.0.28 // indirect
-	github.com/pion/dtls/v3 v3.1.5 // indirect
+	github.com/pion/dtls/v3 v3.1.8 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/stun/v4 v4.0.0 // indirect
 	github.com/pion/transport/v4 v4.1.0 // indirect
-	github.com/pion/turn/v5 v5.0.12 // indirect
+	github.com/pion/turn/v5 v5.1.0 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect
 	github.com/vbauerster/cupwriter v0.0.4 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
