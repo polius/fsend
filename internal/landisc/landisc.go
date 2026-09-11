@@ -31,6 +31,7 @@ import (
 
 	"github.com/pion/mdns/v2"
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
@@ -176,15 +177,17 @@ func Announce(code string, ip net.IP) (*mdns.Conn, error) {
 
 	name := serviceName(code)
 
-	cfg := &mdns.Config{
-		Name:            "fsend-sender",
-		LocalNames:      []string{name},
-		LocalAddress:    ip,
-		IncludeLoopback: true,
-		QueryInterval:   time.Second,
-		Interfaces:      discoveryInterfaces(),
-	}
-	conn, err := mdns.Server(v4Conn, v6Conn, cfg)
+	conn, err := mdns.NewServer(v4Conn, v6Conn,
+		mdns.WithName("fsend-sender"),
+		mdns.WithLocalNames(name),
+		mdns.WithLocalAddress(ip),
+		mdns.WithIncludeLoopback(true),
+		mdns.WithInterfaces(discoveryInterfaces()...),
+		// Legacy parity: answer only A/AAAA (WebRTC/ICE-style naming),
+		// no proactive cache refresh.
+		mdns.WithRecordTypes(dnsmessage.TypeA, dnsmessage.TypeAAAA),
+		mdns.WithCacheRefresh(false),
+	)
 	if err != nil {
 		closePacketConns(v4Conn, v6Conn)
 		return nil, fmt.Errorf("landisc: mdns server: %w", err)
@@ -222,6 +225,10 @@ type QueryResult struct {
 // in turn wedges the next receiver querying the same name, so one stuck
 // process poisons every later transfer with that code on the LAN.
 const watchdogGrace = 2 * time.Second
+
+// queryRetry is how often Query re-issues its question within one window
+// (legacy QueryInterval: 100ms). See the retry loop in queryOn.
+const queryRetry = 100 * time.Millisecond
 
 // Query searches for a sender announcing the given code, up to timeout.
 //
@@ -333,27 +340,47 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 	// connCh hands the mDNS conn to the watchdog as soon as it exists, so
 	// a wedged query (pion parks in a deadline-less interface write) can
 	// be fully torn down: conn.Close unblocks QueryAddr and kills the
-	// 100ms question ticker, instead of leaking a goroutine that spams
-	// the LAN until process exit.
+	// question loop, instead of leaking a goroutine that spams the LAN
+	// until process exit.
 	connCh := make(chan *mdns.Conn, 1)
 	go func() {
-		cfg := &mdns.Config{
-			Name:            "fsend-receiver",
-			IncludeLoopback: true,
-			QueryInterval:   100 * time.Millisecond,
-			Interfaces:      ifaces,
-		}
-		conn, err := mdns.Server(v4Conn, v6Conn, cfg)
+		conn, err := mdns.NewServer(v4Conn, v6Conn,
+			mdns.WithName("fsend-receiver"),
+			mdns.WithIncludeLoopback(true),
+			mdns.WithInterfaces(ifaces...),
+			// Legacy parity: answer only A/AAAA, no proactive cache refresh.
+			mdns.WithRecordTypes(dnsmessage.TypeA, dnsmessage.TypeAAAA),
+			mdns.WithCacheRefresh(false),
+		)
 		if err != nil {
 			closePacketConns(v4Conn, v6Conn)
 			ch <- outcome{err: fmt.Errorf("landisc: mdns server: %w", err)}
 			return
 		}
 		connCh <- conn
-		_, addr, err := conn.QueryAddr(qCtx, name)
+
+		// pion/mdns v2.2.0 has no functional option for the query retry
+		// interval (the deprecated Server shim read it from Config;
+		// NewServer pins it to 1s). Preserve the 100ms cadence by
+		// re-issuing QueryAddr with fresh sub-contexts — each call sends
+		// one question immediately, so this behaves exactly like the old
+		// 100ms ticker. Loop only while the miss came from the sub-window
+		// itself: any other error, or the caller's window closing, ends
+		// the attempt.
+		var addr netip.Addr
+		var qerr error
+		for {
+			sub, subCancel := context.WithTimeout(qCtx, queryRetry)
+			_, addr, qerr = conn.QueryAddr(sub, name)
+			subCancel()
+			if qerr == nil || qCtx.Err() != nil || sub.Err() == nil {
+				break
+			}
+		}
+
 		// Deliver the result before Close: a wedged Close leaks this
 		// goroutine until process exit but can no longer hang the caller.
-		ch <- outcome{addr: addr, err: err}
+		ch <- outcome{addr: addr, err: qerr}
 		_ = conn.Close()
 		closePacketConns(v4Conn, v6Conn)
 	}()
@@ -379,7 +406,7 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 		// watchdog — kill the sockets so the query goroutine unblocks.
 		select {
 		case c := <-connCh:
-			go c.Close()
+			go func() { _ = c.Close() }()
 		default:
 		}
 		closePacketConns(v4Conn, v6Conn)
@@ -387,7 +414,7 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 	case <-watchdog.C:
 		select {
 		case c := <-connCh:
-			go c.Close()
+			go func() { _ = c.Close() }()
 		default:
 		}
 		closePacketConns(v4Conn, v6Conn)
