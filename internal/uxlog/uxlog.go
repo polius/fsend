@@ -52,6 +52,7 @@ type plainProgress struct {
 	lastLine time.Time
 	start    time.Time
 	label    string // current-file chip, "" when unset
+	route    string // connection tag chip, "" when unknown
 }
 
 // plainInterval throttles plain-mode lines. One line per second keeps
@@ -71,6 +72,9 @@ func (p *plainProgress) add(n int64) {
 		// output, whatever the caller's accounting did.
 		line := fmt.Sprintf("%d%%  %s / %s",
 			max(0, min(100, p.current*100/p.total)), HumanBytes(p.current), HumanBytes(p.total))
+		if p.route != "" {
+			line += "  ·  " + p.route
+		}
 		if p.label != "" {
 			line += "  ·  " + p.label
 		}
@@ -83,6 +87,9 @@ func (p *plainProgress) add(n int64) {
 	line := HumanBytes(p.current)
 	if r := HumanRate(p.current, time.Since(p.start)); r != "" {
 		line += "  ·  " + r
+	}
+	if p.route != "" {
+		line += "  ·  " + p.route
 	}
 	_, _ = fmt.Fprintf(p.w, "  %s\n", line)
 }
@@ -156,6 +163,18 @@ func setActive(p *Progress) {
 	activeMu.Unlock()
 }
 
+// Notify flags a completed transfer to an unattended terminal: an audible
+// bell plus an OSC 9 desktop notification (iTerm2, WezTerm, Windows
+// Terminal, foot). TTY-gated so piped stderr stays byte-clean. msg must
+// be caller-controlled literal text — never peer-supplied strings, which
+// could inject OSC sequences.
+func Notify(msg string) {
+	if !renderTTY(os.Stderr) {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "\x1b]9;fsend: %s\x07\x07", msg)
+}
+
 // New constructs a Progress that writes to stderr (the only sink the spec
 // allows for visual output).
 //
@@ -166,13 +185,17 @@ func setActive(p *Progress) {
 // showNames reserves room for the current-file chip (SetLabel). Callers
 // pass true only for multi-file transfers — a single file's name is
 // already in the pre-transfer block, so the columns go to the bar instead.
-func New(totalBytes int64, showNames bool) *Progress {
+//
+// route is the connection tag ("LAN"/"direct"/"relay"), always known
+// before the first byte — data only flows on an established path. Rendered
+// as a dim chip so a long transfer stays honest about which path it rides.
+func New(totalBytes int64, showNames bool, route string) *Progress {
 	// Plain mode for pipes/CI, and for terminals that report a 0×0
 	// window (some pty wrappers) — mpb discards every row at height 0.
 	width, _, sizeErr := term.GetSize(int(os.Stderr.Fd()))
 	if !renderTTY(os.Stderr) || sizeErr != nil || width <= 0 {
 		return &Progress{plain: &plainProgress{
-			w: os.Stderr, total: totalBytes, lastLine: time.Now(), start: time.Now(),
+			w: os.Stderr, total: totalBytes, lastLine: time.Now(), start: time.Now(), route: route,
 		}}
 	}
 	// The fixed width assumes ~55 columns of decorators around the bar; on
@@ -185,6 +208,9 @@ func New(totalBytes int64, showNames bool) *Progress {
 	if showNames && width >= 55+10+nameCols+5 {
 		pad += nameCols + 5
 		labelCap = nameCols
+	}
+	if route != "" {
+		pad += len(route) + 5
 	}
 	bw := min(barWidth, max(10, width-pad))
 
@@ -313,6 +339,14 @@ func New(totalBytes int64, showNames bool) *Progress {
 				return "  ·  ETA " + etaLabel(remainingSecs)
 			}),
 		)
+	}
+	if route != "" {
+		// Static route chip, dimmed at render time: Meta keeps mpb's width
+		// math off the ANSI escapes (same trick as the stalled marker).
+		appendDecs = append(appendDecs, decor.Meta(
+			decor.Name("  ·  "+route),
+			func(str string) string { return Dim(str) },
+		))
 	}
 	if labelCap > 0 {
 		// Current-file chip, last so its per-file width changes don't

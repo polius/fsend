@@ -156,6 +156,22 @@ func (i Info) Chip() string {
 	}
 }
 
+// BarTag is the compact route label shown as a chip on the progress
+// bar, so a long transfer stays honest about which path its bytes are
+// taking: LAN / direct / relay. "" when the path was never established.
+func (i Info) BarTag() string {
+	switch i.Kind {
+	case KindLocal:
+		return "LAN"
+	case KindDirectNAT:
+		return "direct"
+	case KindRelay:
+		return "relay"
+	default:
+		return ""
+	}
+}
+
 // Detail returns the verbose ICE candidate trace for --debug output, e.g.
 // "host → srflx". Empty when no candidate types are known (LAN/relay
 // short-circuits). Kept in pion's vocabulary — this is a deliberately

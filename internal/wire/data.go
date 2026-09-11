@@ -122,9 +122,12 @@ func ReadChunk(r io.Reader) (*Chunk, error) {
 		return nil, fmt.Errorf("%w: zero segments", ErrMalformedChunk)
 	}
 
-	c.Segments = make([]Segment, segCount)
+	// Grow the segment slice as header bytes arrive instead of pre-allocating
+	// all segCount entries: a hostile 40-byte header must not buy megabytes of
+	// allocation for free. Honest chunks carry at most a few thousand segments.
+	c.Segments = make([]Segment, 0, min(int(segCount), 64))
 	var sum uint64
-	for i := range c.Segments {
+	for i := 0; i < int(segCount); i++ {
 		var seg [9]byte
 		if _, err := io.ReadFull(r, seg[:]); err != nil {
 			return nil, fmt.Errorf("wire: reading segment header: %w", err)
@@ -140,7 +143,7 @@ func ReadChunk(r io.Reader) (*Chunk, error) {
 			}
 		}
 		sum += uint64(s.Length)
-		c.Segments[i] = s
+		c.Segments = append(c.Segments, s)
 	}
 	if sum > MaxChunkSize {
 		return nil, fmt.Errorf("%w: segment lengths sum %d > limit %d", ErrChunkTooLarge, sum, MaxChunkSize)

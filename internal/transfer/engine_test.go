@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -140,9 +142,9 @@ func TestEngine_EmptyFileFiresOnFileDone(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(src, "empty.txt"), nil)
 
-	var done []string
+	var donePaths, doneSHAs []string
 	se, re := fileTransfer(t, []string{filepath.Join(src, "empty.txt")}, dst, func(o *RecvOptions) {
-		o.OnFileDone = func(p string) { done = append(done, p) }
+		o.OnFileDone = func(p, sha string) { donePaths = append(donePaths, p); doneSHAs = append(doneSHAs, sha) }
 	})
 	if se != nil || re != nil {
 		t.Fatalf("send=%v recv=%v", se, re)
@@ -150,9 +152,18 @@ func TestEngine_EmptyFileFiresOnFileDone(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dst, "empty.txt")); err != nil {
 		t.Fatalf("empty file not written: %v", err)
 	}
-	if len(done) != 1 {
-		t.Fatalf("OnFileDone fired %d times for a saved empty file, want 1", len(done))
+	if len(donePaths) != 1 {
+		t.Fatalf("OnFileDone fired %d times for a saved empty file, want 1", len(donePaths))
 	}
+	if doneSHAs[0] != sha256hex(nil) {
+		t.Fatalf("empty file SHA-256 = %q, want %q", doneSHAs[0], sha256hex(nil))
+	}
+}
+
+// sha256hex is the digest format OnFileDone and --manifest report.
+func sha256hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // A source that shrinks between the walk and the read must fail the transfer,

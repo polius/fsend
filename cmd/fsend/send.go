@@ -314,7 +314,8 @@ type senderStats struct {
 // bar. Returns close, progress, onResume, onSkip, a stats getter, and
 // onStreamingEOF (latches the bar total once a stream EOFs). All callbacks
 // run on the single send-loop goroutine, so the counters need no locking.
-func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32, bool), stats func() senderStats, onStreamingEOF func(uint32, uint64), resetCounts func()) {
+// pathInfo feeds the bar's route chip ("LAN"/"direct"/"relay").
+func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32, bool), stats func() senderStats, onStreamingEOF func(uint32, uint64), resetCounts func()) {
 	prev := make(map[uint32]uint64)
 	var s senderStats
 	var bar *uxlog.Progress
@@ -340,7 +341,7 @@ func newSenderProgress(f *flags, plan *sendPlan) (closeFn func(), progressFn fun
 	}
 	ensureBar := func() {
 		if bar == nil && !f.quiet {
-			bar = uxlog.New(int64(plan.totalBytes), names != nil)
+			bar = uxlog.New(int64(plan.totalBytes), names != nil, pathInfo.BarTag())
 		}
 	}
 	return func() { bar.Done() },
@@ -428,6 +429,11 @@ func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duratio
 		parts = append(parts, uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver (needs --overwrite there)")
 	}
 	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
+	// Streams report their true size only at EOF — moved is the honest figure.
+	if s.moved > total {
+		total = s.moved
+	}
+	uxlog.Notify("Sent " + uxlog.HumanBytes(total))
 	printUpdateNotice(f)
 }
 

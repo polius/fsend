@@ -31,7 +31,7 @@ func silenceStderr(t *testing.T) {
 // final Done() must return cleanly even when the bar reached 100 %.
 func TestProgress_KnownTotalLifecycle(t *testing.T) {
 	silenceStderr(t)
-	p := New(1000, false)
+	p := New(1000, false, "LAN")
 	p.Add(400)
 	p.Add(600)
 	p.Done()
@@ -43,7 +43,7 @@ func TestProgress_KnownTotalLifecycle(t *testing.T) {
 // than waiting forever for an Increment that will never come.
 func TestProgress_AbortBeforeComplete(t *testing.T) {
 	silenceStderr(t)
-	p := New(1000, false)
+	p := New(1000, false, "LAN")
 	p.Add(250) // partial — bar at 25 %
 	p.Done()   // must not hang
 }
@@ -55,7 +55,7 @@ func TestProgress_AbortBeforeComplete(t *testing.T) {
 // for the streaming-stdin work.
 func TestProgress_StreamingSetTotal(t *testing.T) {
 	silenceStderr(t)
-	p := New(0, false)
+	p := New(0, false, "relay")
 	p.Add(123)
 	p.Add(456)
 	p.SetTotal(579, true)
@@ -88,7 +88,7 @@ func TestProgress_PlainModeNoEscapes(t *testing.T) {
 	os.Stderr = f
 	t.Cleanup(func() { os.Stderr = orig; _ = f.Close() })
 
-	p := New(1000, false)
+	p := New(1000, false, "LAN")
 	p.Add(400)
 	p.Add(600)
 	p.Done()
@@ -116,7 +116,7 @@ func TestProgress_PlainModePartialSilent(t *testing.T) {
 	os.Stderr = f
 	t.Cleanup(func() { os.Stderr = orig; _ = f.Close() })
 
-	p := New(1000, false)
+	p := New(1000, false, "LAN")
 	p.Add(250)
 	p.Done()
 
@@ -169,6 +169,21 @@ func TestProgress_PlainModeLabelInLine(t *testing.T) {
 	}
 	if strings.Count(out, "\n") != 1 {
 		t.Errorf("plain progress must print one line per update: %q", out)
+	}
+}
+
+// Plain mode carries the connection-route chip the same way — one line
+// per print, zero ANSI.
+func TestProgress_PlainModeRouteInLine(t *testing.T) {
+	var buf bytes.Buffer
+	p := &plainProgress{w: &buf, total: 1000, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second), route: "relay"}
+	p.add(400)
+	out := buf.String()
+	if !strings.Contains(out, "  ·  relay") {
+		t.Errorf("plain line missing route chip: %q", out)
+	}
+	if bytes.ContainsRune(buf.Bytes(), 0x1b) {
+		t.Errorf("plain line with route emitted ANSI escapes: %q", out)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,6 +66,17 @@ func serviceName(code string) string {
 	return "fsend-" + hex.EncodeToString(derive(code)[:16]) + ".local"
 }
 
+// closePacketConns tears down the multicast sockets. pion/mdns does not
+// close caller-supplied conns on its own error paths, so every failure
+// return after openMulticast must do it here or leak one UDP socket per
+// call.
+func closePacketConns(v4 *ipv4.PacketConn, v6 *ipv6.PacketConn) {
+	_ = v4.Close()
+	if v6 != nil {
+		_ = v6.Close()
+	}
+}
+
 // Announce publishes the given local address under the code-derived service
 // name. Call Close on the returned *mdns.Conn to stop announcing.
 //
@@ -91,6 +103,7 @@ func Announce(code string, ip net.IP) (*mdns.Conn, error) {
 	}
 	conn, err := mdns.Server(v4Conn, v6Conn, cfg)
 	if err != nil {
+		closePacketConns(v4Conn, v6Conn)
 		return nil, fmt.Errorf("landisc: mdns server: %w", err)
 	}
 	return conn, nil
@@ -145,12 +158,6 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 	if err != nil {
 		return nil, fmt.Errorf("landisc: opening multicast: %w", err)
 	}
-	closeSockets := func() {
-		_ = v4Conn.Close()
-		if v6Conn != nil {
-			_ = v6Conn.Close()
-		}
-	}
 
 	qCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -175,7 +182,7 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 		}
 		conn, err := mdns.Server(v4Conn, v6Conn, cfg)
 		if err != nil {
-			closeSockets()
+			closePacketConns(v4Conn, v6Conn)
 			ch <- outcome{err: fmt.Errorf("landisc: mdns server: %w", err)}
 			return
 		}
@@ -184,7 +191,7 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 		// goroutine until process exit but can no longer hang the caller.
 		ch <- outcome{addr: addr, err: err}
 		_ = conn.Close()
-		closeSockets()
+		closePacketConns(v4Conn, v6Conn)
 	}()
 
 	watchdog := time.NewTimer(timeout + watchdogGrace)
@@ -194,14 +201,22 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 		if o.err != nil {
 			return nil, fmt.Errorf("landisc: query: %w", o.err)
 		}
-		return &QueryResult{IP: net.IP(o.addr.AsSlice()), Port: port}, nil
+		ip := net.IP(o.addr.AsSlice())
+		// mDNS is link-scoped multicast, so a legitimate sender's address
+		// must sit on one of this machine's own subnets. Anything else is
+		// a spoofed answer steering us at an arbitrary third party — drop
+		// it and let the caller fall through to the pairing-server path.
+		if !o.addr.IsValid() || !onLinkSubnet(ip) {
+			return nil, fmt.Errorf("landisc: query: answer %v is not on-link", o.addr)
+		}
+		return &QueryResult{IP: ip, Port: port}, nil
 	case <-ctx.Done():
 		// Caller is shutting down (e.g. SIGINT). Don't wait out the
 		// watchdog — kill the sockets so the query goroutine unblocks.
-		closeSockets()
+		closePacketConns(v4Conn, v6Conn)
 		return nil, fmt.Errorf("landisc: query: %w", ctx.Err())
 	case <-watchdog.C:
-		closeSockets()
+		closePacketConns(v4Conn, v6Conn)
 		return nil, fmt.Errorf("landisc: query stuck past its %v deadline (watchdog)", timeout)
 	}
 }
@@ -247,34 +262,92 @@ func openMulticast() (*ipv4.PacketConn, *ipv6.PacketConn, error) {
 	return v4, v6, nil
 }
 
-// PreferredLocalIP returns the first non-loopback IPv4 address found on
-// this machine's interfaces, or a global-unicast IPv6 on IPv6-only
-// networks. Used by Announce to publish a routable LAN IP.
+// virtualIface reports whether the interface looks like a VPN tunnel or
+// container bridge rather than LAN hardware. Announcing such an address
+// would hand receivers an IP they cannot reach, silently losing the LAN
+// shortcut. Prefix list covers macOS (utun*), WireGuard (wg*, tun*),
+// Tailscale, OpenVPN (tun*/tap*), ZeroTier, and Linux bridges (docker*,
+// virbr*, veth*, br-*).
+func virtualIface(name string) bool {
+	n := strings.ToLower(name)
+	for _, p := range []string{"utun", "tun", "tap", "wg", "tailscale", "zt", "ipsec", "ppp", "docker", "virbr", "veth", "br-"} {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// onLinkSubnet reports whether ip falls within one of this machine's own
+// interface subnets (loopback included). Used to vet mDNS answers, which
+// are link-scoped by construction.
+func onLinkSubnet(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && ipnet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// PreferredLocalIP returns the best IPv4 address to publish for LAN
+// discovery, or a global-unicast IPv6 on IPv6-only networks.
 //
-// Link-local IPv6 is excluded: it needs a zone, which pion/mdns's
-// LocalAddress can't carry.
+// Selection, in order: the first private IPv4 (RFC 1918) on a physical
+// interface, then any other IPv4 (public or CGNAT), then a global-unicast
+// IPv6. Loopback, link-local v6, and virtual interfaces (VPN tunnels,
+// container bridges) are skipped — see virtualIface.
 //
 // Falls back to 127.0.0.1 if nothing else is available — useful for
 // loopback-only test environments.
 func PreferredLocalIP() net.IP {
-	addrs, err := net.InterfaceAddrs()
-	if err == nil {
-		var v6 net.IP
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return net.IPv4(127, 0, 0, 1)
+	}
+	var v4, v4Any, v6 net.IP
+	for i := range ifaces {
+		if virtualIface(ifaces[i].Name) {
+			continue
+		}
+		addrs, err := ifaces[i].Addrs()
+		if err != nil {
+			continue
+		}
 		for _, a := range addrs {
 			ipnet, ok := a.(*net.IPNet)
 			if !ok || ipnet.IP.IsLoopback() {
 				continue
 			}
-			if v4 := ipnet.IP.To4(); v4 != nil {
-				return v4
+			if v := ipnet.IP.To4(); v != nil {
+				if v4 == nil && v.IsPrivate() {
+					v4 = v
+				}
+				if v4Any == nil {
+					v4Any = v
+				}
+				continue
 			}
-			if v6 == nil && ipnet.IP.IsGlobalUnicast() {
+			if v6 == nil && ipnet.IP.IsGlobalUnicast() && !ipnet.IP.IsLinkLocalUnicast() {
 				v6 = ipnet.IP
 			}
 		}
-		if v6 != nil {
-			return v6
-		}
+	}
+	if v4 != nil {
+		return v4
+	}
+	if v4Any != nil {
+		return v4Any
+	}
+	if v6 != nil {
+		return v6
 	}
 	return net.IPv4(127, 0, 0, 1)
 }

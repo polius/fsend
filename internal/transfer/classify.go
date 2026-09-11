@@ -33,6 +33,9 @@ type entryPlan struct {
 	disp         disposition
 	resumeOffset uint64
 	imohash      [ImohashSize]byte
+	// sha256 holds the hex digest of the content written for this entry,
+	// set by finalize when bytes actually landed. Empty otherwise.
+	sha256 string
 	// blockedAncestor marks a target reachable only by traversing a
 	// receiver-side symlink in its path. Such an entry is kept untouched (never
 	// sent, materialized, or chmod'd) even under --overwrite, so a write or

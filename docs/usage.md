@@ -111,7 +111,7 @@ sending, then confirms. Pass `--yes` to skip.
 | `--out <dir>` | Receive into this directory (created if missing, like `mkdir -p`). Default: cwd. |
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files whose contents **differ**. Without it they're kept and the receiver exits `E013`. (Identical files are skipped either way.) |
-| `--manifest <file>` | After receiving, write a CSV record (`path,size,status`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `kept` / `resumed`). |
+| `--manifest <file>` | After receiving, write a CSV record (`path,size,status,sha256`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `kept` / `resumed`) and the SHA-256 of the content written (empty when no bytes moved this run, e.g. identical or kept files). |
 | `--checksum` | Decide what's already present by hashing **contents** (BLAKE3) instead of comparing size + mtime — like rsync's `-c`. See [below](#when-a-file-already-exists). |
 | `--password[=<password>]` | Supply the sender's password non-interactively as `--password=<password>`. Also `FSEND_PASSWORD`. |
 
@@ -149,6 +149,24 @@ When a file *does* differ, fsend keeps your local copy by default
 it. Byte-identical files are always skipped silently. The accept prompt shows
 this breakdown (`N new · M up to date · K differ`) before you confirm, and
 `--manifest <file>` records the exact per-file outcome after a receive.
+
+### Verifying what you received
+
+For up to five saved files, the receiver prints a SHA-256 line under the
+summary:
+
+```text
+  sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  report.pdf
+```
+
+Compare it against `shasum -a 256 report.pdf` on the sender for an
+independent end-to-end check (fsend already verifies every byte with
+BLAKE3 internally). Larger transfers put the full list in
+`--manifest <file>` instead of flooding the terminal. The progress bar
+also carries a route chip — `LAN`, `direct`, or `relay` — showing which
+path the bytes are taking, and a completed transfer rings the terminal
+bell and raises a desktop notification (when stderr is a terminal and
+`--quiet` is not set).
 
 ### Resuming an interrupted transfer
 
@@ -290,6 +308,27 @@ newer release and, if one exists, prints a one-line hint to run
 `fsend --update`. The check is skipped when stderr isn't a terminal (so
 piped or scripted runs never trigger it) or `--quiet` is set, and can be
 turned off entirely with `FSEND_NO_UPDATE_CHECK=1`.
+
+## `fsend doctor`
+
+A read-only diagnostic covering what a transfer depends on. Always exits
+0 — every degraded check has a graceful fallback, and the point is to
+show which one will kick in:
+
+```text
+$ fsend doctor
+[✓] config   server fsend.alzina.dev:443 (default)
+[✓] server   reachable in 84ms
+[✓] network  LAN address 192.168.1.23
+[✓] mDNS     answered by 192.168.1.23 in 2ms — LAN discovery works
+```
+
+| Check | Meaning |
+|---|---|
+| `config` | Which pairing server is configured (custom vs default; the server password is never printed). |
+| `server` | HTTPS reachability of that server's `/health`. Unreachable → cross-network transfers fail, LAN transfers are unaffected. |
+| `network` | The local LAN address fsend would announce. VPN/container interfaces are skipped. |
+| `mDNS` | A real announce→query roundtrip on this machine. No answer → multicast is blocked (common on some Wi-Fi/VPNs); LAN discovery falls back to the pairing server. |
 
 ## `fsend server`
 

@@ -2,8 +2,11 @@ package transfer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -43,7 +46,11 @@ type RecvOptions struct {
 	ProgressFn func(index uint32, bytesWritten uint64)
 	OnResume   func(index uint32, offset, total uint64)
 	OnSkip     func(index uint32)
-	OnFileDone func(path string)
+	// OnFileDone fires once per file committed to disk (including empty
+	// ones) with its absolute path and SHA-256 hex digest — the digest is
+	// what the receiver's summary and --manifest surface for independent
+	// verification. Not called for sink streams.
+	OnFileDone func(path, sha256Hex string)
 	// OnConflictKept fires once per differing/conflicting entry left
 	// untouched (no consent). The CLI uses it to set a non-zero exit code.
 	OnConflictKept func(rel string)
@@ -65,6 +72,9 @@ type ManifestEntry struct {
 	RelativePath string
 	Size         uint64
 	Status       string // new | identical | overwritten | kept | resumed
+	// SHA256 hex digest of the content fsend wrote, empty when no bytes
+	// moved this run (identical/kept files) — not recomputed from disk.
+	SHA256 string
 }
 
 // Recv executes the full receiver-side protocol over the supplied streams.
@@ -464,6 +474,7 @@ type recvFile struct {
 	f        *os.File
 	partial  string
 	verifier *blake3.Hasher
+	sha      hash.Hash // SHA-256 over the same bytes, for the receiver's record
 	written  uint64
 	overwr   bool
 }
@@ -481,7 +492,7 @@ func openRecvFile(s *Streams, p *entryPlan, opts RecvOptions) (*recvFile, error)
 		return nil, fmt.Errorf("%w: partial %s not a regular file", fserrors.ErrWriteFailed, partial)
 	}
 
-	rf := &recvFile{plan: p, partial: partial, verifier: blake3.New(), overwr: p.needsConsent()}
+	rf := &recvFile{plan: p, partial: partial, verifier: blake3.New(), sha: sha256.New(), overwr: p.needsConsent()}
 	resume := p.disp == dispResume
 
 	flag := os.O_RDWR | os.O_CREATE
@@ -505,7 +516,10 @@ func openRecvFile(s *Streams, p *entryPlan, opts RecvOptions) (*recvFile, error)
 		if err := f.Truncate(off); err != nil {
 			return rf, writeFail(s, "truncate", err)
 		}
-		if err := hashPrefixInto(rf.verifier, f, off); err != nil {
+		// One pass over the prefix feeds both hashers: the BLAKE3 root the
+		// sender's continuation must extend, and the SHA-256 the manifest
+		// will report for the finished file.
+		if err := hashPrefixInto(io.MultiWriter(rf.verifier, rf.sha), f, off); err != nil {
 			return rf, fmt.Errorf("%w: verify prefix: %v", fserrors.ErrReadFailed, err)
 		}
 		if _, err := f.Seek(off, io.SeekStart); err != nil {
@@ -533,6 +547,7 @@ func (rf *recvFile) write(s *Streams, data []byte, opts *RecvOptions) error {
 		return classifyWriteErr("write", err)
 	}
 	_, _ = rf.verifier.Write(data)
+	_, _ = rf.sha.Write(data)
 	rf.written += uint64(len(data))
 	if opts.ProgressFn != nil {
 		opts.ProgressFn(rf.plan.entry.Index, rf.written)
@@ -541,6 +556,12 @@ func (rf *recvFile) write(s *Streams, data []byte, opts *RecvOptions) error {
 }
 
 func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error {
+	if rf.written != rf.plan.entry.Size {
+		_ = rf.f.Close()
+		_ = os.Remove(rf.partial)
+		declineTransfer(s, wire.ErrCodeProtocolError, "EOF before declared size reached")
+		return fmt.Errorf("%w: got %d of %d declared bytes", fserrors.ErrProtocolError, rf.written, rf.plan.entry.Size)
+	}
 	var got [32]byte
 	copy(got[:], rf.verifier.Sum(nil))
 	if got != root {
@@ -567,6 +588,7 @@ func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error 
 			_ = os.RemoveAll(target)
 		}
 	}
+	rf.plan.sha256 = hex.EncodeToString(rf.sha.Sum(nil))
 	if err := os.Rename(rf.partial, target); err != nil {
 		return fmt.Errorf("%w: finalize: %v", fserrors.ErrWriteFailed, err)
 	}
@@ -577,7 +599,7 @@ func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error 
 		_ = os.Chtimes(target, t, t)
 	}
 	if opts.OnFileDone != nil {
-		opts.OnFileDone(target)
+		opts.OnFileDone(target, rf.plan.sha256)
 	}
 	return nil
 }
@@ -620,7 +642,7 @@ func materialize(s *Streams, p *entryPlan, approveOverwrite bool, opts RecvOptio
 		// does for non-empty ones, so it's counted in the receiver's saved-file
 		// tally (files_saved / the "Saved N of M" headline).
 		if opts.OnFileDone != nil {
-			opts.OnFileDone(target)
+			opts.OnFileDone(target, emptySHA256)
 		}
 		return nil
 	}
@@ -744,6 +766,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 	w := opts.Sink
 	var target string
 	var f *os.File
+	var sha hash.Hash
 	if w == nil {
 		base := StreamFileName(hello.DisplayName)
 		target = filepath.Join(opts.TargetDir, base)
@@ -762,7 +785,8 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 			declineTransfer(s, wire.ErrCodeWriteFailed, "create: "+err.Error())
 			return fmt.Errorf("%w: create stream file: %v", fserrors.ErrWriteFailed, err)
 		}
-		w = f
+		sha = sha256.New()
+		w = io.MultiWriter(f, sha)
 	}
 
 	err := streamPayload(ctx, s, w, func(n uint64) {
@@ -792,7 +816,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 		}
 		fsyncDir(filepath.Dir(target)) // make the rename itself durable
 		if opts.OnFileDone != nil {
-			opts.OnFileDone(target)
+			opts.OnFileDone(target, hex.EncodeToString(sha.Sum(nil)))
 		}
 	}
 	return finishRecv(s)
@@ -812,6 +836,7 @@ func manifestEntries(plans []entryPlan, decisions []wire.Decision) []ManifestEnt
 			RelativePath: plans[i].entry.RelativePath,
 			Size:         plans[i].entry.Size,
 			Status:       manifestStatus(plans[i].disp, decisions[i].Action),
+			SHA256:       plans[i].sha256,
 		})
 	}
 	return out

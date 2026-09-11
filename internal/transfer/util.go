@@ -1,21 +1,26 @@
 package transfer
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/zeebo/blake3"
 )
+
+// emptySHA256 is the SHA-256 hex digest of a zero-byte file, reported for
+// empty entries the way finalize reports non-empty ones.
+var emptySHA256 = hex.EncodeToString(sha256.New().Sum(nil))
 
 // hashPrefixInto streams the first n bytes of f through h. Used to
 // hydrate the resume verifier so the final BLAKE3 root check covers
-// the whole assembled file, including the prefix we kept on disk.
+// the whole assembled file, including the prefix we kept on disk (and,
+// via an io.MultiWriter, the receiver's SHA-256 record in the same pass).
 //
 // Seeks f back to 0 before reading. The caller is responsible for
 // seeking forward again afterwards.
-func hashPrefixInto(h *blake3.Hasher, f *os.File, n int64) error {
+func hashPrefixInto(h io.Writer, f *os.File, n int64) error {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}

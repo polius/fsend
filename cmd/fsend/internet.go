@@ -43,15 +43,20 @@ const iceBudget = 5 * time.Second
 // carries it through; the server matches against FSEND_SERVER_PASSWORD.
 func signalingClient(cfg *config.Config) (*signaling.Client, string) {
 	addr := cfg.EffectiveServer()
-	baseURL := addr
+	return signaling.New(serverBaseURL(addr), version.Version).WithPassword(cfg.ServerPassword), addr
+}
+
+// serverBaseURL maps a configured server address to an http(s) base URL:
+// HTTPS for non-local addresses, HTTP for localhost so dev loops work
+// without a cert. A user-supplied URL is preserved as-is.
+func serverBaseURL(addr string) string {
 	if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
 		if isLocalAddr(addr) {
-			baseURL = "http://" + addr
-		} else {
-			baseURL = "https://" + addr
+			return "http://" + addr
 		}
+		return "https://" + addr
 	}
-	return signaling.New(baseURL, version.Version).WithPassword(cfg.ServerPassword), addr
+	return addr
 }
 
 func isLocalAddr(addr string) bool {

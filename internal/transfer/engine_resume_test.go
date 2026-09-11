@@ -22,8 +22,10 @@ func TestEngine_ResumeLargeFile(t *testing.T) {
 
 	var resumedAt uint64
 	resumed := false
+	var doneSHA string
 	se, re := fileTransfer(t, []string{filepath.Join(src, "big.bin")}, dst, func(o *RecvOptions) {
 		o.OnResume = func(_ uint32, off, _ uint64) { resumed = true; resumedAt = off }
+		o.OnFileDone = func(_, sha string) { doneSHA = sha }
 	})
 	if se != nil || re != nil {
 		t.Fatalf("send=%v recv=%v", se, re)
@@ -33,6 +35,11 @@ func TestEngine_ResumeLargeFile(t *testing.T) {
 	}
 	if !bytes.Equal(mustRead(t, filepath.Join(dst, "big.bin")), data) {
 		t.Fatal("resumed file content mismatch")
+	}
+	// The reported SHA-256 must cover the assembled file — resumed prefix
+	// plus the tail that crossed the wire — not just the received bytes.
+	if want := sha256hex(data); doneSHA != want {
+		t.Errorf("resumed file SHA-256 = %q, want %q", doneSHA, want)
 	}
 }
 
@@ -145,16 +152,19 @@ func TestEngine_EmptyFileToSink(t *testing.T) {
 func TestEngine_StreamToFile(t *testing.T) {
 	dst := t.TempDir()
 	data := []byte("wifi: hunter2")
-	var donePath string
+	var donePath, doneSHA string
 	se, re := runTransfer(t,
 		SendOptions{Mode: wire.ModeStream, IsText: true, Stream: bytes.NewReader(data), DisplayName: "msg.txt"},
-		RecvOptions{TargetDir: dst, OnFileDone: func(p string) { donePath = p }},
+		RecvOptions{TargetDir: dst, OnFileDone: func(p, sha string) { donePath, doneSHA = p, sha }},
 	)
 	if se != nil || re != nil {
 		t.Fatalf("send=%v recv=%v", se, re)
 	}
 	if donePath == "" || !bytes.Equal(mustRead(t, donePath), data) {
 		t.Fatalf("stream file mismatch at %q", donePath)
+	}
+	if want := sha256hex(data); doneSHA != want {
+		t.Fatalf("stream SHA-256 = %q, want %q", doneSHA, want)
 	}
 }
 

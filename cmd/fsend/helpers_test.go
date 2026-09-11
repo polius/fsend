@@ -983,8 +983,8 @@ func TestFinishReceive_CountsResetAcrossRetry(t *testing.T) {
 	ui.hello = &h
 
 	// Attempt 1: two files land, one differing file kept, then a drop.
-	ui.onFileDone("a.bin")
-	ui.onFileDone("e.txt")
+	ui.onFileDone("a.bin", "aa")
+	ui.onFileDone("e.txt", "ee")
 	ui.onConflictKept("c.bin")
 
 	// Retry: the loop resets before re-running the transfer.
@@ -994,7 +994,7 @@ func TestFinishReceive_CountsResetAcrossRetry(t *testing.T) {
 	// interrupted one lands, the differing one is kept again.
 	ui.onSkip(0)
 	ui.onSkip(1)
-	ui.onFileDone("zz.bin")
+	ui.onFileDone("zz.bin", "zz")
 	ui.onConflictKept("c.bin")
 
 	got := captureStderr(t, func() {

@@ -720,7 +720,7 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan
 // both paths in this helper keeps the two transfer entry points purely
 // declarative.
 func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathInfo connpath.Info, firstRes *quicconn.AcceptResult, reaccept func(context.Context) (*quicconn.AcceptResult, error)) error {
-	closeProg, progressFn, onResume, onSkip, stats, onStreamingEOF, resetCounts := newSenderProgress(f, plan)
+	closeProg, progressFn, onResume, onSkip, stats, onStreamingEOF, resetCounts := newSenderProgress(f, plan, pathInfo)
 	defer closeProg()
 
 	// The receiver may sit at its accept prompt for a while; the spinner

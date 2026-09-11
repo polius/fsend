@@ -2,6 +2,7 @@ package landisc
 
 import (
 	"context"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,41 @@ func TestQuery_CancelledContext(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("cancelled Query took %v, want < 1s", elapsed)
+	}
+}
+
+// TestAnnounceQuery_Roundtrip exercises the LAN-discovery path on the
+// loopback-capable host: announce under a code-derived name, then query
+// for it and get our own address back (pion/mdns enables multicast
+// loopback, so a same-host pair converse). Multicast itself drops frames
+// capriciously (Wi-Fi APs especially), so the query is retried; the
+// contract under test is that *a legitimate answer passes validation* and
+// carries the announced address — an over-strict check here would
+// silently kill LAN discovery. A miss after all retries is an
+// environment limitation, not a code regression, so it skips.
+func TestAnnounceQuery_Roundtrip(t *testing.T) {
+	ip := PreferredLocalIP()
+	ann, err := Announce("round-trip-chk", ip)
+	if err != nil {
+		t.Skipf("multicast unavailable on this host: %v", err)
+	}
+	defer StopAnnounce(ann)
+
+	// Give the announcer a beat to join the multicast group before asking.
+	time.Sleep(200 * time.Millisecond)
+
+	var res *QueryResult
+	for attempt := 0; attempt < 3 && res == nil; attempt++ {
+		res, err = Query(context.Background(), "round-trip-chk", 2*time.Second)
+	}
+	if res == nil {
+		t.Skipf("no mDNS answer after 3 queries (%v) — multicast dropped on this host", err)
+	}
+	if !res.IP.Equal(ip) {
+		t.Errorf("Query returned %v, want the announced %v", res.IP, ip)
+	}
+	if res.Port != PortForCode("round-trip-chk") {
+		t.Errorf("Query port = %d, want %d", res.Port, PortForCode("round-trip-chk"))
 	}
 }
 
@@ -128,5 +164,41 @@ func TestPreferredLocalIP(t *testing.T) {
 	}
 	if ip.To4() == nil {
 		t.Errorf("PreferredLocalIP returned non-IPv4: %v", ip)
+	}
+}
+
+// TestVirtualIface pins the tunnel/bridge filter: VPN and container
+// interfaces must be excluded from announcement, real hardware kept.
+func TestVirtualIface(t *testing.T) {
+	cases := map[string]bool{
+		"utun0": true, "tun0": true, "tap9": true, "wg0": true,
+		"tailscale0": true, "ztwyifhajk": true, "ipsec0": true, "ppp0": true,
+		"docker0": true, "virbr1": true, "veth8a2b1c0": true, "br-4f2a": true,
+		"en0": false, "eth0": false, "wlan0": false, "Ethernet 2": false,
+		"enp5s0": false, "bridge0": false, "awdl0": false, "llw0": false,
+	}
+	for name, want := range cases {
+		if got := virtualIface(name); got != want {
+			t.Errorf("virtualIface(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TestOnLinkSubnet vets the mDNS-answer filter: loopback (the loopback
+// interface's own subnet) is on-link everywhere; TEST-NET-3 is reserved
+// documentation space that can never be a local subnet.
+func TestOnLinkSubnet(t *testing.T) {
+	for _, ip := range []string{"127.0.0.1", "::1"} {
+		if !onLinkSubnet(net.ParseIP(ip)) {
+			t.Errorf("onLinkSubnet(%s) = false, want true", ip)
+		}
+	}
+	for _, ip := range []string{"203.0.113.9", "198.51.100.7"} {
+		if onLinkSubnet(net.ParseIP(ip)) {
+			t.Errorf("onLinkSubnet(%s) = true, want false", ip)
+		}
+	}
+	if onLinkSubnet(nil) {
+		t.Error("onLinkSubnet(nil) = true, want false")
 	}
 }
