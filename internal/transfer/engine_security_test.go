@@ -200,6 +200,25 @@ func TestHostile_OversizedSegment(t *testing.T) {
 	sender.Close()
 }
 
+// EOF with fewer bytes than declared must not finalize a truncated file:
+// a root hash crafted over the partial content must not make it pass.
+func TestHostile_UndersizedEOF(t *testing.T) {
+	dst := t.TempDir()
+	entries := []wire.ListingEntry{{Index: 0, RelativePath: "f.bin", Size: 100, Type: wire.EntryFile}}
+	sender, _, recvErr := hostileSetup(t, dst, entries, RecvOptions{})
+
+	// Declared size 100, but send 4 bytes with a valid root over those bytes.
+	go func() { _ = wire.WriteChunk(sender.Data, mkChunk(0, []byte("EVIL"), true)) }()
+
+	if err := awaitReject(sender, recvErr); err == nil {
+		t.Fatal("receiver finalized a file before its declared size was reached")
+	}
+	if _, err := os.Stat(filepath.Join(dst, "f.bin")); !os.IsNotExist(err) {
+		t.Errorf("truncated file committed to target: %v", err)
+	}
+	sender.Close()
+}
+
 // A second EOF for an already-finalized file (while another file is still
 // pending) must be rejected, not re-open and re-write the finalized target.
 func TestHostile_DuplicateEOF(t *testing.T) {

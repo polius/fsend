@@ -44,7 +44,11 @@ jobs:
           go-version: "1.26"
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: latest
+          # Pinned: golangci-lint must be built with the Go version the
+          # module targets (go.mod's `go` line) or it refuses to load the
+          # packages. "latest" floats to releases built with older Go and
+          # breaks on toolchain jumps. Dependabot keeps the pin current.
+          version: v2.13.2
           args: --timeout=5m
 
   # Catch known CVEs in the standard library and dependencies. "1.26"

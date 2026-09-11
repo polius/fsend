@@ -2,9 +2,11 @@ package wire
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/quick"
@@ -247,6 +249,26 @@ func TestChunk_RejectWrongTypeOnDataStream(t *testing.T) {
 	_, err := ReadChunk(bytes.NewReader(hdr))
 	if !errors.Is(err, ErrWrongFrameType) {
 		t.Errorf("expected ErrWrongFrameType, got %v", err)
+	}
+}
+
+// A hostile header declaring thousands of segments must not translate into a
+// matching allocation before any segment bytes arrive.
+func TestChunk_HeaderOnlyNoPreallocation(t *testing.T) {
+	hdr := make([]byte, chunkFixedHeader)
+	hdr[0] = byte(TypeChunk)
+	binary.BigEndian.PutUint16(hdr[38:40], 0xFFFF)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := ReadChunk(bytes.NewReader(hdr))
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("header-only frame should fail, not succeed")
+	}
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > 1<<20 {
+		t.Errorf("header-only frame allocated %d bytes (want ≤ 1 MiB)", grown)
 	}
 }
 

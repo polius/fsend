@@ -149,6 +149,7 @@ Examples:
 	_ = c.Flags().MarkHidden("mode")
 
 	c.AddCommand(serverCmd())
+	c.AddCommand(doctorCmd())
 
 	// Replace cobra's auto-generated completion command: it inherits the
 	// root help/usage template (so `fsend completion --help` printed the

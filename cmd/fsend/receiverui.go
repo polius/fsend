@@ -39,6 +39,7 @@ type receiverUI struct {
 	mu           sync.Mutex
 	hello        *wire.SenderHello
 	files        []string
+	fileSHAs     []string          // parallel to files: SHA-256 hex of what landed
 	names        map[uint32]string // index → sanitized name; multi-file only
 	curFile      uint32            // last index labelled on the bar
 	prev         map[uint32]uint64
@@ -297,7 +298,7 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 		// matching the sender.
 		ui.bytesHint += d
 		if ui.bar == nil && !ui.f.quiet {
-			ui.bar = uxlog.New(ui.bytesHint, ui.names != nil)
+			ui.bar = uxlog.New(ui.bytesHint, ui.names != nil, ui.pathInfo.BarTag())
 		} else {
 			ui.bar.SetTotal(ui.bytesHint, false)
 		}
@@ -339,9 +340,9 @@ func (ui *receiverUI) onManifest(entries []transfer.ManifestEntry) {
 		}
 	}()
 	cw := csv.NewWriter(f)
-	_ = cw.Write([]string{"path", "size", "status"})
+	_ = cw.Write([]string{"path", "size", "status", "sha256"})
 	for _, e := range entries {
-		_ = cw.Write([]string{e.RelativePath, strconv.FormatUint(e.Size, 10), e.Status})
+		_ = cw.Write([]string{e.RelativePath, strconv.FormatUint(e.Size, 10), e.Status, e.SHA256})
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {
@@ -356,7 +357,7 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 		ui.firstByte = time.Now()
 	}
 	if ui.bar == nil && !ui.f.quiet {
-		ui.bar = uxlog.New(ui.bytesHint, ui.names != nil)
+		ui.bar = uxlog.New(ui.bytesHint, ui.names != nil, ui.pathInfo.BarTag())
 	}
 	if name, ok := ui.names[fileIndex]; ok && fileIndex != ui.curFile {
 		ui.curFile = fileIndex
@@ -368,9 +369,10 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	ui.bar.Add(int64(d))
 }
 
-func (ui *receiverUI) onFileDone(path string) {
+func (ui *receiverUI) onFileDone(path, sha256Hex string) {
 	ui.mu.Lock()
 	ui.files = append(ui.files, path)
+	ui.fileSHAs = append(ui.fileSHAs, sha256Hex)
 	ui.mu.Unlock()
 }
 
@@ -382,6 +384,7 @@ func (ui *receiverUI) onFileDone(path string) {
 func (ui *receiverUI) resetAttemptCounts() {
 	ui.mu.Lock()
 	ui.files = ui.files[:0]
+	ui.fileSHAs = ui.fileSHAs[:0]
 	ui.skippedSame = 0
 	ui.kept = 0
 	ui.mu.Unlock()
@@ -453,6 +456,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	ui.mu.Lock()
 	h := ui.hello
 	files := append([]string(nil), ui.files...)
+	fileSHAs := append([]string(nil), ui.fileSHAs...)
 	firstByte := ui.firstByte
 	kept := ui.kept
 	keptByChoice := ui.keptByChoice
@@ -489,6 +493,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), displayPath(ui.outDir))
 		}
 		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
+		printSHAs(f, files, fileSHAs)
 	}
 	// manifestErr is set by onManifest, which runs on this goroutine before we
 	// return, so no lock is needed. The transfer succeeded; the failure is only
@@ -594,6 +599,23 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	return "Saved " + name + " to " + dest
 }
 
+// maxSHALines caps the per-file hash lines under the summary: a folder
+// send would flood the terminal, and beyond a handful nobody eyeballs
+// hashes anyway — the full list belongs in --manifest.
+const maxSHALines = 5
+
+// printSHAs surfaces each saved file's SHA-256 for independent verification
+// (compare against `shasum -a 256` on the sender). One dim line per file,
+// capped at maxSHALines. Gated on --quiet like every other summary line.
+func printSHAs(f *flags, files, shas []string) {
+	if f.quiet || len(files) == 0 || len(files) != len(shas) || len(files) > maxSHALines {
+		return
+	}
+	for i, p := range files {
+		fmt.Fprintf(os.Stderr, "  %s %s  %s\n", uxlog.Dim("sha256"), shas[i], filepath.Base(p))
+	}
+}
+
 // printRecvSummary renders the post-transfer outcome line. Kept-back files
 // make it a partial success: warn glyph, matching the E013 exit that follows —
 // unless the user chose to keep them at the prompt, which is their decision,
@@ -632,5 +654,6 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 		parts = append(parts, fmt.Sprintf("%s kept", uxlog.CountNoun(kept, "file")))
 	}
 	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
+	uxlog.Notify("Received " + uxlog.HumanBytes(total))
 	printUpdateNotice(f)
 }

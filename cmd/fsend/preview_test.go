@@ -134,7 +134,7 @@ func TestOnManifest_WritesCSV(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.csv")
 	ui := &receiverUI{f: &flags{manifest: path}}
 	ui.onManifest([]transfer.ManifestEntry{
-		{RelativePath: "new.bin", Size: 10, Status: "new"},
+		{RelativePath: "new.bin", Size: 10, Status: "new", SHA256: "9f86"},
 		{RelativePath: "with,comma.txt", Size: 3, Status: "identical"},
 	})
 	if ui.manifestErr != nil {
@@ -144,7 +144,8 @@ func TestOnManifest_WritesCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "path,size,status\nnew.bin,10,new\n\"with,comma.txt\",3,identical\n"
+	// sha256 is empty when no bytes moved (identical files).
+	want := "path,size,status,sha256\nnew.bin,10,new,9f86\n\"with,comma.txt\",3,identical,\n"
 	if string(got) != want {
 		t.Errorf("manifest =\n%q\nwant\n%q", got, want)
 	}
