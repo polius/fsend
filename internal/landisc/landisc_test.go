@@ -184,6 +184,70 @@ func TestVirtualIface(t *testing.T) {
 	}
 }
 
+// TestDiscoveryIface pins the mDNS interface filter: only interfaces a
+// peer could live on (and fsend could dial) are kept. Beyond the virtual
+// prefixes, Apple-only links (AWDL/AirDrop, its low-latency sibling, the
+// network probe interfaces) and internet-sharing bridges are excluded,
+// and an interface must carry an address to announce.
+func TestDiscoveryIface(t *testing.T) {
+	v4 := func(ip string) []net.Addr {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP(ip), Mask: net.CIDRMask(24, 32)}}
+	}
+	up := net.FlagUp | net.FlagMulticast
+	cases := []struct {
+		name string
+		ifc  net.Interface
+		want bool
+	}{
+		{"en0 with LAN v4", net.Interface{Name: "en0", Flags: up}, true},
+		{"loopback", net.Interface{Name: "lo0", Flags: up | net.FlagLoopback}, true},
+		{"ethernet with LAN v4", net.Interface{Name: "enp5s0", Flags: up}, true},
+		{"awdl (AirDrop)", net.Interface{Name: "awdl0", Flags: up}, false},
+		{"llw (AWDL low-latency)", net.Interface{Name: "llw0", Flags: up}, false},
+		{"anpi (Apple probe)", net.Interface{Name: "anpi0", Flags: up}, false},
+		{"bridge (internet sharing)", net.Interface{Name: "bridge0", Flags: up}, false},
+		{"utun (VPN)", net.Interface{Name: "utun3", Flags: up}, false},
+		{"down interface", net.Interface{Name: "en0"}, false},
+	}
+	for _, tc := range cases {
+		addrs := v4("192.168.1.115")
+		if tc.name == "loopback" {
+			addrs = v4("127.0.0.1")
+		}
+		if got := discoveryIface(tc.ifc, addrs); got != tc.want {
+			t.Errorf("discoveryIface(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// Without any address, an interface can't announce or be dialed —
+	// only skip it (loopback in practice always carries 127.0.0.1, so
+	// this only bites synthetic interfaces).
+	if discoveryIface(net.Interface{Name: "en0", Flags: up}, nil) {
+		t.Error("discoveryIface(en0, no addrs) = true, want false")
+	}
+}
+
+// TestDiscoveryInterfaces_LoopbackFirst pins the ordering contract the
+// query ladder depends on: loopback interfaces come first, so the
+// copy that never gets filtered by the OS is already on the wire before
+// any physical-interface write can stall behind Local Network Privacy.
+func TestDiscoveryInterfaces_LoopbackFirst(t *testing.T) {
+	ifaces := discoveryInterfaces()
+	if len(ifaces) == 0 {
+		t.Skip("no usable interfaces on this host")
+	}
+	for i, ifc := range ifaces {
+		isLoop := ifc.Flags&net.FlagLoopback != 0
+		if !isLoop {
+			continue
+		}
+		for _, prev := range ifaces[:i] {
+			if prev.Flags&net.FlagLoopback == 0 {
+				t.Errorf("loopback %s listed after non-loopback %s", ifc.Name, prev.Name)
+			}
+		}
+	}
+}
+
 // TestOnLinkSubnet vets the mDNS-answer filter: loopback (the loopback
 // interface's own subnet) is on-link everywhere; TEST-NET-3 is reserved
 // documentation space that can never be a local subnet.

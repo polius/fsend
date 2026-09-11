@@ -320,7 +320,8 @@ $ fsend doctor
 [✓] config   server fsend.alzina.dev:443 (default)
 [✓] server   reachable in 84ms
 [✓] network  LAN address 192.168.1.23
-[✓] mDNS     answered by 192.168.1.23 in 2ms — LAN discovery works
+[✓] mDNS     roundtrip ok in 2ms
+[✓] mDNS     LAN answer from 192.168.1.23 in 3ms — discovering other devices on this network works
 ```
 
 | Check | Meaning |
@@ -328,7 +329,8 @@ $ fsend doctor
 | `config` | Which pairing server is configured (custom vs default; the server password is never printed). |
 | `server` | HTTPS reachability of that server's `/health`. Unreachable → cross-network transfers fail, LAN transfers are unaffected. |
 | `network` | The local LAN address fsend would announce. VPN/container interfaces are skipped. |
-| `mDNS` | A real announce→query roundtrip on this machine. No answer → multicast is blocked (common on some Wi-Fi/VPNs); LAN discovery falls back to the pairing server. |
+| `mDNS` (roundtrip) | fsend's mDNS machinery tested over loopback — deterministic, the OS cannot filter it. A miss here means LAN discovery is unavailable entirely. |
+| `mDNS` (LAN answer) | Multicast across the physical interface. Blocked → discovering *other* devices falls back to the pairing server (transfers still complete; same-device transfers keep working). |
 
 ## `fsend server`
 

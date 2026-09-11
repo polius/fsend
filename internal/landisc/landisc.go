@@ -24,6 +24,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,87 @@ func serviceName(code string) string {
 	return "fsend-" + hex.EncodeToString(derive(code)[:16]) + ".local"
 }
 
+// unusableIfacePrefixes extends virtualIface with Apple-only interfaces
+// that can never carry a peer we could usefully dial: AWDL (AirDrop) and
+// its low-latency sibling, Apple's network probe interfaces, and the
+// internet-sharing bridges.
+var unusableIfacePrefixes = append([]string{
+	"awdl", "llw", "anpi", "bridge", "ap",
+}, virtualIfacePrefixes...)
+
+// discoveryIface filters one interface for mDNS use. Only interfaces a
+// peer could actually live on are kept: up, multicast-capable, not a
+// VPN tunnel / container bridge / Apple virtual link, and carrying an IP
+// address fsend could announce or dial (any IPv4, or a global-unicast
+// IPv6 for IPv6-only networks).
+func discoveryIface(ifc net.Interface, addrs []net.Addr) bool {
+	if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagMulticast == 0 {
+		return false
+	}
+	if virtualIface(ifc.Name) {
+		return false
+	}
+	n := strings.ToLower(ifc.Name)
+	for _, p := range unusableIfacePrefixes {
+		if strings.HasPrefix(n, p) {
+			return false
+		}
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ipnet.IP.To4() != nil {
+			return true
+		}
+		if ipnet.IP.IsGlobalUnicast() && !ipnet.IP.IsLinkLocalUnicast() {
+			return true
+		}
+	}
+	return false
+}
+
+// discoveryInterfaces returns the interface list mDNS should join, announce
+// and query on, loopback first. Restricting the list matters for
+// reliability, not just tidiness: pion/mdns writes each question once per
+// interface, sequentially, with no write deadline. Two failure modes were
+// observed on macOS 15 (Local Network Privacy enforcement):
+//
+//   - A stalled interface write parks the query goroutine forever,
+//     ignoring the caller's context. Anything written before the stall is
+//     already on the wire, so ordering loopback first guarantees the
+//     self-test/same-machine copy always flies.
+//   - Writes to the blocked physical interface stall rather than error,
+//     delaying every interface after it in the list.
+//
+// Fewer interfaces, fewer stalls — and none of the skipped ones can carry
+// a legitimate fsend peer anyway.
+func discoveryInterfaces() []net.Interface {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []net.Interface
+	for i := range ifaces {
+		addrs, err := ifaces[i].Addrs()
+		if err != nil {
+			continue
+		}
+		if discoveryIface(ifaces[i], addrs) {
+			out = append(out, ifaces[i])
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		li, lj := out[i].Flags&net.FlagLoopback != 0, out[j].Flags&net.FlagLoopback != 0
+		if li != lj {
+			return li
+		}
+		return out[i].Index < out[j].Index
+	})
+	return out
+}
+
 // closePacketConns tears down the multicast sockets. pion/mdns does not
 // close caller-supplied conns on its own error paths, so every failure
 // return after openMulticast must do it here or leak one UDP socket per
@@ -100,6 +182,7 @@ func Announce(code string, ip net.IP) (*mdns.Conn, error) {
 		LocalAddress:    ip,
 		IncludeLoopback: true,
 		QueryInterval:   time.Second,
+		Interfaces:      discoveryInterfaces(),
 	}
 	conn, err := mdns.Server(v4Conn, v6Conn, cfg)
 	if err != nil {
@@ -142,6 +225,18 @@ const watchdogGrace = 2 * time.Second
 
 // Query searches for a sender announcing the given code, up to timeout.
 //
+// Two sequential attempts on separate sockets:
+//
+//  1. loopback — finds a sender on THIS machine (tests, scripted pipes).
+//     Loopback multicast is never filtered by the OS, so this attempt is
+//     deterministic. It must run on its own socket: a sending socket that
+//     also targets a privacy-blocked physical interface loses even its
+//     loopback copies (observed on macOS 15 — 0/5 vs 5/5).
+//  2. LAN — the physical interfaces, for senders on other devices. When
+//     the OS blocks multicast there (macOS 15 Local Network Privacy) this
+//     attempt simply misses and the caller falls through to the
+//     pairing-server path.
+//
 // Returns a QueryResult if found; otherwise an error (usually
 // context.DeadlineExceeded — the caller should fall through to the
 // pairing-server path).
@@ -154,6 +249,48 @@ const watchdogGrace = 2 * time.Second
 // closes the multicast sockets out from under it — which both unblocks
 // its read loop and stops the query spam — and reports a miss.
 func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResult, error) {
+	loop := func(ifc net.Interface, _ []net.Addr) bool {
+		return ifc.Flags&net.FlagLoopback != 0
+	}
+	lan := func(ifc net.Interface, _ []net.Addr) bool {
+		return ifc.Flags&net.FlagLoopback == 0
+	}
+	half := timeout / 2
+	if res, err := queryOn(ctx, code, half, loop); err == nil {
+		return res, nil
+	}
+	return queryOn(ctx, code, timeout-half, lan)
+}
+
+// QueryLoopback is Query restricted to loopback interfaces: it only ever
+// finds a sender on this machine, but it is deterministic — no OS or AP
+// can filter loopback multicast. Used by `fsend doctor` to separate "is
+// fsend's mDNS machinery working" from "does multicast cross the
+// physical network".
+func QueryLoopback(ctx context.Context, code string, timeout time.Duration) (*QueryResult, error) {
+	return queryOn(ctx, code, timeout, func(ifc net.Interface, _ []net.Addr) bool {
+		return ifc.Flags&net.FlagLoopback != 0
+	})
+}
+
+// QueryInterface is Query restricted to the interface that owns ip (the
+// interface whose address list contains it). Used by `fsend doctor` to
+// test the physical LAN path in isolation: loopback multicast always
+// works, so only a scoped query tells the truth about the Wi-Fi/ethernet
+// interface — macOS 15's Local Network Privacy and some APs silently
+// block or stall multicast there.
+func QueryInterface(ctx context.Context, code string, timeout time.Duration, ip net.IP) (*QueryResult, error) {
+	return queryOn(ctx, code, timeout, func(ifc net.Interface, addrs []net.Addr) bool {
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && ipnet.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func queryOn(ctx context.Context, code string, timeout time.Duration, extra func(net.Interface, []net.Addr) bool) (*QueryResult, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {
 		return nil, fmt.Errorf("landisc: opening multicast: %w", err)
@@ -169,16 +306,42 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 	port := PortForCode(code)
 	name := serviceName(code)
 
+	ifaces := discoveryInterfaces()
+	if extra != nil {
+		kept := ifaces[:0]
+		for _, ifc := range ifaces {
+			addrs, err := ifc.Addrs()
+			if err != nil {
+				continue
+			}
+			if extra(ifc, addrs) {
+				kept = append(kept, ifc)
+			}
+		}
+		ifaces = kept
+	}
+	if len(ifaces) == 0 {
+		closePacketConns(v4Conn, v6Conn)
+		return nil, fmt.Errorf("landisc: query: no usable interface for %s", name)
+	}
+
 	type outcome struct {
 		addr netip.Addr
 		err  error
 	}
 	ch := make(chan outcome, 1)
+	// connCh hands the mDNS conn to the watchdog as soon as it exists, so
+	// a wedged query (pion parks in a deadline-less interface write) can
+	// be fully torn down: conn.Close unblocks QueryAddr and kills the
+	// 100ms question ticker, instead of leaking a goroutine that spams
+	// the LAN until process exit.
+	connCh := make(chan *mdns.Conn, 1)
 	go func() {
 		cfg := &mdns.Config{
 			Name:            "fsend-receiver",
 			IncludeLoopback: true,
 			QueryInterval:   100 * time.Millisecond,
+			Interfaces:      ifaces,
 		}
 		conn, err := mdns.Server(v4Conn, v6Conn, cfg)
 		if err != nil {
@@ -186,6 +349,7 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 			ch <- outcome{err: fmt.Errorf("landisc: mdns server: %w", err)}
 			return
 		}
+		connCh <- conn
 		_, addr, err := conn.QueryAddr(qCtx, name)
 		// Deliver the result before Close: a wedged Close leaks this
 		// goroutine until process exit but can no longer hang the caller.
@@ -213,9 +377,19 @@ func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResul
 	case <-ctx.Done():
 		// Caller is shutting down (e.g. SIGINT). Don't wait out the
 		// watchdog — kill the sockets so the query goroutine unblocks.
+		select {
+		case c := <-connCh:
+			go c.Close()
+		default:
+		}
 		closePacketConns(v4Conn, v6Conn)
 		return nil, fmt.Errorf("landisc: query: %w", ctx.Err())
 	case <-watchdog.C:
+		select {
+		case c := <-connCh:
+			go c.Close()
+		default:
+		}
 		closePacketConns(v4Conn, v6Conn)
 		return nil, fmt.Errorf("landisc: query stuck past its %v deadline (watchdog)", timeout)
 	}
@@ -262,15 +436,22 @@ func openMulticast() (*ipv4.PacketConn, *ipv6.PacketConn, error) {
 	return v4, v6, nil
 }
 
+// virtualIfacePrefixes are the name prefixes of VPN tunnels and container
+// bridges: macOS (utun*), WireGuard (wg*, tun*), Tailscale, OpenVPN
+// (tun*/tap*), ZeroTier, IPsec, PPP, and Linux bridges (docker*, virbr*,
+// veth*, br-*).
+var virtualIfacePrefixes = []string{
+	"utun", "tun", "tap", "wg", "tailscale", "zt", "ipsec", "ppp",
+	"docker", "virbr", "veth", "br-",
+}
+
 // virtualIface reports whether the interface looks like a VPN tunnel or
 // container bridge rather than LAN hardware. Announcing such an address
 // would hand receivers an IP they cannot reach, silently losing the LAN
-// shortcut. Prefix list covers macOS (utun*), WireGuard (wg*, tun*),
-// Tailscale, OpenVPN (tun*/tap*), ZeroTier, and Linux bridges (docker*,
-// virbr*, veth*, br-*).
+// shortcut. See virtualIfacePrefixes.
 func virtualIface(name string) bool {
 	n := strings.ToLower(name)
-	for _, p := range []string{"utun", "tun", "tap", "wg", "tailscale", "zt", "ipsec", "ppp", "docker", "virbr", "veth", "br-"} {
+	for _, p := range virtualIfacePrefixes {
 		if strings.HasPrefix(n, p) {
 			return true
 		}

@@ -96,10 +96,16 @@ func runDoctor() {
 		say(true, "network", "LAN address %s", ip)
 	}
 
-	// mDNS: prove the full announce→query roundtrip works from this host —
-	// the whole LAN path depends on multicast sockets opening and answers
-	// coming back. A miss means LAN discovery will fall through to the
-	// pairing server (or fail, if the server is also unreachable).
+	// mDNS: prove the full announce→query roundtrip works from this host.
+	// The check is two-tier so each outcome is deterministic and honest:
+	//
+	//   1. machinery — loopback multicast, which the OS never filters.
+	//      A miss here means fsend's mDNS itself is broken on this host.
+	//   2. LAN — the physical interface. macOS 15+ (Local Network
+	//      Privacy) and some Wi-Fi APs silently drop or stall multicast
+	//      there; when that happens, discovering *other* devices falls
+	//      back to the pairing server (transfers still complete, and
+	//      same-device transfers keep working via loopback).
 	ann, err := landisc.Announce(doctorCode, ip)
 	if err != nil {
 		say(false, "mDNS", "cannot open multicast sockets (%v) — LAN discovery unavailable", err)
@@ -108,25 +114,28 @@ func runDoctor() {
 	defer landisc.StopAnnounce(ann)
 
 	// Let the announcer settle before asking: a query fired the instant
-	// the group join completes is racy (observed on macOS/Wi-Fi). The
-	// query itself is retried because multicast frames drop capriciously
-	// on Wi-Fi.
+	// the group join completes is racy (observed on macOS/Wi-Fi).
 	time.Sleep(250 * time.Millisecond)
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	qStart := time.Now()
-	var res *landisc.QueryResult
-	for attempt := 0; attempt < 3 && res == nil; attempt++ {
-		r, err := landisc.Query(ctx, doctorCode, 1500*time.Millisecond)
-		if err == nil {
-			res = r
-		}
-	}
-	if res == nil {
-		say(false, "mDNS", "no answer after 3 queries — multicast may be blocked; LAN discovery falls back to the pairing server")
+	machStart := time.Now()
+	if _, err := landisc.QueryLoopback(ctx, doctorCode, 500*time.Millisecond); err != nil {
+		say(false, "mDNS", "roundtrip failed even on loopback (%v) — LAN discovery unavailable", err)
 		return
 	}
-	say(true, "mDNS", "answered by %s in %s — LAN discovery works", res.IP, time.Since(qStart).Round(time.Millisecond))
+	say(true, "mDNS", "roundtrip ok in %s", time.Since(machStart).Round(time.Millisecond))
+
+	// LAN tier: a query that only leaves via the physical interface. If
+	// the OS or the AP blocks multicast there, this is the honest signal.
+	lanStart := time.Now()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	if res, err := landisc.QueryInterface(ctx2, doctorCode, 500*time.Millisecond, ip); err != nil {
+		say(false, "mDNS", "no multicast answer via %s (%s) — discovering other devices falls back to the pairing server; check Local Network permission / Wi-Fi", ip, time.Since(lanStart).Round(time.Millisecond))
+	} else {
+		say(true, "mDNS", "LAN answer from %s in %s — discovering other devices on this network works", res.IP, time.Since(lanStart).Round(time.Millisecond))
+	}
 }
 
 const doctorHelpTemplate = `fsend doctor — check what a transfer depends on
@@ -137,7 +146,9 @@ Runs four read-only checks and reports each as ✓ (working) or ⚠
   config    which pairing server is configured (never prints the password)
   server    HTTPS reachability of that server's /health
   network   the local LAN address fsend would announce
-  mDNS      a real announce→query roundtrip on this machine
+  mDNS      a real announce→query roundtrip on this machine, in two
+            tiers: loopback (fsend's mDNS machinery) and the physical
+            LAN interface (discovering other devices)
 
 Always exits 0. Every degraded check has a graceful fallback:
 without a server, same-LAN transfers still work; without mDNS,
