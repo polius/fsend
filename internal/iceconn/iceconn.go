@@ -33,7 +33,7 @@ import (
 	"time"
 
 	"github.com/pion/ice/v4"
-	"github.com/pion/stun/v3"
+	"github.com/pion/stun/v4"
 )
 
 // Options bundle the inputs callers must supply.
