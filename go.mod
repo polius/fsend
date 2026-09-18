@@ -7,9 +7,9 @@ require (
 	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.20.0
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/pion/ice/v4 v4.4.2
-	github.com/pion/mdns/v2 v2.2.0
-	github.com/pion/stun/v4 v4.0.0
+	github.com/pion/ice/v4 v4.4.3
+	github.com/pion/mdns/v2 v2.2.1
+	github.com/pion/stun/v4 v4.0.1
 	github.com/quic-go/quic-go v0.62.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -30,11 +30,11 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect
-	github.com/pion/dtls/v3 v3.1.8 // indirect
+	github.com/pion/dtls/v3 v3.1.9 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/transport/v4 v4.1.0 // indirect
-	github.com/pion/turn/v5 v5.1.1 // indirect
+	github.com/pion/transport/v5 v5.0.0 // indirect
+	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/twmb/murmur3 v1.2.0 // indirect
 	github.com/vbauerster/cupwriter v0.0.4 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
