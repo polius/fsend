@@ -955,35 +955,22 @@ func TestRateLimit_V6BypassClosed(t *testing.T) {
 		MaxSessionsPerIP:     5,
 		MaxNewSessionsPerMin: 1000, // we want concurrent-sessions cap to bite, not rate
 	})
-	srv := httptest.NewServer(s.Handler())
-	defer srv.Close()
+	h := s.Handler()
 
 	ok, throttled := 0, 0
 	for i := 0; i < 20; i++ {
 		// Distinct slot per request so the concurrent-sessions cap is
 		// what bites, not a slot collision.
-		body := mustJSON(t, CreateSessionRequest{Slot: fmt.Sprintf("%032x", i+1)})
-		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/session",
-			bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Rotate /128 inside the same /64 — the exact pattern that
-		// bypassed the cap before the rateLimitKey fix.
-		req.Header.Set("X-Real-IP", "2001:db8:abcd:1234::"+itoaHex(i+1))
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = resp.Body.Close()
-		switch resp.StatusCode {
+		code := postCreateDirect(t, h,
+			"[2001:db8:abcd:1234::"+itoaHex(i+1)+"]:443",
+			fmt.Sprintf("%032x", i+1))
+		switch code {
 		case 200:
 			ok++
 		case 429:
 			throttled++
 		default:
-			t.Fatalf("unexpected status %d at i=%d", resp.StatusCode, i)
+			t.Fatalf("unexpected status %d at i=%d", code, i)
 		}
 	}
 	if ok != 5 {
@@ -991,6 +978,63 @@ func TestRateLimit_V6BypassClosed(t *testing.T) {
 	}
 	if throttled != 15 {
 		t.Errorf("throttled = %d, want 15", throttled)
+	}
+}
+
+// postCreateDirect drives the create handler with a forged RemoteAddr —
+// the only way to vary the source address across requests, since clientIP
+// keys on the connection peer rather than spoofable headers.
+func postCreateDirect(t *testing.T, h http.Handler, remote, slot string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, "/v1/session",
+		bytes.NewReader(mustJSON(t, CreateSessionRequest{Slot: slot})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.RemoteAddr = remote
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code
+}
+
+// TestRateLimit_ProxyHeadersIgnored locks in the spoofing fix: X-Real-IP
+// and X-Forwarded-For are attacker-controlled, so rotating them must not
+// mint fresh rate-limit identities.
+func TestRateLimit_ProxyHeadersIgnored(t *testing.T) {
+	s := New(Config{
+		ServerVersion:        "0.0.0-test",
+		UnpairedTTL:          time.Hour,
+		PairedTTL:            time.Hour,
+		LongPollTimeout:      500 * time.Millisecond,
+		MaxSessionsPerIP:     0,
+		MaxNewSessionsPerMin: 3,
+	})
+	h := s.Handler()
+
+	ok, throttled := 0, 0
+	for i := 0; i < 8; i++ {
+		req, err := http.NewRequest(http.MethodPost, "/v1/session",
+			bytes.NewReader(mustJSON(t, CreateSessionRequest{Slot: fmt.Sprintf("%032x", i+1)})))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.RemoteAddr = "203.0.113.7:4444"
+		req.Header.Set("X-Real-IP", fmt.Sprintf("10.99.0.%d", i+1))
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("10.99.1.%d, 10.0.0.1", i+1))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		switch rec.Code {
+		case 200:
+			ok++
+		case 429:
+			throttled++
+		default:
+			t.Fatalf("unexpected status %d at i=%d", rec.Code, i)
+		}
+	}
+	if ok != 3 || throttled != 5 {
+		t.Errorf("ok=%d throttled=%d, want 3/5 (spoofed headers must not bypass the cap)", ok, throttled)
 	}
 }
 
@@ -1020,7 +1064,6 @@ func TestSessionCaps_ZeroMeansUnlimited(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("X-Real-IP", "203.0.113.7")
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

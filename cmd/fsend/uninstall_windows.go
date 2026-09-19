@@ -42,14 +42,20 @@ func removeBinary(binPath string) error {
 	return cmd.Start()
 }
 
-// removeUserPathEntry drops dir from the HKCU user PATH. PowerShell is always
-// present on Windows, so we shell out to it rather than pull in a registry
-// dependency. Best-effort: a failure just leaves a harmless stale PATH entry.
+// removeUserPathEntry drops dir from the HKCU user PATH via a registry
+// round-trip that preserves the value kind (SetEnvironmentVariable would
+// flatten %VAR% entries), then broadcasts the change.
 func removeUserPathEntry(dir string) {
 	ps := fmt.Sprintf(
-		`$d=%s; $p=[Environment]::GetEnvironmentVariable('Path','User'); `+
-			`if($p){[Environment]::SetEnvironmentVariable('Path', `+
-			`(($p -split ';' | Where-Object { $_ -and $_ -ne $d }) -join ';'), 'User')}`,
+		`$k=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment',$true); `+
+			`try { if ($null -ne $k.GetValue('Path',$null)) { `+
+			`$kind=$k.GetValueKind('Path'); `+
+			`$p=[string]$k.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); `+
+			`$n=($p -split ';' | Where-Object { $_ -and $_ -ne %s }) -join ';'; `+
+			`if ($n -cne $p) { $k.SetValue('Path',$n,$kind); `+
+			`Add-Type -Namespace W -Name M -MemberDefinition '[DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; `+
+			`$r=[UIntPtr]::Zero; [W.M]::SendMessageTimeout([IntPtr]0xffff,0x1A,[UIntPtr]::Zero,'Environment',2,5000,[ref]$r) | Out-Null } } `+
+			`} finally { $k.Close() }`,
 		psSingleQuote(dir))
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps).Run()
 }

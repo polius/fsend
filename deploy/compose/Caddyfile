@@ -2,11 +2,6 @@
 
 {$FSEND_DOMAIN} {
     reverse_proxy fsend:8080 {
-        # Caddy doesn't set X-Real-IP by default; the fsend server reads it
-        # for per-IP rate limiting, so set it explicitly to the upstream
-        # peer's address.
-        header_up X-Real-IP {remote_host}
-
         # Must exceed the 25s signaling long-poll window.
         transport http {
             read_timeout 30s

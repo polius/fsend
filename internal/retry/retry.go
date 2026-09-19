@@ -69,6 +69,11 @@ func WithBackoff(ctx context.Context, opts Options, isTransient func(error) bool
 	if isTransient == nil {
 		isTransient = IsTransient
 	}
+	// Negative Attempts would skip the loop entirely and report success
+	// without ever running op — surface the misconfiguration instead.
+	if opts.Attempts < 0 {
+		return fmt.Errorf("retry: invalid Attempts %d", opts.Attempts)
+	}
 
 	wait := opts.Base
 	for attempt := 1; attempt <= opts.Attempts; attempt++ {

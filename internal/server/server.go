@@ -850,18 +850,9 @@ func newIceCreds() IceCreds {
 	}
 }
 
-// clientIP extracts the client's source IP, preferring the X-Real-IP
-// header injected by Caddy when the server is behind a reverse proxy.
+// clientIP returns the connection's source address. Proxy headers are ignored:
+// attacker-controlled, and trusting them bypassed the per-IP caps.
 func clientIP(r *http.Request) string {
-	if v := r.Header.Get("X-Real-IP"); v != "" {
-		return v
-	}
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		if i := strings.IndexByte(v, ','); i >= 0 {
-			return strings.TrimSpace(v[:i])
-		}
-		return strings.TrimSpace(v)
-	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
@@ -879,8 +870,8 @@ func clientIP(r *http.Request) string {
 //
 // On unparseable input we return the original string — that keeps the
 // existing behaviour for tests that pass arbitrary tokens as the "IP",
-// and means a malformed X-Real-IP is still rate-limited (just on whatever
-// raw bytes the peer sent).
+// and means a malformed source address is still rate-limited (just on
+// whatever raw bytes arrived).
 func rateLimitKey(ip string) string {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {

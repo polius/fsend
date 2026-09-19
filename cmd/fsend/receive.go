@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -332,14 +333,29 @@ func saveTargetLabel(outDir string) string {
 // the bidi filter a peer can spoof display order with U+202E "RIGHT-TO-
 // LEFT OVERRIDE" and friends — the textbook display-spoofing trick.
 func sanitizeForDisplay(s string, maxLen int) string {
+	return sanitizeRunes(s, maxLen, false)
+}
+
+// sanitizeTextPayload is the TTY-mode filter for peer-supplied --text:
+// same strip as sanitizeForDisplay but keeps \n and \t so multi-line
+// text stays readable. Piped stdout bypasses it — bytes must stay exact.
+func sanitizeTextPayload(s string) string {
+	return sanitizeRunes(s, math.MaxInt, true)
+}
+
+func sanitizeRunes(s string, maxLen int, keepWhitespace bool) string {
 	out := make([]rune, 0, len(s))
 	for _, r := range s {
+		if r < 0x20 {
+			// \n and \t are the only control bytes a terminal renders
+			// benignly; the rest (ESC, \r, BEL) are injection vectors.
+			if keepWhitespace && (r == '\n' || r == '\t') {
+				out = append(out, r)
+			}
+			continue
+		}
 		switch {
-		case r < 0x20, r == 0x7F:
-			continue
-		case isBidi(r):
-			continue
-		case unicode.Is(unicode.Cf, r): // any Unicode "Format" character
+		case r == 0x7F, isBidi(r), unicode.Is(unicode.Cf, r):
 			continue
 		}
 		out = append(out, r)
