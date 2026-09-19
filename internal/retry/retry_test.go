@@ -198,3 +198,17 @@ func TestIsTransient_Classification(t *testing.T) {
 		})
 	}
 }
+
+// TestWithBackoff_NegativeAttemptsFails pins the latent API trap: negative
+// Attempts used to skip the loop and report success without running op.
+func TestWithBackoff_NegativeAttemptsFails(t *testing.T) {
+	called := false
+	err := WithBackoff(context.Background(), Options{Attempts: -1}, nil,
+		func(int) error { called = true; return nil })
+	if err == nil {
+		t.Fatal("negative Attempts must return an error, got nil")
+	}
+	if called {
+		t.Error("op must not run when Attempts is negative")
+	}
+}

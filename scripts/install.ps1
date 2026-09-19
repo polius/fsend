@@ -55,6 +55,19 @@ function Ok($m)   { Write-Host "OK $m" -ForegroundColor Green }
 # yields a non-zero exit code under `powershell -File install.ps1`.
 function Err($m)  { Write-Host "x $m" -ForegroundColor Red; throw }
 
+# Broadcast WM_SETTINGCHANGE so Explorer hands a raw registry PATH write to
+# the processes it launches (SetEnvironmentVariable does this; raw writes don't).
+function Broadcast-EnvChange {
+    if (-not ('Win32.EnvBroadcast' -as [type])) {
+        Add-Type -Namespace Win32 -Name EnvBroadcast -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+    }
+    $res = [UIntPtr]::Zero
+    [Win32.EnvBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$res) | Out-Null
+}
+
 function Show-Usage {
     Write-Host @'
 fsend installer (Windows / PowerShell)
@@ -191,21 +204,41 @@ try {
 
     New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
     $dst = Join-Path $Prefix $Binary
+    $oldDst = Join-Path $Prefix ($Binary + '.old')
+    if (Test-Path -LiteralPath $dst) {
+        # A running .exe can't be overwritten but can be renamed; moving it
+        # aside keeps the no-binary window to these two adjacent moves.
+        Move-Item -Force -Path $dst -Destination $oldDst
+    }
     Move-Item -Force -Path $src -Destination $dst
     Ok "installed: $dst"
 
-    # Persist Prefix on the user's PATH (no admin needed). SetEnvironmentVariable
-    # with 'User' writes the registry; $env:PATH is patched so this session works
-    # immediately without a restart.
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not $userPath) { $userPath = '' }
-    if (($userPath -split ';') -notcontains $Prefix) {
-        [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $Prefix).TrimStart(';'), 'User')
-        $env:PATH = $env:PATH + ';' + $Prefix
-        Ok "added $Prefix to your user PATH (open a new terminal for other apps to see it)"
+    # Persist Prefix on the user's PATH (no admin needed). The registry round-trip
+    # preserves REG_EXPAND_SZ (SetEnvironmentVariable flattens it) + broadcasts.
+    $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    try {
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        $userPath = ''
+        if ($null -ne $envKey.GetValue('Path', $null)) {
+            $kind = $envKey.GetValueKind('Path')
+            $userPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        }
+        if (($userPath -split ';') -notcontains $Prefix) {
+            $envKey.SetValue('Path', ($userPath.TrimEnd(';') + ';' + $Prefix).TrimStart(';'), $kind)
+            Broadcast-EnvChange
+            $env:PATH = $env:PATH + ';' + $Prefix
+            Ok "added $Prefix to your user PATH (open a new terminal for other apps to see it)"
+        }
+    } finally {
+        $envKey.Close()
     }
 
+    # Same PS 5.1 pitfall as the cosign call: redirected native stderr under
+    # EAP=Stop aborts a good run, so relax EAP and judge by the output.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $ver = (& $dst --version 2>$null | Select-Object -First 1)
+    $ErrorActionPreference = $prevEAP
     if ($ver) { Ok "verify: $ver" }
 
     Write-Host ''

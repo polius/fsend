@@ -28,9 +28,9 @@ var stdinIsTTY = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 // Empty input gets one re-prompt with a hint, then surfaces as a usage
 // error (mapped to E024) so the user sees a clean message instead of
 // the E099 catchall.
-func readPasswordHidden(prompt string) (string, error) {
+func readPasswordHidden(ctx context.Context, prompt string) (string, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		pw, err := readPasswordOnce(prompt)
+		pw, err := readPasswordOnce(ctx, prompt)
 		if err != nil {
 			// EOF on a piped stdin (or a closed terminal) means the
 			// caller can't supply input — surface as a usage error,
@@ -66,7 +66,7 @@ func readPasswordHiddenCtx(ctx context.Context, prompt string, quiet bool) (stri
 	}
 	ch := make(chan result, 1)
 	go func() {
-		pw, err := readPasswordHidden(prompt)
+		pw, err := readPasswordHidden(ctx, prompt)
 		ch <- result{pw, err}
 	}()
 	select {
@@ -211,10 +211,15 @@ func generateRandomPassword(n int) (string, error) {
 // readPasswordOnce performs a single hidden-input read. Returns "" with
 // no error on empty input so the caller can re-prompt without conflating
 // "empty" with "I/O failure".
-func readPasswordOnce(prompt string) (string, error) {
+func readPasswordOnce(ctx context.Context, prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
 	fd := int(os.Stdin.Fd())
 	if term.IsTerminal(fd) {
+		// Last gate before raw mode: past this point the read owns the
+		// terminal, and a cancel racing it would leave echo off at exit.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		b, err := term.ReadPassword(fd)
 		fmt.Fprintln(os.Stderr)
 		if err != nil {

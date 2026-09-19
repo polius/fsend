@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/signaling"
@@ -377,5 +378,22 @@ func TestJoinWithRetry_RetitlesCallerSpinner(t *testing.T) {
 	}
 	if restored := strings.LastIndex(stderr, "Connecting"); restored < waitIdx {
 		t.Errorf("spinner not restored to Connecting after join:\n%s", stderr)
+	}
+}
+
+// TestEffectiveServerPassword pins the env fallback precedence: the stored
+// --connect value wins, FSEND_SERVER_PASSWORD is the non-argv fallback
+// (mirroring the server-side env of the same name).
+func TestEffectiveServerPassword(t *testing.T) {
+	t.Setenv("FSEND_SERVER_PASSWORD", "env-secret")
+	if got := effectiveServerPassword(&config.Config{}); got != "env-secret" {
+		t.Errorf("env fallback = %q, want env-secret", got)
+	}
+	if got := effectiveServerPassword(&config.Config{ServerPassword: "cfg-secret"}); got != "cfg-secret" {
+		t.Errorf("config precedence = %q, want cfg-secret", got)
+	}
+	t.Setenv("FSEND_SERVER_PASSWORD", "")
+	if got := effectiveServerPassword(&config.Config{}); got != "" {
+		t.Errorf("unset env = %q, want empty", got)
 	}
 }

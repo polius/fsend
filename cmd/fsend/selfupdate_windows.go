@@ -11,16 +11,14 @@ import (
 )
 
 // runInstaller re-runs the PowerShell installer pinned (via
-// FSEND_PREFIX) to the directory binPath lives in. Windows locks a
-// running .exe against overwrite but not rename, so the current image
-// is moved aside first, restored if the installer fails, and the
-// leftover .old is deleted once this process exits.
+// FSEND_PREFIX) to the directory binPath lives in. The installer moves
+// the running image aside itself (a running .exe can be renamed, not
+// overwritten) and swaps the fresh binary in; this function only reaps
+// the leftover .old once this process exits and restores the original
+// if the installer died between those two moves.
 func runInstaller(binPath string) error {
 	old := binPath + ".old"
 	_ = os.Remove(old) // stale leftover from an interrupted update
-	if err := os.Rename(binPath, old); err != nil {
-		return fmt.Errorf("moving the running fsend.exe aside: %v", err)
-	}
 
 	cmd := exec.Command("powershell", "-NoProfile", "-Command",
 		"irm https://getfsend.alzina.dev/windows | iex")
@@ -29,7 +27,11 @@ func runInstaller(binPath string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		_ = os.Rename(old, binPath)
+		// No binary at binPath means the installer moved the running image
+		// aside but never swapped the new one in: put the original back.
+		if _, statErr := os.Stat(binPath); statErr != nil {
+			_ = os.Rename(old, binPath)
+		}
 		return err
 	}
 	removeFileAfterExit(old)
