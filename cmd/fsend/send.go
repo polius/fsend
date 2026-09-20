@@ -444,12 +444,15 @@ func resumeNotice(offset, total uint64) string {
 	return s
 }
 
-// printSendSummary renders the post-transfer outcome line. Files the receiver
-// kept (differing, no --overwrite there) make it a warning, not a success —
-// the sender must not read "✓ Sent" when nothing was delivered. Partial skips
-// without the kept flag stay the neutral "skipped": an old receiver doesn't
-// report the distinction (wire.Decision.Kept), so "up to date" would overclaim.
-func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duration, path connpath.Info) {
+// printSendSummary renders the post-transfer outcome line. subject names
+// what was sent when there is a single path (plan.label) — rendered green
+// like every file reference — so the summary mirrors the receiver's
+// "Saved X to Y" shape. Files the receiver kept (differing, no
+// --overwrite there) make it a warning, not a success — the sender must
+// not read "✓ Sent" when nothing was delivered. Partial skips without the
+// kept flag stay the neutral "skipped": an old receiver doesn't report
+// the distinction (wire.Decision.Kept), so "up to date" would overclaim.
+func printSendSummary(f *flags, subject string, total int64, s senderStats, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
 	}
@@ -462,14 +465,20 @@ func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duratio
 		printUpdateNotice(f)
 		return
 	}
-	glyph, headline := uxlog.Check(), "Sent"
+	glyph, verb := uxlog.Check(), "Sent"
 	if s.keptFiles > 0 {
 		glyph = uxlog.Warn()
 		if s.moved == 0 {
 			// "Sent — 2.1 MB" would contradict itself; name the outcome and
 			// mark the size as the offer, not what crossed the wire.
-			headline = "Nothing sent"
+			verb = "Nothing sent"
 		}
+	}
+	// "Sent <name>" when a single path was named; plain "Sent" for
+	// multi-path and stream sends, which have no one name to show.
+	headline := verb
+	if subject != "" && verb == "Sent" {
+		headline = "Sent " + uxlog.Path(subject)
 	}
 	clauses := ""
 	if n := s.skippedFiles - s.keptFiles; n > 0 {

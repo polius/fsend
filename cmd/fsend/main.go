@@ -187,7 +187,8 @@ func renderError(err error, debug bool) int {
 		// the argument is a path.
 		switch {
 		case code.LooksLikeCode(detail) && !argsHaveFlag("--send"):
-			fmt.Fprintf(os.Stderr, "  If this was a receive code, check it with the sender — codes look like abc-defg-jkm.\n")
+			fmt.Fprintf(os.Stderr, "  If this was a receive code, check it with the sender — codes look like %s.\n",
+				uxlog.Code("abc-defg-jkm"))
 		// Muscle-memory from other tools: there are no subcommands.
 		case detail == "version":
 			fmt.Fprintf(os.Stderr, "  For the fsend version, run: fsend --version\n")

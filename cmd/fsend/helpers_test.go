@@ -1276,7 +1276,7 @@ func TestSummaryLine_ZeroMovedOmitsDuration(t *testing.T) {
 // "Sent · (0 B sent)". Kept files still win over the up-to-date headline.
 func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
 	got := captureStderr(t, func() {
-		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
+		printSendSummary(&flags{}, "f.txt", 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
 	})
 	if !strings.Contains(got, "Already up to date") || !strings.Contains(got, "1 file unchanged") {
 		t.Errorf("all-skipped summary must read up to date, got %q", got)
@@ -1287,7 +1287,7 @@ func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
 
 	// Kept files: still the "Nothing sent" warning path.
 	got = captureStderr(t, func() {
-		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1, keptFiles: 1}, time.Millisecond, mustLANInfo())
+		printSendSummary(&flags{}, "f.txt", 4096, senderStats{skippedFiles: 1, keptFiles: 1}, time.Millisecond, mustLANInfo())
 	})
 	if !strings.Contains(got, "Nothing sent") || !strings.Contains(got, "kept by receiver") {
 		t.Errorf("kept-file summary changed shape: %q", got)
