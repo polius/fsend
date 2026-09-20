@@ -33,7 +33,7 @@ if [ -n "$PREFIX" ]; then PREFIX_EXPLICIT=1; else PREFIX_EXPLICIT=0; fi
 # auto-detection the fsend binary applies (https://no-color.org).
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     esc="$(printf '\033')"
-    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_BLD="${esc}[1m" C_RST="${esc}[0m"
+    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_RST="${esc}[0m"
     # C_ORG styles a command the user is about to run — the same bold +
     # accent-orange treatment the fsend binary gives one (uxlog.Code,
     # tokenAccent #ff9e64): truecolour when the terminal advertises it
@@ -44,7 +44,7 @@ if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
         *)                               C_ORG="${esc}[1;38;5;209m" ;;
     esac
 else
-    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_BLD='' C_RST='' C_ORG=''
+    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_RST='' C_ORG=''
 fi
 
 err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
