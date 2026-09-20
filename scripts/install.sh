@@ -440,11 +440,15 @@ main() {
 while [ $# -gt 0 ]; do
     case "$1" in
         -p|--prefix)
-            [ $# -ge 2 ] && [ -n "$2" ] || err "option $1 requires a directory argument (use -h for help)"
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                err "option $1 requires a directory argument (use -h for help)"
+            fi
             PREFIX="$2" PREFIX_EXPLICIT=1
             shift 2 ;;
         -v|--version)
-            [ $# -ge 2 ] && [ -n "$2" ] || err "option $1 requires a version argument (use -h for help)"
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                err "option $1 requires a version argument (use -h for help)"
+            fi
             FSEND_VERSION="$2"
             shift 2 ;;
         -n|--no-modify-path) MODIFY_PATH=0; shift ;;
