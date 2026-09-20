@@ -88,8 +88,9 @@ func runUninstall(f *flags) error {
 
 	fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
 	// Shell rc files are out of reach here (unlike Windows, where the
-	// helper strips the PATH entry itself), so leave it to the user.
-	fmt.Fprintln(os.Stderr, "  If you added a PATH export or \"fsend completion\" line to your shell rc, remove it.")
+	// helper strips the PATH entry itself), so point at the exact entry.
+	fmt.Fprintf(os.Stderr, "  If your shell rc has a PATH entry for %s, remove it.\n", filepath.Dir(rawPath))
+	fmt.Fprintln(os.Stderr, "  Also remove any \"fsend completion\" line you added.")
 	return nil
 }
 

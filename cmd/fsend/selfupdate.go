@@ -40,6 +40,14 @@ func runUpdate() error {
 		return fmt.Errorf("%w: update it with: brew upgrade fsend", fserrors.ErrHomebrewManaged)
 	}
 
+	// The installers are per-user and refuse root (see scripts/install.*).
+	// Mirror that here so the failure happens before any network work, with
+	// an actionable message instead of an installer abort mid-update.
+	// Geteuid returns -1 on Windows, where the check does not apply.
+	if os.Geteuid() == 0 {
+		return fmt.Errorf("%w: refusing to update as root — fsend installs per-user; run --update as your normal user", fserrors.ErrUpdateFailed)
+	}
+
 	fmt.Fprintln(os.Stderr, "  Checking the latest release...")
 	latest, ok := update.Latest(context.Background())
 	if !ok {

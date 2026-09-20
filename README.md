@@ -56,7 +56,7 @@ brew install polius/tap/fsend
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
-All three verify the release's SHA-256 checksum before installing.
+The installers are per-user — they refuse to run as root, never ask for a password, and verify the release's SHA-256 checksum before installing. Run with `--help` (`-Help` on Windows) for options like a custom install dir or version.
 
 <details>
 <summary>Other install methods</summary>
