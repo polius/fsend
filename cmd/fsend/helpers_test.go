@@ -481,6 +481,31 @@ func TestRenderError_HomebrewManaged(t *testing.T) {
 	}
 }
 
+// The root refusal renders as E040 with the opt-in command as a block at
+// the bottom, mirroring the installer's refusal — and without E033's
+// "check your internet connection" advice, which would be wrong here.
+func TestRenderError_UpdateRootRefused(t *testing.T) {
+	var code int
+	got := captureStderr(t, func() { code = renderError(fserrors.ErrUpdateRootRefused, false) })
+	if code != 40 {
+		t.Errorf("exit code = %d, want 40", code)
+	}
+	for _, want := range []string{
+		"[E040] Refusing to update as root — fsend installs per-user.",
+		"to update anyway, run:",
+		"FSEND_ALLOW_ROOT=1 fsend --update",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"internet connection", "reinstall"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("E033 boilerplate %q leaked in:\n%s", unwanted, got)
+		}
+	}
+}
+
 // A broken pipe on a stdout payload path (`--preview | head`, `--out - | ...`)
 // exits silently with the shell convention 128+SIGPIPE.
 func TestRenderError_BrokenPipeExitsSilently141(t *testing.T) {

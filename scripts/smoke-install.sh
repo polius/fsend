@@ -129,7 +129,7 @@ else
         || { cat "$WORK/out1" >&2; fail "scenario1: installer failed"; }
     [ -x "$H1/.local/bin/fsend" ] || fail "scenario1: binary not at \$HOME/.local/bin"
 fi
-grep -q "✓ verified" "$WORK/out1" || fail "scenario1: no verification line"
+grep -q "✓ checksum verified" "$WORK/out1" || fail "scenario1: no verification line"
 grep -q "fsend v$VER installed" "$WORK/out1" || fail "scenario1: no outro line"
 grep -qF "export PATH=\"$H1/.local/bin:\$PATH\"" "$H1/.profile" \
     || fail "scenario1: PATH line not appended to .profile"
@@ -212,7 +212,16 @@ if [ "$WITH_ROOT" = "1" ]; then
             && fail "scenario8: root install allowed"
         grep -q "refusing to run as root" "$WORK/root" \
             || { cat "$WORK/root" >&2; fail "scenario8: root refusal message missing"; }
-        pass "root refused"
+        # The opt-in flips the refusal: same root context installs, warns,
+        # and the binary runs.
+        # shellcheck disable=SC2024
+        sudo -n env PATH=/usr/bin:/bin HOME=/root FSEND_RELEASE_BASE_URL="$BASE" \
+            FSEND_ALLOW_ROOT=1 sh "$INSTALLER" -p "$WORK/rootbin-ok" -v "$VER" >"$WORK/root-ok" 2>&1 \
+            || { cat "$WORK/root-ok" >&2; fail "scenario8: FSEND_ALLOW_ROOT=1 install failed"; }
+        grep -q "installing as root (FSEND_ALLOW_ROOT)" "$WORK/root-ok" \
+            || { cat "$WORK/root-ok" >&2; fail "scenario8: no opt-in warning"; }
+        [ -x "$WORK/rootbin-ok/fsend" ] || fail "scenario8: opt-in install missing"
+        pass "root refused; FSEND_ALLOW_ROOT=1 opts in (warn + install)"
     else
         printf 'smoke: no passwordless sudo — skipping root test\n' >&2
     fi
@@ -237,18 +246,24 @@ if [ "$WITH_BUSYBOX" = "1" ]; then
         grep -q "refusing to run as root" "$WORK/busybox-root" \
             || { cat "$WORK/busybox-root" >&2; fail "busybox: root refusal message missing"; }
         # Then a real per-user install: busybox wget (no curl in alpine),
-        # ash semantics, rc write, and a binary that runs.
+        # ash semantics, rc write, and a binary that runs. The seam env
+        # above also empties the installer's curl-only HTTPS pin, so a
+        # second run goes through real GitHub with no seam — the exact
+        # command path a user takes — proving the wget flag set is
+        # accepted by the real busybox wget.
         cat > "$WORK/busybox-user.sh" <<EOF
 adduser -D user >/dev/null
 su user -c 'export HOME=/home/user SHELL=/bin/sh FSEND_RELEASE_BASE_URL=$dbase; sh /src/install.sh -v $VER'
 /home/user/.local/bin/fsend --version
 grep -qF 'export PATH="/home/user/.local/bin:\$PATH"' /home/user/.profile
+su user -c 'export HOME=/home/user SHELL=/bin/sh; sh /src/install.sh -p /tmp/fsend-real -n'
+/tmp/fsend-real/fsend --version | grep -qE '^fsend [0-9]+\.[0-9]+\.[0-9]+'
 EOF
         # shellcheck disable=SC2086  # $net is empty on macOS Docker Desktop
         docker run --rm $net -v "$HERE:/src:ro" -v "$WORK:/work:ro" \
             alpine:latest sh /work/busybox-user.sh >"$WORK/busybox-out" 2>&1 \
             || { cat "$WORK/busybox-out" >&2; fail "busybox: install failed"; }
-        pass "busybox (alpine): root refused, wget-path install + rc line"
+        pass "busybox (alpine): root refused, wget-path install + rc line + real-flags guard"
     else
         printf 'smoke: docker unavailable — skipping busybox test\n' >&2
     fi

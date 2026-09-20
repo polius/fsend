@@ -209,8 +209,13 @@ func renderError(err error, debug bool) int {
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}
+	case errors.Is(err, fserrors.ErrUpdateRootRefused):
+		// The opt-in command is the whole point of this refusal — give it
+		// a block of its own, mirroring the installer's root refusal.
+		fmt.Fprintf(os.Stderr, "%s [%s] %s\n  to update anyway, run:\n\n      %s\n",
+			glyph, entry.Code, entry.Message, uxlog.Code("FSEND_ALLOW_ROOT=1 fsend --update"))
 	case detail != "":
-		fmt.Fprintf(os.Stderr, "%s [%s] %s\n  %s\n", glyph, entry.Code, entry.Message, detail)
+		fmt.Fprintf(os.Stderr, "%s [%s] %s\n  %s\n", glyph, entry.Code, entry.Message, withCommandAccent(detail))
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
 		}
@@ -231,6 +236,17 @@ func renderError(err error, debug bool) int {
 	// No-op if the summary already emitted the rich done event.
 	jsonEmitDone(jsonDoneFromErr(err, entry.Exit, errorRole))
 	return entry.Exit
+}
+
+// withCommandAccent colors a detail line's command tail — the text after
+// " with: " ("update it with: brew upgrade fsend") — with the accent
+// treatment share codes get. The lead-in stays plain. Plain-text
+// degradation is handled by the color layer (uxlog.Code).
+func withCommandAccent(s string) string {
+	if lead, cmd, ok := strings.Cut(s, " with: "); ok && cmd != "" {
+		return lead + " with: " + uxlog.Code(cmd)
+	}
+	return s
 }
 
 // extractDetail pulls the wrapper context out of a wrapped sentinel's
