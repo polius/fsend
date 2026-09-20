@@ -38,6 +38,23 @@ server on loopback — no shell wrapper needed.
 scripts/coverage.sh
 ```
 
+## UX colour audit
+
+```sh
+python3 scripts/validate-ux.py
+```
+
+Empirical audit of the terminal UI: builds the CLI, starts an isolated
+pairing server on loopback (isolated `HOME` — your real config is never
+touched), and runs every user-facing scenario as concurrent pty
+sessions. Each element's rendered colour is parsed from the raw SGR
+stream and asserted against the design tokens in
+`internal/uxlog/glyphs.go`; degradation contracts (NO_COLOR, piped
+stderr, ASCII fallbacks) must hold byte-clean. Unix only. Run it before
+merging any change that touches `internal/uxlog` or the CLI's stderr
+surfaces — it is a manual gate, not wired into CI, because its
+assertions are design choices (exact hues) that are meant to evolve.
+
 Runs unit and E2E tests with coverage and prints the merged total. When
 invoked with `-cover`, the E2E suite builds `fsend` with
 `-cover -coverpkg=./...`, so the orchestration code it exercises —
