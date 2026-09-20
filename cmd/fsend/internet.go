@@ -39,11 +39,22 @@ const iceBudget = 5 * time.Second
 //
 // HTTPS is the default for non-local addresses; HTTP for localhost so dev
 // loops work without a cert. If the user has configured a per-server
-// password (via `fsend --connect <host:port>,<password>`), the client
-// carries it through; the server matches against FSEND_SERVER_PASSWORD.
+// password (via `fsend --connect <host:port>,<password>` or the
+// FSEND_SERVER_PASSWORD env), the client carries it through; the server
+// matches against FSEND_SERVER_PASSWORD.
 func signalingClient(cfg *config.Config) (*signaling.Client, string) {
 	addr := cfg.EffectiveServer()
-	return signaling.New(serverBaseURL(addr), version.Version).WithPassword(cfg.ServerPassword), addr
+	return signaling.New(serverBaseURL(addr), version.Version).WithPassword(effectiveServerPassword(cfg)), addr
+}
+
+// effectiveServerPassword prefers the --connect value (kept in the config
+// file); FSEND_SERVER_PASSWORD is the non-argv fallback for scripts, the
+// client-side mirror of the server's env of the same name.
+func effectiveServerPassword(cfg *config.Config) string {
+	if cfg.ServerPassword != "" {
+		return cfg.ServerPassword
+	}
+	return os.Getenv("FSEND_SERVER_PASSWORD")
 }
 
 // serverBaseURL maps a configured server address to an http(s) base URL:

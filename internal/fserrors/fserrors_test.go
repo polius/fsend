@@ -193,3 +193,37 @@ func TestEntryFormat(t *testing.T) {
 		t.Errorf("Format() with no Action should be just Message, got %q", e2.Format())
 	}
 }
+
+// TestLookup_MultiWrapDeterministic pins the scan-order fix: the catalog is
+// a map, so before the fix an error matching two sentinels rendered as
+// whichever entry the random map iteration hit first. Lookup must resolve
+// to the lowest matching code (E008) on every call.
+func TestLookup_MultiWrapDeterministic(t *testing.T) {
+	err := fmt.Errorf("%w: and: %w", ErrDiskFull, ErrWriteFailed)
+	for i := 0; i < 100; i++ {
+		entry, ok := Lookup(err)
+		if !ok {
+			t.Fatal("expected catalog match")
+		}
+		if entry.Code != "E008" {
+			t.Fatalf("iteration %d: code = %q, want E008 (lowest matching code)", i, entry.Code)
+		}
+	}
+}
+
+// TestChain_MultiUnwrap covers errors.Join / multi-%w chains, where plain
+// errors.Unwrap stops after the first level — --debug must see every leaf.
+func TestChain_MultiUnwrap(t *testing.T) {
+	inner := fmt.Errorf("%w: details", ErrWriteFailed)
+	joined := errors.Join(ErrDiskFull, inner)
+	got := Chain(joined)
+	// Outermost first: the joined node, then each branch in order.
+	if len(got) != 4 {
+		t.Fatalf("Chain len = %d, want 4: %q", len(got), got)
+	}
+	if !strings.Contains(got[1], "disk full") ||
+		!strings.Contains(got[2], "write failed: details") ||
+		!strings.Contains(got[3], "write failed") {
+		t.Errorf("leaf order wrong: %q", got)
+	}
+}

@@ -490,13 +490,15 @@ USAGE
   fsend server --help          Show this help
 
 EXAMPLE
-  Local-network test (no TLS — do not expose to the internet):
-    docker run -p 443:443/udp -p 8080:8080/tcp poliuscorp/fsend server
+  Local test (no TLS — keep the plaintext pairing port on loopback):
+    docker run -p 443:443/udp -p 127.0.0.1:8080:8080/tcp poliuscorp/fsend server
 
   Internet-exposed: put a TLS-terminating reverse proxy in front of :8080.
   File data over UDP/443 is already end-to-end encrypted, but the HTTP
   pairing channel carries session slots, bearer tokens, and the
   FSEND_SERVER_PASSWORD header in plaintext.
+  Note: per-IP session caps key on the direct connection peer, so behind
+  a proxy they apply server-wide (every client shares the proxy's address).
   See deploy/compose/docker-compose.yml for a Caddy + Let's Encrypt setup.
 
 CONFIGURATION (environment variables — all optional)
@@ -506,7 +508,8 @@ CONFIGURATION (environment variables — all optional)
     FSEND_SERVER_PASSWORD             Optional shared secret. When set, all
                                       endpoints except /health require the
                                       X-Fsend-Auth header. Connect with
-                                      fsend --connect <host:port>,<password>.
+                                      fsend --connect <host:port>,<password>
+                                      or the same env var client-side.
 
   Pairing (TCP signaling/control plane):
     FSEND_SERVER_ADDR                 Default :8080 (TCP).

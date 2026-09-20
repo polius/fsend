@@ -547,6 +547,10 @@ func printTextPayload(text string) error {
 	if text == "" {
 		return nil
 	}
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		// A terminal acts on control bytes; piped stdout must stay byte-exact.
+		text = sanitizeTextPayload(text)
+	}
 	if _, err := os.Stdout.WriteString(text); err != nil {
 		return err
 	}

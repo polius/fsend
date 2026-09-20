@@ -132,13 +132,17 @@ docker compose up -d
 ```
 
 Now every endpoint except `/` and `/health` requires the password, and clients
-append it to `--connect`, comma-separated:
+append it to `--connect`, comma-separated — or export the same variable
+client-side to keep it out of argv in scripts:
 
 ```sh
 fsend --connect fs.example.com:443,your-secret
+# or
+export FSEND_SERVER_PASSWORD=your-secret
 ```
 
-Connecting without it — or with the wrong one — fails with `E028`.
+A stored `--connect` password wins over the env var. Connecting without it —
+or with the wrong one — fails with `E028`.
 
 ## Operations
 

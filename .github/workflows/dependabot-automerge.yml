@@ -11,13 +11,20 @@ jobs:
     # Majors are left for human review; minor/patch merge once the
     # required checks pass. Requires repo auto-merge enabled and a
     # ruleset marking the checks as required — without required checks,
-    # --auto merges immediately.
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    # --auto merges immediately. go-patch PRs (go directive patch bumps)
+    # automerge the same way; fetch-metadata only understands Dependabot.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' ||
+      github.event.pull_request.user.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
         id: meta
-      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+      - if: >-
+          (github.event.pull_request.user.login == 'dependabot[bot]' &&
+           steps.meta.outputs.update-type != 'version-update:semver-major') ||
+          startsWith(github.event.pull_request.head.ref, 'chore/go-patch')
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

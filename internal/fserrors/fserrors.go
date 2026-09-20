@@ -15,6 +15,7 @@ package fserrors
 import (
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // Sentinel errors. Wrap these with fmt.Errorf("…: %w", Err…) so the catalog
@@ -470,9 +471,9 @@ func Lookup(err error) (Entry, bool) {
 	if err == nil {
 		return Entry{}, false
 	}
-	for sentinel, entry := range catalog {
+	for _, sentinel := range catalogOrder {
 		if errors.Is(err, sentinel) {
-			return entry, true
+			return catalog[sentinel], true
 		}
 	}
 	return Entry{
@@ -484,13 +485,40 @@ func Lookup(err error) (Entry, bool) {
 	}, false
 }
 
+// catalogOrder pins Lookup's scan order by code: an error whose wrap chain
+// matches two sentinels (multi-%w) must render deterministically, not by
+// map iteration luck.
+var catalogOrder = func() []error {
+	keys := make([]error, 0, len(catalog))
+	for k := range catalog {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return catalog[keys[i]].Code < catalog[keys[j]].Code
+	})
+	return keys
+}()
+
 // Chain returns the full wrap chain of err as a slice of error strings,
 // outermost first. Used by --debug rendering to expose the underlying
 // technical details after the friendly catalog message.
 func Chain(err error) []string {
 	var out []string
-	for e := err; e != nil; e = errors.Unwrap(e) {
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
 		out = append(out, e.Error())
+		switch x := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, sub := range x.Unwrap() {
+				walk(sub)
+			}
+		case interface{ Unwrap() error }:
+			walk(x.Unwrap())
+		}
 	}
+	walk(err)
 	return out
 }
