@@ -137,7 +137,13 @@ function Download($url, $out) {
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
         $flags = if ([Console]::IsErrorRedirected) { '-fsSL' } else { '-fS#L' }
-        & $curl.Source $flags --proto '=https' --tlsv1.2 -o $out $url
+        # HTTPS-only pin, except through the test seam (FSEND_RELEASE_BASE_URL):
+        # a caller that redirects the release source owns its transport —
+        # same rule as install.sh.
+        $curlArgs = @($flags, '--tlsv1.2')
+        if (-not $env:FSEND_RELEASE_BASE_URL) { $curlArgs += @('--proto', '=https') }
+        $curlArgs += @('-o', $out, $url)
+        & $curl.Source @curlArgs
         if ($LASTEXITCODE -ne 0) { Err "download failed: $url" }
         return
     }

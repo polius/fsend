@@ -201,17 +201,7 @@ run_installer "$H7" -p "$H7/bin" -v "$VER" --verbose >"$WORK/out7e" 2>&1 \
 grep -q "downloading fsend_" "$WORK/out7e" || fail "scenario7: --verbose hides the steps"
 pass "flag handling (missing value, unknown flag, positional, -h, --verbose)"
 
-# 8. a corrupted archive is rejected by the checksum. Runs after every
-# full-install scenario: it poisons the shared fixture archive.
-H8="$WORK/home8"
-mkdir -p "$H8"
-printf 'X' | dd of="$FIX/download/v$VER/$ARCHIVE" bs=1 seek=50 conv=notrunc 2>/dev/null
-run_installer "$H8" -p "$H8/bin" -v "$VER" >"$WORK/out8" 2>&1 \
-    && { cat "$WORK/out8" >&2; fail "scenario8: corrupt archive installed"; }
-grep -q "checksum mismatch" "$WORK/out8" || fail "scenario8: no checksum mismatch error"
-pass "corrupted archive rejected by checksum"
-
-# 9. root refusal (needs passwordless sudo).
+# 8. root refusal (needs passwordless sudo).
 if [ "$WITH_ROOT" = "1" ]; then
     if sudo -n true 2>/dev/null; then
         # The redirect is performed by our shell (not sudo) on purpose: we
@@ -219,16 +209,16 @@ if [ "$WITH_ROOT" = "1" ]; then
         # shellcheck disable=SC2024
         sudo -n env PATH=/usr/bin:/bin HOME=/root FSEND_RELEASE_BASE_URL="$BASE" \
             sh "$INSTALLER" -p "$WORK/rootbin" -v "$VER" >"$WORK/root" 2>&1 \
-            && fail "scenario9: root install allowed"
+            && fail "scenario8: root install allowed"
         grep -q "refusing to run as root" "$WORK/root" \
-            || { cat "$WORK/root" >&2; fail "scenario9: root refusal message missing"; }
+            || { cat "$WORK/root" >&2; fail "scenario8: root refusal message missing"; }
         pass "root refused"
     else
         printf 'smoke: no passwordless sudo — skipping root test\n' >&2
     fi
 fi
 
-# 10. busybox (alpine) via docker: the wget fallback path, ash semantics,
+# 9. busybox (alpine) via docker: the wget fallback path, ash semantics,
 # and the root refusal again in a true root context. Skips when docker is
 # unavailable. On Linux the container shares the host network; on macOS
 # Docker Desktop reaches the host via host.docker.internal.
@@ -263,5 +253,15 @@ EOF
         printf 'smoke: docker unavailable — skipping busybox test\n' >&2
     fi
 fi
+
+# 10. a corrupted archive is rejected by the checksum. Runs after every
+# scenario that installs: it poisons the shared fixture archive.
+H10="$WORK/home10"
+mkdir -p "$H10"
+printf 'X' | dd of="$FIX/download/v$VER/$ARCHIVE" bs=1 seek=50 conv=notrunc 2>/dev/null
+run_installer "$H10" -p "$H10/bin" -v "$VER" >"$WORK/out10" 2>&1 \
+    && { cat "$WORK/out10" >&2; fail "scenario10: corrupt archive installed"; }
+grep -q "checksum mismatch" "$WORK/out10" || fail "scenario10: no checksum mismatch error"
+pass "corrupted archive rejected by checksum"
 
 printf '%d scenario(s) passed\n' "$PASS"
