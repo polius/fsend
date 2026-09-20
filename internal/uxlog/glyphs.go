@@ -16,6 +16,7 @@ const (
 	gCross                  // ✗ / FAIL
 	gWarn                   // ⚠ / [!]
 	gInfo                   // ℹ / [i]
+	gStep                   // › / >  (narration marker, as the install scripts print)
 	gRetry                  // ⟳ / [~]
 	gSpin                   // … / [*]  ("waiting" — non-animated; deliberately not a
 	//                                   single-frame braille spinner)
@@ -50,6 +51,12 @@ func Warn() string { return Marker(gWarn) }
 // Info returns the informational glyph (ℹ or [i]).
 func Info() string { return Marker(gInfo) }
 
+// Step returns the step glyph (› or >) — the marker the install scripts
+// (scripts/install.sh, install.ps1) print before each action they take.
+// fsend uses it for its own narration ahead of a re-run installer
+// (--update) so the two outputs read as one continuous block.
+func Step() string { return Marker(gStep) }
+
 // Retry returns the retry glyph (⟳ or [~]).
 func Retry() string { return Marker(gRetry) }
 
@@ -79,6 +86,11 @@ func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken) {
 		// Cyan reads as "neutral status update" — distinct from green
 		// (success) and yellow (warning).
 		return "ℹ", "[i]", tokenInfo
+	case gStep:
+		// Cyan like ℹ — neutral narration. The › is the same glyph the
+		// install scripts print for every step, so --update's lines and
+		// the installer output that follows them match.
+		return "›", ">", tokenInfo
 	case gRetry:
 		// Yellow signals "in-flight recovery" — same family as warn,
 		// so the retry line catches the eye without crying error.

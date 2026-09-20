@@ -33,9 +33,18 @@ if [ -n "$PREFIX" ]; then PREFIX_EXPLICIT=1; else PREFIX_EXPLICIT=0; fi
 # auto-detection the fsend binary applies (https://no-color.org).
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     esc="$(printf '\033')"
-    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_BLD="${esc}[1m" C_RST="${esc}[0m"
+    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_RST="${esc}[0m"
+    # C_ORG styles a command the user is about to run — the same bold +
+    # accent-orange treatment the fsend binary gives one (uxlog.Code,
+    # tokenAccent #ff9e64): truecolour when the terminal advertises it
+    # (COLORTERM), nearest 256-colour index otherwise. Bold is folded in
+    # like the binary's fgBold; one C_RST clears both.
+    case "${COLORTERM:-}" in
+        truecolor|24bit|TrueColor|24BIT) C_ORG="${esc}[1;38;2;255;158;100m" ;;
+        *)                               C_ORG="${esc}[1;38;5;209m" ;;
+    esac
 else
-    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_BLD='' C_RST=''
+    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_RST='' C_ORG=''
 fi
 
 err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
@@ -333,7 +342,7 @@ main() {
                 err "refusing to run as root — fsend installs per-user, without sudo.
   to install anyway, run:
 
-      ${C_BLD}FSEND_ALLOW_ROOT=1 curl -fsSL https://getfsend.alzina.dev | sh${C_RST}
+      ${C_ORG}curl -fsSL https://getfsend.alzina.dev | FSEND_ALLOW_ROOT=1 sh${C_RST}
 
   or download a release by hand: https://github.com/polius/fsend/releases"
                 ;;
