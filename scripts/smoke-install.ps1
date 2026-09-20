@@ -115,7 +115,8 @@ try {
     $env:GITHUB_PATH = $null
     Check "default-prefix install exits 0" ($LASTEXITCODE -eq 0)
     Check "binary at %LOCALAPPDATA%\Programs\fsend" (Test-Path "$env:LOCALAPPDATA/Programs/fsend/fsend.exe")
-    Check "`$GITHUB_PATH populated" ($null -ne (Get-Content $ghFile | Where-Object { $_ -like '*Programs/fsend*' }))
+    # `?` matches the path separator (backslash on Windows, slash elsewhere).
+    Check "`$GITHUB_PATH populated" ($null -ne (Get-Content $ghFile | Where-Object { $_ -like '*Programs?fsend*' }))
     if ($onWindows) {
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         Check "user PATH updated" ($userPath -like '*Programs\fsend*')
