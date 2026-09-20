@@ -54,7 +54,7 @@ func runUpdate() error {
 		return fserrors.ErrUpdateRootRefused
 	}
 
-	fmt.Fprintln(os.Stderr, "  Checking the latest release...")
+	fmt.Fprintln(os.Stderr, uxlog.Step(), "Checking the latest release...")
 	latest, ok := update.Latest(context.Background())
 	if !ok {
 		return fmt.Errorf("%w: could not look up the latest release", fserrors.ErrUpdateFailed)
@@ -64,7 +64,7 @@ func runUpdate() error {
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "  Updating fsend %s → %s in %s\n", current, latest, filepath.Dir(binPath))
+	fmt.Fprintf(os.Stderr, "%s Updating fsend %s → %s in %s\n", uxlog.Step(), current, latest, filepath.Dir(binPath))
 	if err := runInstaller(binPath); err != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrUpdateFailed, err)
 	}
