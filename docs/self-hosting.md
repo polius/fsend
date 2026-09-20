@@ -286,13 +286,6 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 | `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap — wire bytes after compression. Defaults to unlimited; set a value to bound per-transfer bandwidth. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |
 | `FSEND_RELAY_MAX_BYTES_PER_DAY` | `0` (unlimited) | **Egress budget** — outbound bytes the relay forwards **per UTC day** across all sessions. The Denial-of-Wallet ceiling: once spent, the relay stops forwarding and refuses new transfers until 00:00 UTC. Bounds a distributed abuser that the per-IP caps can't. Each byte is counted once, so a 1 MB file sent over the relay uses about 1 MB of budget. Only relay-fallback transfers count — same-network and direct transfers don't, and STUN doesn't. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500GB`, `2TB`) or a plain byte count; default unlimited — **set a value to bound your bandwidth bill**. |
 
-The two per-IP caps key on the connection's direct source address (full
-IPv4, or the /64 prefix for IPv6). Proxy headers (`X-Real-IP`,
-`X-Forwarded-For`) are never trusted — they're attacker-controlled, and a
-client could otherwise mint fresh "identities" at will. Consequence: behind
-a reverse proxy every client shares the proxy's address, so the caps apply
-server-wide rather than per client — size them for your total traffic.
-
 ### Pairing-only mode (no relay)
 
 Set `FSEND_RELAY_ENABLED=false` to run the server as a pure matchmaker: it
