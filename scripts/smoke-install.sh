@@ -221,6 +221,9 @@ if [ "$WITH_ROOT" = "1" ]; then
         grep -q "installing as root (FSEND_ALLOW_ROOT)" "$WORK/root-ok" \
             || { cat "$WORK/root-ok" >&2; fail "scenario8: no opt-in warning"; }
         [ -x "$WORK/rootbin-ok/fsend" ] || fail "scenario8: opt-in install missing"
+        # The opt-in install ran as root: it left root-owned files the
+        # user-level EXIT trap cannot remove. Reap them with sudo now.
+        sudo -n rm -rf "$WORK/rootbin-ok"
         pass "root refused; FSEND_ALLOW_ROOT=1 opts in (warn + install)"
     else
         printf 'smoke: no passwordless sudo — skipping root test\n' >&2
