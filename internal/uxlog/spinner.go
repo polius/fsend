@@ -26,13 +26,14 @@ import (
 // Stop clears the spinner line so the next stderr write starts at column 0.
 // On non-TTY the static line stays in place — Stop is a no-op visually.
 type Spinner struct {
-	mu   sync.Mutex
-	msg  string
-	w    io.Writer
-	tty  bool
-	stop chan struct{}
-	done chan struct{}
-	once sync.Once
+	mu    sync.Mutex
+	msg   string
+	w     io.Writer
+	tty   bool
+	start time.Time // spinner life; rendered as an "· 45s" chip once ≥1s
+	stop  chan struct{}
+	done  chan struct{}
+	once  sync.Once
 }
 
 // spinnerFrames is the braille rotation used on TTYs. 10 frames at 10 Hz
@@ -53,11 +54,12 @@ const spinnerInterval = 100 * time.Millisecond
 // concern (don't start a spinner); the package consults no flags.
 func StartSpinner(msg string) *Spinner {
 	s := &Spinner{
-		msg:  msg,
-		w:    os.Stderr,
-		tty:  renderTTY(os.Stderr),
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
+		msg:   msg,
+		w:     os.Stderr,
+		tty:   renderTTY(os.Stderr),
+		start: time.Now(),
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
 	}
 	if !s.tty {
 		// Non-TTY: print one static "[*] msg" line and we're done.
@@ -99,13 +101,29 @@ func (s *Spinner) draw(frame string) {
 	s.mu.Lock()
 	msg := s.msg
 	s.mu.Unlock()
+	// Elapsed chip: answers "alive or hung?" while a wait stretches on.
+	// Hidden for the first second so a quick pair doesn't flash "0s";
+	// after a minute the duration formatter switches to 1m05s form.
+	elapsed := ""
+	if d := time.Since(s.start); d >= time.Second {
+		elapsed = "  ·  " + spinnerElapsed(d)
+	}
 	// Stderr write failures inside the UX layer are non-actionable —
 	// the caller has bigger problems than an unrendered spinner.
 	if colorEnabled() {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s", colorCyan, frame, colorReset, msg)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s%s", colorCyan, frame, colorReset, msg, Dim(elapsed))
 	} else {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s", frame, msg)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s%s", frame, msg, elapsed)
 	}
+}
+
+// spinnerElapsed renders a spinner's running age in compact wall-clock
+// form. Seconds for the first minute, then HumanDuration's m/s form.
+func spinnerElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return HumanDuration(d)
 }
 
 // SetMessage swaps the spinner text; the next frame draws it. On non-TTY,

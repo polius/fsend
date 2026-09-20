@@ -54,12 +54,17 @@ func Info() string { return Marker(gInfo) }
 func Retry() string { return Marker(gRetry) }
 
 // PasswordChip renders the "password required" artifact chip, degrading
-// to plain text on pipes/files like every other glyph here.
+// to plain text on pipes/files like every other glyph here. ⚠ (yellow)
+// keeps the chip inside the app's glyph family — an emoji would be the
+// odd one out and renders double-width in some terminals.
 func PasswordChip() string {
-	if renderTTY(os.Stderr) {
-		return "🔒 password required"
+	if !renderTTY(os.Stderr) {
+		return "[password required]"
 	}
-	return "[password required]"
+	if colorEnabled() {
+		return colorYellow + "⚠" + colorReset + " password required"
+	}
+	return "⚠ password required"
 }
 
 func glyphForKind(k glyphKind) (utf8, ascii, color string) {

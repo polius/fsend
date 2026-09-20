@@ -120,6 +120,15 @@ func Alert(s string) string {
 	return colorYellow + s + colorReset
 }
 
+// Accent wraps s in cyan — the informational/interactive accent shared
+// with the spinner and Info glyphs. Unconditional, like Bold: callers
+// that need the glyph to disappear entirely on pipes gate the call on
+// ColorFor themselves (direction arrows on artifact headers, --help
+// flag names).
+func Accent(s string) string {
+	return colorCyan + s + colorReset
+}
+
 // Bold wraps s in the ANSI bold escape, unconditionally. Unlike Dim and
 // Code it carries no colour gate of its own: it decorates --help, which
 // cobra writes to stdout, so the caller must gate on stdout's state via

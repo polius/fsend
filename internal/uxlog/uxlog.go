@@ -168,6 +168,14 @@ func terminalWidth(fallback int) int {
 	return w
 }
 
+// TerminalWidth is terminalWidth for one-shot renders in cmd/fsend
+// (e.g. the code box): callers that shape a single block to the
+// terminal's width, not a per-frame redraw. Falls back to the given
+// width when stderr isn't a measurable terminal.
+func TerminalWidth(fallback int) int {
+	return terminalWidth(fallback)
+}
+
 // rateThreshold is the transfer size below which rate + ETA are
 // suppressed. Small transfers (sub-MB) finish in less time than the
 // PAKE handshake takes; reporting "13 B/s" for a 169 B file is just
@@ -229,9 +237,10 @@ func Notify(msg string) {
 // pass true only for multi-file transfers — a single file's name is
 // already in the pre-transfer block, so the columns go to the bar instead.
 //
-// route is the connection tag ("LAN"/"direct"/"relay"), always known
-// before the first byte — data only flows on an established path. Rendered
-// as a dim chip so a long transfer stays honest about which path it rides.
+// route is the connection tag ("local network"/"direct"/"relay"), always
+// known before the first byte — data only flows on an established path.
+// Rendered as a dim chip so a long transfer stays honest about which
+// path it rides.
 func New(totalBytes int64, showNames bool, route string) *Progress {
 	// Plain mode for pipes/CI, and for terminals that report a 0×0
 	// window (some pty wrappers) — mpb discards every row at height 0.
@@ -459,12 +468,16 @@ func (p *Progress) SetLabel(name string) {
 	p.label.Store(name)
 }
 
-// truncateName caps s at max runes, cutting in the middle so the tail —
-// where the extension lives — stays visible. Runes, not display cells: a
-// name heavy in wide glyphs (CJK, emoji) can overflow the chip's budget,
-// but mpb clamps overflowing decorators (shrinking the bar) rather than
-// wrapping, so the failure mode is a shorter name, never a broken line.
-// Mirrors the consent-time truncation in cmd/fsend's sanitizer.
+// truncateName caps s at max runes, cutting from the left so the tail —
+// the basename, where the distinctive part and the extension live —
+// stays visible; "…" marks the cut. A path chip that shrinks should
+// lose its leading directories first (the wrapping folder is already
+// named in the artifact headline), never the middle of the filename —
+// "myproj/asse…deo1.bin" hides the one part that identifies the file.
+// Runes, not display cells: a name heavy in wide glyphs (CJK, emoji)
+// can overflow the chip's budget, but mpb clamps overflowing decorators
+// (shrinking the bar) rather than wrapping, so the failure mode is a
+// shorter name, never a broken line.
 func truncateName(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
@@ -473,8 +486,7 @@ func truncateName(s string, max int) string {
 	if max <= 0 {
 		return "" // nothing fits; avoids a negative slice bound below
 	}
-	tail := min(8, max/2)
-	return string(r[:max-tail-1]) + "…" + string(r[len(r)-tail:])
+	return "…" + string(r[len(r)-(max-1):])
 }
 
 // SetTotal updates the bar's total. Useful for stdin transfers where the

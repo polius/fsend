@@ -66,7 +66,9 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 		case it.from != "": // followed symlink: real size + "name (→ target)"
 			name += " (→ " + it.from + ")"
 		}
-		line := fmt.Sprintf("%s%*s   %s", pad, sizeWidth, sizeCell(it), name)
+		// The size column is dimmed: metadata that supports the scan, not
+		// the payload. Names carry the information; sizes contextualise it.
+		line := fmt.Sprintf("%s%s   %s", pad, uxlog.Dim(fmt.Sprintf("%*s", sizeWidth, sizeCell(it))), name)
 		if it.note != "" {
 			line += "   " + noteText(it.note)
 		}

@@ -97,27 +97,29 @@ func FromICE(localType, remoteType string) Info {
 }
 
 // Tag returns the compact path label used in summary lines and inline
-// chips, e.g. "Direct on local network", "Direct over the internet",
-// "Relayed via <host>".
+// chips: "local network", "direct", "relay [via <host>]".
 //
-// The labels deliberately avoid "LAN", "STUN", and "TURN":
+// One word per route everywhere (chips, summaries, bar, doctor) so the
+// vocabulary never drifts between surfaces. The labels deliberately
+// avoid "LAN", "STUN", and "TURN":
 //   - "local network" is everyday vocabulary; "LAN" sounds technical.
-//   - "Direct over the internet" tells the user *where* the bytes went
-//     while "Direct" still signals "no server in the middle." The old
-//     "Direct via STUN" read like a third-party intermediary (it isn't).
-//   - "Relayed via <addr>" already names what's in the middle without
-//     leaking the "TURN" protocol name (the relay is custom, not TURN).
+//   - "direct" signals "no server in the middle." The old "Direct via
+//     STUN" read like a third-party intermediary (it isn't).
+//   - "relay" names what's in the middle without leaking the "TURN"
+//     protocol name (the relay is custom, not TURN). The relay address
+//     stays in the label so operators can confirm which relay they
+//     ended up on; --debug surfaces it too.
 func (i Info) Tag() string {
 	switch i.Kind {
 	case KindLocal:
-		return "Direct on local network"
+		return "local network"
 	case KindDirectNAT:
-		return "Direct over the internet"
+		return "direct"
 	case KindRelay:
 		if i.RelayAddr != "" {
-			return "Relayed via " + i.RelayAddr
+			return "relay via " + i.RelayAddr
 		}
-		return "Relayed"
+		return "relay"
 	default:
 		return "unknown"
 	}
@@ -126,7 +128,7 @@ func (i Info) Tag() string {
 // Headline is the standalone path line the CLI prints under --debug
 // right after the data path is established, e.g.
 //
-//	✓ Direct over the internet
+//	✓ direct
 //
 // Identical to Tag() today — the old verbose form ("— same LAN, no NAT
 // crossed") was dropped because it read as jargon. Kept as a separate
@@ -138,19 +140,19 @@ func (i Info) Headline() string {
 
 // Chip returns the lowercase mid-line form shown when the connection is
 // established: "Receiver connected (local network)" on the sender,
-// "Incoming from <peer> · direct over the internet" on the receiver.
+// "Incoming from <peer> · direct" on the receiver.
 // Tag remains the standalone capitalized form for summary lines.
 func (i Info) Chip() string {
 	switch i.Kind {
 	case KindLocal:
 		return "local network"
 	case KindDirectNAT:
-		return "direct over the internet"
+		return "direct"
 	case KindRelay:
 		if i.RelayAddr != "" {
-			return "relayed via " + i.RelayAddr
+			return "relay via " + i.RelayAddr
 		}
-		return "relayed"
+		return "relay"
 	default:
 		return "unknown"
 	}
@@ -158,11 +160,12 @@ func (i Info) Chip() string {
 
 // BarTag is the compact route label shown as a chip on the progress
 // bar, so a long transfer stays honest about which path its bytes are
-// taking: LAN / direct / relay. "" when the path was never established.
+// taking: local network / direct / relay. "" when the path was never
+// established.
 func (i Info) BarTag() string {
 	switch i.Kind {
 	case KindLocal:
-		return "LAN"
+		return "local network"
 	case KindDirectNAT:
 		return "direct"
 	case KindRelay:

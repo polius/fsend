@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -101,6 +102,7 @@ Examples:
 	// when writing a bug report.
 	ht := strings.Replace(helpTemplate, "fsend —", "fsend "+version.Version+" —", 1)
 	ht = boldHelpHeaders(ht)
+	ht = decorateHelpFlags(ht)
 	c.SetHelpTemplate(ht)
 	c.SetUsageTemplate(ht)
 
@@ -343,6 +345,67 @@ func isHelpHeader(line string) bool {
 		}
 	}
 	return true
+}
+
+// flagTokenRe matches a single-dash or double-dash token ("--out", "-h")
+// inside a help entry's flag column. Descriptions live right of the
+// column gap and never contain a leading-dash token at a word boundary
+// that would matter — only the left side is scanned.
+var flagTokenRe = regexp.MustCompile(`-{1,2}[A-Za-z][A-Za-z0-9-]*`)
+
+// decorateHelpFlags colours the hand-written flag reference: flag tokens
+// cyan, description text dim, so each entry scans as [flag] [description]
+// and the eye can jump between flags without reading prose.
+//
+// Line shapes handled (indentation-keyed):
+//   - "  --flag <arg>        description" — split at the first 2+ space
+//     run after the indent; dash tokens on the left go cyan, the whole
+//     right side dims. USAGE/ADVANCED command entries share the shape
+//     ("  fsend server  …  Run your own …") and just get the dim right.
+//   - "                         wrapped description" (25-space indent) —
+//     a continuation of the entry above, dimmed whole.
+//
+// Gated on stdout — cobra writes help there — so pipes, NO_COLOR, and
+// non-TTY contexts get the template byte-for-byte untouched. The
+// completion template keeps boldHelpHeaders only: its EXAMPLES lines
+// ("zsh:  eval …") share the entry shape but are not a flag reference.
+func decorateHelpFlags(tpl string) string {
+	if !uxlog.ColorFor(os.Stdout) {
+		return tpl
+	}
+	lines := strings.Split(tpl, "\n")
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "   "):
+			gap := helpColumnGap(line)
+			if gap < 0 {
+				continue // no description on this line ("  --connect <host[:port]>")
+			}
+			lines[i] = colorizeFlagTokens(line[:gap]) + uxlog.Dim(line[gap:])
+		case len(line) >= 25 && strings.TrimSpace(line) != "" && strings.TrimSpace(line[:25]) == "":
+			lines[i] = uxlog.Dim(line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// helpColumnGap returns the index of the first 2+ space run at or after
+// the two-space indent — the boundary between the flag column and its
+// description. -1 when the line has no description.
+func helpColumnGap(line string) int {
+	for i := 2; i+1 < len(line); i++ {
+		if line[i] == ' ' && line[i+1] == ' ' {
+			return i
+		}
+	}
+	return -1
+}
+
+// colorizeFlagTokens wraps every dash token in s with the cyan accent.
+func colorizeFlagTokens(s string) string {
+	return flagTokenRe.ReplaceAllStringFunc(s, func(m string) string {
+		return uxlog.Accent(m)
+	})
 }
 
 // passPromptSentinel is the value cobra hands us when the user passes

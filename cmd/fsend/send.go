@@ -232,19 +232,20 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 		}
 		return nil
 	}
+	arrow := sendArrow()
 	fmt.Fprintln(os.Stderr)
 	switch {
 	case plan.mode == wire.ModeStream && plan.isText:
-		fmt.Fprintf(os.Stderr, "  Sending text  ·  %s\n", uxlog.HumanBytes(int64(plan.totalBytes)))
+		fmt.Fprintf(os.Stderr, "  %sSending text  ·  %s\n", arrow, uxlog.HumanBytes(int64(plan.totalBytes)))
 	case plan.mode == wire.ModeStream:
-		fmt.Fprintln(os.Stderr, "  Sending stdin stream  ·  size unknown")
+		fmt.Fprintf(os.Stderr, "  %sSending stdin stream  ·  size unknown\n", arrow)
 	default:
 		name := ""
 		if plan.label != "" {
 			name = plan.label + "  ·  "
 		}
-		fmt.Fprintf(os.Stderr, "  Sending %s%s  ·  %s\n",
-			name, uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))
+		fmt.Fprintf(os.Stderr, "  %sSending %s%s  ·  %s\n",
+			arrow, name, uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))
 		// Directory-only sends (an empty folder) survive collectPlan's
 		// nothing-to-send guard because the dir entry itself is a source.
 		// Sending it is legitimate — but "0 files" is usually a mistake,
@@ -255,11 +256,59 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 		renderPreview(os.Stderr, senderPreview(plan.sources), 6)
 	}
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  On the other machine, run:")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "      fsend %s\n", uxlog.Code(c))
+	renderCodeBlock(os.Stderr, c)
 	fmt.Fprintln(os.Stderr)
 	return uxlog.StartSpinner("Waiting for receiver")
+}
+
+// sendArrow renders the ⇢ direction marker prefixed to the send header
+// on color-capable terminals; "" on pipes/files so the plain-text form
+// scripts may scrape stays byte-stable.
+func sendArrow() string {
+	if !uxlog.ColorFor(os.Stderr) {
+		return ""
+	}
+	return uxlog.Accent("⇢") + "  "
+}
+
+// codeBoxInner is the content width between the box borders. Both
+// content lines are constants — the instruction sentence and the run
+// command (codes are always 11 chars) — so a fixed box renders the same
+// for every transfer; 34 leaves comfortable padding around the
+// 28-character instruction row.
+const codeBoxInner = 34
+
+// codeBoxMinWidth is the narrowest terminal the box fits in: 2 leading
+// spaces + 2 border columns + the 36-column interior. Below that (and on
+// non-TTYs) the plain indented block renders instead — a wrapped box
+// looks broken, and piped stderr must stay byte-stable anyway.
+const codeBoxMinWidth = 42
+
+// renderCodeBlock draws the "run this on the other machine" block. On a
+// terminal wide enough to hold it, a light box frames the share code —
+// the one thing on screen the user must read back or dictate — so it
+// survives scrollback and busy terminals as a single visual object.
+// The borders are dim: structure without shouting. Fallback keeps the
+// historical plain block for pipes, narrow terminals, and NO_COLOR.
+func renderCodeBlock(w io.Writer, c string) {
+	if !uxlog.ColorFor(w) || uxlog.TerminalWidth(0) < codeBoxMinWidth {
+		fmt.Fprintln(w, "  On the other machine, run:")
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "      fsend %s\n", uxlog.Code(c))
+		return
+	}
+	edge := uxlog.Dim("  │")
+	row := func(content string, plainLen int) {
+		// pad is computed off the plain length; content may carry ANSI
+		// (the code) that must not count toward the width.
+		fmt.Fprintf(w, "%s %s%s %s\n", edge, content,
+			strings.Repeat(" ", max(0, codeBoxInner-plainLen)), uxlog.Dim("│"))
+	}
+	fmt.Fprintln(w, uxlog.Dim("  ┌"+strings.Repeat("─", codeBoxInner+2)+"┐"))
+	row("  On the other machine, run:", len("  On the other machine, run:"))
+	row("", 0)
+	row("      fsend "+uxlog.Code(c), len("      fsend ")+len(c))
+	fmt.Fprintln(w, uxlog.Dim("  └"+strings.Repeat("─", codeBoxInner+2)+"┘"))
 }
 
 // senderPreview projects the walked sources into preview rows, dropping
@@ -314,7 +363,7 @@ type senderStats struct {
 // bar. Returns close, progress, onResume, onSkip, a stats getter, and
 // onStreamingEOF (latches the bar total once a stream EOFs). All callbacks
 // run on the single send-loop goroutine, so the counters need no locking.
-// pathInfo feeds the bar's route chip ("LAN"/"direct"/"relay").
+// pathInfo feeds the bar's route chip ("local network"/"direct"/"relay").
 func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeFn func(), progressFn func(uint32, uint64), onResume func(uint32, uint64, uint64), onSkip func(uint32, bool), stats func() senderStats, onStreamingEOF func(uint32, uint64), resetCounts func()) {
 	prev := make(map[uint32]uint64)
 	var s senderStats
@@ -407,28 +456,27 @@ func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duratio
 	// itself. Mirror the receiver's headline.
 	if s.moved == 0 && s.keptFiles == 0 && s.skippedFiles > 0 {
 		fmt.Fprintf(os.Stderr, "%s Already up to date  ·  %s unchanged  ·  %s\n",
-			uxlog.Check(), uxlog.CountNoun(s.skippedFiles, "file"), path.Tag())
+			uxlog.Check(), uxlog.CountNoun(s.skippedFiles, "file"), uxlog.Dim(path.Tag()))
 		printUpdateNotice(f)
 		return
 	}
 	glyph, headline := uxlog.Check(), "Sent"
-	parts := summaryParts(total, s.moved, "sent", elapsed, path)
 	if s.keptFiles > 0 {
 		glyph = uxlog.Warn()
 		if s.moved == 0 {
-			// "Sent · 2.1 MB (0 B sent)" would contradict itself; name the
-			// outcome and drop the redundant moved clause.
+			// "Sent — 2.1 MB" would contradict itself; name the outcome and
+			// mark the size as the offer, not what crossed the wire.
 			headline = "Nothing sent"
-			parts[0] = uxlog.HumanBytes(total) + " offered"
 		}
 	}
+	clauses := ""
 	if n := s.skippedFiles - s.keptFiles; n > 0 {
-		parts = append(parts, uxlog.CountNoun(n, "file")+" skipped")
+		clauses += "  ·  " + uxlog.CountNoun(n, "file") + " skipped"
 	}
 	if s.keptFiles > 0 {
-		parts = append(parts, uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver (needs --overwrite there)")
+		clauses += "  ·  " + uxlog.CountNoun(s.keptFiles, "file") + " kept by receiver (needs --overwrite there)"
 	}
-	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
+	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, s.moved, "sent", elapsed, path), clauses)
 	// Streams report their true size only at EOF — moved is the honest figure.
 	if s.moved > total {
 		total = s.moved
@@ -437,30 +485,32 @@ func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duratio
 	printUpdateNotice(f)
 }
 
-// summaryParts builds the bytes/duration/rate/path sequence shared by both
-// summaries. moved below total adds a "(X sent)" clause and bases the rate on
-// moved alone.
-func summaryParts(total, moved int64, verb string, elapsed time.Duration, path connpath.Info) []string {
+// summaryLine renders the size/duration/rate/route tail shared by both
+// summaries: "209.7 MB in 4.5s (46.1 MB/s)  ·  local network". The size
+// stays in the default colour; elapsed, rate, and the route chip are
+// dimmed — secondary detail after the sentence's subject. moved below
+// total adds a "(X sent)" clause and bases the rate on moved alone.
+func summaryLine(total, moved int64, verb string, elapsed time.Duration, path connpath.Info) string {
 	// A stream's total is unknown up front (0); by summary time the moved
-	// count is the size — "Sent · 0 B" for a 15 MB pipe would be a lie.
+	// count is the size — "Sent — 0 B" for a 15 MB pipe would be a lie.
 	if moved > total {
 		total = moved
 	}
 	size := uxlog.HumanBytes(total)
-	if moved < total {
+	if moved < total && moved > 0 {
 		size += " (" + uxlog.HumanBytes(moved) + " " + verb + ")"
 	}
-	parts := []string{size}
+	line := size
 	// With zero bytes moved, elapsed is prompt dwell or connection wall
 	// time, not a transfer duration — "0 B · 5.8s" reads as a slow
 	// transfer. Omit it (HumanRate already suppresses the rate).
 	if moved > 0 {
-		parts = append(parts, uxlog.HumanDuration(elapsed))
+		line += uxlog.Dim(" in " + uxlog.HumanDuration(elapsed))
 	}
 	if r := uxlog.HumanRate(moved, elapsed); r != "" {
-		parts = append(parts, r)
+		line += uxlog.Dim(" (" + r + ")")
 	}
-	return append(parts, path.Tag())
+	return line + uxlog.Dim("  ·  " + path.Tag())
 }
 
 // displayPath renders an absolute path with $HOME collapsed to "~".
