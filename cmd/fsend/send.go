@@ -294,23 +294,23 @@ const codeBoxMinWidth = 42
 // historical plain block for pipes, narrow terminals, and NO_COLOR.
 func renderCodeBlock(w io.Writer, c string) {
 	if !uxlog.ColorFor(w) || uxlog.TerminalWidth(0) < codeBoxMinWidth {
-		fmt.Fprintln(w, "  On the other machine, run:")
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "      fsend %s\n", uxlog.Code(c))
+		_, _ = fmt.Fprintln(w, "  On the other machine, run:")
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "      fsend %s\n", uxlog.Code(c))
 		return
 	}
 	edge := uxlog.Brand("  │")
 	row := func(content string, plainLen int) {
 		// pad is computed off the plain length; content may carry ANSI
 		// (the code) that must not count toward the width.
-		fmt.Fprintf(w, "%s %s%s %s\n", edge, content,
+		_, _ = fmt.Fprintf(w, "%s %s%s %s\n", edge, content,
 			strings.Repeat(" ", max(0, codeBoxInner-plainLen)), uxlog.Brand("│"))
 	}
-	fmt.Fprintln(w, uxlog.Brand("  ┌"+strings.Repeat("─", codeBoxInner+2)+"┐"))
+	_, _ = fmt.Fprintln(w, uxlog.Brand("  ┌"+strings.Repeat("─", codeBoxInner+2)+"┐"))
 	row("  On the other machine, run:", len("  On the other machine, run:"))
 	row("", 0)
 	row("      fsend "+uxlog.Code(c), len("      fsend ")+len(c))
-	fmt.Fprintln(w, uxlog.Brand("  └"+strings.Repeat("─", codeBoxInner+2)+"┘"))
+	_, _ = fmt.Fprintln(w, uxlog.Brand("  └"+strings.Repeat("─", codeBoxInner+2)+"┘"))
 }
 
 // senderPreview projects the walked sources into preview rows, dropping

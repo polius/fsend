@@ -669,7 +669,7 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	// upfront --yes warning or E013's action line — and after an explicit
 	// "n" at the prompt it must not appear at all.
 	if kept > 0 {
-		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(kept, "file") + " kept")
+		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(kept, "file")+" kept")
 	}
 	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, moved, "received", elapsed, path), clauses)
 	uxlog.Notify("Received " + uxlog.HumanBytes(total))
