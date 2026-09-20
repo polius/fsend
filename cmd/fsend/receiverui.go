@@ -190,12 +190,18 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		}
 		return true
 	}
-	question := "Save to " + boldIfColor(saveTargetLabel(ui.outDir)) + "?"
+	// The question renders in the violet prompt accent: when the user
+	// glances back at the terminal, every line asking for a decision is
+	// the same colour. Built in parts so the bold destination's reset
+	// doesn't cut the accent short.
+	var question string
 	switch {
 	case ui.sink:
-		question = "Write to stdout?"
+		question = uxlog.Prompt("Write to stdout?")
 	case h.Mode == wire.ModeStream && h.IsText:
-		question = "Accept?"
+		question = uxlog.Prompt("Accept?")
+	default:
+		question = uxlog.Prompt("Save to ") + boldIfColor(saveTargetLabel(ui.outDir)) + uxlog.Prompt("?")
 	}
 	for {
 		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", question)
@@ -225,8 +231,9 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	const preview = 5
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  %s %s from your local copies:\n",
-		uxlog.CountNoun(len(conflicts), "file"), differVerb(len(conflicts)))
+	fmt.Fprintf(os.Stderr, "  %s\n",
+		uxlog.Prompt(fmt.Sprintf("%s %s from your local copies:",
+			uxlog.CountNoun(len(conflicts), "file"), differVerb(len(conflicts)))))
 	shown := min(len(conflicts), preview)
 	for _, c := range conflicts[:shown] {
 		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
@@ -241,7 +248,7 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 		prompt, hint = "  Overwrite all? [y/N/l] ", "  Please answer y or n (or l to list all)."
 	}
 	for {
-		fmt.Fprint(os.Stderr, prompt)
+		fmt.Fprint(os.Stderr, uxlog.Prompt("  Overwrite all?")+prompt[len("  Overwrite all?"):])
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false

@@ -104,17 +104,21 @@ const (
 	colorYellow   = "\x1b[33m"
 	colorCyan     = "\x1b[36m"
 	colorBoldCyan = "\x1b[1;36m"
-	colorDim      = "\x1b[2m"
+	colorDim      = "\x1b[38;5;244m"
 
-	// Brand orange, 256-colour palette (208). The interactive/hero
-	// accent — the share code, the code box, the spinner, the direction
-	// arrows — so everything the user must *act on* shares one colour,
-	// distinct from cyan (informational) and green (reassurance).
-	// 256-colour escapes render on every terminal that passes the VT /
-	// renderTTY gate; legacy 8-colour terminals degrade to an
-	// approximation, never to garbage.
-	colorOrange     = "\x1b[38;5;208m"
-	colorBoldOrange = "\x1b[1;38;5;208m"
+	// Brand orange, 256-colour 202 — deep enough to stay clearly distinct
+	// from warning yellow (33), which it previously sat beside (208 read
+	// as "another yellow"). The interactive/hero accent: the share code,
+	// the code box, the spinner, the direction arrows — everything the
+	// user must *act on* shares one colour.
+	colorOrange     = "\x1b[38;5;202m"
+	colorBoldOrange = "\x1b[1;38;5;202m"
+
+	// Primary violet, 256-colour 140 — the prompt/decision accent, in the
+	// role opencode's themes give their primary token: question lines and
+	// anything asking the user to choose. Distinct from orange (act),
+	// green (reassure), yellow (caution), cyan (inform).
+	colorPurple = "\x1b[38;5;140m"
 )
 
 var (

@@ -14,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/uxlog"
 )
 
 // stdinIsTTY reports whether stdin is an interactive terminal. A var (not
@@ -167,7 +168,7 @@ func promptPasswordWithSuggestion(br *bufio.Reader) (string, error) {
 		return "", fmt.Errorf("generating suggested password: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "  Suggested password: %s\n", suggested)
-	fmt.Fprint(os.Stderr, "  Press Enter to use it, or type your own: ")
+	fmt.Fprint(os.Stderr, "  "+uxlog.Prompt("Press Enter to use it, or type your own: "))
 
 	line, err := br.ReadString('\n')
 	if err != nil && line == "" {

@@ -100,13 +100,28 @@ func Code(c string) string {
 	return colorBoldOrange + c + colorReset
 }
 
-// Dim wraps s in the ANSI dim escape (or returns it unchanged when
-// color is off). Useful for secondary metadata in artifact lines.
+// Dim wraps s in the muted-grey foreground colour (or returns it
+// unchanged when color is off). It is a colour, not the ANSI dim (2)
+// attribute — the attribute halves whatever the theme's foreground is,
+// which on plenty of palettes means "illegible". Mid-grey (256-colour
+// 244) stays readable on both dark and light backgrounds while still
+// receding: the textMuted role. For secondary metadata only.
 func Dim(s string) string {
 	if !colorEnabled() {
 		return s
 	}
 	return colorDim + s + colorReset
+}
+
+// Prompt wraps s in the violet primary accent — the colour of a
+// question. Used for the lines that ask the user to decide (accept,
+// overwrite, password) so a scan of the terminal finds every point
+// where input is wanted. Gated on colour like Dim.
+func Prompt(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return colorPurple + s + colorReset
 }
 
 // Good wraps s in green — the reassurance family the ✓ glyph leads —
