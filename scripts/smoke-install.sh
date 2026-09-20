@@ -73,13 +73,17 @@ tar -czf "$FIX/download/v$VER/$ARCHIVE" -C "$FIX" fsend
 
 # The busybox scenario installs from inside an Alpine container, which
 # asks for LINUX archives while the fixture targets the host's os/arch —
-# add the linux ones (both arches; a tar of a shell stub is tiny).
+# add the missing linux ones. On a linux host the host archive IS the
+# linux archive: skip it, a duplicated line would break the checksum
+# lookup. (A tar of a shell stub is tiny.)
 if [ "$WITH_BUSYBOX" = "1" ]; then
     for A in amd64 arm64; do
-        tar -czf "$FIX/download/v$VER/fsend_${VER}_linux_${A}.tar.gz" -C "$FIX" fsend
+        name="fsend_${VER}_linux_${A}.tar.gz"
+        [ "$name" = "$ARCHIVE" ] && continue
+        tar -czf "$FIX/download/v$VER/$name" -C "$FIX" fsend
         (
             cd "$FIX/download/v$VER" \
-                && { sha256sum "fsend_${VER}_linux_${A}.tar.gz" 2>/dev/null || shasum -a 256 "fsend_${VER}_linux_${A}.tar.gz"; }
+                && { sha256sum "$name" 2>/dev/null || shasum -a 256 "$name"; }
         ) >> "$FIX/download/v$VER/checksums.txt"
     done
 fi

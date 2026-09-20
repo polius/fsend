@@ -70,7 +70,13 @@ for ($i = 0; $i -lt 20; $i++) {
 }
 
 function Invoke-Installer([string[]]$installerArgs) {
-    & $ps -NoProfile -File $installer @installerArgs 2>&1
+    $out = @(& $ps -NoProfile -File $installer @installerArgs 2>&1)
+    # A failing installer dumps its output here so CI logs show why.
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "--- installer output (exit $LASTEXITCODE) ---"
+        $out | Select-Object -First 40 | ForEach-Object { Write-Host "  | $_" }
+    }
+    return $out
 }
 
 try {
