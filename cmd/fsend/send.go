@@ -242,7 +242,7 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 	default:
 		name := ""
 		if plan.label != "" {
-			name = plan.label + "  ·  "
+			name = uxlog.Path(plan.label) + "  ·  "
 		}
 		fmt.Fprintf(os.Stderr, "  %sSending %s%s  ·  %s\n",
 			arrow, name, uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))

@@ -231,7 +231,7 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 			// The name is peer-supplied; show exactly what will land on disk
 			// (same derivation as the engine) so consent covers the filename.
 			name := sanitizeForDisplay(transfer.StreamFileName(h.DisplayName), 128)
-			_, _ = fmt.Fprintf(w, "      stdin stream  ·  saves as %s  ·  size unknown%s\n", name, pwChip)
+			_, _ = fmt.Fprintf(w, "      stdin stream  ·  saves as %s  ·  size unknown%s\n", uxlog.Path(name), pwChip)
 		}
 		return
 	}
@@ -248,7 +248,8 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 	fileCount := uxlog.CountNoun(len(summary.Files), "file")
 	lead := fileCount
 	if name != fileCount {
-		lead = name + "  ·  " + fileCount
+		// The wrapping folder/file name is a path — green, opencode-style.
+		lead = uxlog.Path(name) + "  ·  " + fileCount
 	}
 	diff := ""
 	if summary.Differing > 0 {

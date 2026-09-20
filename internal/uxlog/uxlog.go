@@ -347,14 +347,14 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 					}
 					return "  ·  " + HumanBytes(int64(r)) + "/s"
 				}),
-				// Colour only the stalled marker — yellow, the caution
-				// family, since a stall is a soft warning. Measuring width
-				// off the plain string above keeps mpb from counting the
-				// ANSI escapes — a colorized decor.Any costs ~6 columns of
-				// bar during a stall.
+				// Colour only the stalled marker — the warning token, the
+				// caution family, since a stall is a soft warning. Measuring
+				// width off the plain string above keeps mpb from counting
+				// the ANSI escapes — a colorized decor.Any costs ~6 columns
+				// of bar during a stall.
 				func(str string) string {
 					if str == stalledChip {
-						return colorYellow + str + colorReset
+						return fg(tokenWarning) + str + colorReset
 					}
 					return str
 				},
@@ -390,11 +390,13 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	}
 	if showNames {
 		// Current-file chip, last so its per-file width changes don't
-		// jiggle the rate/ETA chips. Budget re-derives from the live
-		// width every frame, so a mid-transfer resize re-truncates (or
-		// drops) the name; terminalWidth falls back to the width seen at
-		// construction if the size query starts failing.
-		appendDecs = append(appendDecs, decor.Any(func(s decor.Statistics) string {
+		// jiggle the rate/ETA chips. The name is a file path — Meta paints
+		// it green (the file-reference accent) at render time while mpb
+		// measures width off the plain form. Budget re-derives from the
+		// live width every frame, so a mid-transfer resize re-truncates
+		// (or drops) the name; terminalWidth falls back to the width seen
+		// at construction if the size query starts failing.
+		appendDecs = append(appendDecs, decor.Meta(decor.Any(func(s decor.Statistics) string {
 			name, _ := p.label.Load().(string)
 			if name == "" {
 				return ""
@@ -404,7 +406,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 				return ""
 			}
 			return "  ·  " + truncateName(name, chipCap)
-		}))
+		}), func(str string) string { return Path(str) }))
 	}
 
 	p.bar = p.mp.New(totalBytes,

@@ -59,12 +59,15 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 		}
 	}
 	for _, it := range items[:shown] {
-		name := it.name
+		// The name cell is a file path — opencode-style green — including
+		// any symlink annotation appended to it (also path material).
+		// Sizes stay default; the green column is the part the eye scans.
+		name := uxlog.Path(it.name)
 		switch {
 		case it.link != "": // preserved symlink: "name → target", "→" size cell
-			name += " → " + it.link
+			name = uxlog.Path(it.name + " → " + it.link)
 		case it.from != "": // followed symlink: real size + "name (→ target)"
-			name += " (→ " + it.from + ")"
+			name = uxlog.Path(it.name + " (→ " + it.from + ")")
 		}
 		// The size column stays in the default foreground: metadata keeps
 		// its readability; the name carries the row's information.

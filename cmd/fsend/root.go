@@ -374,6 +374,12 @@ func decorateHelpFlags(tpl string) string {
 	}
 	lines := strings.Split(tpl, "\n")
 	for i, line := range lines {
+		// LEARN MORE footer: the URL renders in the info accent (the
+		// markdown-link role).
+		if strings.HasPrefix(line, "  https://") {
+			lines[i] = uxlog.Link(line)
+			continue
+		}
 		if !strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "   ") {
 			continue
 		}

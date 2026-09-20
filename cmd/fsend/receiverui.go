@@ -285,18 +285,22 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 }
 
 // conflictLabel renders one conflict, distinguishing type clashes from
-// content differences. A "differs" row carries the size delta — the
-// concrete fact the overwrite decision is really about: what's on disk
-// versus what would replace it. LocalSize is always populated for
-// "differs" (the classification Lstat'ed the file to call it differing);
-// type clashes have no meaningful byte pair, so they keep the kind tag.
+// content differences. The row name is a file path — green. A "differs"
+// row carries the size delta in diff semantics (opencode's diffRemoved
+// / diffAdded roles): the on-disk size that a consented overwrite would
+// remove, then the incoming size that would be written. LocalSize is
+// always populated for "differs" (the classification Lstat'ed the file
+// to call it differing); type clashes have no meaningful byte pair, so
+// they keep the kind tag.
 func conflictLabel(c transfer.Conflict) string {
-	name := sanitizeForDisplay(c.RelativePath, 128)
+	name := uxlog.Path(sanitizeForDisplay(c.RelativePath, 128))
 	if c.Kind != "differs" {
 		return fmt.Sprintf("%s  (%s)", name, c.Kind)
 	}
-	delta := uxlog.HumanBytes(c.LocalSize) + " → "
-	return fmt.Sprintf("%s  %s%s", name, delta, uxlog.HumanBytes(int64(c.IncomingSize)))
+	return fmt.Sprintf("%s  %s → %s",
+		name,
+		uxlog.Removed(uxlog.HumanBytes(c.LocalSize)),
+		uxlog.Added(uxlog.HumanBytes(int64(c.IncomingSize))))
 }
 
 func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
@@ -505,7 +509,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		// overcount what actually landed — say how many of the offer were written.
 		if kept > 0 && !ui.sink {
 			headline = fmt.Sprintf("Saved %d of %s to %s",
-				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), displayPath(ui.outDir))
+				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), uxlog.Path(displayPath(ui.outDir)))
 		}
 		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
 	}
@@ -595,7 +599,9 @@ func sameSink(a, b *os.File) bool {
 	return err1 == nil && err2 == nil && os.SameFile(ai, bi)
 }
 
-// headline names what landed where for the summary line.
+// headline names what landed where for the summary line. Names and
+// destinations are file paths — green, the opencode file-reference
+// convention.
 func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	if ui.sink {
 		return "Received"
@@ -610,21 +616,22 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 			name = sanitizeForDisplay(h.DisplayName, 128)
 		}
 	}
-	dest := displayPath(ui.outDir)
+	dest := uxlog.Path(displayPath(ui.outDir))
 	if name == "" {
 		return "Saved to " + dest
 	}
-	return "Saved " + name + " to " + dest
+	return "Saved " + uxlog.Path(name) + " to " + dest
 }
 
-// boldIfColor wraps s in bold when stderr can render it — used for the
-// destination in the accept prompt, the answer to "where will this
-// actually land?". Plain on pipes/files so scraped output stays clean.
+// boldIfColor wraps s in bold green when stderr can render it — used for
+// the destination in the accept prompt: a file path (green, the
+// opencode file-reference convention) that is also the answer to "where
+// will this actually land?" (bold). Plain on pipes/files.
 func boldIfColor(s string) string {
 	if !uxlog.ColorFor(os.Stderr) {
 		return s
 	}
-	return uxlog.Bold(s)
+	return uxlog.Bold(uxlog.Path(s))
 }
 
 // printRecvSummary renders the post-transfer outcome line. Kept-back files

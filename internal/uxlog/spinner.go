@@ -113,7 +113,7 @@ func (s *Spinner) draw(frame string) {
 	// Stderr write failures inside the UX layer are non-actionable —
 	// the caller has bigger problems than an unrendered spinner.
 	if colorEnabled() {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s%s", colorOrange, frame, colorReset, msg, elapsed)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s%s", fg(tokenAccent), frame, colorReset, msg, elapsed)
 	} else {
 		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s%s", frame, msg, elapsed)
 	}
