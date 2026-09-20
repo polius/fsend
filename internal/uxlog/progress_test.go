@@ -232,6 +232,42 @@ func TestProgress_PlainModePercentClampedLow(t *testing.T) {
 	}
 }
 
+// The chip must grow with the terminal: spare columns go to the name,
+// narrow terminals keep the 20-rune minimum or drop the chip entirely.
+func TestLayoutBudgets(t *testing.T) {
+	cases := []struct {
+		name      string
+		width     int
+		showNames bool
+		route     string
+		wantBW    int
+		wantChip  int
+	}{
+		{"too narrow for a chip", 70, true, "LAN", 10, 0},
+		{"gate boundary gets minimum chip", 90, true, "LAN", 10, 20},
+		{"bar yields before chip shrinks", 100, true, "LAN", 12, 20},
+		{"wide terminal grows the chip", 200, true, "LAN", 40, 90},
+		{"spare flows to chip past bar cap", 140, true, "LAN", 40, 30},
+		{"no names means no chip", 200, false, "LAN", 40, 0},
+		{"route eats into the spare", 200, true, "relay", 40, 88},
+	}
+	for _, c := range cases {
+		bw, chip := layoutBudgets(c.width, c.showNames, c.route)
+		if bw != c.wantBW || chip != c.wantChip {
+			t.Errorf("%s: layoutBudgets(%d, %v, %q) = (%d, %d), want (%d, %d)",
+				c.name, c.width, c.showNames, c.route, bw, chip, c.wantBW, c.wantChip)
+		}
+	}
+}
+
+// A failing width query keeps the fallback, never collapses to zero.
+func TestTerminalWidthFallback(t *testing.T) {
+	silenceStderr(t)
+	if got := terminalWidth(42); got != 42 {
+		t.Errorf("terminalWidth(42) = %d on a non-terminal, want fallback 42", got)
+	}
+}
+
 // truncateName keeps the tail (extension) visible with a middle ellipsis
 // and leaves short names untouched.
 func TestTruncateName(t *testing.T) {
