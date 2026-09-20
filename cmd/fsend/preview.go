@@ -59,14 +59,19 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 		}
 	}
 	for _, it := range items[:shown] {
-		name := it.name
+		// The name cell is a file path — opencode-style green — including
+		// any symlink annotation appended to it (also path material).
+		// Sizes stay default; the green column is the part the eye scans.
+		name := uxlog.Path(it.name)
 		switch {
 		case it.link != "": // preserved symlink: "name → target", "→" size cell
-			name += " → " + it.link
+			name = uxlog.Path(it.name + " → " + it.link)
 		case it.from != "": // followed symlink: real size + "name (→ target)"
-			name += " (→ " + it.from + ")"
+			name = uxlog.Path(it.name + " (→ " + it.from + ")")
 		}
-		line := fmt.Sprintf("%s%*s   %s", pad, sizeWidth, sizeCell(it), name)
+		// The size column stays in the default foreground: metadata keeps
+		// its readability; the name carries the row's information.
+		line := fmt.Sprintf("%s%s   %s", pad, fmt.Sprintf("%*s", sizeWidth, sizeCell(it)), name)
 		if it.note != "" {
 			line += "   " + noteText(it.note)
 		}
@@ -78,7 +83,7 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 			rest += it.size
 		}
 		_, _ = fmt.Fprintf(w, "%s%s\n", pad,
-			uxlog.Dim(fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(int64(rest)))))
+			fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(int64(rest))))
 	}
 }
 
@@ -92,12 +97,13 @@ func sizeCell(it previewItem) string {
 }
 
 // noteText colours a status tag: "differs" needs a decision, so it's
-// highlighted; the rest are reassuring background, so they're dimmed.
+// highlighted yellow; the rest ("up to date", "resume") render in the
+// default foreground — readable, quiet by being brief.
 func noteText(note string) string {
 	if note == "differs" {
 		return uxlog.Alert(note)
 	}
-	return uxlog.Dim(note)
+	return note
 }
 
 // stripCommonDir removes the longest leading directory prefix shared by every

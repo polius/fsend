@@ -73,7 +73,7 @@ func TestFromRelay(t *testing.T) {
 	}
 	// Headline collapses to the compact Tag() form; the address still
 	// appears so operators can see which relay.
-	wantHead := "Relayed via fsend.alzina.dev:443"
+	wantHead := "relay via fsend.alzina.dev:443"
 	if got.Headline() != wantHead {
 		t.Errorf("Headline() = %q, want %q", got.Headline(), wantHead)
 	}
@@ -83,14 +83,14 @@ func TestFromRelay(t *testing.T) {
 }
 
 func TestTag_CompactForms(t *testing.T) {
-	if got := (Info{Kind: KindLocal}).Tag(); got != "Direct on local network" {
-		t.Errorf("Local Tag() = %q, want %q", got, "Direct on local network")
+	if got := (Info{Kind: KindLocal}).Tag(); got != "local network" {
+		t.Errorf("Local Tag() = %q, want %q", got, "local network")
 	}
-	if got := (Info{Kind: KindDirectNAT}).Tag(); got != "Direct over the internet" {
-		t.Errorf("DirectNAT Tag() = %q, want %q", got, "Direct over the internet")
+	if got := (Info{Kind: KindDirectNAT}).Tag(); got != "direct" {
+		t.Errorf("DirectNAT Tag() = %q, want %q", got, "direct")
 	}
-	if got := (Info{Kind: KindRelay}).Tag(); got != "Relayed" {
-		t.Errorf("Relay (no addr) Tag() = %q, want %q", got, "Relayed")
+	if got := (Info{Kind: KindRelay}).Tag(); got != "relay" {
+		t.Errorf("Relay (no addr) Tag() = %q, want %q", got, "relay")
 	}
 }
 
@@ -100,9 +100,9 @@ func TestChip_MidLineForms(t *testing.T) {
 		want string
 	}{
 		{Info{Kind: KindLocal}, "local network"},
-		{Info{Kind: KindDirectNAT}, "direct over the internet"},
-		{FromRelay("relay.example.com:443"), "relayed via relay.example.com:443"},
-		{Info{Kind: KindRelay}, "relayed"},
+		{Info{Kind: KindDirectNAT}, "direct"},
+		{FromRelay("relay.example.com:443"), "relay via relay.example.com:443"},
+		{Info{Kind: KindRelay}, "relay"},
 	}
 	for _, c := range cases {
 		if got := c.info.Chip(); got != c.want {

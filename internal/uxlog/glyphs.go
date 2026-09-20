@@ -28,12 +28,12 @@ const (
 // allowed) apply colour. When stderr is a pipe/file we render the ASCII
 // fallback with no colour so log files stay readable.
 func Marker(kind glyphKind) string {
-	utf8, ascii, color := glyphForKind(kind)
+	utf8, ascii, token := glyphForKind(kind)
 	if !renderTTY(os.Stderr) {
 		return ascii
 	}
 	if colorEnabled() {
-		return color + utf8 + colorReset
+		return fg(token) + utf8 + colorReset
 	}
 	return utf8
 }
@@ -54,53 +54,170 @@ func Info() string { return Marker(gInfo) }
 func Retry() string { return Marker(gRetry) }
 
 // PasswordChip renders the "password required" artifact chip, degrading
-// to plain text on pipes/files like every other glyph here.
+// to plain text on pipes/files like every other glyph here. ⚠ (warning)
+// keeps the chip inside the app's glyph family — an emoji would be the
+// odd one out and renders double-width in some terminals.
 func PasswordChip() string {
-	if renderTTY(os.Stderr) {
-		return "🔒 password required"
+	if !renderTTY(os.Stderr) {
+		return "[password required]"
 	}
-	return "[password required]"
+	if colorEnabled() {
+		return fg(tokenWarning) + "⚠" + colorReset + " password required"
+	}
+	return "⚠ password required"
 }
 
-func glyphForKind(k glyphKind) (utf8, ascii, color string) {
+func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken) {
 	switch k {
 	case gCheck:
-		return "✓", "[OK]", colorGreen
+		return "✓", "[OK]", tokenSuccess
 	case gCross:
-		return "✗", "[FAIL]", colorRed
+		return "✗", "[FAIL]", tokenError
 	case gWarn:
-		return "⚠", "[!]", colorYellow
+		return "⚠", "[!]", tokenWarning
 	case gInfo:
 		// Cyan reads as "neutral status update" — distinct from green
-		// (success) and yellow (warning). Dim looks like noise.
-		return "ℹ", "[i]", colorCyan
+		// (success) and yellow (warning).
+		return "ℹ", "[i]", tokenInfo
 	case gRetry:
 		// Yellow signals "in-flight recovery" — same family as warn,
-		// brighter than dim so the retry line catches the eye.
-		return "⟳", "[~]", colorYellow
+		// so the retry line catches the eye without crying error.
+		return "⟳", "[~]", tokenWarning
 	case gSpin:
 		// The animated spinner glyph (Spinner type) carries its own
 		// rendering; this static fallback is only used in the rare
-		// non-animated paths (e.g. tests). Cyan to match Info.
-		return "…", "[*]", colorCyan
+		// non-animated paths (e.g. tests). Info cyan to match ℹ.
+		return "…", "[*]", tokenInfo
 	}
-	return "", "", ""
+	return "", "", colourToken{}
 }
 
 // ---------------------------------------------------------------------
 // Colour handling
 // ---------------------------------------------------------------------
 
-const (
-	colorReset    = "\x1b[0m"
-	colorBold     = "\x1b[1m"
-	colorRed      = "\x1b[31m"
-	colorGreen    = "\x1b[32m"
-	colorYellow   = "\x1b[33m"
-	colorCyan     = "\x1b[36m"
-	colorBoldCyan = "\x1b[1;36m"
-	colorDim      = "\x1b[2m"
+// colourToken is one semantic colour role, holding its truecolour hex
+// and the 256-colour approximation used when the terminal doesn't
+// advertise truecolour. The roles mirror the theme keys opencode's
+// theme system defines (primary / accent / success / warning / error /
+// info), so the CLI vocabulary and the TUI vocabulary stay parallel:
+//
+//	accent   — act: the share code, code box, spinner, direction arrows
+//	primary  — decide: question lines, overwrite prompts, password prompts
+//	success  — reassurance and file references (✓, paths — the green the
+//	           eye learns to read as "a file on disk")
+//	warning  — caution (⚠, "differs", stalled bar)
+//	error    — failure (✗)
+//	info     — neutral status (ℹ, --help flags)
+//
+// Rendering follows opencode's documented model: truecolour when the
+// terminal reports it (COLORTERM=truecolor/24bit), nearest 256-colour
+// approximation otherwise.
+type colourToken struct {
+	hex  string // "#rrggbb", used when truecolour is available
+	c256 string // nearest 256-colour index, the fallback
+}
+
+var (
+	tokenAccent  = colourToken{"#ff9e64", "209"}
+	tokenPrimary = colourToken{"#bb9af7", "140"}
+	tokenSuccess = colourToken{"#9ece6a", "114"}
+	tokenWarning = colourToken{"#e0af68", "179"}
+	tokenError   = colourToken{"#f7768e", "204"}
+	tokenInfo    = colourToken{"#7dcfff", "117"}
 )
+
+const (
+	colorReset = "\x1b[0m"
+	colorBold  = "\x1b[1m"
+)
+
+// truecolorEnabled reports whether the terminal advertised 24-bit colour
+// support via COLORTERM (truecolor | 24bit) — the check opencode's docs
+// prescribe before using full-palette themes. Cached: env is fixed for
+// the process lifetime.
+var (
+	tcOnce sync.Once
+	tcOK   bool
+)
+
+func truecolorEnabled() bool {
+	tcOnce.Do(func() {
+		switch os.Getenv("COLORTERM") {
+		case "truecolor", "24bit", "TrueColor", "24BIT":
+			tcOK = true
+		}
+	})
+	return tcOK
+}
+
+// sgr returns the SGR foreground parameters for the token at the
+// terminal's best fidelity: "38;2;r;g;b" under truecolour, else
+// "38;5;<idx>".
+func sgr(t colourToken) string {
+	if truecolorEnabled() {
+		r, g, b := parseHex(t.hex)
+		return "38;2;" + r + ";" + g + ";" + b
+	}
+	return "38;5;" + t.c256
+}
+
+// fg renders s in the token's colour; caller wraps with colorReset (or
+// uses the gated colour helpers in format.go).
+func fg(t colourToken) string { return "\x1b[" + sgr(t) + "m" }
+
+// fgBold renders s in the token's colour plus bold — for the share code
+// and other hero moments that need the extra weight.
+func fgBold(t colourToken) string { return "\x1b[" + "1;" + sgr(t) + "m" }
+
+// parseHex splits "#rrggbb" into decimal channel strings. Tokens are
+// compile-time data, so an error path is unreachable; on malformed input
+// it degrades to mid-grey rather than emitting a broken escape.
+func parseHex(hex string) (r, g, b string) {
+	if len(hex) == 7 && hex[0] == '#' {
+		var v [3]int
+		ok := true
+		for i := range v {
+			hi, hok := hexVal(hex[2*i+1])
+			lo, lok := hexVal(hex[2*i+2])
+			if !hok || !lok {
+				ok = false
+				break
+			}
+			v[i] = hi*16 + lo
+		}
+		if ok {
+			return itoa(v[0]), itoa(v[1]), itoa(v[2])
+		}
+	}
+	return "128", "128", "128"
+}
+
+func hexVal(c byte) (int, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0'), true
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10, true
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10, true
+	}
+	return 0, false
+}
+
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
+	}
+	var buf [3]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	return string(buf[i:])
+}
 
 var (
 	colorMu      sync.Mutex

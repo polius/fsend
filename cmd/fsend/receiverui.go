@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,8 +37,7 @@ type receiverUI struct {
 
 	mu           sync.Mutex
 	hello        *wire.SenderHello
-	files        []string
-	fileSHAs     []string          // parallel to files: SHA-256 hex of what landed
+	files        []string          // paths of what landed this run
 	names        map[uint32]string // index → sanitized name; multi-file only
 	curFile      uint32            // last index labelled on the bar
 	prev         map[uint32]uint64
@@ -169,10 +167,14 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	peer := sanitizeRemote(h.Hostname)
 	pathChip := ""
 	if ui.pathInfo.Kind != connpath.KindUnknown {
-		pathChip = uxlog.Dim("  ·  " + ui.pathInfo.Chip())
+		pathChip = "  ·  " + ui.pathInfo.Chip()
+	}
+	arrow := ""
+	if uxlog.ColorFor(os.Stderr) {
+		arrow = uxlog.Brand("⇣") + "  "
 	}
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  Incoming from %s%s\n", peer, pathChip)
+	fmt.Fprintf(os.Stderr, "  %sIncoming from %s%s\n", arrow, peer, pathChip)
 	fmt.Fprintln(os.Stderr)
 	renderArtifact(os.Stderr, h, summary, ui.sink)
 	fmt.Fprintln(os.Stderr)
@@ -188,12 +190,18 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		}
 		return true
 	}
-	question := "Save to " + saveTargetLabel(ui.outDir) + "?"
+	// The question renders in the violet prompt accent: when the user
+	// glances back at the terminal, every line asking for a decision is
+	// the same colour. Built in parts so the bold destination's reset
+	// doesn't cut the accent short.
+	var question string
 	switch {
 	case ui.sink:
-		question = "Write to stdout?"
+		question = uxlog.Prompt("Write to stdout?")
 	case h.Mode == wire.ModeStream && h.IsText:
-		question = "Accept?"
+		question = uxlog.Prompt("Accept?")
+	default:
+		question = uxlog.Prompt("Save to ") + boldIfColor(saveTargetLabel(ui.outDir)) + uxlog.Prompt("?")
 	}
 	for {
 		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", question)
@@ -223,8 +231,9 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	const preview = 5
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  %s %s from your local copies:\n",
-		uxlog.CountNoun(len(conflicts), "file"), differVerb(len(conflicts)))
+	fmt.Fprintf(os.Stderr, "  %s\n",
+		uxlog.Prompt(fmt.Sprintf("%s %s from your local copies:",
+			uxlog.CountNoun(len(conflicts), "file"), differVerb(len(conflicts)))))
 	shown := min(len(conflicts), preview)
 	for _, c := range conflicts[:shown] {
 		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
@@ -235,11 +244,11 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	prompt, hint := "  Overwrite all? [y/N] ", "  Please answer y or n."
 	if truncated {
 		fmt.Fprintf(os.Stderr, "    %s\n",
-			uxlog.Dim(fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts))))
+			fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts)))
 		prompt, hint = "  Overwrite all? [y/N/l] ", "  Please answer y or n (or l to list all)."
 	}
 	for {
-		fmt.Fprint(os.Stderr, prompt)
+		fmt.Fprint(os.Stderr, uxlog.Prompt("  Overwrite all?")+prompt[len("  Overwrite all?"):])
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
@@ -276,13 +285,22 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 }
 
 // conflictLabel renders one conflict, distinguishing type clashes from
-// content differences.
+// content differences. The row name is a file path — green. A "differs"
+// row carries the size delta in diff semantics (opencode's diffRemoved
+// / diffAdded roles): the on-disk size that a consented overwrite would
+// remove, then the incoming size that would be written. LocalSize is
+// always populated for "differs" (the classification Lstat'ed the file
+// to call it differing); type clashes have no meaningful byte pair, so
+// they keep the kind tag.
 func conflictLabel(c transfer.Conflict) string {
-	name := sanitizeForDisplay(c.RelativePath, 128)
+	name := uxlog.Path(sanitizeForDisplay(c.RelativePath, 128))
 	if c.Kind != "differs" {
 		return fmt.Sprintf("%s  (%s)", name, c.Kind)
 	}
-	return name
+	return fmt.Sprintf("%s  %s → %s",
+		name,
+		uxlog.Removed(uxlog.HumanBytes(c.LocalSize)),
+		uxlog.Added(uxlog.HumanBytes(int64(c.IncomingSize))))
 }
 
 func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
@@ -369,10 +387,13 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	ui.bar.Add(int64(d))
 }
 
-func (ui *receiverUI) onFileDone(path, sha256Hex string) {
+// onFileDone records each saved file's path for the summary headline and
+// the JSON done event. (Per-file SHA-256 hashes are not surfaced in the
+// terminal — they flooded it after folder receives; --manifest's CSV is
+// the verification surface.)
+func (ui *receiverUI) onFileDone(path, _ string) {
 	ui.mu.Lock()
 	ui.files = append(ui.files, path)
-	ui.fileSHAs = append(ui.fileSHAs, sha256Hex)
 	ui.mu.Unlock()
 }
 
@@ -384,7 +405,6 @@ func (ui *receiverUI) onFileDone(path, sha256Hex string) {
 func (ui *receiverUI) resetAttemptCounts() {
 	ui.mu.Lock()
 	ui.files = ui.files[:0]
-	ui.fileSHAs = ui.fileSHAs[:0]
 	ui.skippedSame = 0
 	ui.kept = 0
 	ui.mu.Unlock()
@@ -456,7 +476,6 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	ui.mu.Lock()
 	h := ui.hello
 	files := append([]string(nil), ui.files...)
-	fileSHAs := append([]string(nil), ui.fileSHAs...)
 	firstByte := ui.firstByte
 	kept := ui.kept
 	keptByChoice := ui.keptByChoice
@@ -490,10 +509,9 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		// overcount what actually landed — say how many of the offer were written.
 		if kept > 0 && !ui.sink {
 			headline = fmt.Sprintf("Saved %d of %s to %s",
-				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), displayPath(ui.outDir))
+				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), uxlog.Path(displayPath(ui.outDir)))
 		}
 		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
-		printSHAs(f, files, fileSHAs)
 	}
 	// manifestErr is set by onManifest, which runs on this goroutine before we
 	// return, so no lock is needed. The transfer succeeded; the failure is only
@@ -581,7 +599,9 @@ func sameSink(a, b *os.File) bool {
 	return err1 == nil && err2 == nil && os.SameFile(ai, bi)
 }
 
-// headline names what landed where for the summary line.
+// headline names what landed where for the summary line. Names and
+// destinations are file paths — green, the opencode file-reference
+// convention.
 func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	if ui.sink {
 		return "Received"
@@ -596,28 +616,22 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 			name = sanitizeForDisplay(h.DisplayName, 128)
 		}
 	}
-	dest := displayPath(ui.outDir)
+	dest := uxlog.Path(displayPath(ui.outDir))
 	if name == "" {
 		return "Saved to " + dest
 	}
-	return "Saved " + name + " to " + dest
+	return "Saved " + uxlog.Path(name) + " to " + dest
 }
 
-// maxSHALines caps the per-file hash lines under the summary: a folder
-// send would flood the terminal, and beyond a handful nobody eyeballs
-// hashes anyway — the full list belongs in --manifest.
-const maxSHALines = 5
-
-// printSHAs surfaces each saved file's SHA-256 for independent verification
-// (compare against `shasum -a 256` on the sender). One dim line per file,
-// capped at maxSHALines. Gated on --quiet like every other summary line.
-func printSHAs(f *flags, files, shas []string) {
-	if f.quiet || len(files) == 0 || len(files) != len(shas) || len(files) > maxSHALines {
-		return
+// boldIfColor wraps s in bold green when stderr can render it — used for
+// the destination in the accept prompt: a file path (green, the
+// opencode file-reference convention) that is also the answer to "where
+// will this actually land?" (bold). Plain on pipes/files.
+func boldIfColor(s string) string {
+	if !uxlog.ColorFor(os.Stderr) {
+		return s
 	}
-	for i, p := range files {
-		fmt.Fprintf(os.Stderr, "  %s %s  %s\n", uxlog.Dim("sha256"), shas[i], filepath.Base(p))
-	}
+	return uxlog.Bold(uxlog.Path(s))
 }
 
 // printRecvSummary renders the post-transfer outcome line. Kept-back files
@@ -647,17 +661,17 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 		printUpdateNotice(f)
 		return
 	}
-	parts := summaryParts(total, moved, "received", elapsed, path)
+	clauses := ""
 	if skippedSame > 0 {
-		parts = append(parts, fmt.Sprintf("%s up to date", uxlog.CountNoun(skippedSame, "file")))
+		clauses += "  ·  " + uxlog.Good(uxlog.CountNoun(skippedSame, "file")+" up to date")
 	}
 	// No "(use --overwrite)" here: the remedy already appears once — the
 	// upfront --yes warning or E013's action line — and after an explicit
 	// "n" at the prompt it must not appear at all.
 	if kept > 0 {
-		parts = append(parts, fmt.Sprintf("%s kept", uxlog.CountNoun(kept, "file")))
+		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(kept, "file")+" kept")
 	}
-	fmt.Fprintf(os.Stderr, "%s %s  ·  %s\n", glyph, headline, strings.Join(parts, "  ·  "))
+	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, moved, "received", elapsed, path), clauses)
 	uxlog.Notify("Received " + uxlog.HumanBytes(total))
 	printUpdateNotice(f)
 }

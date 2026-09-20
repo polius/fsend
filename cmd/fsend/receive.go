@@ -207,9 +207,9 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func(attempt int) (st
 		fmt.Fprintln(os.Stderr)
 		if attempt > 1 {
 			return readPasswordHiddenCtx(ctx,
-				fmt.Sprintf("  Wrong password — try again (%d/%d): ", attempt, transfer.PasswordAttempts), f.quiet)
+				fmt.Sprintf("  %s (%d/%d): ", uxlog.Prompt("Wrong password — try again"), attempt, transfer.PasswordAttempts), f.quiet)
 		}
-		return readPasswordHiddenCtx(ctx, "  Password for this transfer: ", f.quiet)
+		return readPasswordHiddenCtx(ctx, "  "+uxlog.Prompt("Password for this transfer: "), f.quiet)
 	}
 }
 
@@ -231,7 +231,7 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 			// The name is peer-supplied; show exactly what will land on disk
 			// (same derivation as the engine) so consent covers the filename.
 			name := sanitizeForDisplay(transfer.StreamFileName(h.DisplayName), 128)
-			_, _ = fmt.Fprintf(w, "      stdin stream  ·  saves as %s  ·  size unknown%s\n", name, pwChip)
+			_, _ = fmt.Fprintf(w, "      stdin stream  ·  saves as %s  ·  size unknown%s\n", uxlog.Path(name), pwChip)
 		}
 		return
 	}
@@ -248,7 +248,8 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 	fileCount := uxlog.CountNoun(len(summary.Files), "file")
 	lead := fileCount
 	if name != fileCount {
-		lead = name + "  ·  " + fileCount
+		// The wrapping folder/file name is a path — green, opencode-style.
+		lead = uxlog.Path(name) + "  ·  " + fileCount
 	}
 	diff := ""
 	if summary.Differing > 0 {

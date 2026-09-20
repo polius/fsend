@@ -654,7 +654,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 	// runSenderTransferLoop.
 	if !f.quiet {
 		fmt.Fprintf(os.Stderr, "%s Receiver connected%s\n",
-			uxlog.Check(), uxlog.Dim("  ·  "+pathInfo.Chip()))
+			uxlog.Check(), "  ·  "+pathInfo.Chip())
 	}
 
 	if winner.lan != nil {
@@ -819,7 +819,15 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// dropping to the sent bytes. The skipped-file count explains the gap and
 	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
 	s := stats()
-	printSendSummary(f, int64(plan.totalBytes), s, elapsed, pathInfo)
+	// The summary names the subject when a single path was sent — the
+	// file-reference green mirrors the receiver's "Saved X to Y" shape.
+	// Stream/text sends have no path to name (their labels, "text" /
+	// "stdin stream", are not paths), so they stay the plain "Sent".
+	subject := ""
+	if plan.mode == wire.ModeFiles {
+		subject = plan.label
+	}
+	printSendSummary(f, subject, int64(plan.totalBytes), s, elapsed, pathInfo)
 	ev := jsonDoneEvent{Ok: true, Role: "sender",
 		BytesMoved: ptr64(s.moved), DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
 	// A piped stdin stream has no known size; per the JSON contract an omitted

@@ -1133,21 +1133,21 @@ func TestPrintCancelKeptHint(t *testing.T) {
 	}
 }
 
-func TestSummaryParts_ResumeShowsMovedAndHonestRate(t *testing.T) {
+func TestSummaryLine_ResumeShowsMovedAndHonestRate(t *testing.T) {
 	// 200 MB total, 50 MB moved in 1s → size annotated with the moved
 	// clause and the rate computed from moved, not total.
 	total, moved := int64(200_000_000), int64(50_000_000)
-	parts := strings.Join(summaryParts(total, moved, "sent", time.Second, mustLANInfo()), "  ·  ")
-	if !strings.Contains(parts, "200 MB (50 MB sent)") {
-		t.Errorf("missing moved clause: %s", parts)
+	line := summaryLine(total, moved, "sent", time.Second, mustLANInfo())
+	if !strings.Contains(line, "200 MB (50 MB sent)") {
+		t.Errorf("missing moved clause: %s", line)
 	}
-	if !strings.Contains(parts, "50 MB/s") {
-		t.Errorf("rate must derive from moved bytes: %s", parts)
+	if !strings.Contains(line, "50 MB/s") {
+		t.Errorf("rate must derive from moved bytes: %s", line)
 	}
 	// Non-resumed: no annotation, rate from the full size.
-	parts = strings.Join(summaryParts(total, total, "sent", time.Second, mustLANInfo()), "  ·  ")
-	if strings.Contains(parts, "(") || !strings.Contains(parts, "200 MB/s") {
-		t.Errorf("non-resumed summary changed shape: %s", parts)
+	line = summaryLine(total, total, "sent", time.Second, mustLANInfo())
+	if strings.Contains(line, "sent") || !strings.Contains(line, "200 MB/s") {
+		t.Errorf("non-resumed summary changed shape: %s", line)
 	}
 }
 
@@ -1184,7 +1184,7 @@ func TestPrintPath_DebugOnly(t *testing.T) {
 		t.Errorf("non-debug should print nothing, got %q", got)
 	}
 	got := captureStderr(t, func() { printPath(&flags{debug: true}, relay) })
-	if !strings.Contains(got, "Relayed via relay.example.com:443") {
+	if !strings.Contains(got, "relay via relay.example.com:443") {
 		t.Errorf("debug headline missing:\n%s", got)
 	}
 	got = captureStderr(t, func() { printPath(&flags{debug: true}, connpath.FromICE("srflx", "host")) })
@@ -1200,8 +1200,8 @@ func TestPromptAccept_PathChipShown(t *testing.T) {
 		want string
 	}{
 		{connpath.FromLAN(), "local network"},
-		{connpath.FromICE("srflx", "host"), "direct over the internet"},
-		{connpath.FromRelay("relay.example.com:443"), "relayed via relay.example.com:443"},
+		{connpath.FromICE("srflx", "host"), "direct"},
+		{connpath.FromRelay("relay.example.com:443"), "relay via relay.example.com:443"},
 	}
 	for _, c := range cases {
 		got := captureStderr(t, func() {
@@ -1256,14 +1256,18 @@ func TestResolveOutDir(t *testing.T) {
 }
 
 // With zero bytes moved the elapsed figure is prompt dwell or connection
-// wall time, not a transfer duration — it must not render.
-func TestSummaryParts_ZeroMovedOmitsDuration(t *testing.T) {
-	parts := strings.Join(summaryParts(4096, 0, "sent", 5800*time.Millisecond, mustLANInfo()), "  ·  ")
-	if strings.Contains(parts, "5.8s") {
-		t.Errorf("0 B moved must not show a duration: %s", parts)
+// wall time, not a transfer duration — it must not render. The moved
+// clause is likewise noise at 0 B ("(0 B sent)" after "Sent").
+func TestSummaryLine_ZeroMovedOmitsDuration(t *testing.T) {
+	line := summaryLine(4096, 0, "sent", 5800*time.Millisecond, mustLANInfo())
+	if strings.Contains(line, "5.8s") {
+		t.Errorf("0 B moved must not show a duration: %s", line)
 	}
-	if !strings.Contains(parts, "4.1 KB (0 B sent)") {
-		t.Errorf("size clause changed shape: %s", parts)
+	if strings.Contains(line, "sent") {
+		t.Errorf("0 B moved must not show a moved clause: %s", line)
+	}
+	if !strings.Contains(line, "4.1 KB") {
+		t.Errorf("size clause changed shape: %s", line)
 	}
 }
 
@@ -1272,7 +1276,7 @@ func TestSummaryParts_ZeroMovedOmitsDuration(t *testing.T) {
 // "Sent · (0 B sent)". Kept files still win over the up-to-date headline.
 func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
 	got := captureStderr(t, func() {
-		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
+		printSendSummary(&flags{}, "f.txt", 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
 	})
 	if !strings.Contains(got, "Already up to date") || !strings.Contains(got, "1 file unchanged") {
 		t.Errorf("all-skipped summary must read up to date, got %q", got)
@@ -1283,7 +1287,7 @@ func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
 
 	// Kept files: still the "Nothing sent" warning path.
 	got = captureStderr(t, func() {
-		printSendSummary(&flags{}, 4096, senderStats{skippedFiles: 1, keptFiles: 1}, time.Millisecond, mustLANInfo())
+		printSendSummary(&flags{}, "f.txt", 4096, senderStats{skippedFiles: 1, keptFiles: 1}, time.Millisecond, mustLANInfo())
 	})
 	if !strings.Contains(got, "Nothing sent") || !strings.Contains(got, "kept by receiver") {
 		t.Errorf("kept-file summary changed shape: %q", got)
@@ -1319,12 +1323,12 @@ func TestPrintRecvSummary_KeptCarriesNoFlagAdvice(t *testing.T) {
 
 // A stream's total is 0 until EOF; the summary must report the moved
 // bytes as the size, not "0 B".
-func TestSummaryParts_UnknownTotalUsesMoved(t *testing.T) {
-	parts := strings.Join(summaryParts(0, 15_000_000, "sent", 3*time.Second, mustLANInfo()), "  ·  ")
-	if !strings.Contains(parts, "15 MB") || strings.Contains(parts, "0 B") {
-		t.Errorf("stream summary should carry the moved size: %s", parts)
+func TestSummaryLine_UnknownTotalUsesMoved(t *testing.T) {
+	line := summaryLine(0, 15_000_000, "sent", 3*time.Second, mustLANInfo())
+	if !strings.Contains(line, "15 MB") || strings.Contains(line, "0 B") {
+		t.Errorf("stream summary should carry the moved size: %s", line)
 	}
-	if strings.Contains(parts, "(") {
-		t.Errorf("no resume clause expected for a stream: %s", parts)
+	if strings.Contains(line, "sent") {
+		t.Errorf("no resume clause expected for a stream: %s", line)
 	}
 }

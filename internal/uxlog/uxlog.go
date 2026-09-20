@@ -168,6 +168,14 @@ func terminalWidth(fallback int) int {
 	return w
 }
 
+// TerminalWidth is terminalWidth for one-shot renders in cmd/fsend
+// (e.g. the code box): callers that shape a single block to the
+// terminal's width, not a per-frame redraw. Falls back to the given
+// width when stderr isn't a measurable terminal.
+func TerminalWidth(fallback int) int {
+	return terminalWidth(fallback)
+}
+
 // rateThreshold is the transfer size below which rate + ETA are
 // suppressed. Small transfers (sub-MB) finish in less time than the
 // PAKE handshake takes; reporting "13 B/s" for a 169 B file is just
@@ -229,9 +237,10 @@ func Notify(msg string) {
 // pass true only for multi-file transfers — a single file's name is
 // already in the pre-transfer block, so the columns go to the bar instead.
 //
-// route is the connection tag ("LAN"/"direct"/"relay"), always known
-// before the first byte — data only flows on an established path. Rendered
-// as a dim chip so a long transfer stays honest about which path it rides.
+// route is the connection tag ("local network"/"direct"/"relay"), always
+// known before the first byte — data only flows on an established path.
+// Rendered as a dim chip so a long transfer stays honest about which
+// path it rides.
 func New(totalBytes int64, showNames bool, route string) *Progress {
 	// Plain mode for pipes/CI, and for terminals that report a 0×0
 	// window (some pty wrappers) — mpb discards every row at height 0.
@@ -338,12 +347,14 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 					}
 					return "  ·  " + HumanBytes(int64(r)) + "/s"
 				}),
-				// Dim only the stalled marker. Measuring width off the plain
-				// string above keeps mpb from counting the ANSI escapes — a
-				// colorized decor.Any costs ~6 columns of bar during a stall.
+				// Colour only the stalled marker — the warning token, the
+				// caution family, since a stall is a soft warning. Measuring
+				// width off the plain string above keeps mpb from counting
+				// the ANSI escapes — a colorized decor.Any costs ~6 columns
+				// of bar during a stall.
 				func(str string) string {
 					if str == stalledChip {
-						return Dim(str)
+						return fg(tokenWarning) + str + colorReset
 					}
 					return str
 				},
@@ -372,20 +383,20 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		)
 	}
 	if route != "" {
-		// Static route chip, dimmed at render time: Meta keeps mpb's width
-		// math off the ANSI escapes (same trick as the stalled marker).
-		appendDecs = append(appendDecs, decor.Meta(
-			decor.Name("  ·  "+route),
-			func(str string) string { return Dim(str) },
-		))
+		// Static route chip, plain default foreground — the bar's other
+		// decorators (rate, ETA, file chip) provide the emphasis around
+		// it; a grey or dim chip here only costs readability.
+		appendDecs = append(appendDecs, decor.Name("  ·  "+route))
 	}
 	if showNames {
 		// Current-file chip, last so its per-file width changes don't
-		// jiggle the rate/ETA chips. Budget re-derives from the live
-		// width every frame, so a mid-transfer resize re-truncates (or
-		// drops) the name; terminalWidth falls back to the width seen at
-		// construction if the size query starts failing.
-		appendDecs = append(appendDecs, decor.Any(func(s decor.Statistics) string {
+		// jiggle the rate/ETA chips. The name is a file path — Meta paints
+		// it green (the file-reference accent) at render time while mpb
+		// measures width off the plain form. Budget re-derives from the
+		// live width every frame, so a mid-transfer resize re-truncates
+		// (or drops) the name; terminalWidth falls back to the width seen
+		// at construction if the size query starts failing.
+		appendDecs = append(appendDecs, decor.Meta(decor.Any(func(s decor.Statistics) string {
 			name, _ := p.label.Load().(string)
 			if name == "" {
 				return ""
@@ -395,7 +406,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 				return ""
 			}
 			return "  ·  " + truncateName(name, chipCap)
-		}))
+		}), func(str string) string { return Path(str) }))
 	}
 
 	p.bar = p.mp.New(totalBytes,
@@ -459,12 +470,16 @@ func (p *Progress) SetLabel(name string) {
 	p.label.Store(name)
 }
 
-// truncateName caps s at max runes, cutting in the middle so the tail —
-// where the extension lives — stays visible. Runes, not display cells: a
-// name heavy in wide glyphs (CJK, emoji) can overflow the chip's budget,
-// but mpb clamps overflowing decorators (shrinking the bar) rather than
-// wrapping, so the failure mode is a shorter name, never a broken line.
-// Mirrors the consent-time truncation in cmd/fsend's sanitizer.
+// truncateName caps s at max runes, cutting from the left so the tail —
+// the basename, where the distinctive part and the extension live —
+// stays visible; "…" marks the cut. A path chip that shrinks should
+// lose its leading directories first (the wrapping folder is already
+// named in the artifact headline), never the middle of the filename —
+// "myproj/asse…deo1.bin" hides the one part that identifies the file.
+// Runes, not display cells: a name heavy in wide glyphs (CJK, emoji)
+// can overflow the chip's budget, but mpb clamps overflowing decorators
+// (shrinking the bar) rather than wrapping, so the failure mode is a
+// shorter name, never a broken line.
 func truncateName(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
@@ -473,8 +488,7 @@ func truncateName(s string, max int) string {
 	if max <= 0 {
 		return "" // nothing fits; avoids a negative slice bound below
 	}
-	tail := min(8, max/2)
-	return string(r[:max-tail-1]) + "…" + string(r[len(r)-tail:])
+	return "…" + string(r[len(r)-(max-1):])
 }
 
 // SetTotal updates the bar's total. Useful for stdin transfers where the
