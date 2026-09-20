@@ -28,11 +28,14 @@ func runUpdate() error {
 	if err != nil {
 		return fmt.Errorf("%w: locating the fsend binary: %v", fserrors.ErrUpdateFailed, err)
 	}
-	// Resolve symlinks so the install lands on the real binary and an
-	// on-PATH `~/.local/bin/fsend → /opt/fsend/fsend` link keeps working.
-	if resolved, rerr := filepath.EvalSymlinks(binPath); rerr == nil && resolved != "" {
-		binPath = resolved
-	}
+	// Resolve symlinks — but only when the binary itself is one — so the
+	// install lands on the real binary and an on-PATH
+	// `~/.local/bin/fsend → /opt/fsend/fsend` link keeps working. Always
+	// resolving would also rewrite symlinked directories (/var →
+	// /private/var on macOS), handing the installer a physical prefix
+	// that PATH spells differently: the installer then appends a
+	// duplicate PATH line and warns about a shadow that isn't there.
+	binPath = resolveBinaryPath(binPath)
 	// A brew-managed binary must not be overwritten behind brew's back —
 	// the Cellar file would diverge from the formula's metadata and the
 	// next `brew upgrade` would fight it. Checked before any network work.
@@ -42,10 +45,13 @@ func runUpdate() error {
 
 	// The installers are per-user and refuse root (see scripts/install.*).
 	// Mirror that here so the failure happens before any network work, with
-	// an actionable message instead of an installer abort mid-update.
-	// Geteuid returns -1 on Windows, where the check does not apply.
-	if os.Geteuid() == 0 {
-		return fmt.Errorf("%w: refusing to update as root — fsend installs per-user; run --update as your normal user", fserrors.ErrUpdateFailed)
+	// an actionable message instead of an installer abort mid-update. The
+	// same FSEND_ALLOW_ROOT opt-in applies: a root install (container,
+	// appliance) must not become a dead end for --update. The env var
+	// carries through to the installer re-run below, so it refuses only
+	// once. Geteuid returns -1 on Windows, where the check does not apply.
+	if os.Geteuid() == 0 && !rootOptIn() {
+		return fserrors.ErrUpdateRootRefused
 	}
 
 	fmt.Fprintln(os.Stderr, "  Checking the latest release...")
@@ -63,6 +69,30 @@ func runUpdate() error {
 		return fmt.Errorf("%w: %v", fserrors.ErrUpdateFailed, err)
 	}
 	return nil
+}
+
+// rootOptIn reports whether the user explicitly accepted a root install
+// or update via FSEND_ALLOW_ROOT — the escape hatch for single-user
+// machines (containers, appliances) that have no other user. Same value
+// semantics as FORCE_COLOR: empty, "0", or "false" means off.
+func rootOptIn() bool {
+	switch os.Getenv("FSEND_ALLOW_ROOT") {
+	case "", "0", "false":
+		return false
+	}
+	return true
+}
+
+// resolveBinaryPath resolves the executable's path through file
+// symlinks, leaving it alone otherwise. See the call site in runUpdate
+// for why directory symlinks must stay untouched.
+func resolveBinaryPath(binPath string) string {
+	if fi, err := os.Lstat(binPath); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if resolved, rerr := filepath.EvalSymlinks(binPath); rerr == nil && resolved != "" {
+			return resolved
+		}
+	}
+	return binPath
 }
 
 // managedByHomebrew reports whether the (symlink-resolved) binary lives

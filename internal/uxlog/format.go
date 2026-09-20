@@ -90,10 +90,10 @@ func CountNoun(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// Code renders a share code in bold + accent orange — the hero moment —
-// so it stands out as the one thing the user is about to type or
-// dictate. Degrades to plain text when color is disabled or stderr is
-// not a TTY.
+// Code renders a share code — or any command the user is about to run —
+// in bold + accent orange, the hero treatment: the one thing on the line
+// the user is about to type or dictate. Degrades to plain text when
+// color is disabled or stderr is not a TTY.
 func Code(c string) string {
 	if !colorEnabled() {
 		return c

@@ -139,6 +139,10 @@ var (
 	// fight the next `brew` run), not a failure — distinct from E033/E035 so
 	// the message points at brew instead of "reinstall"/"remove by hand".
 	ErrHomebrewManaged = errors.New("managed by Homebrew")
+	// E040 — `fsend --update` as root without the FSEND_ALLOW_ROOT opt-in.
+	// A policy stop, like E039: it needs its own entry so the guidance is
+	// the opt-in command, not E033's "check your internet connection".
+	ErrUpdateRootRefused = errors.New("update refused as root")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -460,6 +464,12 @@ var catalog = map[error]Entry{
 	ErrHomebrewManaged: {
 		Code: "E039", Exit: 39,
 		Message: "This fsend is managed by Homebrew.",
+	},
+	ErrUpdateRootRefused: {
+		Code: "E040", Exit: 40,
+		Message: "Refusing to update as root — fsend installs per-user.",
+		// The opt-in command renders as a block (see renderError), so the
+		// Action is left empty rather than competing with it.
 	},
 }
 

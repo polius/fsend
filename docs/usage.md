@@ -405,6 +405,7 @@ failure. For what to *do* about a given error, see
 | `37`  | `E037` — the server's relay spent its daily byte budget; forwarding is paused until 00:00 UTC. |
 | `38`  | `E038` — files received, but the `--manifest` record could not be written. |
 | `39`  | `E039` — `fsend --update`/`--uninstall` on a Homebrew-managed binary; use `brew upgrade`/`brew uninstall fsend`. |
+| `40`  | `E040` — `fsend --update` as root; opt in with `FSEND_ALLOW_ROOT=1` on single-user machines (containers). |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 | `141` | The output pipe closed early (e.g. `fsend <code> --out - \| head`). Shell convention (128+SIGPIPE); nothing is printed. |

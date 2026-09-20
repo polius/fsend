@@ -2,7 +2,8 @@
 # fsend installer — https://github.com/polius/fsend
 #
 # Downloads a release, verifies its SHA-256 checksum, and installs the
-# binary. Per-user by design: refuses to run as root, never elevates,
+# binary. Per-user by design: refuses to run as root (opt in with
+# FSEND_ALLOW_ROOT=1 on single-user machines), never elevates,
 # never asks for a password. Everything it does is readable
 # top-to-bottom below.
 #
@@ -32,16 +33,15 @@ if [ -n "$PREFIX" ]; then PREFIX_EXPLICIT=1; else PREFIX_EXPLICIT=0; fi
 # auto-detection the fsend binary applies (https://no-color.org).
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     esc="$(printf '\033')"
-    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_MUT="${esc}[2m" C_RST="${esc}[0m"
+    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_BLD="${esc}[1m" C_RST="${esc}[0m"
 else
-    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_MUT='' C_RST=''
+    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_BLD='' C_RST=''
 fi
 
 err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
 info() { printf '%s›%s %s\n' "$C_CYN" "$C_RST" "$*" >&2; }
 warn() { printf '%s!%s %s\n' "$C_YLW" "$C_RST" "$*" >&2; }
 ok()   { printf '%s✓%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
-mut()  { printf '%s%s%s\n' "$C_MUT" "$*" "$C_RST" >&2; }
 vinfo() {
     if [ "$VERBOSE" = "1" ]; then
         info "$@"
@@ -66,8 +66,11 @@ Options:
 Environment:
   FSEND_PREFIX, PREFIX    Same as -p/--prefix (the flag wins)
   FSEND_VERSION           Same as -v/--version (the flag wins)
+  FSEND_ALLOW_ROOT        Set to 1 to install as root (single-user
+                          machines like containers)
 
-Per-user install: the script refuses to run as root and never uses sudo.
+Per-user install: the script refuses to run as root and never uses sudo
+(override with FSEND_ALLOW_ROOT=1 on single-user machines like containers).
 More: https://github.com/polius/fsend#readme
 EOF
 }
@@ -138,38 +141,35 @@ default_prefix() {
 download() {
     url="$1"
     out="$2"
-    # HTTPS-only, except through the test seam (FSEND_RELEASE_BASE_URL).
-    if [ -n "${FSEND_RELEASE_BASE_URL:-}" ]; then
-        pin=""
-    else
-        pin="--proto =https"
-    fi
     if command -v curl >/dev/null 2>&1; then
-        # Progress bar only on a tty (-s hides it, so swap the flag set).
-        # shellcheck disable=SC2086  # $pin is an intentional word split
-        if [ -t 2 ]; then
-            curl $pin -fS#L --tlsv1.2 -o "$out" "$url" || err "download failed: $url"
+        # HTTPS-only, except through the test seam (FSEND_RELEASE_BASE_URL).
+        # The pin is curl-only: no wget flavor accepts --proto (both GNU
+        # and busybox abort on it). Wget still only fetches the hardcoded
+        # https URL, so there is nothing to downgrade.
+        if [ -n "${FSEND_RELEASE_BASE_URL:-}" ]; then
+            pin=""
         else
-            curl $pin -fsSL --tlsv1.2 -o "$out" "$url" || err "download failed: $url"
+            pin="--proto =https"
         fi
+        # Quiet: downloads are small and the outro narrates the result —
+        # a progress meter is noise.
+        # shellcheck disable=SC2086  # $pin is an intentional word split
+        curl $pin -fsSL --tlsv1.2 -o "$out" "$url" || err "download failed: $url"
     elif command -v wget >/dev/null 2>&1; then
-        # shellcheck disable=SC2046 disable=SC2086  # $pin/$(...) split intentionally
-        wget $(wget_flags) $pin -O "$out" "$url" || err "download failed: $url"
+        # shellcheck disable=SC2046 disable=SC2086  # $(...) split intentionally
+        wget $(wget_flags) -O "$out" "$url" || err "download failed: $url"
     else
         err "need curl or wget to download fsend"
     fi
 }
 
-# Flags for the wget flavor in use: an explicit TLS floor when supported
-# (GNU wget; busybox aborts on the unknown flag but still validates
-# certificates), and progress that mirrors the curl behavior above.
+# Flags for the wget flavor in use: quiet output (same rule as curl
+# above) and an explicit TLS floor when supported (GNU wget; busybox
+# aborts on the unknown flag but still validates certificates). This is
+# wget's only TLS control — curl's --proto pin is curl-only.
 wget_flags() {
+    printf '%s ' -q
     if wget --help 2>&1 | grep -q -- --secure-protocol; then printf '%s ' --secure-protocol=TLSv1_2; fi
-    if [ -t 2 ]; then
-        if wget --help 2>&1 | grep -q -- --show-progress; then printf '%s ' --show-progress; fi
-    else
-        printf '%s ' -q
-    fi
 }
 
 # winpath converts an MSYS/Cygwin path to a Windows path for native
@@ -324,12 +324,21 @@ main() {
 
     # Per-user by design. Running a network script as root is exactly how a
     # compromised mirror becomes a compromised machine, and a root install
-    # has no single-user PATH story. Containers/CI should fetch the release
-    # tarball directly instead.
+    # has no single-user PATH story. Single-user machines (containers,
+    # appliances, CI) have no other user though: FSEND_ALLOW_ROOT is the
+    # explicit opt-in, with a warning so the deviation lands in logs.
     if [ "$(id -u)" = "0" ]; then
-        err "refusing to run as root — fsend installs per-user, without sudo.
-  run as your normal user, or download a release archive by hand:
-  https://github.com/${REPO}/releases"
+        case "${FSEND_ALLOW_ROOT:-}" in
+            ""|0|false)
+                err "refusing to run as root — fsend installs per-user, without sudo.
+  to install anyway, run:
+
+      ${C_BLD}FSEND_ALLOW_ROOT=1 curl -fsSL https://getfsend.alzina.dev | sh${C_RST}
+
+  or download a release by hand: https://github.com/polius/fsend/releases"
+                ;;
+        esac
+        warn "installing as root (FSEND_ALLOW_ROOT) — meant for single-user machines like containers"
     fi
 
     os="$(detect_os)"
@@ -343,7 +352,7 @@ main() {
     # Upgrade awareness: say what's already installed before touching it.
     if _prev="$(command -v "$BINARY" 2>/dev/null)"; then
         _cur="$("$_prev" --version 2>/dev/null | head -n1 || true)"
-        [ -n "$_cur" ] && mut "currently installed: $_cur"
+        [ -n "$_cur" ] && printf 'currently installed: %s\n' "$_cur" >&2
     fi
 
     tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend.XXXXXXXX)"
@@ -392,7 +401,7 @@ main() {
     # side of the trust model (see docs/security.md).
     vinfo "verifying checksum"
     verify_checksum "$tmp/$archive" "$tmp/checksums.txt"
-    ok "verified"
+    ok "checksum verified"
 
     vinfo "extracting"
     case "$ext" in
@@ -430,11 +439,11 @@ main() {
         printf '    %s\n' "$PREFIX/$bin_file" >&2
     fi
 
+    ok "fsend $version installed → $PREFIX/$bin_file"
     printf '\n' >&2
-    mut "fsend $version installed → $PREFIX/$bin_file"
-    printf 'fsend <path>    %ssend a file%s\n' "$C_MUT" "$C_RST" >&2
-    printf 'fsend --help    %sall options%s\n' "$C_MUT" "$C_RST" >&2
-    mut "docs: $DOCS"
+    printf '  fsend <path>    send a file\n' >&2
+    printf '  fsend --help    all options\n' >&2
+    printf '  docs:           %s\n' "$DOCS" >&2
 }
 
 while [ $# -gt 0 ]; do

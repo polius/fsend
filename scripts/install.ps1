@@ -71,7 +71,6 @@ $mark = if ($PSVersionTable.PSEdition -eq 'Core') {
 function Info($m) { Write-Host "$($mark.info) $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "$($mark.ok) $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "$($mark.warn) $m" -ForegroundColor Yellow }
-function Mut($m)  { Write-Host $m -ForegroundColor DarkGray }
 # -Verbose is a PowerShell common parameter (available via CmdletBinding):
 # it flips $VerbosePreference, which is exactly the opt-in we want.
 function VInfo($m) { if ($VerbosePreference -eq 'Continue') { Info $m } }
@@ -132,15 +131,15 @@ function Get-Arch {
 }
 
 function Download($url, $out) {
-    # curl.exe ships in-box since Windows 10 1803 and shows a progress bar;
-    # Invoke-WebRequest is the fallback for stripped-down hosts.
+    # curl.exe ships in-box since Windows 10 1803; Invoke-WebRequest is the
+    # fallback for stripped-down hosts. Quiet: downloads are small and the
+    # outro narrates the result - a progress meter is noise.
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
-        $flags = if ([Console]::IsErrorRedirected) { '-fsSL' } else { '-fS#L' }
         # HTTPS-only pin, except through the test seam (FSEND_RELEASE_BASE_URL):
         # a caller that redirects the release source owns its transport —
         # same rule as install.sh.
-        $curlArgs = @($flags, '--tlsv1.2')
+        $curlArgs = @('-fsSL', '--tlsv1.2')
         if (-not $env:FSEND_RELEASE_BASE_URL) { $curlArgs += @('--proto', '=https') }
         $curlArgs += @('-o', $out, $url)
         & $curl.Source @curlArgs
@@ -171,7 +170,7 @@ try {
         $cur = $null
         try { $cur = (& $existing.Source --version 2>$null | Select-Object -First 1) } catch { $cur = $null }
         $ErrorActionPreference = $prevEAP
-        if ($cur) { Mut "currently installed: $cur ($($existing.Source))" }
+        if ($cur) { Write-Host "currently installed: $cur ($($existing.Source))" }
     }
 
     $checksums = Join-Path $tmp 'checksums.txt'
@@ -218,7 +217,7 @@ try {
     $expected = (($row -split '\s+') | Where-Object { $_ })[0].ToLower()
     $actual   = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $tmp $archive)).Hash.ToLower()
     if ($actual -ne $expected) { Err "checksum mismatch: expected $expected, got $actual" }
-    Ok 'verified'
+    Ok 'checksum verified'
 
     VInfo 'extracting'
     Expand-Archive -LiteralPath (Join-Path $tmp $archive) -DestinationPath $tmp -Force
@@ -290,13 +289,11 @@ try {
     # the running image (locked) and skips silently; the updater reaps it.
     Remove-Item -LiteralPath $oldDst -Force -ErrorAction SilentlyContinue
 
+    Ok "fsend $Version installed -> $dst"
     Write-Host ''
-    Mut "fsend $Version installed -> $dst"
-    Write-Host 'fsend <path>    ' -NoNewline
-    Write-Host 'send a file' -ForegroundColor DarkGray
-    Write-Host 'fsend --help    ' -NoNewline
-    Write-Host 'all options' -ForegroundColor DarkGray
-    Mut "docs: https://github.com/$Repo#readme"
+    Write-Host '  fsend <path>    send a file'
+    Write-Host '  fsend --help    all options'
+    Write-Host "  docs:           https://github.com/$Repo#readme"
 }
 finally {
     Remove-Item -Recurse -Force -Path $tmp -ErrorAction SilentlyContinue
