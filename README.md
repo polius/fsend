@@ -56,8 +56,6 @@ brew install polius/tap/fsend
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
-All three verify the release's SHA-256 checksum before installing.
-
 <details>
 <summary>Other install methods</summary>
 

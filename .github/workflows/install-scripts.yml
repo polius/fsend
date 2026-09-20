@@ -1,0 +1,37 @@
+name: install-scripts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The installer's pre-checked os/arch list must match what the
+      # release actually builds (see .goreleaser.yml).
+      - run: python3 scripts/check-release-targets.py
+      - run: shellcheck scripts/install.sh scripts/smoke-install.sh
+      # Full download -> verify -> install cycle against a local fixture
+      # server. --with-root-test asserts the root refusal; --with-busybox-test
+      # exercises the wget fallback + ash semantics in an Alpine container.
+      - run: sh scripts/smoke-install.sh --with-root-test --with-busybox-test
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Error
+          if ($findings) {
+            $findings | Format-Table -AutoSize
+            exit 1
+          }
+      - name: Smoke test
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/smoke-install.ps1

@@ -127,20 +127,16 @@ What makes a short code safe to use as the whole secret:
 
 ## Release integrity
 
-Each release ships a `checksums.txt` that is **signed in CI with keyless
-[cosign](https://docs.sigstore.dev/)** (Sigstore Fulcio + Rekor), bound
-to the release workflow's identity. The installer and `fsend --update`
-then verify two separate things:
+Each release ships a `checksums.txt` with the SHA-256 of every archive.
+The installer and `fsend --update` verify the downloaded archive's
+SHA-256 against it before anything is installed, so a corrupted or
+truncated download is caught instead of installed.
 
-- **Authenticity** — if `cosign` is installed, the signature on
-  `checksums.txt` is verified against the release workflow's identity
-  before any checksum is trusted. This catches a *tampered* release, not
-  just a corrupted download: a SHA-256 match alone only proves the archive
-  matches `checksums.txt`, and both come from the same host.
-- **Integrity** — the downloaded archive's SHA-256 is checked against the
-  (now-trusted) `checksums.txt`.
-
-cosign is optional, so the one-line install still works on hosts without
-it — in that case only the checksum is verified, and the installer tells
-you so. Set `FSEND_REQUIRE_SIGNATURE=1` to refuse any install that isn't
-signature-verified.
+checksums.txt and the archive are fetched over HTTPS from the same host
+(GitHub releases), so checksum verification is an *integrity* check, not
+proof of authenticity — it cannot by itself distinguish a tampered
+release from a legitimate one. The authenticity side of the model is
+GitHub's: assets are uploaded by the release workflow over HTTPS-only
+URLs, and the installer script itself arrives through that same channel,
+so any verification the installer could perform would depend on the very
+channel it is verifying.

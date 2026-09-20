@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 )
 
@@ -22,7 +24,13 @@ func runInstaller(binPath string) error {
 
 	cmd := exec.Command("powershell", "-NoProfile", "-Command",
 		"irm https://getfsend.alzina.dev/windows | iex")
-	cmd.Env = append(os.Environ(), "FSEND_PREFIX="+filepath.Dir(binPath))
+	// --update always wants the newest release: drop any FSEND_VERSION the
+	// user exported, so a stale pin can't reinstall an older version over
+	// a newer binary.
+	env := slices.DeleteFunc(slices.Clone(os.Environ()), func(e string) bool {
+		return strings.HasPrefix(e, "FSEND_VERSION=")
+	})
+	cmd.Env = append(env, "FSEND_VERSION=latest", "FSEND_PREFIX="+filepath.Dir(binPath))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

@@ -1,35 +1,52 @@
 #!/usr/bin/env sh
+# fsend installer — https://github.com/polius/fsend
+#
+# Downloads a release, verifies its SHA-256 checksum, and installs the
+# binary. Per-user by design: refuses to run as root, never elevates,
+# never asks for a password. Everything it does is readable
+# top-to-bottom below.
+#
+#   curl -fsSL https://getfsend.alzina.dev | sh
+#
 set -eu
 
 REPO="polius/fsend"
 BINARY="fsend"
+DOCS="https://github.com/${REPO}#readme"
+
 FSEND_VERSION="${FSEND_VERSION:-latest}"
-PREFIX="${PREFIX:-}"
+# FSEND_PREFIX is the documented name; PREFIX is kept because `fsend --update`
+# sets it when re-running this installer pinned to the binary's directory.
+PREFIX="${FSEND_PREFIX:-${PREFIX:-}}"
+MODIFY_PATH=1
+VERBOSE=0
+# Test seam: point the installer at a local HTTP server to exercise the
+# full download → verify → install path without a real release. Same-user
+# trust, like rustup's RUSTUP_DIST_SERVER. A caller that redirects the
+# release source also owns its transport (the HTTPS-only pin is dropped).
+RELEASE_BASE="${FSEND_RELEASE_BASE_URL:-https://github.com/${REPO}/releases}"
 
-# Keyless-cosign identity of the release workflow. checksums.txt is signed
-# in CI (see .goreleaser.yml); these pin who is allowed to have signed it.
-COSIGN_IDENTITY_REGEXP="^https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v.*$"
-COSIGN_ISSUER="https://token.actions.githubusercontent.com"
-
-if [ -n "$PREFIX" ]; then
-    PREFIX_EXPLICIT=1
-else
-    PREFIX_EXPLICIT=0
-fi
+if [ -n "$PREFIX" ]; then PREFIX_EXPLICIT=1; else PREFIX_EXPLICIT=0; fi
 
 # Color only when stderr is a tty and NO_COLOR is unset/empty — the same
 # auto-detection the fsend binary applies (https://no-color.org).
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     esc="$(printf '\033')"
-    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_RST="${esc}[0m"
+    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_MUT="${esc}[2m" C_RST="${esc}[0m"
 else
-    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_RST=''
+    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_MUT='' C_RST=''
 fi
 
 err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
 info() { printf '%s›%s %s\n' "$C_CYN" "$C_RST" "$*" >&2; }
 warn() { printf '%s!%s %s\n' "$C_YLW" "$C_RST" "$*" >&2; }
 ok()   { printf '%s✓%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
+mut()  { printf '%s%s%s\n' "$C_MUT" "$*" "$C_RST" >&2; }
+vinfo() {
+    if [ "$VERBOSE" = "1" ]; then
+        info "$@"
+    fi
+}
 
 usage() {
     cat <<'EOF'
@@ -37,39 +54,26 @@ fsend installer
 
 Usage:
   curl -fsSL https://getfsend.alzina.dev | sh
-  curl -fsSL https://getfsend.alzina.dev | sh -s -- [-p DIR] [-v VERSION]
+  curl -fsSL https://getfsend.alzina.dev | sh -s -- [options]
 
-Flags:
-  -p DIR        Install location (default: auto-pick a writable dir)
-  -v VERSION    Version to install (default: latest)
-  -h            Show this help and exit
+Options:
+  -p, --prefix DIR        Install location (default: auto-pick a writable dir)
+  -v, --version VERSION   Version to install (default: latest)
+  -n, --no-modify-path    Don't add the install dir to your shell config
+  --verbose               Show the individual install steps
+  -h, --help              Show this help and exit
 
-Environment variables:
-  PREFIX, FSEND_VERSION      Same as -p / -v (the flag wins)
-  FSEND_REQUIRE_SIGNATURE=1  Refuse to install unless cosign verifies the release signature
+Environment:
+  FSEND_PREFIX, PREFIX    Same as -p/--prefix (the flag wins)
+  FSEND_VERSION           Same as -v/--version (the flag wins)
 
-Source: https://github.com/polius/fsend/blob/main/scripts/install.sh
+Per-user install: the script refuses to run as root and never uses sudo.
+More: https://github.com/polius/fsend#readme
 EOF
 }
 
 need() {
     command -v "$1" >/dev/null 2>&1 || err "missing required command: $1"
-}
-
-run_elevated() {
-    if [ "$(id -u 2>/dev/null || echo 1000)" = "0" ]; then
-        "$@"
-        return $?
-    fi
-    if command -v sudo >/dev/null 2>&1; then
-        sudo "$@"
-        return $?
-    fi
-    if command -v doas >/dev/null 2>&1; then
-        doas "$@"
-        return $?
-    fi
-    return 127
 }
 
 detect_os() {
@@ -106,6 +110,7 @@ detect_arch() {
 # list in .goreleaser.yml). Catch unbuilt combinations up front so the
 # user sees "no prebuilt binary" instead of a mystifying download 404.
 check_release_target() {
+    # release-matrix:begin (synced with .goreleaser.yml; CI asserts equality)
     case "$1-$2" in
         linux-amd64|linux-arm64|linux-386|linux-armv7|linux-armv6|linux-riscv64) ;;
         darwin-amd64|darwin-arm64) ;;
@@ -114,17 +119,14 @@ check_release_target() {
         openbsd-amd64|openbsd-arm64) ;;
         *) err "no prebuilt binary for $1/$2 — build from source: go install github.com/${REPO}/cmd/fsend@latest" ;;
     esac
+    # release-matrix:end
 }
 
 default_prefix() {
-    pf_os="$1"
-    case "$pf_os" in
-        windows)
-            echo "${HOME:-/usr/local}/bin"
-            ;;
+    case "$1" in
+        windows) echo "${HOME:-/usr/local}/bin" ;;
         *)
-            if [ "$(id -u 2>/dev/null || echo 1000)" = "0" ] \
-               || [ -w "/usr/local/bin" ]; then
+            if [ -w "/usr/local/bin" ]; then
                 echo "/usr/local/bin"
             else
                 echo "${HOME:-/tmp}/.local/bin"
@@ -133,34 +135,45 @@ default_prefix() {
     esac
 }
 
-# GNU wget supports an explicit TLS floor; busybox wget (Alpine) does
-# not and aborts on the unknown flag — it still validates certificates,
-# so emit the flag only when supported. Callers expand the result
-# unquoted on purpose (empty → no extra argument).
-wget_tls_opts() {
-    if wget --help 2>&1 | grep -q -- --secure-protocol; then
-        printf %s "--secure-protocol=TLSv1_2"
-    fi
-}
-
 download() {
     url="$1"
     out="$2"
+    # HTTPS-only, except through the test seam (FSEND_RELEASE_BASE_URL).
+    if [ -n "${FSEND_RELEASE_BASE_URL:-}" ]; then
+        pin=""
+    else
+        pin="--proto =https"
+    fi
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --proto '=https' --tlsv1.2 -o "$out" "$url" \
-            || err "download failed: $url"
+        # Progress bar only on a tty (-s hides it, so swap the flag set).
+        # shellcheck disable=SC2086  # $pin is an intentional word split
+        if [ -t 2 ]; then
+            curl $pin -fS#L --tlsv1.2 -o "$out" "$url" || err "download failed: $url"
+        else
+            curl $pin -fsSL --tlsv1.2 -o "$out" "$url" || err "download failed: $url"
+        fi
     elif command -v wget >/dev/null 2>&1; then
-        # shellcheck disable=SC2046
-        wget -q $(wget_tls_opts) -O "$out" "$url" \
-            || err "download failed: $url"
+        # shellcheck disable=SC2046 disable=SC2086  # $pin/$(...) split intentionally
+        wget $(wget_flags) $pin -O "$out" "$url" || err "download failed: $url"
     else
         err "need curl or wget to download fsend"
     fi
 }
 
+# Flags for the wget flavor in use: an explicit TLS floor when supported
+# (GNU wget; busybox aborts on the unknown flag but still validates
+# certificates), and progress that mirrors the curl behavior above.
+wget_flags() {
+    if wget --help 2>&1 | grep -q -- --secure-protocol; then printf '%s ' --secure-protocol=TLSv1_2; fi
+    if [ -t 2 ]; then
+        if wget --help 2>&1 | grep -q -- --show-progress; then printf '%s ' --show-progress; fi
+    else
+        printf '%s ' -q
+    fi
+}
+
 # winpath converts an MSYS/Cygwin path to a Windows path for native
 # tools (System32 tar.exe, PowerShell), which can't resolve /tmp/...
-# Falls through to the raw path where cygpath doesn't exist.
 winpath() {
     cygpath -w "$1" 2>/dev/null || printf '%s' "$1"
 }
@@ -194,41 +207,10 @@ extract_zip() {
     err "no zip extractor found (need unzip, bsdtar, or PowerShell)"
 }
 
-# POSIX sh has no function scope: bare assignments here would clobber the
-# caller's globals. The archive name in particular is reused for extraction
-# after this returns, so keep these parameters underscore-prefixed.
-# verify_signature checks cosign's keyless signature on checksums.txt before
-# any checksum derived from it is trusted. The SHA-256 check alone only proves
-# the archive matches checksums.txt — both fetched over the same channel — so
-# it catches corruption, not a tampered release. The signature proves the file
-# came from the release workflow.
-#
-# cosign is optional: requiring it would break the common curl|sh path on hosts
-# without it. When absent we fall back to checksum-only and say so; a present
-# cosign that reports a bad signature is always fatal. Set
-# FSEND_REQUIRE_SIGNATURE=1 to refuse to install without verification.
-verify_signature() {
-    _sums="$1"  # checksums.txt
-    _base="$2"  # release download base URL
-    _dir="$3"   # temp dir
-    if ! command -v cosign >/dev/null 2>&1; then
-        if [ "${FSEND_REQUIRE_SIGNATURE:-0}" = "1" ]; then
-            err "FSEND_REQUIRE_SIGNATURE=1 but cosign is not installed"
-        fi
-        warn "cosign not found — verifying checksum only, not the release signature."
-        warn "  install cosign for full authenticity, or set FSEND_REQUIRE_SIGNATURE=1 to require it."
-        return 0
-    fi
-    download "${_base}/checksums.txt.bundle" "${_dir}/checksums.txt.bundle"
-    cosign verify-blob \
-        --bundle "${_dir}/checksums.txt.bundle" \
-        --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
-        --certificate-oidc-issuer "$COSIGN_ISSUER" \
-        "$_sums" >/dev/null 2>&1 \
-        || err "cosign signature verification failed for checksums.txt — refusing to install"
-    ok "signature verified"
-}
-
+# The checksum catches corruption and truncation. checksums.txt and the
+# archive both come from the same HTTPS host, so this is an integrity
+# check, not a guarantee against a tampered release — that is GitHub's
+# side of the trust model (see docs/security.md).
 verify_checksum() {
     _archive="$1"
     _sums="$2"
@@ -253,72 +235,102 @@ verify_checksum() {
 
 ensure_prefix() {
     [ -d "$PREFIX" ] && return 0
-
-    if mkdir -p "$PREFIX" 2>/dev/null; then
-        return 0
-    fi
-
-    if [ "$PREFIX_EXPLICIT" = "1" ]; then
-        info "creating $PREFIX (requires elevation)"
-        run_elevated mkdir -p "$PREFIX" \
-            || err "cannot create $PREFIX (no sudo/doas available)"
-        return 0
-    fi
-
-    err "cannot create $PREFIX"
+    mkdir -p "$PREFIX" 2>/dev/null \
+        || err "cannot create $PREFIX — pick a writable location with -p/--prefix"
 }
 
 install_binary() {
     src="$1"
     dst="$PREFIX/$(basename "$src")"
-
-    if [ -w "$PREFIX" ]; then
-        mv "$src" "$dst"
-        chmod 755 "$dst"
-        return 0
+    if [ ! -w "$PREFIX" ]; then
+        err "$PREFIX is not writable — pick a writable location with -p/--prefix"
     fi
-
-    if [ "$PREFIX_EXPLICIT" = "0" ]; then
-        err "$PREFIX is not writable (auto-selected). Set PREFIX=... to override."
-    fi
-
-    info "$PREFIX is not writable, attempting elevation"
-    if ! run_elevated mv "$src" "$dst"; then
-        err "could not move binary into $PREFIX (no sudo/doas available;
-  re-run as root, or set PREFIX=\$HOME/.local/bin)"
-    fi
-    run_elevated chmod 755 "$dst" \
-        || err "could not chmod $dst"
+    mv "$src" "$dst"
+    chmod 755 "$dst"
 }
 
+# shellcheck disable=SC2016  # the literal $PATH is the point
 print_path_hint() {
-    case "${SHELL:-}" in
-        */fish)
-            printf '    fish_add_path %s\n' "$PREFIX"
-            ;;
-        */zsh)
-            printf '    echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.zshrc\n' "$PREFIX"
-            ;;
-        */bash)
-            if [ "$(uname -s)" = "Darwin" ]; then
-                printf '    echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.bash_profile\n' "$PREFIX"
-            else
-                printf '    echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.bashrc\n' "$PREFIX"
-            fi
-            ;;
+    case "$(basename "${SHELL:-sh}")" in
+        fish) printf '    fish_add_path %s\n' "$PREFIX" >&2 ;;
         *)
-            printf '    export PATH="%s:$PATH"\n' "$PREFIX"
+            printf '    export PATH="%s:$PATH"\n' "$PREFIX" >&2
             ;;
     esac
 }
 
+# Prepend PREFIX to the user's PATH by appending one line to their shell
+# config (opencode/rustup style). Idempotent; opt out with --no-modify-path.
+# Returns 0 when the PATH is (or was made) fine, 1 when manual action is
+# needed — a hint is printed in that case, so main stays quiet.
+configure_path() {
+    [ "$MODIFY_PATH" = "1" ] || return 1
+    case ":${PATH}:" in *":$PREFIX:"*) return 0 ;; esac
+    if [ -z "${HOME:-}" ]; then
+        warn "HOME is not set — add $PREFIX to your PATH manually:"
+        print_path_hint
+        return 0
+    fi
+
+    xdg="${XDG_CONFIG_HOME:-$HOME/.config}"
+    case "$(basename "${SHELL:-sh}")" in
+        fish)
+            line="fish_add_path $PREFIX"
+            rc="$xdg/fish/config.fish"
+            ;;
+        zsh)
+            line="export PATH=\"$PREFIX:\$PATH\""
+            zd="${ZDOTDIR:-$HOME}"
+            rc="$zd/.zshrc"
+            [ -f "$rc" ] || rc="$zd/.zshenv"
+            [ -f "$rc" ] || rc="$zd/.zshrc"
+            ;;
+        bash)
+            line="export PATH=\"$PREFIX:\$PATH\""
+            if [ "$(uname -s)" = "Darwin" ]; then
+                rc="$HOME/.bash_profile"
+                [ -f "$rc" ] || rc="$HOME/.bashrc"
+                [ -f "$rc" ] || rc="$HOME/.bash_profile"
+            else
+                rc="$HOME/.bashrc"
+                [ -f "$rc" ] || rc="$HOME/.bash_profile"
+                [ -f "$rc" ] || rc="$HOME/.bashrc"
+            fi
+            ;;
+        *)
+            line="export PATH=\"$PREFIX:\$PATH\""
+            rc="$HOME/.profile"
+            ;;
+    esac
+
+    # Already referenced in the rc file (maybe added by hand) — leave it alone.
+    if [ -f "$rc" ] && grep -qF -- "$PREFIX" "$rc"; then
+        return 0
+    fi
+
+    mkdir -p "${rc%/*}" 2>/dev/null || true
+    if [ -w "${rc%/*}" ] && { [ ! -e "$rc" ] || [ -w "$rc" ]; }; then
+        printf '\n# fsend\n%s\n' "$line" >> "$rc"
+        ok "PATH updated in $rc — open a new shell"
+    else
+        warn "could not update PATH — add $PREFIX manually:"
+        print_path_hint
+        return 1
+    fi
+}
+
 main() {
-    need uname
-    need mkdir
-    need rm
-    need awk
-    need sed
-    need grep
+    need id uname mkdir rm awk sed grep basename head tr
+
+    # Per-user by design. Running a network script as root is exactly how a
+    # compromised mirror becomes a compromised machine, and a root install
+    # has no single-user PATH story. Containers/CI should fetch the release
+    # tarball directly instead.
+    if [ "$(id -u)" = "0" ]; then
+        err "refusing to run as root — fsend installs per-user, without sudo.
+  run as your normal user, or download a release archive by hand:
+  https://github.com/${REPO}/releases"
+    fi
 
     os="$(detect_os)"
     arch="$(detect_arch)"
@@ -328,8 +340,18 @@ main() {
         PREFIX="$(default_prefix "$os")"
     fi
 
-    tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend)"
-    trap 'rm -rf "$tmp"' EXIT INT TERM HUP
+    # Upgrade awareness: say what's already installed before touching it.
+    if _prev="$(command -v "$BINARY" 2>/dev/null)"; then
+        _cur="$("$_prev" --version 2>/dev/null | head -n1 || true)"
+        [ -n "$_cur" ] && mut "currently installed: $_cur"
+    fi
+
+    tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend.XXXXXXXX)"
+    cleanup() { rm -rf "$tmp"; }
+    trap cleanup EXIT
+    trap 'cleanup; exit 130' INT
+    trap 'cleanup; exit 143' TERM
+    trap 'cleanup; exit 129' HUP
 
     version="$FSEND_VERSION"
     if [ "$version" = "latest" ]; then
@@ -339,24 +361,21 @@ main() {
         # CI, universities). checksums.txt is needed anyway; the version
         # is recovered from the archive names inside it, and the tag is
         # rebuilt as "v<version>" (Go module tags are always v-prefixed).
-        info "looking up latest release..."
-        download "https://github.com/${REPO}/releases/latest/download/checksums.txt" "$tmp/checksums.txt"
+        vinfo "resolving the latest release..."
+        download "${RELEASE_BASE}/latest/download/checksums.txt" "$tmp/checksums.txt"
         vnum="$(sed -n 's/.*[[:space:]]fsend_\([^_]*\)_.*/\1/p' "$tmp/checksums.txt" | head -n1)"
-        [ -n "$vnum" ] || err "could not resolve latest version"
+        [ -n "$vnum" ] || err "could not resolve the latest version"
         version="v${vnum}"
     else
-        # Accept "-v 1.0.0" and "-v v1.0.0" alike: release tags are
+        # Accept "-v 1.2.3" and "-v v1.2.3" alike: release tags are
         # always v-prefixed, archive names never are.
         vnum="${version#v}"
         version="v${vnum}"
-        info "downloading checksums"
-        download "https://github.com/${REPO}/releases/download/${version}/checksums.txt" "$tmp/checksums.txt"
+        vinfo "downloading checksums"
+        download "${RELEASE_BASE}/download/${version}/checksums.txt" "$tmp/checksums.txt"
     fi
-    info "verifying signature"
-    verify_signature "$tmp/checksums.txt" \
-        "https://github.com/${REPO}/releases/download/${version}" "$tmp"
 
-    info "installing fsend ${version} for ${os}-${arch} into ${PREFIX}"
+    info "installing fsend $version (${os}-${arch})"
 
     case "$os" in
         windows) ext="zip";    bin_file="${BINARY}.exe" ;;
@@ -364,14 +383,18 @@ main() {
     esac
     archive="fsend_${vnum}_${os}_${arch}.${ext}"
 
-    info "downloading $archive"
-    download "https://github.com/${REPO}/releases/download/${version}/${archive}" "$tmp/$archive"
+    vinfo "downloading $archive"
+    download "${RELEASE_BASE}/download/${version}/${archive}" "$tmp/$archive"
 
-    info "verifying checksum"
+    # The checksum catches corruption and truncation. checksums.txt and the
+    # archive both come from the same HTTPS host, so this is an integrity
+    # check, not a guarantee against a tampered release — that is GitHub's
+    # side of the trust model (see docs/security.md).
+    vinfo "verifying checksum"
     verify_checksum "$tmp/$archive" "$tmp/checksums.txt"
-    ok "checksum verified"
+    ok "verified"
 
-    info "extracting"
+    vinfo "extracting"
     case "$ext" in
         tar.gz) need tar; tar -xzf "$tmp/$archive" -C "$tmp" ;;
         zip)    extract_zip "$tmp/$archive" "$tmp" ;;
@@ -381,40 +404,58 @@ main() {
     ensure_prefix
     install_binary "$tmp/$bin_file"
 
-    ok "installed: $PREFIX/$bin_file"
+    configure_path || {
+        if [ "$MODIFY_PATH" = "0" ]; then
+            warn "PATH untouched (--no-modify-path) — add $PREFIX manually:"
+            print_path_hint
+        fi
+    }
 
-    found="$(command -v "$BINARY" 2>/dev/null || true)"
-    if [ "$found" = "$PREFIX/$bin_file" ]; then
-        installed_version="$("$BINARY" --version 2>/dev/null | head -n1 || echo "?")"
-        ok "verify: $installed_version"
-    elif [ -n "$found" ]; then
-        # A stale install earlier on PATH shadows the fresh one — a
-        # different problem than a missing PATH entry, so say which it is.
-        printf '\n'
-        warn "another fsend at $found takes precedence on your PATH. Put $PREFIX first with:"
-        print_path_hint
-        printf '\n  Then restart your shell, or run %s directly.\n' "$PREFIX/$bin_file"
-    else
-        printf '\n'
-        warn "$PREFIX is not on your PATH. Add it with:"
-        print_path_hint
-        printf '\n  Then restart your shell, or run it now to try fsend.\n'
+    # GitHub Actions: expose the install dir to later steps of the workflow.
+    if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -n "${GITHUB_PATH:-}" ]; then
+        printf '%s\n' "$PREFIX" >> "$GITHUB_PATH"
+        ok "added $PREFIX to \$GITHUB_PATH"
     fi
 
-    printf '\n'
-    printf 'Next: send a file with  fsend <path>\n'
-    printf '      see all options:  fsend --help\n'
+    # Quiet on success, loud on failure: the outro below is the install
+    # confirmation; this only speaks up if the fresh binary is broken.
+    _ver="$("$PREFIX/$bin_file" --version 2>/dev/null | head -n1 || true)"
+    [ -n "$_ver" ] || warn "the installed binary did not respond to --version"
+
+    found="$(command -v "$BINARY" 2>/dev/null || true)"
+    if [ -n "$found" ] && [ "$found" != "$PREFIX/$bin_file" ]; then
+        # A stale install earlier on PATH shadows the fresh one in *this*
+        # shell; the configure_path line above fixes it after a restart.
+        warn "$found shadows the new binary — open a new shell, or run:"
+        printf '    %s\n' "$PREFIX/$bin_file" >&2
+    fi
+
+    printf '\n' >&2
+    mut "fsend $version installed → $PREFIX/$bin_file"
+    printf 'fsend <path>    %ssend a file%s\n' "$C_MUT" "$C_RST" >&2
+    printf 'fsend --help    %sall options%s\n' "$C_MUT" "$C_RST" >&2
+    mut "docs: $DOCS"
 }
 
-while getopts ":p:v:h" opt; do
-    case "$opt" in
-        p)  PREFIX="$OPTARG"; PREFIX_EXPLICIT=1 ;;
-        v)  FSEND_VERSION="$OPTARG" ;;
-        h)  usage; exit 0 ;;
-        :)  err "option -$OPTARG requires an argument (use -h for help)" ;;
-        \?) err "unknown option: -$OPTARG (use -h for help)" ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -p|--prefix)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                err "option $1 requires a directory argument (use -h for help)"
+            fi
+            PREFIX="$2" PREFIX_EXPLICIT=1
+            shift 2 ;;
+        -v|--version)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                err "option $1 requires a version argument (use -h for help)"
+            fi
+            FSEND_VERSION="$2"
+            shift 2 ;;
+        -n|--no-modify-path) MODIFY_PATH=0; shift ;;
+        --verbose) VERBOSE=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) err "unexpected argument: $1 (use -h for help)" ;;
     esac
 done
-shift $((OPTIND - 1))
 
-main "$@"
+main
