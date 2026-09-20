@@ -94,24 +94,29 @@ func (s *Spinner) run() {
 // We use \x1b[2K (erase entire line) rather than \x1b[K (erase to end)
 // because a previous longer message may have left trailing characters.
 //
-// The frame glyph is rendered in cyan to match the Info / static-Spin
-// glyphs; on a dark background it reads as "active wait" without
-// shouting like a yellow warn would.
+// The frame glyph is rendered in the brand orange: the spinner is the
+// "act now / pay attention" element par excellence, so it carries the
+// same accent as the share code and the code box — distinct from cyan
+// (informational) and green (reassurance).
 func (s *Spinner) draw(frame string) {
 	s.mu.Lock()
 	msg := s.msg
 	s.mu.Unlock()
 	// Elapsed chip: answers "alive or hung?" while a wait stretches on.
 	// Hidden for the first second so a quick pair doesn't flash "0s";
-	// after a minute the duration formatter switches to 1m05s form.
+	// after a minute the duration formatter switches to 1m05s form. The
+	// whole chip (separator included) dims or vanishes as one unit, so
+	// the un-dimmed frame never ends in an empty escape pair.
 	elapsed := ""
 	if d := time.Since(s.start); d >= time.Second {
-		elapsed = "  ·  " + spinnerElapsed(d)
+		elapsed = Dim("  ·  " + spinnerElapsed(d))
 	}
 	// Stderr write failures inside the UX layer are non-actionable —
 	// the caller has bigger problems than an unrendered spinner.
+	// Dim() degrades to the plain string when colour is off, so the
+	// elapsed chip is safe to append in both branches.
 	if colorEnabled() {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s%s", colorCyan, frame, colorReset, msg, Dim(elapsed))
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s%s", colorOrange, frame, colorReset, msg, elapsed)
 	} else {
 		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s%s", frame, msg, elapsed)
 	}

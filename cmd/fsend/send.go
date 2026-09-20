@@ -263,12 +263,13 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 
 // sendArrow renders the ⇢ direction marker prefixed to the send header
 // on color-capable terminals; "" on pipes/files so the plain-text form
-// scripts may scrape stays byte-stable.
+// scripts may scrape stays byte-stable. Brand orange: it marks the
+// interactive hero flow.
 func sendArrow() string {
 	if !uxlog.ColorFor(os.Stderr) {
 		return ""
 	}
-	return uxlog.Accent("⇢") + "  "
+	return uxlog.Brand("⇢") + "  "
 }
 
 // codeBoxInner is the content width between the box borders. Both
@@ -288,7 +289,8 @@ const codeBoxMinWidth = 42
 // terminal wide enough to hold it, a light box frames the share code —
 // the one thing on screen the user must read back or dictate — so it
 // survives scrollback and busy terminals as a single visual object.
-// The borders are dim: structure without shouting. Fallback keeps the
+// The frame and the code share the brand orange (with the code bolded):
+// the box is the hero, not structure to dim past. Fallback keeps the
 // historical plain block for pipes, narrow terminals, and NO_COLOR.
 func renderCodeBlock(w io.Writer, c string) {
 	if !uxlog.ColorFor(w) || uxlog.TerminalWidth(0) < codeBoxMinWidth {
@@ -297,18 +299,18 @@ func renderCodeBlock(w io.Writer, c string) {
 		fmt.Fprintf(w, "      fsend %s\n", uxlog.Code(c))
 		return
 	}
-	edge := uxlog.Dim("  │")
+	edge := uxlog.Brand("  │")
 	row := func(content string, plainLen int) {
 		// pad is computed off the plain length; content may carry ANSI
 		// (the code) that must not count toward the width.
 		fmt.Fprintf(w, "%s %s%s %s\n", edge, content,
-			strings.Repeat(" ", max(0, codeBoxInner-plainLen)), uxlog.Dim("│"))
+			strings.Repeat(" ", max(0, codeBoxInner-plainLen)), uxlog.Brand("│"))
 	}
-	fmt.Fprintln(w, uxlog.Dim("  ┌"+strings.Repeat("─", codeBoxInner+2)+"┐"))
+	fmt.Fprintln(w, uxlog.Brand("  ┌"+strings.Repeat("─", codeBoxInner+2)+"┐"))
 	row("  On the other machine, run:", len("  On the other machine, run:"))
 	row("", 0)
 	row("      fsend "+uxlog.Code(c), len("      fsend ")+len(c))
-	fmt.Fprintln(w, uxlog.Dim("  └"+strings.Repeat("─", codeBoxInner+2)+"┘"))
+	fmt.Fprintln(w, uxlog.Brand("  └"+strings.Repeat("─", codeBoxInner+2)+"┘"))
 }
 
 // senderPreview projects the walked sources into preview rows, dropping
@@ -471,10 +473,10 @@ func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duratio
 	}
 	clauses := ""
 	if n := s.skippedFiles - s.keptFiles; n > 0 {
-		clauses += "  ·  " + uxlog.CountNoun(n, "file") + " skipped"
+		clauses += "  ·  " + uxlog.Good(uxlog.CountNoun(n, "file")+" skipped")
 	}
 	if s.keptFiles > 0 {
-		clauses += "  ·  " + uxlog.CountNoun(s.keptFiles, "file") + " kept by receiver (needs --overwrite there)"
+		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver (needs --overwrite there)")
 	}
 	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, s.moved, "sent", elapsed, path), clauses)
 	// Streams report their true size only at EOF — moved is the honest figure.

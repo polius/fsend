@@ -90,14 +90,14 @@ func CountNoun(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// Code renders a share code in bold + cyan so it stands out as the one
-// thing the user is about to type or dictate. Degrades to plain text
-// when color is disabled or stderr is not a TTY.
+// Code renders a share code in bold + orange — the brand accent — so it
+// stands out as the one thing the user is about to type or dictate.
+// Degrades to plain text when color is disabled or stderr is not a TTY.
 func Code(c string) string {
 	if !colorEnabled() {
 		return c
 	}
-	return colorBoldCyan + c + colorReset
+	return colorBoldOrange + c + colorReset
 }
 
 // Dim wraps s in the ANSI dim escape (or returns it unchanged when
@@ -107,6 +107,16 @@ func Dim(s string) string {
 		return s
 	}
 	return colorDim + s + colorReset
+}
+
+// Good wraps s in green — the reassurance family the ✓ glyph leads —
+// for positive clauses in summary lines ("2 files up to date"). Gated on
+// colour like Dim; not for hero moments (those take the brand orange).
+func Good(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return colorGreen + s + colorReset
 }
 
 // Alert wraps s in yellow (the same family as the warning glyph) so an
@@ -120,13 +130,19 @@ func Alert(s string) string {
 	return colorYellow + s + colorReset
 }
 
-// Accent wraps s in cyan — the informational/interactive accent shared
-// with the spinner and Info glyphs. Unconditional, like Bold: callers
-// that need the glyph to disappear entirely on pipes gate the call on
-// ColorFor themselves (direction arrows on artifact headers, --help
-// flag names).
+// Accent wraps s in cyan — the informational accent shared with the
+// Info glyph. Unconditional, like Bold: callers that need the glyph to
+// disappear entirely on pipes gate the call on ColorFor themselves
+// (--help flag names).
 func Accent(s string) string {
 	return colorCyan + s + colorReset
+}
+
+// Brand wraps s in the orange brand accent, unconditionally like Bold
+// and Accent. The caller gates it (ColorFor) for elements that must
+// vanish on pipes: direction arrows, the code box frame.
+func Brand(s string) string {
+	return colorOrange + s + colorReset
 }
 
 // Bold wraps s in the ANSI bold escape, unconditionally. Unlike Dim and

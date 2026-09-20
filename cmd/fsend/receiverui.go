@@ -171,7 +171,7 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	}
 	arrow := ""
 	if uxlog.ColorFor(os.Stderr) {
-		arrow = uxlog.Accent("⇣") + "  "
+		arrow = uxlog.Brand("⇣") + "  "
 	}
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "  %sIncoming from %s%s\n", arrow, peer, pathChip)
@@ -278,13 +278,18 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 }
 
 // conflictLabel renders one conflict, distinguishing type clashes from
-// content differences.
+// content differences. A "differs" row carries the size delta — the
+// concrete fact the overwrite decision is really about: what's on disk
+// versus what would replace it. LocalSize is always populated for
+// "differs" (the classification Lstat'ed the file to call it differing);
+// type clashes have no meaningful byte pair, so they keep the kind tag.
 func conflictLabel(c transfer.Conflict) string {
 	name := sanitizeForDisplay(c.RelativePath, 128)
 	if c.Kind != "differs" {
 		return fmt.Sprintf("%s  (%s)", name, c.Kind)
 	}
-	return name
+	delta := uxlog.Dim(uxlog.HumanBytes(c.LocalSize) + " → ")
+	return fmt.Sprintf("%s  %s%s", name, delta, uxlog.HumanBytes(int64(c.IncomingSize)))
 }
 
 func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
@@ -644,13 +649,13 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	}
 	clauses := ""
 	if skippedSame > 0 {
-		clauses += "  ·  " + uxlog.CountNoun(skippedSame, "file") + " up to date"
+		clauses += "  ·  " + uxlog.Good(uxlog.CountNoun(skippedSame, "file")+" up to date")
 	}
 	// No "(use --overwrite)" here: the remedy already appears once — the
 	// upfront --yes warning or E013's action line — and after an explicit
 	// "n" at the prompt it must not appear at all.
 	if kept > 0 {
-		clauses += "  ·  " + uxlog.CountNoun(kept, "file") + " kept"
+		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(kept, "file") + " kept")
 	}
 	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, moved, "received", elapsed, path), clauses)
 	uxlog.Notify("Received " + uxlog.HumanBytes(total))

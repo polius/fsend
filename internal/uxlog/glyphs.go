@@ -105,6 +105,16 @@ const (
 	colorCyan     = "\x1b[36m"
 	colorBoldCyan = "\x1b[1;36m"
 	colorDim      = "\x1b[2m"
+
+	// Brand orange, 256-colour palette (208). The interactive/hero
+	// accent — the share code, the code box, the spinner, the direction
+	// arrows — so everything the user must *act on* shares one colour,
+	// distinct from cyan (informational) and green (reassurance).
+	// 256-colour escapes render on every terminal that passes the VT /
+	// renderTTY gate; legacy 8-colour terminals degrade to an
+	// approximation, never to garbage.
+	colorOrange     = "\x1b[38;5;208m"
+	colorBoldOrange = "\x1b[1;38;5;208m"
 )
 
 var (
