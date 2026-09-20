@@ -19,6 +19,7 @@ FSEND_VERSION="${FSEND_VERSION:-latest}"
 # sets it when re-running this installer pinned to the binary's directory.
 PREFIX="${FSEND_PREFIX:-${PREFIX:-}}"
 MODIFY_PATH=1
+VERBOSE=0
 # Test seam: point the installer at a local HTTP server to exercise the
 # full download → verify → install path without a real release. Same-user
 # trust, like rustup's RUSTUP_DIST_SERVER. A caller that redirects the
@@ -41,6 +42,11 @@ info() { printf '%s›%s %s\n' "$C_CYN" "$C_RST" "$*" >&2; }
 warn() { printf '%s!%s %s\n' "$C_YLW" "$C_RST" "$*" >&2; }
 ok()   { printf '%s✓%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
 mut()  { printf '%s%s%s\n' "$C_MUT" "$*" "$C_RST" >&2; }
+vinfo() {
+    if [ "$VERBOSE" = "1" ]; then
+        info "$@"
+    fi
+}
 
 usage() {
     cat <<'EOF'
@@ -54,6 +60,7 @@ Options:
   -p, --prefix DIR        Install location (default: auto-pick a writable dir)
   -v, --version VERSION   Version to install (default: latest)
   -n, --no-modify-path    Don't add the install dir to your shell config
+  --verbose               Show the individual install steps
   -h, --help              Show this help and exit
 
 Environment:
@@ -254,8 +261,10 @@ print_path_hint() {
 
 # Prepend PREFIX to the user's PATH by appending one line to their shell
 # config (opencode/rustup style). Idempotent; opt out with --no-modify-path.
+# Returns 0 when the PATH is (or was made) fine, 1 when manual action is
+# needed — a hint is printed in that case, so main stays quiet.
 configure_path() {
-    [ "$MODIFY_PATH" = "1" ] || return 0
+    [ "$MODIFY_PATH" = "1" ] || return 1
     case ":${PATH}:" in *":$PREFIX:"*) return 0 ;; esac
     if [ -z "${HOME:-}" ]; then
         warn "HOME is not set — add $PREFIX to your PATH manually:"
@@ -296,17 +305,17 @@ configure_path() {
 
     # Already referenced in the rc file (maybe added by hand) — leave it alone.
     if [ -f "$rc" ] && grep -qF -- "$PREFIX" "$rc"; then
-        info "$PREFIX is already referenced in $rc"
         return 0
     fi
 
     mkdir -p "${rc%/*}" 2>/dev/null || true
     if [ -w "${rc%/*}" ] && { [ ! -e "$rc" ] || [ -w "$rc" ]; }; then
         printf '\n# fsend\n%s\n' "$line" >> "$rc"
-        ok "added $PREFIX to PATH in $rc (restart your shell to pick it up)"
+        ok "PATH updated in $rc — open a new shell"
     else
-        warn "could not write to $rc — add $PREFIX to your PATH manually:"
+        warn "could not update PATH — add $PREFIX manually:"
         print_path_hint
+        return 1
     fi
 }
 
@@ -334,7 +343,7 @@ main() {
     # Upgrade awareness: say what's already installed before touching it.
     if _prev="$(command -v "$BINARY" 2>/dev/null)"; then
         _cur="$("$_prev" --version 2>/dev/null | head -n1 || true)"
-        [ -n "$_cur" ] && mut "currently installed: $_cur ($_prev)"
+        [ -n "$_cur" ] && mut "currently installed: $_cur"
     fi
 
     tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend.XXXXXXXX)"
@@ -352,7 +361,7 @@ main() {
         # CI, universities). checksums.txt is needed anyway; the version
         # is recovered from the archive names inside it, and the tag is
         # rebuilt as "v<version>" (Go module tags are always v-prefixed).
-        info "looking up the latest release..."
+        vinfo "resolving the latest release..."
         download "${RELEASE_BASE}/latest/download/checksums.txt" "$tmp/checksums.txt"
         vnum="$(sed -n 's/.*[[:space:]]fsend_\([^_]*\)_.*/\1/p' "$tmp/checksums.txt" | head -n1)"
         [ -n "$vnum" ] || err "could not resolve the latest version"
@@ -362,11 +371,11 @@ main() {
         # always v-prefixed, archive names never are.
         vnum="${version#v}"
         version="v${vnum}"
-        info "downloading checksums"
+        vinfo "downloading checksums"
         download "${RELEASE_BASE}/download/${version}/checksums.txt" "$tmp/checksums.txt"
     fi
 
-    info "installing fsend $version for ${os}-${arch} into ${PREFIX}"
+    info "installing fsend $version (${os}-${arch})"
 
     case "$os" in
         windows) ext="zip";    bin_file="${BINARY}.exe" ;;
@@ -374,14 +383,18 @@ main() {
     esac
     archive="fsend_${vnum}_${os}_${arch}.${ext}"
 
-    info "downloading $archive"
+    vinfo "downloading $archive"
     download "${RELEASE_BASE}/download/${version}/${archive}" "$tmp/$archive"
 
-    info "verifying checksum"
+    # The checksum catches corruption and truncation. checksums.txt and the
+    # archive both come from the same HTTPS host, so this is an integrity
+    # check, not a guarantee against a tampered release — that is GitHub's
+    # side of the trust model (see docs/security.md).
+    vinfo "verifying checksum"
     verify_checksum "$tmp/$archive" "$tmp/checksums.txt"
-    ok "checksum verified"
+    ok "verified"
 
-    info "extracting"
+    vinfo "extracting"
     case "$ext" in
         tar.gz) need tar; tar -xzf "$tmp/$archive" -C "$tmp" ;;
         zip)    extract_zip "$tmp/$archive" "$tmp" ;;
@@ -390,9 +403,13 @@ main() {
 
     ensure_prefix
     install_binary "$tmp/$bin_file"
-    ok "installed: $PREFIX/$bin_file"
 
-    configure_path
+    configure_path || {
+        if [ "$MODIFY_PATH" = "0" ]; then
+            warn "PATH untouched (--no-modify-path) — add $PREFIX manually:"
+            print_path_hint
+        fi
+    }
 
     # GitHub Actions: expose the install dir to later steps of the workflow.
     if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -n "${GITHUB_PATH:-}" ]; then
@@ -400,24 +417,23 @@ main() {
         ok "added $PREFIX to \$GITHUB_PATH"
     fi
 
+    # Quiet on success, loud on failure: the outro below is the install
+    # confirmation; this only speaks up if the fresh binary is broken.
+    _ver="$("$PREFIX/$bin_file" --version 2>/dev/null | head -n1 || true)"
+    [ -n "$_ver" ] || warn "the installed binary did not respond to --version"
+
     found="$(command -v "$BINARY" 2>/dev/null || true)"
-    if [ "$found" = "$PREFIX/$bin_file" ]; then
-        installed_version="$("$BINARY" --version 2>/dev/null | head -n1 || true)"
-        [ -n "$installed_version" ] && ok "verify: $installed_version"
-    elif [ -n "$found" ]; then
+    if [ -n "$found" ] && [ "$found" != "$PREFIX/$bin_file" ]; then
         # A stale install earlier on PATH shadows the fresh one in *this*
         # shell; the configure_path line above fixes it after a restart.
-        warn "$found shadows the new binary in this shell — restart your shell, or run:"
+        warn "$found shadows the new binary — open a new shell, or run:"
         printf '    %s\n' "$PREFIX/$bin_file" >&2
-    else
-        warn "$PREFIX is not on this shell's PATH yet — restart your shell, or run:"
-        print_path_hint
     fi
 
     printf '\n' >&2
     mut "fsend $version installed → $PREFIX/$bin_file"
-    printf 'Next: send a file with  fsend <path>\n' >&2
-    printf '      see all options:  fsend --help\n' >&2
+    printf 'fsend <path>    %ssend a file%s\n' "$C_MUT" "$C_RST" >&2
+    printf 'fsend --help    %sall options%s\n' "$C_MUT" "$C_RST" >&2
     mut "docs: $DOCS"
 }
 
@@ -432,6 +448,7 @@ while [ $# -gt 0 ]; do
             FSEND_VERSION="$2"
             shift 2 ;;
         -n|--no-modify-path) MODIFY_PATH=0; shift ;;
+        --verbose) VERBOSE=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) err "unexpected argument: $1 (use -h for help)" ;;
     esac

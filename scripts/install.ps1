@@ -72,6 +72,9 @@ function Info($m) { Write-Host "$($mark.info) $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "$($mark.ok) $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "$($mark.warn) $m" -ForegroundColor Yellow }
 function Mut($m)  { Write-Host $m -ForegroundColor DarkGray }
+# -Verbose is a PowerShell common parameter (available via CmdletBinding):
+# it flips $VerbosePreference, which is exactly the opt-in we want.
+function VInfo($m) { if ($VerbosePreference -eq 'Continue') { Info $m } }
 
 # throw, not exit: the install one-liner runs via `irm ... | iex` *in the
 # user's own session*, so `exit` would close their terminal. throw halts,
@@ -91,6 +94,7 @@ Parameters (or matching env var):
   -Prefix DIR        Install location    (default: %LOCALAPPDATA%\Programs\fsend; env FSEND_PREFIX)
   -Version VERSION   Version to install  (default: latest; env FSEND_VERSION)
   -NoModifyPath      Don't add the install dir to your user PATH
+  -Verbose           Show the individual install steps
   -Help              Show this help and exit
 
 Per-user install: no admin rights needed.
@@ -171,7 +175,7 @@ try {
         # API (unauthenticated API is capped at 60/hr per IP). checksums.txt is
         # needed anyway, and the version is recovered from the archive names in
         # it - tags are always v-prefixed.
-        Info 'looking up the latest release...'
+        VInfo 'resolving the latest release...'
         Download "$ReleaseBase/latest/download/checksums.txt" $checksums
         $line = Get-Content $checksums | Where-Object { $_ -match 'fsend_([^_]+)_' } | Select-Object -First 1
         if ($line -match 'fsend_([^_]+)_') { $vnum = $Matches[1] } else { Err 'could not resolve the latest version' }
@@ -180,7 +184,7 @@ try {
         # Accept "1.2.3" and "v1.2.3" alike: tags are v-prefixed, archive names are not.
         $vnum = $Version -replace '^v', ''
         $Version = "v$vnum"
-        Info 'downloading checksums'
+        VInfo 'downloading checksums'
         Download "$ReleaseBase/download/$Version/checksums.txt" $checksums
     }
 
@@ -192,25 +196,25 @@ try {
         if (-not $env:LOCALAPPDATA) { Err '%LOCALAPPDATA% is not set - pass -Prefix explicitly' }
         $Prefix = Join-Path $env:LOCALAPPDATA 'Programs\fsend'
     }
-    Info "installing fsend $Version for windows-$arch into $Prefix"
+    Info "installing fsend $Version (windows-$arch)"
 
     $archive = "fsend_${vnum}_windows_${arch}.zip"
-    Info "downloading $archive"
+    VInfo "downloading $archive"
     Download "$ReleaseBase/download/$Version/$archive" (Join-Path $tmp $archive)
 
     # The checksum catches corruption and truncation. checksums.txt and the
     # archive both come from the same HTTPS host, so this is an integrity
     # check, not a guarantee against a tampered release - that is GitHub's
     # side of the trust model (see docs/security.md).
-    Info 'verifying checksum'
+    VInfo 'verifying checksum'
     $row = Get-Content $checksums | Where-Object { $_ -match ("\s" + [regex]::Escape($archive) + "$") } | Select-Object -First 1
     if (-not $row) { Err "no checksum found for $archive" }
     $expected = (($row -split '\s+') | Where-Object { $_ })[0].ToLower()
     $actual   = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $tmp $archive)).Hash.ToLower()
     if ($actual -ne $expected) { Err "checksum mismatch: expected $expected, got $actual" }
-    Ok 'checksum verified'
+    Ok 'verified'
 
-    Info 'extracting'
+    VInfo 'extracting'
     Expand-Archive -LiteralPath (Join-Path $tmp $archive) -DestinationPath $tmp -Force
     $src = Join-Path $tmp $Binary
     if (-not (Test-Path $src)) { Err "binary $Binary not found in archive" }
@@ -232,7 +236,6 @@ try {
         }
         Err "could not install into $Prefix : $($_.Exception.Message)"
     }
-    Ok "installed: $dst"
 
     # Persist Prefix on the user's PATH (no admin needed). The registry round-trip
     # preserves REG_EXPAND_SZ (SetEnvironmentVariable flattens it) + broadcasts.
@@ -251,7 +254,7 @@ try {
                 $envKey.SetValue('Path', ($userPath.TrimEnd(';') + ';' + $Prefix).TrimStart(';'), $kind)
                 Broadcast-EnvChange
                 $env:PATH = $env:PATH + ';' + $Prefix
-                Ok "added $Prefix to your user PATH (open a new terminal for other apps to see it)"
+                Ok "PATH updated - open a new terminal"
             }
         } finally {
             $envKey.Close()
@@ -264,9 +267,10 @@ try {
         Ok "added $Prefix to `$GITHUB_PATH"
     }
 
-    # Best-effort smoke check that the fresh binary runs. EAP=Continue covers
-    # the PS 5.1 native-stderr abort; try/catch covers a binary that cannot
-    # execute at all — neither may abort the tail of the install (backup
+    # Best-effort smoke check that the fresh binary runs. Quiet on success -
+    # the outro below is the install confirmation. EAP=Continue covers the
+    # PS 5.1 native-stderr abort; try/catch covers a binary that cannot
+    # execute at all - neither may abort the tail of the install (backup
     # reaping, outro). A statement-terminating error here would otherwise
     # unwind the try block and exit 0 with the work silently half-done.
     $prevEAP = $ErrorActionPreference
@@ -274,7 +278,7 @@ try {
     $ver = $null
     try { $ver = (& $dst --version 2>$null | Select-Object -First 1) } catch { $ver = $null }
     $ErrorActionPreference = $prevEAP
-    if ($ver) { Ok "verify: $ver" }
+    if (-not $ver) { Warn 'the installed binary did not respond to --version' }
 
     # Reap the backup from a previous install. During `fsend --update` it is
     # the running image (locked) and skips silently; the updater reaps it.
@@ -282,8 +286,10 @@ try {
 
     Write-Host ''
     Mut "fsend $Version installed -> $dst"
-    Write-Host 'Next: send a file with  fsend <path>'
-    Write-Host '      see all options:  fsend --help'
+    Write-Host 'fsend <path>    ' -NoNewline
+    Write-Host 'send a file' -ForegroundColor DarkGray
+    Write-Host 'fsend --help    ' -NoNewline
+    Write-Host 'all options' -ForegroundColor DarkGray
     Mut "docs: https://github.com/$Repo#readme"
 }
 finally {

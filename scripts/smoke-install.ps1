@@ -78,14 +78,14 @@ try {
     $out = Invoke-Installer @('-Help')
     Check "-Help exits 0" ($LASTEXITCODE -eq 0)
 
-    # 2. pinned install into an explicit prefix, rc/PATH untouched.
+    # 2. pinned install into an explicit prefix, rc/PATH untouched. -Verbose
+    # turns on the step narration (a PowerShell common parameter).
     $p1 = Join-Path $work 'bin1'
-    $out = Invoke-Installer @('-Version', $ver, '-Prefix', $p1, '-NoModifyPath')
+    $out = Invoke-Installer @('-Version', $ver, '-Prefix', $p1, '-NoModifyPath', '-Verbose')
     Check "pinned install exits 0" ($LASTEXITCODE -eq 0)
     Check "binary installed" (Test-Path (Join-Path $p1 'fsend.exe'))
-    Check "checksum verified line" ($null -ne ($out | Where-Object { $_ -like '*checksum verified*' }))
-    # The outro prints last: its presence proves no mid-install abort was
-    # swallowed (a statement-terminating error would exit 0 but half-done).
+    Check "verification line" ($null -ne ($out | Where-Object { $_ -like '*verified*' }))
+    Check "verbose shows the steps" ($null -ne ($out | Where-Object { $_ -like '*downloading*' }))
     Check "outro printed" ($null -ne ($out | Where-Object { $_ -like "*fsend v$ver installed*" }))
 
     # 3. default prefix without %LOCALAPPDATA% errors cleanly.

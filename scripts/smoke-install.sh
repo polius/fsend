@@ -125,7 +125,7 @@ else
         || { cat "$WORK/out1" >&2; fail "scenario1: installer failed"; }
     [ -x "$H1/.local/bin/fsend" ] || fail "scenario1: binary not at \$HOME/.local/bin"
 fi
-grep -q "checksum verified" "$WORK/out1" || fail "scenario1: no checksum verification"
+grep -q "✓ verified" "$WORK/out1" || fail "scenario1: no verification line"
 grep -q "fsend v$VER installed" "$WORK/out1" || fail "scenario1: no outro line"
 grep -qF "export PATH=\"$H1/.local/bin:\$PATH\"" "$H1/.profile" \
     || fail "scenario1: PATH line not appended to .profile"
@@ -185,24 +185,27 @@ EXTRA_ENV=""
 grep -qF "$H6/bin" "$GHFILE" || fail "scenario6: \$GITHUB_PATH not populated"
 pass "GITHUB_PATH populated in Actions"
 
-# 7. a corrupted archive is rejected by the checksum. Runs last: it
-# poisons the shared fixture archive.
+# 7. flag handling.
 H7="$WORK/home7"
 mkdir -p "$H7"
-printf 'X' | dd of="$FIX/download/v$VER/$ARCHIVE" bs=1 seek=50 conv=notrunc 2>/dev/null
-run_installer "$H7" -p "$H7/bin" -v "$VER" >"$WORK/out7" 2>&1 \
-    && { cat "$WORK/out7" >&2; fail "scenario7: corrupt archive installed"; }
-grep -q "checksum mismatch" "$WORK/out7" || fail "scenario7: no checksum mismatch error"
-pass "corrupted archive rejected by checksum"
+run_installer "$H7" -v >"$WORK/out7a" 2>&1 && fail "scenario7: -v without value accepted"
+run_installer "$H7" --bogus >"$WORK/out7b" 2>&1 && fail "scenario7: unknown flag accepted"
+run_installer "$H7" positional >"$WORK/out7c" 2>&1 && fail "scenario7: positional arg accepted"
+run_installer "$H7" -h >"$WORK/out7d" 2>&1 || fail "scenario7: -h failed"
+run_installer "$H7" -p "$H7/bin" -v "$VER" --verbose >"$WORK/out7e" 2>&1 \
+    || { cat "$WORK/out7e" >&2; fail "scenario7: --verbose run failed"; }
+grep -q "downloading fsend_" "$WORK/out7e" || fail "scenario7: --verbose hides the steps"
+pass "flag handling (missing value, unknown flag, positional, -h, --verbose)"
 
-# 7. flag handling.
+# 8. a corrupted archive is rejected by the checksum. Runs after every
+# full-install scenario: it poisons the shared fixture archive.
 H8="$WORK/home8"
 mkdir -p "$H8"
-run_installer "$H8" -v >"$WORK/out8a" 2>&1 && fail "scenario8: -v without value accepted"
-run_installer "$H8" --bogus >"$WORK/out8b" 2>&1 && fail "scenario8: unknown flag accepted"
-run_installer "$H8" positional >"$WORK/out8c" 2>&1 && fail "scenario8: positional arg accepted"
-run_installer "$H8" -h >"$WORK/out8d" 2>&1 || fail "scenario8: -h failed"
-pass "flag handling (missing value, unknown flag, positional, -h)"
+printf 'X' | dd of="$FIX/download/v$VER/$ARCHIVE" bs=1 seek=50 conv=notrunc 2>/dev/null
+run_installer "$H8" -p "$H8/bin" -v "$VER" >"$WORK/out8" 2>&1 \
+    && { cat "$WORK/out8" >&2; fail "scenario8: corrupt archive installed"; }
+grep -q "checksum mismatch" "$WORK/out8" || fail "scenario8: no checksum mismatch error"
+pass "corrupted archive rejected by checksum"
 
 # 9. root refusal (needs passwordless sudo).
 if [ "$WITH_ROOT" = "1" ]; then
