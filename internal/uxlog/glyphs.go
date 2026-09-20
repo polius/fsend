@@ -104,7 +104,6 @@ const (
 	colorYellow   = "\x1b[33m"
 	colorCyan     = "\x1b[36m"
 	colorBoldCyan = "\x1b[1;36m"
-	colorDim      = "\x1b[38;5;244m"
 
 	// Brand orange, 256-colour 202 — deep enough to stay clearly distinct
 	// from warning yellow (33), which it previously sat beside (208 read

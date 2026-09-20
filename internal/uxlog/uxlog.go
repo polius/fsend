@@ -347,12 +347,14 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 					}
 					return "  ·  " + HumanBytes(int64(r)) + "/s"
 				}),
-				// Dim only the stalled marker. Measuring width off the plain
-				// string above keeps mpb from counting the ANSI escapes — a
-				// colorized decor.Any costs ~6 columns of bar during a stall.
+				// Colour only the stalled marker — yellow, the caution
+				// family, since a stall is a soft warning. Measuring width
+				// off the plain string above keeps mpb from counting the
+				// ANSI escapes — a colorized decor.Any costs ~6 columns of
+				// bar during a stall.
 				func(str string) string {
 					if str == stalledChip {
-						return Dim(str)
+						return colorYellow + str + colorReset
 					}
 					return str
 				},
@@ -381,12 +383,10 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		)
 	}
 	if route != "" {
-		// Static route chip, dimmed at render time: Meta keeps mpb's width
-		// math off the ANSI escapes (same trick as the stalled marker).
-		appendDecs = append(appendDecs, decor.Meta(
-			decor.Name("  ·  "+route),
-			func(str string) string { return Dim(str) },
-		))
+		// Static route chip, plain default foreground — the bar's other
+		// decorators (rate, ETA, file chip) provide the emphasis around
+		// it; a grey or dim chip here only costs readability.
+		appendDecs = append(appendDecs, decor.Name("  ·  "+route))
 	}
 	if showNames {
 		// Current-file chip, last so its per-file width changes don't

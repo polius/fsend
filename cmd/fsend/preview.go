@@ -66,9 +66,9 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 		case it.from != "": // followed symlink: real size + "name (→ target)"
 			name += " (→ " + it.from + ")"
 		}
-		// The size column is dimmed: metadata that supports the scan, not
-		// the payload. Names carry the information; sizes contextualise it.
-		line := fmt.Sprintf("%s%s   %s", pad, uxlog.Dim(fmt.Sprintf("%*s", sizeWidth, sizeCell(it))), name)
+		// The size column stays in the default foreground: metadata keeps
+		// its readability; the name carries the row's information.
+		line := fmt.Sprintf("%s%s   %s", pad, fmt.Sprintf("%*s", sizeWidth, sizeCell(it)), name)
 		if it.note != "" {
 			line += "   " + noteText(it.note)
 		}
@@ -80,7 +80,7 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 			rest += it.size
 		}
 		_, _ = fmt.Fprintf(w, "%s%s\n", pad,
-			uxlog.Dim(fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(int64(rest)))))
+			fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(int64(rest))))
 	}
 }
 
@@ -94,12 +94,13 @@ func sizeCell(it previewItem) string {
 }
 
 // noteText colours a status tag: "differs" needs a decision, so it's
-// highlighted; the rest are reassuring background, so they're dimmed.
+// highlighted yellow; the rest ("up to date", "resume") render in the
+// default foreground — readable, quiet by being brief.
 func noteText(note string) string {
 	if note == "differs" {
 		return uxlog.Alert(note)
 	}
-	return uxlog.Dim(note)
+	return note
 }
 
 // stripCommonDir removes the longest leading directory prefix shared by every

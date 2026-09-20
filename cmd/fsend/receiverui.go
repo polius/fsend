@@ -167,7 +167,7 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	peer := sanitizeRemote(h.Hostname)
 	pathChip := ""
 	if ui.pathInfo.Kind != connpath.KindUnknown {
-		pathChip = uxlog.Dim("  ·  " + ui.pathInfo.Chip())
+		pathChip = "  ·  " + ui.pathInfo.Chip()
 	}
 	arrow := ""
 	if uxlog.ColorFor(os.Stderr) {
@@ -244,7 +244,7 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	prompt, hint := "  Overwrite all? [y/N] ", "  Please answer y or n."
 	if truncated {
 		fmt.Fprintf(os.Stderr, "    %s\n",
-			uxlog.Dim(fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts))))
+			fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts)))
 		prompt, hint = "  Overwrite all? [y/N/l] ", "  Please answer y or n (or l to list all)."
 	}
 	for {
@@ -295,7 +295,7 @@ func conflictLabel(c transfer.Conflict) string {
 	if c.Kind != "differs" {
 		return fmt.Sprintf("%s  (%s)", name, c.Kind)
 	}
-	delta := uxlog.Dim(uxlog.HumanBytes(c.LocalSize) + " → ")
+	delta := uxlog.HumanBytes(c.LocalSize) + " → "
 	return fmt.Sprintf("%s  %s%s", name, delta, uxlog.HumanBytes(int64(c.IncomingSize)))
 }
 
@@ -650,7 +650,7 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	// of "Saved … 0 B", which reads as if it did work.
 	if total == 0 && moved == 0 && kept == 0 && skippedSame > 0 {
 		fmt.Fprintf(os.Stderr, "%s Already up to date  ·  %s unchanged  ·  %s\n",
-			uxlog.Check(), uxlog.CountNoun(skippedSame, "file"), uxlog.Dim(path.Tag()))
+			uxlog.Check(), uxlog.CountNoun(skippedSame, "file"), path.Tag())
 		printUpdateNotice(f)
 		return
 	}

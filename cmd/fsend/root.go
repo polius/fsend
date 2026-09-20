@@ -354,16 +354,15 @@ func isHelpHeader(line string) bool {
 var flagTokenRe = regexp.MustCompile(`-{1,2}[A-Za-z][A-Za-z0-9-]*`)
 
 // decorateHelpFlags colours the hand-written flag reference: flag tokens
-// cyan, description text dim, so each entry scans as [flag] [description]
-// and the eye can jump between flags without reading prose.
+// cyan so each entry scans as [flag] [description] and the eye can jump
+// between flags without reading prose. Descriptions stay in the
+// terminal's default foreground — readable by definition; only headers
+// (bold) and flags (cyan) are emphasized.
 //
 // Line shapes handled (indentation-keyed):
 //   - "  --flag <arg>        description" — split at the first 2+ space
-//     run after the indent; dash tokens on the left go cyan, the whole
-//     right side dims. USAGE/ADVANCED command entries share the shape
-//     ("  fsend server  …  Run your own …") and just get the dim right.
-//   - "                         wrapped description" (25-space indent) —
-//     a continuation of the entry above, dimmed whole.
+//     run after the indent; dash tokens on the left go cyan.
+//   - continuation lines are left untouched.
 //
 // Gated on stdout — cobra writes help there — so pipes, NO_COLOR, and
 // non-TTY contexts get the template byte-for-byte untouched. The
@@ -375,16 +374,14 @@ func decorateHelpFlags(tpl string) string {
 	}
 	lines := strings.Split(tpl, "\n")
 	for i, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "   "):
-			gap := helpColumnGap(line)
-			if gap < 0 {
-				continue // no description on this line ("  --connect <host[:port]>")
-			}
-			lines[i] = colorizeFlagTokens(line[:gap]) + uxlog.Dim(line[gap:])
-		case len(line) >= 25 && strings.TrimSpace(line) != "" && strings.TrimSpace(line[:25]) == "":
-			lines[i] = uxlog.Dim(line)
+		if !strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "   ") {
+			continue
 		}
+		gap := helpColumnGap(line)
+		if gap < 0 {
+			continue // no description on this line ("  --connect <host[:port]>")
+		}
+		lines[i] = colorizeFlagTokens(line[:gap]) + line[gap:]
 	}
 	return strings.Join(lines, "\n")
 }

@@ -458,7 +458,7 @@ func printSendSummary(f *flags, total int64, s senderStats, elapsed time.Duratio
 	// itself. Mirror the receiver's headline.
 	if s.moved == 0 && s.keptFiles == 0 && s.skippedFiles > 0 {
 		fmt.Fprintf(os.Stderr, "%s Already up to date  ·  %s unchanged  ·  %s\n",
-			uxlog.Check(), uxlog.CountNoun(s.skippedFiles, "file"), uxlog.Dim(path.Tag()))
+			uxlog.Check(), uxlog.CountNoun(s.skippedFiles, "file"), path.Tag())
 		printUpdateNotice(f)
 		return
 	}
@@ -507,12 +507,12 @@ func summaryLine(total, moved int64, verb string, elapsed time.Duration, path co
 	// time, not a transfer duration — "0 B · 5.8s" reads as a slow
 	// transfer. Omit it (HumanRate already suppresses the rate).
 	if moved > 0 {
-		line += uxlog.Dim(" in " + uxlog.HumanDuration(elapsed))
+		line += " in " + uxlog.HumanDuration(elapsed)
 	}
 	if r := uxlog.HumanRate(moved, elapsed); r != "" {
-		line += uxlog.Dim(" (" + r + ")")
+		line += " (" + r + ")"
 	}
-	return line + uxlog.Dim("  ·  " + path.Tag())
+	return line + "  ·  " + path.Tag()
 }
 
 // displayPath renders an absolute path with $HOME collapsed to "~".

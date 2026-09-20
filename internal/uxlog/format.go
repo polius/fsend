@@ -100,23 +100,18 @@ func Code(c string) string {
 	return colorBoldOrange + c + colorReset
 }
 
-// Dim wraps s in the muted-grey foreground colour (or returns it
-// unchanged when color is off). It is a colour, not the ANSI dim (2)
-// attribute — the attribute halves whatever the theme's foreground is,
-// which on plenty of palettes means "illegible". Mid-grey (256-colour
-// 244) stays readable on both dark and light backgrounds while still
-// receding: the textMuted role. For secondary metadata only.
-func Dim(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return colorDim + s + colorReset
-}
+// There is deliberately no "dim"/muted renderer here. Secondary text
+// renders in the terminal's default foreground: that is the one colour
+// guaranteed readable on the user's theme, and hierarchy comes from
+// emphasising the primary elements (brand orange, violet prompts,
+// green/yellow clauses, bold) — never from darkening the rest. opencode
+// can calibrate a muted tone against the known background; a portable
+// CLI cannot, and every grey gamble loses on someone's palette.
 
 // Prompt wraps s in the violet primary accent — the colour of a
 // question. Used for the lines that ask the user to decide (accept,
 // overwrite, password) so a scan of the terminal finds every point
-// where input is wanted. Gated on colour like Dim.
+// where input is wanted. Gated on colour.
 func Prompt(s string) string {
 	if !colorEnabled() {
 		return s
