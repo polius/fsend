@@ -10,7 +10,7 @@ require (
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/mdns/v2 v2.2.1
 	github.com/pion/stun/v4 v4.0.1
-	github.com/quic-go/quic-go v0.62.0
+	github.com/quic-go/quic-go v0.63.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/vbauerster/mpb/v8 v8.16.1
