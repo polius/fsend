@@ -5,7 +5,7 @@ go 1.26.8
 require (
 	github.com/adrg/xdg v0.5.3
 	github.com/kalafut/imohash v1.1.1
-	github.com/klauspost/compress v1.20.0
+	github.com/klauspost/compress v1.20.1
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/mdns/v2 v2.2.1
@@ -13,7 +13,7 @@ require (
 	github.com/quic-go/quic-go v0.63.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	github.com/vbauerster/mpb/v8 v8.16.1
+	github.com/vbauerster/mpb/v8 v8.16.2
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
@@ -36,7 +36,7 @@ require (
 	github.com/pion/transport/v5 v5.0.1 // indirect
 	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/twmb/murmur3 v1.2.0 // indirect
-	github.com/vbauerster/cupwriter v0.0.4 // indirect
+	github.com/vbauerster/cupwriter v0.0.5 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/time v0.16.0 // indirect
 )
