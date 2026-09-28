@@ -13,8 +13,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/kalafut/imohash v1.1.1 h1:G/HYtKgteQSVU96LidSJEbUGoZOMiBcuXYxbeb2W9e4=
 github.com/kalafut/imohash v1.1.1/go.mod h1:6cn9lU0Sj8M4eu9UaQm1kR/5y3k/ayB68yntRhGloL4=
-github.com/klauspost/compress v1.20.0 h1:a3C1ke2ohxFymNlb2HWAHjDeKCI90scRskErZkR0ezA=
-github.com/klauspost/compress v1.20.0/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
+github.com/klauspost/compress v1.20.1 h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=
+github.com/klauspost/compress v1.20.1/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/klauspost/cpuid/v2 v2.4.0 h1:S6Hrbc7+ywsr0r+RLapfGBHfyefhCTwEh3A0tV913Dw=
 github.com/klauspost/cpuid/v2 v2.4.0/go.mod h1:19jmZ9mjzoF//ddRSUsv0zfBTJWh3QJh9FNxZTMrGxU=
 github.com/mattn/go-runewidth v0.0.30 h1:+KUuiDA4fF0R1p5FeueHefjDm+GIM+kWfFnDjybOPgk=
@@ -53,10 +53,10 @@ github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUm
 github.com/twmb/murmur3 v1.1.5/go.mod h1:Qq/R7NUyOfr65zD+6Q5IHKsJLwP7exErjN6lyyq3OSQ=
 github.com/twmb/murmur3 v1.2.0 h1:S6p/KHqoqsLveELUoKh6zSm/Kwwgl1pStVBgrrLa5UA=
 github.com/twmb/murmur3 v1.2.0/go.mod h1:LVqs/avIy0flspVtmBd4VSbogDepFl6Wkj0i0ToccHE=
-github.com/vbauerster/cupwriter v0.0.4 h1:9sBPe0uXWLZuWQU5lqVbhyFlxX6c09asST/YfatFAys=
-github.com/vbauerster/cupwriter v0.0.4/go.mod h1:IFyzS6Xis5dnBH/rdAhrnuzg3c+KkUqEN6yE8lhJlDw=
-github.com/vbauerster/mpb/v8 v8.16.1 h1:gNYmwMip9xRWNGAiblZOgUNXWeU2P0NIGd5x0f8ffbc=
-github.com/vbauerster/mpb/v8 v8.16.1/go.mod h1:gnU8zNF/JWltFepqwko/ulMEUIDrydIq7T4UdMN26Nw=
+github.com/vbauerster/cupwriter v0.0.5 h1:pxlPgxPLIebXh8lJPOZmn2TmjPE8+PqJIFkKkr7hI9I=
+github.com/vbauerster/cupwriter v0.0.5/go.mod h1:ptJDgOtLtGZp1gLzycD0TFnZztDhrQdsikG6EAA4xYQ=
+github.com/vbauerster/mpb/v8 v8.16.2 h1:+UH2Nhn6asKkdX58hSgN+5Jqg/JcFSqCcU+8z0IiYYo=
+github.com/vbauerster/mpb/v8 v8.16.2/go.mod h1:PFkxR+jl7Eew9ukpdUcodHBGq9ow74b6cXI7xL0t3mA=
 github.com/wlynxg/anet v0.0.5 h1:J3VJGi1gvo0JwZ/P1/Yc/8p63SoW98B5dHkYDmpgvvU=
 github.com/wlynxg/anet v0.0.5/go.mod h1:eay5PRQr7fIVAMbTbchTnO9gG65Hg/uYGdc7mguHxoA=
 github.com/zeebo/assert v1.1.0 h1:hU1L1vLTHsnO8x8c9KAR5GmM5QscxHg5RNU5z5qbUWY=
