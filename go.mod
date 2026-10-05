@@ -7,8 +7,8 @@ require (
 	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.20.1
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/pion/ice/v4 v4.4.4
-	github.com/pion/mdns/v2 v2.2.1
+	github.com/pion/ice/v4 v4.4.5
+	github.com/pion/mdns/v2 v2.2.2
 	github.com/pion/stun/v4 v4.0.1
 	github.com/quic-go/quic-go v0.63.0
 	github.com/spf13/cobra v1.10.2
