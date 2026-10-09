@@ -7,7 +7,7 @@ require (
 	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.20.1
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/pion/ice/v4 v4.4.5
+	github.com/pion/ice/v4 v4.4.6
 	github.com/pion/mdns/v2 v2.2.2
 	github.com/pion/stun/v4 v4.0.1
 	github.com/quic-go/quic-go v0.63.0
@@ -17,7 +17,7 @@ require (
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.46.0
 	salsa.debian.org/vasudev/gospake2 v0.0.0-20210510093858-d91629950ad1
 )
