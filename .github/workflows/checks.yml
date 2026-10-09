@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # setup-go pins GOTOOLCHAIN=local when unset, and its version manifest
+  # can lag a fresh Go release by days — a go-patch bump PR then fails
+  # every job with "go.mod requires go >= X (running go < X)". Explicitly
+  # opting into auto lets the go command run the toolchain go.mod asks
+  # for, which is the same contract as everyone building from source.
+  GOTOOLCHAIN: auto
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
