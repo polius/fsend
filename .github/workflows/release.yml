@@ -6,6 +6,11 @@ on:
       - 'v*'
   workflow_dispatch:
 
+env:
+  # Same as checks.yml: never pin GOTOOLCHAIN=local, so a freshly bumped
+  # go.mod (go-patch) is always built with the toolchain it names.
+  GOTOOLCHAIN: auto
+
 permissions:
   contents: write
   id-token: write
