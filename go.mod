@@ -5,7 +5,7 @@ go 1.26.9
 require (
 	github.com/adrg/xdg v0.5.3
 	github.com/kalafut/imohash v1.1.1
-	github.com/klauspost/compress v1.20.1
+	github.com/klauspost/compress v1.20.3
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/pion/ice/v4 v4.4.7
 	github.com/pion/mdns/v2 v2.2.2
