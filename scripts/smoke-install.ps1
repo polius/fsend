@@ -132,6 +132,20 @@ try {
     Check ".old backup reaped" (-not (Test-Path (Join-Path $p2 'fsend.exe.old')))
     Check "replaced binary present" (Test-Path (Join-Path $p2 'fsend.exe'))
     Check "reinstall outro printed" ($null -ne ($out | Where-Object { $_ -like "*fsend v$ver installed*" }))
+    # Positive control for the FSEND_UPDATE checks below: the sign-off (and
+    # the newcomer pointers in it) really is printed on a normal reinstall.
+    Check "clean reinstall prints the newcomer sign-off" ($null -ne ($out | Where-Object { $_ -like '*all options*' }))
+
+    # ...but FSEND_UPDATE=1 — what `fsend --update` sets — drops the
+    # "currently installed" preamble and the newcomer sign-off, because
+    # fsend's own narration has already named both versions.
+    $env:FSEND_UPDATE = '1'
+    $out = Invoke-Installer @('-Version', $ver, '-Prefix', $p2, '-NoModifyPath')
+    $env:FSEND_UPDATE = $null
+    Check "FSEND_UPDATE=1 run exits 0" ($LASTEXITCODE -eq 0)
+    Check "FSEND_UPDATE=1 trims the preamble" ($null -eq ($out | Where-Object { $_ -like '*currently installed*' }))
+    Check "FSEND_UPDATE=1 trims the sign-off" ($null -eq ($out | Where-Object { $_ -like '*all options*' }))
+    Check "FSEND_UPDATE=1 keeps the confirmation" ($null -ne ($out | Where-Object { $_ -like "*fsend v$ver installed*" }))
 
     # 6. a corrupted archive is rejected by the checksum. Runs last: it
     # poisons the shared fixture archive.
