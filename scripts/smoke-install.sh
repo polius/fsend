@@ -175,7 +175,22 @@ run_installer "$H5" -p "$H5/bin" >"$WORK/out5" 2>&1 \
 SMOKE_PATH=/usr/bin:/bin
 grep -q "currently installed: fsend $VER (smoke)" "$WORK/out5" \
     || fail "scenario5: no 'currently installed' line on reinstall"
-pass "reinstall reports currently installed version"
+# ...but a `fsend --update` re-run (FSEND_UPDATE=1) drops that preamble and
+# the newcomer sign-off: fsend's own narration already named both versions,
+# and the pointers are for someone who has never run fsend.
+SMOKE_PATH="$H5/bin:/usr/bin:/bin"
+EXTRA_ENV="FSEND_UPDATE=1"
+run_installer "$H5" -p "$H5/bin" >"$WORK/out5b" 2>&1 \
+    || { cat "$WORK/out5b" >&2; fail "scenario5: FSEND_UPDATE run failed"; }
+EXTRA_ENV=""
+SMOKE_PATH=/usr/bin:/bin
+grep -q "currently installed" "$WORK/out5b" \
+    && fail "scenario5: FSEND_UPDATE kept the 'currently installed' preamble"
+grep -q "all options" "$WORK/out5b" \
+    && fail "scenario5: FSEND_UPDATE kept the newcomer sign-off"
+grep -q "installed" "$WORK/out5b" \
+    || fail "scenario5: FSEND_UPDATE dropped the install confirmation too"
+pass "reinstall reports currently installed version; FSEND_UPDATE=1 trims it"
 
 # 6. GitHub Actions: install dir lands in $GITHUB_PATH.
 H6="$WORK/home6"

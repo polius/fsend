@@ -68,7 +68,7 @@ $mark = if ($PSVersionTable.PSEdition -eq 'Core') {
     @{ info = '>'; ok = 'OK'; warn = '!'; err = 'x' }
 }
 
-function Info($m) { Write-Host "$($mark.info) $m" -ForegroundColor Cyan }
+function Info($m) { Write-Host "$($mark.info) $m" }
 function Ok($m)   { Write-Host "$($mark.ok) $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "$($mark.warn) $m" -ForegroundColor Yellow }
 # -Verbose is a PowerShell common parameter (available via CmdletBinding):
@@ -163,8 +163,10 @@ try {
     # Same PS 5.1 pitfall as the other native calls below: redirected native
     # stderr under EAP=Stop aborts a good run, so relax EAP around them.
     # try/catch on top keeps a broken binary from aborting the installer.
+    # Under FSEND_UPDATE (set by `fsend --update`) the caller has already
+    # named both versions, so the preamble would only repeat it.
     $existing = Get-Command fsend -ErrorAction SilentlyContinue
-    if ($existing) {
+    if ($existing -and $env:FSEND_UPDATE -ne '1') {
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         $cur = $null
@@ -290,10 +292,13 @@ try {
     Remove-Item -LiteralPath $oldDst -Force -ErrorAction SilentlyContinue
 
     Ok "fsend $Version installed -> $dst"
-    Write-Host ''
-    Write-Host '  fsend <path>    send a file'
-    Write-Host '  fsend --help    all options'
-    Write-Host "  docs:           https://github.com/$Repo#readme"
+    # Newcomer pointers are for a first install; an update already knows them.
+    if ($env:FSEND_UPDATE -ne '1') {
+        Write-Host ''
+        Write-Host '  fsend <path>    send a file'
+        Write-Host '  fsend --help    all options'
+        Write-Host "  docs:           https://github.com/$Repo#readme"
+    }
 }
 finally {
     Remove-Item -Recurse -Force -Path $tmp -ErrorAction SilentlyContinue

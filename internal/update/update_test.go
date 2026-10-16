@@ -33,7 +33,7 @@ func TestNewer(t *testing.T) {
 	}
 }
 
-func TestNotice(t *testing.T) {
+func TestAvailable(t *testing.T) {
 	// Redirect cache to a tempdir and the API to a stub server.
 	config.SetPathForTesting(filepath.Join(t.TempDir(), "config.json"))
 	t.Cleanup(func() { config.SetPathForTesting("") })
@@ -44,21 +44,33 @@ func TestNotice(t *testing.T) {
 	t.Cleanup(srv.Close)
 	apiURL = srv.URL
 
-	if msg := Notice(context.Background(), "0.1.0"); msg == "" {
-		t.Fatal("expected an upgrade notice for 0.1.0 vs 9.9.9")
+	if latest, ok := Available(context.Background(), "0.1.0"); !ok || latest != "9.9.9" {
+		t.Fatalf("Available(0.1.0) = (%q, %v), want (\"9.9.9\", true)", latest, ok)
 	}
 	// Up-to-date: no notice (served version cached, no second fetch needed).
-	if msg := Notice(context.Background(), "9.9.9"); msg != "" {
-		t.Fatalf("expected no notice when current, got %q", msg)
+	if latest, ok := Available(context.Background(), "9.9.9"); ok {
+		t.Fatalf("Available(9.9.9) = (%q, true), want ok=false", latest)
 	}
 	// Dev builds never check.
-	if msg := Notice(context.Background(), "dev"); msg != "" {
-		t.Fatalf("expected no notice for dev build, got %q", msg)
+	if latest, ok := Available(context.Background(), "dev"); ok {
+		t.Fatalf("Available(dev) = (%q, true), want ok=false", latest)
 	}
 	// Opt-out.
 	t.Setenv("FSEND_NO_UPDATE_CHECK", "1")
-	if msg := Notice(context.Background(), "0.1.0"); msg != "" {
-		t.Fatalf("expected no notice when opted out, got %q", msg)
+	if latest, ok := Available(context.Background(), "0.1.0"); ok {
+		t.Fatalf("Available opted out = (%q, true), want ok=false", latest)
+	}
+}
+
+func TestReleaseURL(t *testing.T) {
+	cases := map[string]string{
+		"1.14.1":  "https://github.com/polius/fsend/releases/tag/v1.14.1",
+		"v1.14.1": "https://github.com/polius/fsend/releases/tag/v1.14.1",
+	}
+	for in, want := range cases {
+		if got := ReleaseURL(in); got != want {
+			t.Errorf("ReleaseURL(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

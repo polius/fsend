@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,10 +20,13 @@ import (
 // the directory the binary lives in. The installer — not fsend — does
 // the download and checksum verification, so the update path can never
 // drift from a fresh install.
-func runUpdate() error {
+//
+// check reports instead of installing: it shares the lookup and the
+// wording, and stops before anything is written.
+func runUpdate(check bool) error {
 	current := strings.TrimPrefix(version.Version, "v")
 	if current == "" || current == "dev" {
-		return fmt.Errorf("%w: this is a dev build with no release to compare against", fserrors.ErrUpdateFailed)
+		return fserrors.ErrUpdateDevBuild
 	}
 
 	binPath, err := os.Executable()
@@ -36,22 +41,27 @@ func runUpdate() error {
 	// that PATH spells differently: the installer then appends a
 	// duplicate PATH line and warns about a shadow that isn't there.
 	binPath = resolveBinaryPath(binPath)
-	// A brew-managed binary must not be overwritten behind brew's back —
-	// the Cellar file would diverge from the formula's metadata and the
-	// next `brew upgrade` would fight it. Checked before any network work.
-	if managedByHomebrew(binPath) {
-		return fmt.Errorf("%w: update it with: brew upgrade fsend", fserrors.ErrHomebrewManaged)
-	}
 
-	// The installers are per-user and refuse root (see scripts/install.*).
-	// Mirror that here so the failure happens before any network work, with
-	// an actionable message instead of an installer abort mid-update. The
-	// same FSEND_ALLOW_ROOT opt-in applies: a root install (container,
-	// appliance) must not become a dead end for --update. The env var
-	// carries through to the installer re-run below, so it refuses only
-	// once. Geteuid returns -1 on Windows, where the check does not apply.
-	if os.Geteuid() == 0 && !rootOptIn() {
-		return fserrors.ErrUpdateRootRefused
+	// The two refusals below exist to protect a write, so --check — which
+	// only looks — is exempt from both.
+	if !check {
+		// A brew-managed binary must not be overwritten behind brew's back —
+		// the Cellar file would diverge from the formula's metadata and the
+		// next `brew upgrade` would fight it. Checked before any network work.
+		if managedByHomebrew(binPath) {
+			return fmt.Errorf("%w: update it with: brew upgrade fsend", fserrors.ErrHomebrewManaged)
+		}
+
+		// The installers are per-user and refuse root (see scripts/install.*).
+		// Mirror that here so the failure happens before any network work, with
+		// an actionable message instead of an installer abort mid-update. The
+		// same FSEND_ALLOW_ROOT opt-in applies: a root install (container,
+		// appliance) must not become a dead end for --update. The env var
+		// carries through to the installer re-run below, so it refuses only
+		// once. Geteuid returns -1 on Windows, where the check does not apply.
+		if os.Geteuid() == 0 && !rootOptIn() {
+			return fserrors.ErrUpdateRootRefused
+		}
 	}
 
 	fmt.Fprintln(os.Stderr, uxlog.Step(), "Checking the latest release...")
@@ -63,12 +73,28 @@ func runUpdate() error {
 		fmt.Fprintf(os.Stderr, "%s fsend %s is already the latest version.\n", uxlog.Check(), current)
 		return nil
 	}
+	if check {
+		fmt.Fprintf(os.Stderr, "%s\n", availableLine(latest, current))
+		return nil
+	}
 
 	fmt.Fprintf(os.Stderr, "%s Updating fsend %s → %s in %s\n", uxlog.Step(), current, latest, filepath.Dir(binPath))
+	fmt.Fprintf(os.Stderr, "  what's new: %s\n", uxlog.Link(update.ReleaseURL(latest)))
 	if err := runInstaller(binPath); err != nil {
-		return fmt.Errorf("%w: %v", fserrors.ErrUpdateFailed, err)
+		return fmt.Errorf("%w: %s", fserrors.ErrUpdateFailed, installerFailureDetail(err))
 	}
 	return nil
+}
+
+// installerFailureDetail phrases a failed installer run for a person:
+// exec's bare "exit status 1" becomes "the installer exited with status
+// 1". Anything else (no shell on PATH, say) passes through as-is.
+func installerFailureDetail(err error) string {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return fmt.Sprintf("the installer exited with status %d", exit.ExitCode())
+	}
+	return err.Error()
 }
 
 // rootOptIn reports whether the user explicitly accepted a root install

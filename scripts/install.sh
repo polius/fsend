@@ -18,6 +18,9 @@ DOCS="https://github.com/${REPO}#readme"
 FSEND_VERSION="${FSEND_VERSION:-latest}"
 # FSEND_PREFIX is the documented name; PREFIX is kept because `fsend --update`
 # sets it when re-running this installer pinned to the binary's directory.
+# FSEND_UPDATE (also set by `fsend --update`) trims the install-only parts
+# of the output — the "currently installed" preamble and the newcomer
+# sign-off — which fsend's own update narration already covers.
 PREFIX="${FSEND_PREFIX:-${PREFIX:-}}"
 MODIFY_PATH=1
 VERBOSE=0
@@ -33,7 +36,7 @@ if [ -n "$PREFIX" ]; then PREFIX_EXPLICIT=1; else PREFIX_EXPLICIT=0; fi
 # auto-detection the fsend binary applies (https://no-color.org).
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     esc="$(printf '\033')"
-    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_CYN="${esc}[36m" C_RST="${esc}[0m"
+    C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_RST="${esc}[0m"
     # C_ORG styles a command the user is about to run — the same bold +
     # accent-orange treatment the fsend binary gives one (uxlog.Code,
     # tokenAccent #ff9e64): truecolour when the terminal advertises it
@@ -44,11 +47,16 @@ if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
         *)                               C_ORG="${esc}[1;38;5;209m" ;;
     esac
 else
-    C_RED='' C_GRN='' C_YLW='' C_CYN='' C_RST='' C_ORG=''
+    C_RED='' C_GRN='' C_YLW='' C_RST='' C_ORG=''
 fi
 
+# The step marker is the plain '›' the fsend binary prints for narration
+# (uxlog.Step): cyan is reserved for the ℹ info glyph, so a step competing
+# in cyan only adds noise. Keeping it colourless also makes the installer's
+# lines read as one continuous block with the narration fsend prints ahead
+# of it under `fsend --update`.
 err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
-info() { printf '%s›%s %s\n' "$C_CYN" "$C_RST" "$*" >&2; }
+info() { printf '› %s\n' "$*" >&2; }
 warn() { printf '%s!%s %s\n' "$C_YLW" "$C_RST" "$*" >&2; }
 ok()   { printf '%s✓%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
 vinfo() {
@@ -359,9 +367,13 @@ main() {
     fi
 
     # Upgrade awareness: say what's already installed before touching it.
-    if _prev="$(command -v "$BINARY" 2>/dev/null)"; then
-        _cur="$("$_prev" --version 2>/dev/null | head -n1 || true)"
-        [ -n "$_cur" ] && printf 'currently installed: %s\n' "$_cur" >&2
+    # Under FSEND_UPDATE the caller has already named both versions, so this
+    # would only repeat it.
+    if [ "${FSEND_UPDATE:-}" != "1" ]; then
+        if _prev="$(command -v "$BINARY" 2>/dev/null)"; then
+            _cur="$("$_prev" --version 2>/dev/null | head -n1 || true)"
+            [ -n "$_cur" ] && printf 'currently installed: %s\n' "$_cur" >&2
+        fi
     fi
 
     tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend.XXXXXXXX)"
@@ -449,10 +461,13 @@ main() {
     fi
 
     ok "fsend $version installed → $PREFIX/$bin_file"
-    printf '\n' >&2
-    printf '  fsend <path>    send a file\n' >&2
-    printf '  fsend --help    all options\n' >&2
-    printf '  docs:           %s\n' "$DOCS" >&2
+    # Newcomer pointers are for a first install; an update already knows them.
+    if [ "${FSEND_UPDATE:-}" != "1" ]; then
+        printf '\n' >&2
+        printf '  fsend <path>    send a file\n' >&2
+        printf '  fsend --help    all options\n' >&2
+        printf '  docs:           %s\n' "$DOCS" >&2
+    fi
 }
 
 while [ $# -gt 0 ]; do
