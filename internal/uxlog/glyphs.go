@@ -221,7 +221,9 @@ func darkBackground() bool {
 			if c := os.Getenv("COLORFGBG"); c != "" {
 				if i := strings.LastIndexByte(c, ';'); i >= 0 {
 					if bg, err := strconv.Atoi(c[i+1:]); err == nil {
-						bgDark = !(bg == 7 || bg >= 9)
+						// A light background index (the default fg 7, or
+						// 9–15) means the terminal is light-on-dark.
+						bgDark = bg != 7 && bg < 9
 					}
 				}
 			}

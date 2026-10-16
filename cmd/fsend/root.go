@@ -365,7 +365,7 @@ func startHere() {
 		}
 		return render(s)
 	}
-	fmt.Fprintf(os.Stdout, `  %s  %s — send files straight to another computer
+	_, _ = fmt.Fprintf(os.Stdout, `  %s  %s — send files straight to another computer
 
   %s
     fsend %s
