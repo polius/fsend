@@ -347,6 +347,46 @@ func isHelpHeader(line string) bool {
 	return true
 }
 
+// stdoutIsTTY reports whether stdout is an interactive terminal. A var so
+// tests can flip it without faking a file descriptor.
+var stdoutIsTTY = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+
+// startHere is what bare `fsend` prints on an interactive terminal: the two
+// commands a newcomer actually needs, then a pointer to the reference. The
+// full manual stays behind --help, and a piped or non-TTY invocation keeps
+// printing it too, so scripts and `fsend | less` still see every flag.
+func startHere() {
+	colour := uxlog.ColorFor(os.Stdout)
+	// Bold, Brand and Accent are unconditional in uxlog (they decorate
+	// --help, which cobra writes to stdout); the gate lives here.
+	paint := func(render func(string) string, s string) string {
+		if !colour {
+			return s
+		}
+		return render(s)
+	}
+	fmt.Fprintf(os.Stdout, `  %s  %s — send files straight to another computer
+
+  %s
+    fsend %s
+
+  %s
+    fsend %s       ← the code fsend gives you
+
+  More: fsend %s   everything
+        fsend %s   check your setup
+`,
+		paint(uxlog.Brand, "⇄"),
+		paint(uxlog.Bold, "fsend"),
+		paint(uxlog.Bold, "Send a file"),
+		paint(uxlog.Path, "report.pdf"),
+		paint(uxlog.Bold, "Then, on the other machine"),
+		paint(uxlog.Code, "xqp-wjyc-zxk"),
+		paint(uxlog.Accent, "--help"),
+		paint(uxlog.Accent, "doctor"),
+	)
+}
+
 // flagTokenRe matches a single-dash or double-dash token ("--out", "-h")
 // inside a help entry's flag column. Descriptions live right of the
 // column gap and never contain a leading-dash token at a word boundary
@@ -591,8 +631,14 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		return runSend(f, nil)
 	}
 
-	// No positional args and no flag-driven send: print help.
+	// No positional args and no flag-driven send: on an interactive
+	// terminal show the short "start here" screen; anywhere else (a pipe,
+	// CI, `fsend | less`) keep printing the full reference.
 	if len(f.posArgs) == 0 {
+		if stdoutIsTTY() {
+			startHere()
+			return nil
+		}
 		return cmd.Help()
 	}
 
