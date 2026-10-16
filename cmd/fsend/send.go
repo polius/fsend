@@ -260,7 +260,7 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  The code works once, and only while this stays open.")
 	fmt.Fprintln(os.Stderr)
-	return uxlog.StartSpinner("Waiting for receiver", "Ctrl-C to cancel")
+	return uxlog.StartSpinner("Waiting for receiver", uxlog.HintCancel)
 }
 
 // sendArrow renders the ⇢ direction marker prefixed to the send header

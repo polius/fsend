@@ -41,6 +41,10 @@ type Spinner struct {
 // gives a 1 s rotation period, which reads as "alive" without being noisy.
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+// HintCancel is the trailer long waits advertise so the escape hatch is
+// never hidden: pass it as StartSpinner's hint.
+const HintCancel = "Ctrl-C to cancel"
+
 // spinnerInterval matches the progress-bar refresh rate (≥10 Hz when
 // active) so both visuals stay in sync on the same terminal.
 const spinnerInterval = 100 * time.Millisecond

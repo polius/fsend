@@ -69,21 +69,22 @@ func runReceive(f *flags, c string) error {
 		return err
 	}
 
-	// LAN discovery is a 300 ms probe — short enough that showing a
-	// spinner only flashes a line that immediately gets cleared on miss,
-	// which reads as glitchy. Stay silent through the probe; a spinner
-	// starts once we know we're on a longer path (the LAN dial below, or
-	// the internet fallback).
+	// Name the phase rather than showing a bare "Connecting": the LAN probe
+	// and the server fallback are very different waits, and a named phase
+	// turns the mystery pause into a status. One continuous spinner spans
+	// both — its message changes in place, so a fast LAN hit never flashes.
+	var spin *uxlog.Spinner
+	if !f.quiet {
+		spin = uxlog.StartSpinner("Looking for sender on the local network", uxlog.HintCancel)
+	}
 	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
 	if err != nil {
-		// LAN miss → internet path. A single "Connecting" spinner runs
-		// from here through Join + ICE/relay setup and classification,
-		// replacing what used to be a sequence of brief flashes.
-		// runReceiveOverInternet owns its lifetime.
+		// LAN miss → internet path. The spinner carries on through Join +
+		// ICE/relay setup and classification; runReceiveOverInternet owns
+		// its lifetime from here.
 		cfg := loadConfig(f.quiet)
-		var spin *uxlog.Spinner
 		if !f.quiet {
-			spin = uxlog.StartSpinner("Connecting")
+			spin.SetMessage("Connecting via the server")
 		}
 		return runReceiveOverInternet(ctx, f, c, cfg, spin)
 	}
@@ -112,9 +113,8 @@ func runReceive(f *flags, c string) error {
 
 	// The dial is user-visible wait; on miss runReceiveOverInternet
 	// takes ownership of the spinner.
-	var spin *uxlog.Spinner
 	if !f.quiet {
-		spin = uxlog.StartSpinner("Connecting")
+		spin.SetMessage("Connecting to the sender")
 	}
 	dialCtx, cancelDial := context.WithTimeout(ctx, lanFirstDialTimeout)
 	first, err := quicconn.Dial(dialCtx, addr, c)
@@ -123,10 +123,14 @@ func runReceive(f *flags, c string) error {
 		// Debug-only: the transfer may still end up "Direct on local
 		// network" via ICE, so this notice by default reads as the tool
 		// contradicting itself. Spinner restart keeps the line clean.
-		if f.debug && !f.quiet {
-			spin.Stop()
-			fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server.")
-			spin = uxlog.StartSpinner("Connecting")
+		if !f.quiet {
+			if f.debug {
+				spin.Stop()
+				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server.")
+				spin = uxlog.StartSpinner("Connecting via the server", uxlog.HintCancel)
+			} else {
+				spin.SetMessage("Connecting via the server")
+			}
 		}
 		cfg := loadConfig(f.quiet)
 		return runReceiveOverInternet(ctx, f, c, cfg, spin)
@@ -209,7 +213,11 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func(attempt int) (st
 			return readPasswordHiddenCtx(ctx,
 				fmt.Sprintf("  %s (%d/%d): ", uxlog.Prompt("Wrong password — try again"), attempt, transfer.PasswordAttempts), f.quiet)
 		}
-		return readPasswordHiddenCtx(ctx, "  "+uxlog.Prompt("Password for this transfer: "), f.quiet)
+		// One line of context. The password is protocol-required before the
+		// peer's HELLO can be decrypted, so the ordering is forced — but the
+		// prompt can still say why it is asking.
+		fmt.Fprintf(os.Stderr, "  %s This transfer is password-protected.\n", uxlog.Warn())
+		return readPasswordHiddenCtx(ctx, "  "+uxlog.Prompt("Enter the password the sender shared: "), f.quiet)
 	}
 }
 
