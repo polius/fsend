@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/quic-go/quic-go"
+
 	"github.com/polius/fsend/internal/fserrors"
 )
 
@@ -174,38 +176,54 @@ func IsTransient(err error) bool {
 		return true
 	}
 
-	// QUIC's IdleTimeoutError doesn't satisfy net.Error in all cases;
-	// match by error-string fallback. This is brittle but the
-	// alternative — importing quic-go just for one type — pulls the
-	// retry package into the transport's dependency graph.
+	// QUIC's failures are matched by type first — quic-go's error wording is
+	// not a stable API, and a reword would silently reclassify a transient
+	// drop as terminal (surfacing as E099 "please file an issue"). quic-go is
+	// already a direct module dependency, so the typed match costs nothing
+	// new.
 	//
-	// "Application error 0x..." is the shape quic-go renders when either
-	// side closes the connection with CloseWithError. In fsend this fires
-	// when a peer is killed mid-transfer (Ctrl-C, OOM, network drop) and
-	// the surviving side's next read/write surfaces the abrupt close. The
-	// peer can come back on a retry and resume from its .fsend-partial,
-	// so this is the canonical transient case — without this match it
-	// surfaced as E099 "please file an issue".
+	//   - IdleTimeoutError: the peer went silent within the idle window.
+	//   - ApplicationError: either side closed the connection with
+	//     CloseWithError. In fsend this fires when a peer is killed
+	//     mid-transfer (Ctrl-C, OOM, network drop) and the surviving side's
+	//     next read/write surfaces the abrupt close. The peer can come back on
+	//     a retry and resume from its .fsend-partial, so this is the canonical
+	//     transient case.
+	//   - StreamError{Remote}: the peer's teardown cancels its data-stream
+	//     read (STOP_SENDING) just before the connection close, and an
+	//     in-flight write can surface the stream cancel instead of the
+	//     connection error above — same abrupt close, same transient verdict.
 	//
-	// Terminal disagreements (wrong password, hash mismatch, peer
-	// declined, ...) are surfaced via wire-level ErrorFrames BEFORE the
-	// QUIC stream tears down, so they're already caught by the terminal
-	// sentinel check above and never reach this fallback.
+	// Terminal disagreements (wrong password, hash mismatch, peer declined,
+	// ...) are surfaced via wire-level ErrorFrames BEFORE the QUIC stream
+	// tears down, so they're already caught by the terminal sentinel check
+	// above and never reach this fallback.
+	var idleErr *quic.IdleTimeoutError
+	if errors.As(err, &idleErr) {
+		return true
+	}
+	var appErr *quic.ApplicationError
+	if errors.As(err, &appErr) {
+		return true
+	}
+	var streamErr *quic.StreamError
+	if errors.As(err, &streamErr) && streamErr.Remote {
+		return true
+	}
+
+	// String fallbacks. The typed match above should catch these, but a
+	// quic-go error that loses its type through a non-%w wrap would slip
+	// past it, so keep the stable substrings as a secondary net. The last
+	// two have no typed equivalent we own: stdlib socket surfaces and
+	// pion/ice's STUN-demux guard.
 	//
-	// "canceled by remote" is quic-go's StreamError: the peer's teardown
-	// cancels its data-stream read (STOP_SENDING) just before the
-	// connection close, and an in-flight write can surface the stream
-	// cancel instead of the "Application error" above — same abrupt
-	// close, same transient verdict.
-	//
-	// "failed to write STUN message to ICE connection" is pion/ice's
-	// sentinel from its STUN/data demux guard: ice.Conn.Write refuses any
-	// app packet that stun.IsMessage flags (len>=20 && bytes[4:8]==magic
-	// cookie). A QUIC datagram whose encrypted bytes 4..7 randomly equal
-	// the cookie trips it — a false positive, never a real network fault.
-	// A retry re-dials with fresh connection IDs/keys so the colliding
-	// bytes can't recur (and the STUN-safe connID generator prevents it
-	// outright); always safe to retry. See internal/quicconn/connid.go.
+	//   - "failed to write STUN message to ICE connection": ice.Conn.Write
+	//     refuses any app packet that stun.IsMessage flags (len>=20 &&
+	//     bytes[4:8]==magic cookie). A QUIC datagram whose encrypted bytes
+	//     4..7 randomly equal the cookie trips it — a false positive, never a
+	//     real network fault. A retry re-dials with fresh connection IDs/keys
+	//     so the colliding bytes can't recur (and the STUN-safe connID
+	//     generator prevents it outright). See internal/quicconn/connid.go.
 	if s := err.Error(); strings.Contains(s, "idle timeout") ||
 		strings.Contains(s, "connection reset by peer") ||
 		strings.Contains(s, "use of closed network connection") ||

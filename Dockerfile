@@ -18,3 +18,7 @@ FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /out/fsend /fsend
 ENTRYPOINT ["/fsend"]
+# Liveness: probe the local /health (legacy combined probe). The binary
+# self-invokes with --health-check, so no shell/curl is needed on scratch.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/fsend", "server", "--health-check"]

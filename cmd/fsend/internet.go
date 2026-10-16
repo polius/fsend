@@ -42,19 +42,24 @@ const iceBudget = 5 * time.Second
 // password (via `fsend --connect <host:port>,<password>` or the
 // FSEND_SERVER_PASSWORD env), the client carries it through; the server
 // matches against FSEND_SERVER_PASSWORD.
-func signalingClient(cfg *config.Config) (*signaling.Client, string) {
+func signalingClient(cfg *config.Config) (*signaling.Client, string, error) {
 	addr := cfg.EffectiveServer()
-	return signaling.New(serverBaseURL(addr), version.Version).WithPassword(effectiveServerPassword(cfg)), addr
+	pw, err := effectiveServerPassword(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	return signaling.New(serverBaseURL(addr), version.Version).WithPassword(pw), addr, nil
 }
 
 // effectiveServerPassword prefers the --connect value (kept in the config
 // file); FSEND_SERVER_PASSWORD is the non-argv fallback for scripts, the
-// client-side mirror of the server's env of the same name.
-func effectiveServerPassword(cfg *config.Config) string {
+// client-side mirror of the server's env of the same name, with
+// FSEND_SERVER_PASSWORD_FILE as the mounted-file alternative.
+func effectiveServerPassword(cfg *config.Config) (string, error) {
 	if cfg.ServerPassword != "" {
-		return cfg.ServerPassword
+		return cfg.ServerPassword, nil
 	}
-	return os.Getenv("FSEND_SERVER_PASSWORD")
+	return passwordFromEnv("FSEND_SERVER_PASSWORD")
 }
 
 // serverBaseURL maps a configured server address to an http(s) base URL:
@@ -102,7 +107,10 @@ var joinRetryBudget = 15 * time.Second
 // Stop covers error returns; Stop is idempotent (sync.Once), so the
 // earlier stops don't double-close.
 func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config, connSpin *uxlog.Spinner) error {
-	client, _ := signalingClient(cfg)
+	client, _, err := signalingClient(cfg)
+	if err != nil {
+		return err
+	}
 	defer connSpin.Stop()
 
 	joined, err := joinWithRetry(ctx, client, c, f, connSpin)
@@ -147,7 +155,7 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	if alloc.ForwardingDisabled {
 		return fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 	}
-	relayConn, err := dialRelay(alloc)
+	relayConn, err := dialRelay(alloc, client.ServerHost())
 	if err != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}
@@ -397,7 +405,14 @@ func (c *iceOwningConn) Close() error {
 // dialRelay wires up a relay.Conn for QUIC. Mirrors the original
 // internet.go relay path; factored out so both sender and receiver code
 // can share it.
-func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
+//
+// serverHost is the signaling server's host (signaling.Client.ServerHost);
+// the relay address is server-chosen, so validateRelayAddr screens it before
+// we dial (SSRF-ish defense against a hostile/misconfigured server).
+func dialRelay(alloc *server.RelayAllocateResponse, serverHost string) (net.PacketConn, error) {
+	if err := validateRelayAddr(alloc.RelayAddr, serverHost); err != nil {
+		return nil, err
+	}
 	myUDP, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	if err != nil {
 		return nil, fmt.Errorf("local UDP: %w", err)
@@ -421,6 +436,46 @@ func dialRelay(alloc *server.RelayAllocateResponse) (net.PacketConn, error) {
 	// lost one would strand the passive sender (it only waits to be dialed).
 	rc.KeepBootstrapping(500*time.Millisecond, 20*time.Second)
 	return rc, nil
+}
+
+// validateRelayAddr refuses a relay address the signaling server chose
+// unless it is the same host we trusted enough to speak signaling to, or a
+// public address. relayAddrFor normally pairs the client's Host with the
+// relay's UDP port, so the trusted case is exact-host equality — even for a
+// single-box deploy whose server host is loopback or a LAN IP. Anything else
+// is a redirect we didn't ask for: a hostile/misconfigured server could
+// otherwise aim our QUIC dialer at loopback, RFC1918, link-local, multicast,
+// or a cloud-metadata address.
+func validateRelayAddr(relayAddr, serverHost string) error {
+	host, port, err := net.SplitHostPort(relayAddr)
+	if err != nil {
+		return fmt.Errorf("relay address %q: %w", relayAddr, err)
+	}
+	if host == "" || port == "" {
+		return fmt.Errorf("relay address %q: missing host or port", relayAddr)
+	}
+	if serverHost != "" && strings.EqualFold(host, serverHost) {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// A name pointing somewhere other than our server. Resolving it
+		// would invite DNS-rebinding, and the supported relay layout never
+		// advertises a different host, so refuse.
+		return fmt.Errorf("relay address %q: host is not the signaling server %q", relayAddr, serverHost)
+	}
+	if unsafeRelayIP(ip) {
+		return fmt.Errorf("relay address %q: refusing non-public relay host", relayAddr)
+	}
+	return nil
+}
+
+// unsafeRelayIP reports whether ip is anything other than a globally
+// routable address — the set a relay must never redirect a client to.
+func unsafeRelayIP(ip net.IP) bool {
+	return ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsInterfaceLocalMulticast()
 }
 
 // runReceiverQUICOver runs the receiver's QUIC + transfer flow over an
@@ -482,9 +537,9 @@ func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, f *flags, ui
 	defer dialCancel()
 	// The PacketConn ignores the dial address (both relay.Conn and our
 	// iceOwningConn route via fixed underlying paths). quic-go uses the
-	// address as a per-peer routing tag — a stable synthetic value
-	// suffices. See internal/relay.peerSyntheticAddr.
-	dialAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1}
+	// address as a per-peer routing tag — the shared synthetic value
+	// suffices. See relay.SyntheticPeer.
+	dialAddr := relay.SyntheticPeer
 	qc, err := tr.Dial(dialCtx, dialAddr, quicconn.ReceiverTLSConfig(), quicconn.QuicConfig())
 	if err != nil {
 		return fmt.Errorf("QUIC dial: %w", err)

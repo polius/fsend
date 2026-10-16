@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
+
 	"github.com/polius/fsend/internal/fserrors"
 )
 
@@ -164,6 +166,19 @@ func TestIsTransient_Classification(t *testing.T) {
 			errors.New("wire: writing chunk payload: stream 3 canceled by remote with error code 0"), true},
 		{"quic_stream_cancel_local_not_transient",
 			errors.New("stream 3 canceled by local with error code 0"), false},
+
+		// The same CLASSES as typed quic-go errors: the primary match is by
+		// type, so these must classify correctly even if quic-go rewords its
+		// Error() strings.
+		{"quic_idle_timeout_typed_transient", &quic.IdleTimeoutError{}, true},
+		{"quic_application_error_typed_remote_transient",
+			fmt.Errorf("wire: writing chunk payload: %w", &quic.ApplicationError{Remote: true}), true},
+		{"quic_application_error_typed_local_transient",
+			&quic.ApplicationError{Remote: false}, true},
+		{"quic_stream_cancel_typed_remote_transient",
+			fmt.Errorf("wire: writing chunk payload: %w", &quic.StreamError{StreamID: 3, Remote: true}), true},
+		{"quic_stream_cancel_typed_local_not_transient",
+			&quic.StreamError{StreamID: 3, Remote: false}, false},
 
 		// pion/ice STUN-demux false positive: a QUIC datagram's encrypted
 		// bytes 4..7 randomly matched the STUN magic cookie, so

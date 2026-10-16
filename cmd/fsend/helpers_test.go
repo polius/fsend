@@ -679,7 +679,7 @@ func TestApplyEnvFallbacks_FSEND_PASSWORD(t *testing.T) {
 	c := rootCmd()
 	_ = os.Setenv("FSEND_PASSWORD", "from-env")
 	f := &flags{}
-	applyEnvFallbacks(f, c)
+	_ = applyEnvFallbacks(f, c)
 	if f.passArg != "from-env" {
 		t.Errorf("env not applied: %q", f.passArg)
 	}
@@ -691,7 +691,7 @@ func TestApplyEnvFallbacks_FSEND_PASSWORD(t *testing.T) {
 		t.Fatal(err)
 	}
 	f2 := &flags{passArg: "from-flag"}
-	applyEnvFallbacks(f2, c2)
+	_ = applyEnvFallbacks(f2, c2)
 	if f2.passArg != "from-flag" {
 		t.Errorf("flag should win: %q", f2.passArg)
 	}
@@ -704,20 +704,20 @@ func TestApplyEnvFallbacks_FSEND_PASSWORD(t *testing.T) {
 func TestSignalingClient_SchemeSelection(t *testing.T) {
 	// localhost → http://.
 	cfg := &config.Config{Server: "127.0.0.1:8080"}
-	c, addr := signalingClient(cfg)
-	if c == nil || addr != "127.0.0.1:8080" {
-		t.Fatalf("loopback: c=%v addr=%q", c, addr)
+	c, addr, err := signalingClient(cfg)
+	if err != nil || c == nil || addr != "127.0.0.1:8080" {
+		t.Fatalf("loopback: c=%v addr=%q err=%v", c, addr, err)
 	}
 
 	// Non-local → https://.
 	cfg = &config.Config{Server: "fs.example.com:443"}
-	if _, addr := signalingClient(cfg); addr != "fs.example.com:443" {
+	if _, addr, _ := signalingClient(cfg); addr != "fs.example.com:443" {
 		t.Errorf("remote addr: %q", addr)
 	}
 
 	// Pre-prefixed URL is kept verbatim.
 	cfg = &config.Config{Server: "https://fs.example.com:443"}
-	_, addr = signalingClient(cfg)
+	_, addr, _ = signalingClient(cfg)
 	if addr != "https://fs.example.com:443" {
 		t.Errorf("prefixed addr should be preserved: %q", addr)
 	}

@@ -95,7 +95,7 @@ func runDoctor() {
 	default:
 		server = cfg.EffectiveServer()
 		detail := "server " + server + " (custom)"
-		if effectiveServerPassword(cfg) != "" {
+		if pw, _ := effectiveServerPassword(cfg); pw != "" {
 			detail += ", password set"
 		}
 		say(true, "config", "%s", detail)

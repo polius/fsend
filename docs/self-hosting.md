@@ -97,8 +97,15 @@ curl https://fs.example.com/health
 ```
 
 Or open `https://fs.example.com/` in a browser — the root path returns a
-plain-text "fsend server is up and running" banner. Both `/` and `/health`
-stay reachable without the password, so monitoring never needs the secret.
+plain-text "fsend server is up and running" banner. The probe endpoints stay
+reachable without the password, so monitoring never needs the secret:
+
+| Path | Meaning |
+|---|---|
+| `/health` | Legacy combined probe. Same as `/readyz` (kept for existing monitors and the Docker `HEALTHCHECK`). |
+| `/healthz` | **Liveness** — always `200` while the process is up. Use for "restart me". |
+| `/readyz` | **Readiness** — `503` while a wired relay's read loop is dead, so an orchestrator stops routing here instead of trusting a zombie. Use for "don't send me traffic". |
+| `/` | Human-readable banner. |
 
 No OK response? See [Troubleshooting](#troubleshooting).
 
@@ -131,9 +138,9 @@ and restart:
 docker compose up -d
 ```
 
-Now every endpoint except `/` and `/health` requires the password, and clients
-append it to `--connect`, comma-separated — or export the same variable
-client-side to keep it out of argv in scripts:
+Now every endpoint except `/`, `/health`, `/healthz`, and `/readyz` requires the
+password, and clients append it to `--connect`, comma-separated — or export the
+same variable client-side to keep it out of argv in scripts:
 
 ```sh
 fsend --connect fs.example.com:443,your-secret
@@ -158,7 +165,11 @@ or with the wrong one — fails with `E028`.
   you edit the file — Docker's 10s default would SIGKILL mid-drain).
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
   within an hour; certificates live in the `caddy_data` volume, and Caddy
-  reissues them automatically if you lose it.
+  reissues them automatically if you lose it. That reissue is the recovery
+  time worth knowing: a lost `caddy_data` means Caddy re-runs an ACME
+  challenge on the next start, so expect a short window where TLS isn't
+  ready yet — and if you rebuild often without the volume, Let's Encrypt
+  rate limits can stretch it to hours. Keep the volume across restarts.
 - **Tuning.** Every knob is an environment variable — see
   [Configuration](#configuration).
 
@@ -168,7 +179,7 @@ or with the wrong one — fails with `E028`.
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.14.1",
   "uptime_seconds": 84213,
   "sessions_active": 3,
   "sessions_created_total": 1284,
@@ -213,7 +224,7 @@ so anyone can verify the server holds nothing sensitive.
 The `relay` block is omitted when the server runs without a relay.
 
 **Access.** `/metrics` inherits the server's own openness, like every
-endpoint except `/` and `/health`:
+endpoint except `/`, `/health`, `/healthz`, and `/readyz`:
 
 - **Open server (no `FSEND_SERVER_PASSWORD`)** — public, no credentials:
 
@@ -277,7 +288,8 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 | Variable | Default | Notes |
 |---|---|---|
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable. |
-| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/` and `/health` — see [Require a password](#require-a-password-optional). |
+| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/`, `/health`, `/healthz`, and `/readyz` — see [Require a password](#require-a-password-optional). |
+| `FSEND_SERVER_PASSWORD_FILE` | _(unset)_ | Read the password from this file (trailing newline trimmed) instead of `FSEND_SERVER_PASSWORD` — for Docker secrets / systemd credentials. Used only when `FSEND_SERVER_PASSWORD` is unset. |
 | `FSEND_SERVER_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP` | `0` (unlimited) | **Concurrency cap** — how many sessions one source IP may have **alive at once**. A session gates relay allocation too, so this caps relay access as well. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` | `0` (unlimited) | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |

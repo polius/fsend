@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/polius/fsend/internal/atomicfile"
 	"github.com/polius/fsend/internal/config"
 )
 
@@ -165,7 +166,10 @@ func writeCache(path string, c cache) {
 	}
 	if data, err := json.Marshal(c); err == nil {
 		_ = os.MkdirAll(filepath.Dir(path), 0o700)
-		_ = os.WriteFile(path, data, 0o600)
+		// Atomic write so a concurrent read never sees a half-written
+		// cache file (which would fail to unmarshal and just re-fetch, but
+		// the tmp+rename avoids the torn read entirely).
+		_ = atomicfile.Write(path, data, 0o600)
 	}
 }
 

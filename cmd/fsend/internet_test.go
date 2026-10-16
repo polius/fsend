@@ -386,14 +386,14 @@ func TestJoinWithRetry_RetitlesCallerSpinner(t *testing.T) {
 // (mirroring the server-side env of the same name).
 func TestEffectiveServerPassword(t *testing.T) {
 	t.Setenv("FSEND_SERVER_PASSWORD", "env-secret")
-	if got := effectiveServerPassword(&config.Config{}); got != "env-secret" {
-		t.Errorf("env fallback = %q, want env-secret", got)
+	if got, err := effectiveServerPassword(&config.Config{}); err != nil || got != "env-secret" {
+		t.Errorf("env fallback = %q, err=%v, want env-secret", got, err)
 	}
-	if got := effectiveServerPassword(&config.Config{ServerPassword: "cfg-secret"}); got != "cfg-secret" {
-		t.Errorf("config precedence = %q, want cfg-secret", got)
+	if got, err := effectiveServerPassword(&config.Config{ServerPassword: "cfg-secret"}); err != nil || got != "cfg-secret" {
+		t.Errorf("config precedence = %q, err=%v, want cfg-secret", got, err)
 	}
 	t.Setenv("FSEND_SERVER_PASSWORD", "")
-	if got := effectiveServerPassword(&config.Config{}); got != "" {
-		t.Errorf("unset env = %q, want empty", got)
+	if got, err := effectiveServerPassword(&config.Config{}); err != nil || got != "" {
+		t.Errorf("unset env = %q, err=%v, want empty", got, err)
 	}
 }

@@ -249,11 +249,17 @@ type serverRuntimeConfig struct {
 
 func loadServerConfig() (serverRuntimeConfig, error) {
 	cfg := serverRuntimeConfig{
-		httpAddr:       envOr(envServerAddr, defaultServerAddr),
-		udpAddr:        envOr(envRelayAddr, defaultRelayAddr),
-		serverPassword: os.Getenv("FSEND_SERVER_PASSWORD"),
+		httpAddr: envOr(envServerAddr, defaultServerAddr),
+		udpAddr:  envOr(envRelayAddr, defaultRelayAddr),
 	}
-	var err error
+	// FSEND_SERVER_PASSWORD, or FSEND_SERVER_PASSWORD_FILE for a mounted
+	// secret (Docker secrets / systemd credentials) so the password need
+	// not sit in the process environment.
+	pw, err := passwordFromEnv("FSEND_SERVER_PASSWORD")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.serverPassword = pw
 	if cfg.maxSessionsPerIP, err = envInt(envMaxSessionsPerIP, defaultMaxSessionsPerIP); err != nil {
 		return cfg, err
 	}
@@ -468,7 +474,10 @@ func healthCheck() error {
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}
-	resp, err := http.Get("http://" + addr + "/health")
+	// Bounded client: http.Get has no timeout, so a hung server (accepts
+	// the connection, never replies) would stall the Docker HEALTHCHECK
+	// until the container's own timeout fires. 3s is well under Docker's.
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get("http://" + addr + "/health")
 	if err != nil {
 		return fmt.Errorf("health: %w", err)
 	}
@@ -506,10 +515,15 @@ CONFIGURATION (environment variables — all optional)
   Server-wide:
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
     FSEND_SERVER_PASSWORD             Optional shared secret. When set, all
-                                      endpoints except /health require the
-                                      X-Fsend-Auth header. Connect with
+                                      endpoints except /health, /healthz,
+                                      /readyz, and / require the X-Fsend-Auth
+                                      header. Connect with
                                       fsend --connect <host:port>,<password>
                                       or the same env var client-side.
+    FSEND_SERVER_PASSWORD_FILE        Read the password from this file instead
+                                      (Docker secrets / systemd credentials);
+                                      used only when FSEND_SERVER_PASSWORD is
+                                      unset.
 
   Pairing (TCP signaling/control plane):
     FSEND_SERVER_ADDR                 Default :8080 (TCP).

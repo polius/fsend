@@ -299,7 +299,10 @@ func selfSignedCert() (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 
-	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("quicconn: cert serial: %w", err)
+	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		NotBefore:    time.Now().Add(-1 * time.Minute),
