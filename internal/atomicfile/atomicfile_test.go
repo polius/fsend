@@ -3,6 +3,7 @@ package atomicfile
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -31,8 +32,12 @@ func TestWrite_AtomicReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := st.Mode().Perm(); got != 0o600 {
-		t.Errorf("perm = %o, want 600", got)
+	// Windows ignores POSIX permission bits (a file reports 0666 whatever
+	// was requested), so the perm assertion is only meaningful off-Windows.
+	if runtime.GOOS != "windows" {
+		if got := st.Mode().Perm(); got != 0o600 {
+			t.Errorf("perm = %o, want 600", got)
+		}
 	}
 
 	entries, err := os.ReadDir(dir)

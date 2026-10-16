@@ -27,7 +27,7 @@ func readSecretFile(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G703: path is operator-supplied via the environment (their own config/secret mount), never peer input; the file:// class is already waived by the G304 exclusion in .golangci.yml.
 	if err != nil {
 		return "", fmt.Errorf("%w: reading secret file: %v", fserrors.ErrUsage, err)
 	}
