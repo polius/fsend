@@ -143,6 +143,18 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			"--update cannot be combined with --yes",
 		},
 		{
+			// --check reports on --update; alone it would silently do
+			// nothing and exit 0, which a CI job would read as "up to date".
+			"check_without_update",
+			[]string{"--check"},
+			"--check reports on --update",
+		},
+		{
+			"connect_with_check",
+			[]string{"--connect=host:443", "--check"},
+			"--connect cannot be combined with --check",
+		},
+		{
 			// Worst case of the same hole: `--uninstall --yes` in a mangled
 			// script deleted the binary when a transfer was intended.
 			"uninstall_with_positional",

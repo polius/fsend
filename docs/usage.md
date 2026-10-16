@@ -286,6 +286,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
+| `--update --check` | Report whether a newer release exists — printing the same hint as the once-a-day notice, with the release-notes link — and exit without installing. Exits 0 either way. |
 | `--uninstall` | Remove the binary and **recursively delete** the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |
 | `--help` / `-h` | Show inline help. |
 | `--version` / `-v` | Print version. |
@@ -307,10 +308,13 @@ Config is at `~/.config/fsend/config.json` (Linux),
 Flags always win when both are set.
 
 After a successful transfer, fsend checks GitHub at most once a day for a
-newer release and, if one exists, prints a one-line hint to run
-`fsend --update`. The check is skipped when stderr isn't a terminal (so
-piped or scripted runs never trigger it) or `--quiet` is set, and can be
-turned off entirely with `FSEND_NO_UPDATE_CHECK=1`.
+newer release and, if one exists, prints a one-line hint with the release
+link so you can see what changed — and the command that actually works for
+this install (`brew upgrade fsend` on a Homebrew-managed binary, instead of
+an `fsend --update` that would only refuse with [E039](#exit-codes)). The
+check is skipped when stderr isn't a terminal (so piped or scripted runs
+never trigger it) or `--quiet` is set, and can be turned off entirely with
+`FSEND_NO_UPDATE_CHECK=1`.
 
 ## `fsend doctor`
 
@@ -409,6 +413,7 @@ failure. For what to *do* about a given error, see
 | `38`  | `E038` — files received, but the `--manifest` record could not be written. |
 | `39`  | `E039` — `fsend --update`/`--uninstall` on a Homebrew-managed binary; use `brew upgrade`/`brew uninstall fsend`. |
 | `40`  | `E040` — `fsend --update` as root; opt in with `FSEND_ALLOW_ROOT=1` on single-user machines (containers). |
+| `41`  | `E041` — `fsend --update` from a development build; there is no release to compare against. Install a release build. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 | `141` | The output pipe closed early (e.g. `fsend <code> --out - \| head`). Shell convention (128+SIGPIPE); nothing is printed. |

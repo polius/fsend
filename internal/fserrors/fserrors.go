@@ -143,6 +143,11 @@ var (
 	// A policy stop, like E039: it needs its own entry so the guidance is
 	// the opt-in command, not E033's "check your internet connection".
 	ErrUpdateRootRefused = errors.New("update refused as root")
+	// E041 — `fsend --update` from a dev build. Not an environment failure
+	// at all (there is simply no release to compare with), so like E040 it
+	// gets its own entry rather than E033's "check your internet
+	// connection", which would send a developer chasing the wrong thing.
+	ErrUpdateDevBuild = errors.New("development build")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -470,6 +475,12 @@ var catalog = map[error]Entry{
 		Message: "Refusing to update as root — fsend installs per-user.",
 		// The opt-in command renders as a block (see renderError), so the
 		// Action is left empty rather than competing with it.
+	},
+	ErrUpdateDevBuild: {
+		Code: "E041", Exit: 41,
+		Message: "This is a development build — there is no release to update to.",
+		Action: "Install a release build instead:\n" +
+			"    https://github.com/polius/fsend#install",
 	},
 }
 

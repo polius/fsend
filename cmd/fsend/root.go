@@ -52,6 +52,7 @@ type flags struct {
 	json      bool // NDJSON events on stdout; human output stays on stderr
 	debug     bool
 	update    bool
+	check     bool // with --update: report only, install nothing
 	uninstall bool
 
 	// First-positional args, recorded after parsing.
@@ -145,6 +146,7 @@ Examples:
 	// Acted on before cobra parses (see main): the help template is built
 	// — and flag-parse errors render — before RunE ever runs.
 	c.Flags().BoolVar(&f.update, "update", false, "update fsend to the latest release")
+	c.Flags().BoolVar(&f.check, "check", false, "with --update: report whether a newer release exists, then exit")
 	c.Flags().BoolVar(&f.uninstall, "uninstall", false, "remove the fsend binary and config dir")
 
 	c.Flags().StringVar(&f.mode, "mode", "", "")
@@ -306,6 +308,8 @@ ADVANCED
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
   --update               Update fsend to the latest release
+  --update --check       Report whether a newer release exists, install
+                         nothing, and print its release notes link
   --uninstall            Remove the fsend binary and its config dir
   fsend server           Run your own pairing/relay server (--help for env vars)
   fsend completion <shell>
@@ -500,7 +504,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "uninstall", "checksum", "manifest", "preview", "json"} {
+		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "check", "uninstall", "checksum", "manifest", "preview", "json"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}
@@ -530,11 +534,14 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	if f.update && f.uninstall {
 		return fmt.Errorf("%w: --update and --uninstall are mutually exclusive", fserrors.ErrUsage)
 	}
+	if f.check && !f.update {
+		return fmt.Errorf("%w: --check reports on --update; run: fsend --update --check", fserrors.ErrUsage)
+	}
 	if f.update {
 		if err := maintenanceGuard(cmd, f, "--update", false); err != nil {
 			return err
 		}
-		return runUpdate()
+		return runUpdate(f.check)
 	}
 	if f.uninstall {
 		// --yes stays allowed: it skips the uninstall confirmation.

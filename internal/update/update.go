@@ -11,7 +11,6 @@ package update
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,10 +22,14 @@ import (
 	"github.com/polius/fsend/internal/config"
 )
 
+// repo is the GitHub repository releases come from. Named once so the
+// API endpoint and the human-facing release page can't drift apart.
+const repo = "polius/fsend"
+
 // apiURL is the GitHub "latest release" endpoint. /latest already
 // excludes drafts and pre-releases, so we never nag about those. A
 // package var so tests can point it at a local server.
-var apiURL = "https://api.github.com/repos/polius/fsend/releases/latest"
+var apiURL = "https://api.github.com/repos/" + repo + "/releases/latest"
 
 const (
 	cacheFile     = "update-check.json"
@@ -44,24 +47,29 @@ type cache struct {
 	Latest    string    `json:"latest"`
 }
 
-// Notice returns a short upgrade message if a release newer than
-// current is available, or "" when up to date, opted out, or anything
-// goes wrong. current is the running version (version.Version).
+// Available returns the newest release version (no leading "v") when it
+// is newer than current, and ok=false when it is not — up to date,
+// opted out, a dev build, or anything went wrong.
 //
-// Opt out with FSEND_NO_UPDATE_CHECK=1. Dev builds never check.
-func Notice(ctx context.Context, current string) string {
+// Opt out with FSEND_NO_UPDATE_CHECK=1.
+func Available(ctx context.Context, current string) (latest string, ok bool) {
 	if current == "" || current == "dev" {
-		return ""
+		return "", false
 	}
 	if v := os.Getenv("FSEND_NO_UPDATE_CHECK"); v != "" && v != "0" && v != "false" {
-		return ""
+		return "", false
 	}
-	latest := latestVersion(ctx)
+	latest = latestVersion(ctx)
 	if latest == "" || !Newer(latest, current) {
-		return ""
+		return "", false
 	}
-	return fmt.Sprintf("A new fsend is available (%s → %s). Update: fsend --update",
-		strings.TrimPrefix(current, "v"), latest)
+	return latest, true
+}
+
+// ReleaseURL is the GitHub release page for a version (leading "v"
+// optional), where the user can read what changed before updating.
+func ReleaseURL(v string) string {
+	return "https://github.com/" + repo + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(v), "v")
 }
 
 // Latest returns the latest release version (no leading "v") from a

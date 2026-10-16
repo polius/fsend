@@ -121,6 +121,7 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 		{ErrManifestWriteFailed, "E038", 38},
 		{ErrHomebrewManaged, "E039", 39},
 		{ErrUpdateRootRefused, "E040", 40},
+		{ErrUpdateDevBuild, "E041", 41},
 	}
 	for _, c := range cases {
 		entry, ok := Lookup(c.err)

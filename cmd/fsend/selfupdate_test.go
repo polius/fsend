@@ -3,8 +3,8 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/polius/fsend/internal/fserrors"
@@ -12,18 +12,45 @@ import (
 )
 
 // Dev builds have no release version to compare against, so --update
-// must refuse up front — before any output or network I/O.
+// must refuse up front — before any output or network I/O — with its own
+// code, not E033's "check your internet connection".
 func TestRunUpdate_DevBuildRefused(t *testing.T) {
 	orig := version.Version
 	version.Version = "dev"
 	t.Cleanup(func() { version.Version = orig })
 
-	err := runUpdate()
-	if !errors.Is(err, fserrors.ErrUpdateFailed) {
-		t.Fatalf("got %v, want wrapping ErrUpdateFailed", err)
+	err := runUpdate(false)
+	if !errors.Is(err, fserrors.ErrUpdateDevBuild) {
+		t.Fatalf("got %v, want wrapping ErrUpdateDevBuild", err)
 	}
-	if !strings.Contains(err.Error(), "dev build") {
-		t.Errorf("got %q, want a dev-build explanation", err.Error())
+	// Same refusal for the report-only path: --check can't report on a
+	// build that has no release to compare with either.
+	if err := runUpdate(true); !errors.Is(err, fserrors.ErrUpdateDevBuild) {
+		t.Fatalf("--check got %v, want wrapping ErrUpdateDevBuild", err)
+	}
+}
+
+// The installer's exit is phrased for a person; other failures (no shell
+// on PATH) pass through untouched.
+func TestInstallerFailureDetail(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 7")
+	err := cmd.Run()
+	if got := installerFailureDetail(err); got != "the installer exited with status 7" {
+		t.Errorf("exit failure: got %q", got)
+	}
+	if got := installerFailureDetail(errors.New("exec: \"sh\": executable file not found in $PATH")); got != `exec: "sh": executable file not found in $PATH` {
+		t.Errorf("non-exit failure: got %q, want it verbatim", got)
+	}
+}
+
+// availableLine is the single rendering shared by the passive notice and
+// --update --check. Asserted uncoloured, which is what a pipe gets.
+func TestAvailableLine(t *testing.T) {
+	got := availableLine("1.14.1", "1.14.0")
+	want := "[i] fsend 1.14.1 is available (you have 1.14.0)\n" +
+		"  fsend --update  ·  https://github.com/polius/fsend/releases/tag/v1.14.1"
+	if got != want {
+		t.Errorf("availableLine =\n%q\nwant\n%q", got, want)
 	}
 }
 

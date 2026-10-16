@@ -33,11 +33,13 @@ func runInstaller(binPath string) error {
 	cmd := exec.Command("sh", "-c", installerScript)
 	// --update always wants the newest release: drop any FSEND_VERSION the
 	// user exported, so a stale pin can't reinstall an older version over
-	// a newer binary.
+	// a newer binary. FSEND_UPDATE tells the installer this is an update,
+	// not a first install: it drops its own "currently installed" preamble
+	// and newcomer sign-off, which fsend's narration already covers.
 	env := slices.DeleteFunc(slices.Clone(os.Environ()), func(e string) bool {
 		return strings.HasPrefix(e, "FSEND_VERSION=")
 	})
-	cmd.Env = append(env, "FSEND_VERSION=latest", "PREFIX="+filepath.Dir(binPath))
+	cmd.Env = append(env, "FSEND_VERSION=latest", "FSEND_UPDATE=1", "PREFIX="+filepath.Dir(binPath))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
