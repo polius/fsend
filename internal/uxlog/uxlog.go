@@ -36,7 +36,12 @@ type Progress struct {
 	bar   *mpb.Bar
 	plain *plainProgress
 	label atomic.Value // string: current-file chip (see SetLabel)
+	pos   atomic.Value // fileSlot: "file i/N" counter (see SetFilePos)
 }
+
+// fileSlot is the current-file position behind the chip's "· file 3/12"
+// counter. n <= 0 means "no counter".
+type fileSlot struct{ i, n int }
 
 // plainProgress renders progress as occasional complete lines — no
 // cursor movement, no in-place redraws — so pipes and CI logs stay
@@ -52,6 +57,8 @@ type plainProgress struct {
 	lastLine time.Time
 	start    time.Time
 	label    string // current-file chip, "" when unset
+	fileI    int    // 1-based current file, 0 when unset
+	fileN    int    // total files, 0 when unset
 	route    string // connection tag chip, "" when unknown
 }
 
@@ -78,6 +85,9 @@ func (p *plainProgress) add(n int64) {
 		if p.label != "" {
 			line += "  ·  " + p.label
 		}
+		if p.fileN > 0 {
+			line += fmt.Sprintf("  ·  file %d/%d", p.fileI, p.fileN)
+		}
 		_, _ = fmt.Fprintf(p.w, "  %s\n", line)
 		return
 	}
@@ -98,6 +108,12 @@ func (p *plainProgress) setLabel(name string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.label = name
+}
+
+func (p *plainProgress) setFilePos(i, n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fileI, p.fileN = i, n
 }
 
 func (p *plainProgress) setTotal(total int64, complete bool) {
@@ -160,6 +176,14 @@ func layoutBudgets(width int, showNames bool, route string) (bw, labelCap int, s
 		labelCap += max(0, spare) // spare columns grow the name
 	}
 	return bw, labelCap, showRoute
+}
+
+// chipBudget is just layoutBudgets' chip cap, re-derived from the live
+// terminal width (falling back to the construction-time width) for the
+// per-frame chip decorators.
+func chipBudget(width int, showNames bool, route string) int {
+	_, cap, _ := layoutBudgets(terminalWidth(width), showNames, route)
+	return cap
 }
 
 // terminalWidth returns stderr's current width, or fallback when stderr
@@ -403,23 +427,23 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	}
 	if showNames {
 		// Current-file chip, last so its per-file width changes don't
-		// jiggle the rate/ETA chips. The name is a file path — Meta paints
-		// it green (the file-reference accent) at render time while mpb
-		// measures width off the plain form. Budget re-derives from the
-		// live width every frame, so a mid-transfer resize re-truncates
-		// (or drops) the name; terminalWidth falls back to the width seen
-		// at construction if the size query starts failing.
-		appendDecs = append(appendDecs, decor.Meta(decor.Any(func(s decor.Statistics) string {
-			name, _ := p.label.Load().(string)
-			if name == "" {
-				return ""
-			}
-			_, chipCap, _ := layoutBudgets(terminalWidth(width), showNames, route)
-			if chipCap == 0 {
-				return ""
-			}
-			return "  ·  " + truncateName(name, chipCap)
-		}), func(str string) string { return Path(str) }))
+		// jiggle the rate/ETA chips. Two decorators, two tones: the name
+		// wears the file-reference green, while the "file i/N" counter
+		// stays in the default foreground so it reads as progress instead
+		// of another filename. The budget re-derives from the live width
+		// every frame, so a mid-transfer resize re-truncates (or drops)
+		// the chip; terminalWidth falls back to the width seen at
+		// construction if the size query starts failing.
+		appendDecs = append(appendDecs,
+			decor.Meta(decor.Any(func(decor.Statistics) string {
+				name, _ := p.chipParts(chipBudget(width, showNames, route))
+				return name
+			}), func(str string) string { return Path(str) }),
+			decor.Any(func(decor.Statistics) string {
+				_, tail := p.chipParts(chipBudget(width, showNames, route))
+				return tail
+			}),
+		)
 	}
 
 	p.bar = p.mp.New(totalBytes,
@@ -481,6 +505,48 @@ func (p *Progress) SetLabel(name string) {
 		return
 	}
 	p.label.Store(name)
+}
+
+// SetFilePos sets the "file i/N" counter the chip appends after the name.
+// i is 1-based. This is the honest progress signal when a folder holds
+// many small files and the byte bar barely moves; n <= 0 clears it. Safe
+// on a nil receiver.
+func (p *Progress) SetFilePos(i, n int) {
+	if p == nil {
+		return
+	}
+	if p.plain != nil {
+		p.plain.setFilePos(i, n)
+		return
+	}
+	p.pos.Store(fileSlot{i, n})
+}
+
+// filePosition returns the stored file position, or (0, 0) when unset.
+func (p *Progress) filePosition() (int, int) {
+	if v, ok := p.pos.Load().(fileSlot); ok {
+		return v.i, v.n
+	}
+	return 0, 0
+}
+
+// chipParts splits the current-file chip into its two tones: the name and
+// the "· file i/N" counter. chipCap is the chip's rune budget from
+// layoutBudgets. Either half may come back empty — the name when there is
+// nothing to show, the counter when the name would be squeezed below a
+// readable stub.
+func (p *Progress) chipParts(chipCap int) (name, tail string) {
+	label, _ := p.label.Load().(string)
+	if label == "" || chipCap == 0 {
+		return "", ""
+	}
+	if i, n := p.filePosition(); n > 0 {
+		if t := fmt.Sprintf("  ·  file %d/%d", i, n); chipCap-len(t) >= 6 {
+			tail = t
+			chipCap -= len(t)
+		}
+	}
+	return "  ·  " + truncateName(label, chipCap), tail
 }
 
 // truncateName caps s at max runes, cutting from the left so the tail —

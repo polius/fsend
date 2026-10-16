@@ -28,6 +28,7 @@ import (
 type Spinner struct {
 	mu    sync.Mutex
 	msg   string
+	hint  string // static trailer after the elapsed chip ("Ctrl-C to cancel")
 	w     io.Writer
 	tty   bool
 	start time.Time // spinner life; rendered as an "· 45s" chip once ≥1s
@@ -45,14 +46,16 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 const spinnerInterval = 100 * time.Millisecond
 
 // StartSpinner begins drawing an animated spinner to stderr with the given
-// message. The returned Spinner must be Stop'd before the caller writes
-// anything else to stderr, otherwise the spinner's redraw will fight the
-// caller's output.
+// message. An optional hint renders as a static trailer after the elapsed
+// chip — "⠋ Waiting for receiver  ·  4s  ·  Ctrl-C to cancel" — so a long
+// wait always advertises its escape hatch. The returned Spinner must be
+// Stop'd before the caller writes anything else to stderr, otherwise the
+// spinner's redraw will fight the caller's output.
 //
 // On non-TTY stderr a single static "[*] msg" line is printed instead —
 // log files should record the wait happened. Quiet mode is the caller's
 // concern (don't start a spinner); the package consults no flags.
-func StartSpinner(msg string) *Spinner {
+func StartSpinner(msg string, hint ...string) *Spinner {
 	s := &Spinner{
 		msg:   msg,
 		w:     os.Stderr,
@@ -61,16 +64,28 @@ func StartSpinner(msg string) *Spinner {
 		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 	}
+	if len(hint) > 0 {
+		s.hint = hint[0]
+	}
 	if !s.tty {
 		// Non-TTY: print one static "[*] msg" line and we're done.
 		// Stop will be a no-op. A stderr write failure is non-actionable
 		// from a UX helper, so the error is intentionally ignored.
-		_, _ = fmt.Fprintln(s.w, Marker(gSpin), msg)
+		_, _ = fmt.Fprintln(s.w, Marker(gSpin), s.line())
 		close(s.done)
 		return s
 	}
 	go s.run()
 	return s
+}
+
+// line is the plain "msg · hint" text; the TTY path inserts the elapsed
+// chip between the two.
+func (s *Spinner) line() string {
+	if s.hint != "" {
+		return s.msg + "  ·  " + s.hint
+	}
+	return s.msg
 }
 
 func (s *Spinner) run() {
@@ -101,6 +116,7 @@ func (s *Spinner) run() {
 func (s *Spinner) draw(frame string) {
 	s.mu.Lock()
 	msg := s.msg
+	hint := s.hint
 	s.mu.Unlock()
 	// Elapsed chip: answers "alive or hung?" while a wait stretches on.
 	// Hidden for the first second so a quick pair doesn't flash "0s";
@@ -109,6 +125,9 @@ func (s *Spinner) draw(frame string) {
 	elapsed := ""
 	if d := time.Since(s.start); d >= time.Second {
 		elapsed = "  ·  " + spinnerElapsed(d)
+	}
+	if hint != "" {
+		elapsed += "  ·  " + hint
 	}
 	// Stderr write failures inside the UX layer are non-actionable —
 	// the caller has bigger problems than an unrendered spinner.
@@ -141,7 +160,7 @@ func (s *Spinner) SetMessage(msg string) {
 	s.msg = msg
 	s.mu.Unlock()
 	if !s.tty && changed {
-		_, _ = fmt.Fprintln(s.w, Marker(gSpin), msg)
+		_, _ = fmt.Fprintln(s.w, Marker(gSpin), s.line())
 	}
 }
 
