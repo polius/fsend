@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,8 @@ type receiverUI struct {
 	hello        *wire.SenderHello
 	files        []string          // paths of what landed this run
 	names        map[uint32]string // index → sanitized name; multi-file only
+	ordinal      map[uint32]int    // index → 1-based position; multi-file only
+	stripPrefix  string            // shared wrapper dir trimmed from display names
 	curFile      uint32            // last index labelled on the bar
 	prev         map[uint32]uint64
 	total        int64 // bytes received this run (excludes resumed prefixes)
@@ -149,9 +152,21 @@ func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummar
 	// Current-file chip data: multi-file only. Names are peer-supplied, so
 	// sanitize here — the only place they enter the UI state.
 	if h.Mode == wire.ModeFiles && len(summary.Files) > 1 {
-		ui.names = make(map[uint32]string, len(summary.Files))
+		// Current-file chip data: multi-file only. Names are peer-supplied,
+		// so sanitize here — the only place they enter the UI state. Trim
+		// the shared wrapping directory the incoming headline already
+		// names (same trim as the sender's chip and the preview list), and
+		// keep a 1-based ordinal for the "file i/N" counter.
+		items := make([]previewItem, 0, len(summary.Files))
 		for _, e := range summary.Files {
-			ui.names[e.Index] = sanitizeForDisplay(e.RelativePath, 128)
+			items = append(items, previewItem{name: sanitizeForDisplay(e.RelativePath, 128)})
+		}
+		ui.stripPrefix = stripCommonDir(items)
+		ui.names = make(map[uint32]string, len(summary.Files))
+		ui.ordinal = make(map[uint32]int, len(summary.Files))
+		for i, e := range summary.Files {
+			ui.names[e.Index] = items[i].name
+			ui.ordinal[e.Index] = i + 1
 		}
 	}
 	ui.mu.Unlock()
@@ -230,25 +245,34 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 // keeps the local copies but says so.
 func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	const preview = 5
+	names := ui.conflictNames(conflicts)
+	copyNoun, local, aux := "copies", "versions", "are"
+	if len(conflicts) == 1 {
+		copyNoun, local, aux = "copy", "version", "is"
+	}
+	// Name the consequence, not just the mechanical difference: this is the
+	// one prompt in fsend that can destroy user data.
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  %s\n",
-		uxlog.Prompt(fmt.Sprintf("%s %s from your local copies:",
-			uxlog.CountNoun(len(conflicts), "file"), differVerb(len(conflicts)))))
+	fmt.Fprintf(os.Stderr, "  %s  %s\n",
+		uxlog.Prompt(fmt.Sprintf("Replace %s with the incoming %s?",
+			uxlog.CountNoun(len(conflicts), "file"), copyNoun)),
+		uxlog.Alert(fmt.Sprintf("⚠ your local %s %s deleted", local, aux)))
 	shown := min(len(conflicts), preview)
-	for _, c := range conflicts[:shown] {
-		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
+	for i, c := range conflicts[:shown] {
+		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c, names[i]))
 	}
 	// Offer "l" only when the preview was truncated — with the full list
 	// already on screen, listing again adds nothing.
 	truncated := len(conflicts) > shown
-	prompt, hint := "  Overwrite all? [y/N] ", "  Please answer y or n."
+	question := "  Replace your local " + copyNoun + "?"
+	prompt, hint := question+" [y/N] ", "  Please answer y or n."
 	if truncated {
 		fmt.Fprintf(os.Stderr, "    %s\n",
 			fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts)))
-		prompt, hint = "  Overwrite all? [y/N/l] ", "  Please answer y or n (or l to list all)."
+		prompt, hint = question+" [y/N/l] ", "  Please answer y or n (or l to list all)."
 	}
 	for {
-		fmt.Fprint(os.Stderr, uxlog.Prompt("  Overwrite all?")+prompt[len("  Overwrite all?"):])
+		fmt.Fprint(os.Stderr, uxlog.Prompt(question)+prompt[len(question):])
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
@@ -275,8 +299,8 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 			return false
 		case "l", "list":
 			// Still honored when not advertised (harmless reprint).
-			for _, c := range conflicts {
-				fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c))
+			for i, c := range conflicts {
+				fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c, names[i]))
 			}
 			continue
 		}
@@ -284,23 +308,69 @@ func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
 	}
 }
 
+// conflictNames returns the display names for the conflict rows, trimmed of
+// the shared wrapping directory the incoming headline already names (the same
+// trim the bar chip and the preview list do), so a conflict row doesn't repeat
+// "myproject/" and burn the columns on the part that never changes.
+func (ui *receiverUI) conflictNames(conflicts []transfer.Conflict) []string {
+	names := make([]string, len(conflicts))
+	for i, c := range conflicts {
+		names[i] = sanitizeForDisplay(c.RelativePath, 128)
+	}
+	if p := ui.stripPrefix; p != "" {
+		for i := range names {
+			names[i] = strings.TrimPrefix(names[i], p)
+		}
+	}
+	return names
+}
+
+// compactAgo renders an age in the shortest honest unit — "30s", "4m",
+// "3h", "2d" — for the overwrite row's tiebreaker.
+func compactAgo(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
 // conflictLabel renders one conflict, distinguishing type clashes from
 // content differences. The row name is a file path — green. A "differs"
-// row carries the size delta in diff semantics (opencode's diffRemoved
-// / diffAdded roles): the on-disk size that a consented overwrite would
-// remove, then the incoming size that would be written. LocalSize is
-// always populated for "differs" (the classification Lstat'ed the file
-// to call it differing); type clashes have no meaningful byte pair, so
-// they keep the kind tag.
-func conflictLabel(c transfer.Conflict) string {
-	name := uxlog.Path(sanitizeForDisplay(c.RelativePath, 128))
+// row carries the size delta in diff semantics (opencode's diffRemoved /
+// diffAdded roles) and, crucially, in plain text: the leading − and + carry
+// the meaning even where colour doesn't, so the row never reads as a no-op
+// for a colourblind user or on a 256-colour terminal. LocalSize is always
+// populated for "differs" (the classification Lstat'ed the file to call it
+// differing); type clashes have no meaningful byte pair, so they keep the
+// kind tag.
+func conflictLabel(c transfer.Conflict, name string) string {
+	row := uxlog.Path(name)
 	if c.Kind != "differs" {
-		return fmt.Sprintf("%s  (%s)", name, c.Kind)
+		return fmt.Sprintf("%s  (%s)", row, c.Kind)
 	}
-	return fmt.Sprintf("%s  %s → %s",
-		name,
-		uxlog.Removed(uxlog.HumanBytes(c.LocalSize)),
-		uxlog.Added(uxlog.HumanBytes(int64(c.IncomingSize))))
+	row = fmt.Sprintf("%s  %s → %s",
+		row,
+		uxlog.Removed("− "+uxlog.HumanBytes(c.LocalSize)),
+		uxlog.Added("+ "+uxlog.HumanBytes(int64(c.IncomingSize))))
+	// Two rounded "3.3 MB"s read as a no-op, so when the displayed sizes
+	// collide, say what actually differs: the byte delta, or — when even the
+	// bytes match, meaning the classification rested on mtime — the local
+	// copy's age.
+	if uxlog.HumanBytes(c.LocalSize) == uxlog.HumanBytes(int64(c.IncomingSize)) {
+		switch d := int64(c.IncomingSize) - c.LocalSize; {
+		case d != 0:
+			row += fmt.Sprintf("  (%+d B)", d)
+		case !c.LocalModTime.IsZero():
+			row += "  (local copy modified " + compactAgo(time.Since(c.LocalModTime)) + " ago)"
+		}
+	}
+	return row
 }
 
 func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
@@ -380,6 +450,7 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	if name, ok := ui.names[fileIndex]; ok && fileIndex != ui.curFile {
 		ui.curFile = fileIndex
 		ui.bar.SetLabel(name)
+		ui.bar.SetFilePos(ui.ordinal[fileIndex], len(ui.names))
 	}
 	d := bytesWritten - ui.prev[fileIndex]
 	ui.prev[fileIndex] = bytesWritten

@@ -220,6 +220,19 @@ func TestProgress_PlainModePercentClamped(t *testing.T) {
 	}
 }
 
+// The plain fallback carries the same "· file i/N" counter the TTY chip
+// does, so a folder of many small files reads as finite in CI logs too.
+func TestProgress_PlainModeFileCounter(t *testing.T) {
+	var buf bytes.Buffer
+	p := &plainProgress{w: &buf, total: 1000, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second)}
+	p.setLabel("data.bin")
+	p.setFilePos(1, 3)
+	p.add(500)
+	if out := buf.String(); !strings.Contains(out, "data.bin  ·  file 1/3") {
+		t.Errorf("plain line missing label + counter: %q", out)
+	}
+}
+
 // A negative running total (a caller under-accounting) must clamp to 0%, not
 // print a "-N%" line.
 func TestProgress_PlainModePercentClampedLow(t *testing.T) {
@@ -232,8 +245,9 @@ func TestProgress_PlainModePercentClampedLow(t *testing.T) {
 	}
 }
 
-// The chip must grow with the terminal: spare columns go to the name,
-// narrow terminals keep the 20-rune minimum or drop the chip entirely.
+// Priority is bar → file chip → route chip: the bar keeps its width while
+// the columns are there, the chip takes a minimum, the route is dropped
+// first, and only the leftover grows the name.
 func TestLayoutBudgets(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -242,20 +256,23 @@ func TestLayoutBudgets(t *testing.T) {
 		route     string
 		wantBW    int
 		wantChip  int
+		wantRoute bool
 	}{
-		{"too narrow for a chip", 70, true, "LAN", 10, 0},
-		{"gate boundary gets minimum chip", 90, true, "LAN", 10, 20},
-		{"bar yields before chip shrinks", 100, true, "LAN", 12, 20},
-		{"wide terminal grows the chip", 200, true, "LAN", 40, 90},
-		{"spare flows to chip past bar cap", 140, true, "LAN", 40, 30},
-		{"no names means no chip", 200, false, "LAN", 40, 0},
-		{"route eats into the spare", 200, true, "relay", 40, 88},
+		{"narrow keeps only the bar", 70, true, "LAN", 40, 0, false},
+		{"room for the chip, not the route", 90, true, "LAN", 40, 20, false},
+		{"both chips fit", 100, true, "LAN", 40, 22, true},
+		{"wide terminal grows the chip", 200, true, "LAN", 40, 122, true},
+		{"spare past the bar cap flows to the chip", 140, true, "LAN", 40, 62, true},
+		{"shorter route frees columns for the chip", 200, true, "relay", 40, 120, true},
+		{"no names means no chip", 200, false, "LAN", 40, 0, true},
+		{"sub-furniture width shrinks the bar", 60, true, "LAN", 35, 0, false},
+		{"very narrow floors the bar at 10", 50, true, "LAN", 25, 0, false},
 	}
 	for _, c := range cases {
-		bw, chip := layoutBudgets(c.width, c.showNames, c.route)
-		if bw != c.wantBW || chip != c.wantChip {
-			t.Errorf("%s: layoutBudgets(%d, %v, %q) = (%d, %d), want (%d, %d)",
-				c.name, c.width, c.showNames, c.route, bw, chip, c.wantBW, c.wantChip)
+		bw, chip, route := layoutBudgets(c.width, c.showNames, c.route)
+		if bw != c.wantBW || chip != c.wantChip || route != c.wantRoute {
+			t.Errorf("%s: layoutBudgets(%d, %v, %q) = (%d, %d, %v), want (%d, %d, %v)",
+				c.name, c.width, c.showNames, c.route, bw, chip, route, c.wantBW, c.wantChip, c.wantRoute)
 		}
 	}
 }

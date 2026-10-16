@@ -670,7 +670,9 @@ func startWaitSpinner(f *flags, msg string) *uxlog.Spinner {
 	if f.quiet {
 		return nil
 	}
-	return uxlog.StartSpinner(msg)
+	// Every wait advertises its escape hatch: a sender staring at a dead
+	// terminal should know Ctrl-C is the way out.
+	return uxlog.StartSpinner(msg, uxlog.HintCancel)
 }
 
 // runSenderTransferOverLAN runs the transfer protocol on a paired LAN

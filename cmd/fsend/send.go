@@ -258,7 +258,9 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 	fmt.Fprintln(os.Stderr)
 	renderCodeBlock(os.Stderr, c)
 	fmt.Fprintln(os.Stderr)
-	return uxlog.StartSpinner("Waiting for receiver")
+	fmt.Fprintln(os.Stderr, "  The code works once, and only while this stays open.")
+	fmt.Fprintln(os.Stderr)
+	return uxlog.StartSpinner("Waiting for receiver", uxlog.HintCancel)
 }
 
 // sendArrow renders the ⇢ direction marker prefixed to the send header
@@ -309,7 +311,7 @@ func renderCodeBlock(w io.Writer, c string) {
 	_, _ = fmt.Fprintln(w, uxlog.Brand("  ┌"+strings.Repeat("─", codeBoxInner+2)+"┐"))
 	row("  On the other machine, run:", len("  On the other machine, run:"))
 	row("", 0)
-	row("      fsend "+uxlog.Code(c), len("      fsend ")+len(c))
+	row("      "+uxlog.Accent("fsend")+" "+uxlog.Code(c), len("      fsend ")+len(c))
 	_, _ = fmt.Fprintln(w, uxlog.Brand("  └"+strings.Repeat("─", codeBoxInner+2)+"┘"))
 }
 
@@ -374,12 +376,24 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 	// already in the pre-transfer block. Names are our own local paths, so no
 	// display sanitization is needed (matches senderPreview).
 	var names map[uint32]string
+	var ordinal map[uint32]int
 	if plan.mode == wire.ModeFiles && plan.totalFiles > 1 {
-		names = make(map[uint32]string, len(plan.sources))
+		// Same projection the preview list uses, trimmed by the same shared
+		// root the headline already names — otherwise every chip row repeats
+		// "myproject/" and spends columns on the one part of the path that
+		// never changes.
+		items := senderPreview(plan.sources)
+		stripCommonDir(items)
+		names = make(map[uint32]string, len(items))
+		ordinal = make(map[uint32]int, len(items))
+		k := 0
 		for _, src := range plan.sources {
-			if src.Entry.Type != wire.EntryDir {
-				names[src.Entry.Index] = src.Entry.RelativePath
+			if src.Entry.Type == wire.EntryDir {
+				continue
 			}
+			names[src.Entry.Index] = items[k].name
+			ordinal[src.Entry.Index] = k + 1
+			k++
 		}
 	}
 	curFile := ^uint32(0)
@@ -389,6 +403,9 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 		}
 		curFile = fi
 		bar.SetLabel(names[fi])
+		// The "file i/N" counter is the honest progress signal for a folder
+		// of many small files, where the byte bar barely moves.
+		bar.SetFilePos(ordinal[fi], plan.totalFiles)
 	}
 	ensureBar := func() {
 		if bar == nil && !f.quiet {

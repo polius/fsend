@@ -123,7 +123,7 @@ func resolvePassword(ctx context.Context, f *flags, sender bool) error {
 		f.passArg = pw
 		return nil
 	}
-	pw, err := readPasswordHiddenCtx(ctx, "  Password for this transfer: ", f.quiet)
+	pw, err := readPasswordHiddenCtx(ctx, "  "+uxlog.Prompt("Enter the password the sender shared: "), f.quiet)
 	if err != nil {
 		return err
 	}

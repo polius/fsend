@@ -394,12 +394,14 @@ def s3_conflict():
     snd, rcv = pair(s, d, ['small.txt'], ['--out', 'recv_out'],
                     [(4.0, b'y\n'), (6.0, b'n\n')])
     sp, rv = snd.text, rcv.text if rcv else ''
-    check(s, 'prompt header primary', rv, 'differs from your local copies',
-          '1 file differs from your local copies:', VIOLET)
+    check(s, 'prompt header primary', rv, 'incoming copy?',
+          'Replace 1 file with the incoming copy?', VIOLET)
+    check(s, 'delete consequence warning', rv, 'incoming copy?',
+          '⚠ your local version is deleted', YELLOW)
     check(s, 'conflict name green', rv, '→', 'small.txt', GREEN)
     check(s, 'local size diff-removed', rv, '→', '12 B', RED)
     check(s, 'incoming size diff-added', rv, '→', '52 B', GREEN)
-    check(s, 'prompt primary', rv, None, 'Overwrite all?', VIOLET)
+    check(s, 'prompt primary', rv, None, 'Replace your local copy?', VIOLET)
     check(s, 'kept clause warning', rv, 'kept', '1 file kept', YELLOW)
     check(s, 'sender warn glyph', sp, 'Nothing sent', '⚠', YELLOW)
     check(s, 'Nothing sent default', sp, 'Nothing sent', 'Nothing sent', DEFAULT, False)
@@ -426,8 +428,9 @@ def s4_password():
     sp, rv = snd.text, rcv.text
     check(s, 'sender instruction primary', sp, 'Press Enter to use it',
           'Press Enter to use it, or type your own:', VIOLET)
-    check(s, 'receiver prompt primary', rv, 'Password for this transfer',
-          'Password for this transfer:', VIOLET)
+    check(s, 'receiver prompt primary', rv, 'Enter the password',
+          'Enter the password the sender shared:', VIOLET)
+    check(s, 'password context warning', rv, 'password-protected', '⚠', YELLOW)
     check(s, 'retry prompt primary', rv, 'Wrong password', 'Wrong password — try again', VIOLET)
     check(s, 'chip warning glyph', rv, 'password required', '⚠', YELLOW)
     check(s, 'chip text default', rv, 'password required', 'password required', DEFAULT, False)

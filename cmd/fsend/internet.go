@@ -246,7 +246,7 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 			if existing != nil {
 				existing.SetMessage(waitMsg)
 			} else if spin == nil {
-				spin = uxlog.StartSpinner(waitMsg)
+				spin = uxlog.StartSpinner(waitMsg, uxlog.HintCancel)
 			}
 			retitled = existing != nil
 		}

@@ -38,6 +38,50 @@ server on loopback — no shell wrapper needed.
 scripts/coverage.sh
 ```
 
+## Design tokens
+
+The terminal UI speaks one semantic palette, defined in
+`internal/uxlog/glyphs.go`. Six roles, borrowed from the family
+opencode's themes use so the CLI vocabulary and the TUI vocabulary stay
+parallel:
+
+| role | dark (default) | light | means |
+| --- | --- | --- | --- |
+| accent | `#ff9e64` | `#b15c00` | act — share code, code box, spinner, direction arrows |
+| primary | `#bb9af7` | `#7847bd` | decide — questions, prompts |
+| success | `#9ece6a` | `#587539` | reassure / file references — ✓, paths |
+| warning | `#e0af68` | `#8c6c3e` | caution — ⚠, "differs" |
+| error | `#f7768e` | `#b3261e` | failure — ✗ |
+| info | `#7dcfff` | `#007197` | status — ℹ, `--help` flags, links |
+
+The dark column is the design target: all six clear WCAG AAA on a
+near-black background. The light column is the same hue family darkened
+to clear AA on white, chosen once per process:
+
+1. `FSEND_THEME=light|dark` — the explicit override.
+2. `COLORFGBG` — the `<fg>;<bg>` var iTerm2/Konsole/rxvt export; a light
+   background index (7, or 9–15) selects the light column.
+3. dark — the designed-for default.
+
+Truecolour is used when the terminal advertises it
+(`COLORTERM=truecolor`/`24bit`); otherwise each hex maps to its nearest
+xterm-256 cell at render time, so the fallback can never drift from the
+palette it approximates.
+
+There is deliberately no dim/muted renderer. Secondary text renders in
+the terminal's default foreground — the one colour guaranteed readable on
+the user's theme — and hierarchy comes from emphasising the primary
+elements, never from darkening the rest.
+
+**`brand/logo-orange` is a separate, fixed token: `#E0805A`.** The
+wordmark and the README icon use it because a logo may hold a colour the
+terminal theme cannot shift; it is a muted, print-safe sibling of `accent`
+(`#ff9e64`, ~6:1 on the dark background). Do not "correct" it to the
+accent — `docs/assets/icon*.svg` is the reference. The README demo
+(`docs/assets/demo.svg`, produced by `scripts/video`) should be re-rendered
+in the six tokens above when that pipeline next runs: its current greens
+and cyans are Catppuccin Mocha and appear nowhere in the product.
+
 ## UX colour audit
 
 ```sh

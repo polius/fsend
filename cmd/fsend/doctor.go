@@ -48,14 +48,42 @@ func doctorCmd() *cobra.Command {
 // derived mDNS name can't collide with a real transfer's.
 const doctorCode = "doctor-check"
 
+// doctorTitle is the heading line. Bold is unconditional in uxlog, so the
+// gate lives here: stderr is where doctor writes, and ColorFor(stderr) is
+// the matching probe.
+func doctorTitle() string {
+	const title = "fsend doctor"
+	if uxlog.ColorFor(os.Stderr) {
+		return uxlog.Bold(title)
+	}
+	return title
+}
+
 func runDoctor() {
+	passed, failed := 0, 0
 	say := func(ok bool, label, format string, args ...any) {
 		glyph := uxlog.Warn()
 		if ok {
 			glyph = uxlog.Check()
+			passed++
+		} else {
+			failed++
 		}
 		fmt.Fprintf(os.Stderr, "%s %-8s %s\n", glyph, label, fmt.Sprintf(format, args...))
 	}
+
+	fmt.Fprintf(os.Stderr, "%s — checking what a transfer depends on\n\n", doctorTitle())
+	// The verdict closes the report on every path — including the early
+	// returns below, where a broken check makes the remaining ones moot.
+	defer func() {
+		if failed == 0 {
+			fmt.Fprintf(os.Stderr, "\n%s %s\n", uxlog.Check(), uxlog.Good(
+				fmt.Sprintf("All %d checks passed. Transfers will try your local network first.", passed)))
+			return
+		}
+		fmt.Fprintf(os.Stderr, "\n%s %s\n", uxlog.Warn(), uxlog.Alert(
+			fmt.Sprintf("%d of %d checks degraded — see above.", failed, passed+failed)))
+	}()
 
 	server := config.DefaultServer
 	cfg, err := config.Load()
@@ -124,24 +152,25 @@ func runDoctor() {
 		say(false, "mDNS", "roundtrip failed even on loopback (%v) — LAN discovery unavailable", err)
 		return
 	}
-	say(true, "mDNS", "roundtrip ok in %s", time.Since(machStart).Round(time.Millisecond))
+	say(true, "mDNS", "local roundtrip ok in %s", time.Since(machStart).Round(time.Millisecond))
 
 	// LAN tier: a query that only leaves via the physical interface. If
 	// the OS or the AP blocks multicast there, this is the honest signal.
 	lanStart := time.Now()
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
-	if res, err := landisc.QueryInterface(ctx2, doctorCode, 500*time.Millisecond, ip); err != nil {
+	if _, err := landisc.QueryInterface(ctx2, doctorCode, 500*time.Millisecond, ip); err != nil {
 		say(false, "mDNS", "no multicast answer via %s (%s) — discovering other devices falls back to the pairing server; check Local Network permission / Wi-Fi", ip, time.Since(lanStart).Round(time.Millisecond))
 	} else {
-		say(true, "mDNS", "LAN answer from %s in %s — discovering other devices on this network works", res.IP, time.Since(lanStart).Round(time.Millisecond))
+		say(true, "mDNS", "answered on the LAN in %s", time.Since(lanStart).Round(time.Millisecond))
 	}
 }
 
 const doctorHelpTemplate = `fsend doctor — check what a transfer depends on
 
-Runs four read-only checks and reports each as ✓ (working) or ⚠
-(degraded, with the consequence):
+Runs five read-only checks and reports each as ✓ (working) or ⚠
+(degraded, with the consequence). mDNS reports its two tiers —
+loopback, then the physical interface — as separate rows:
 
   config    which pairing server is configured (never prints the password)
   server    HTTPS reachability of that server's /health
