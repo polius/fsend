@@ -125,35 +125,41 @@ func (p *plainProgress) done() {
 // terminals. Full-width bars look "loud" — see CLI UX review notes.
 const barWidth = 40
 
-// chipMargin cushions the chip's budget against worst-case counter/rate/ETA
-// drift, so an exact-leftover chip can't push the line past the edge.
-const chipMargin = 2
+// fixedFurniture is the column cost of the decorators the bar can never
+// reclaim: the "  100%  " block (8) and the counter plus its "  ·  "
+// separator at a realistic "1.5 GB / 12.4 GB" width (2 + 15). The rate and
+// ETA chips are deliberately not reserved: mpb draws the append
+// decorators first and hands the bar whatever remains, so a rate chip
+// appearing costs the bar a few columns instead of wrapping the line —
+// reserving ~24 columns for chips that stay hidden for the first second
+// would waste the bar on every wide terminal instead.
+const fixedFurniture = 8 + 2 + 15
 
-// layoutBudgets splits a terminal of the given width between the bar and
-// its decorators: bw is the bar's column budget, labelCap the current-file
-// chip's cap in runes (0 = no chip). Pure; cheap enough for every frame.
+// layoutBudgets splits a terminal of the given width between the bar, the
+// current-file chip, and the route chip: bw is the bar's requested width,
+// labelCap the chip's cap in runes (0 = no chip), showRoute whether the
+// route chip fits. Pure; cheap enough for every frame.
 //
-// pad assumes ~55 columns of decorators around the bar — underestimate and
-// a narrow terminal wraps, and the in-place redraw leaves stale fragments.
-// The chip reserves a minimum; terminals too narrow for both keep the bar
-// and drop the chip. On wide terminals the bar stops at barWidth and every
-// spare column goes to the name.
-func layoutBudgets(width int, showNames bool, route string) (bw, labelCap int) {
-	const nameCols = 20 // minimum chip budget; +5 for its "  ·  " separator
-	pad := 55
-	if showNames && width >= 55+10+nameCols+5 {
-		pad += nameCols + 5
-		labelCap = nameCols
+// Priority is bar → file chip → route chip. The bar asks for its full
+// width and mpb takes it whenever the columns are there; the chip claims a
+// minimum only once the bar has room, and the route — the one chip the
+// user has already read on the phase line above the bar — is dropped
+// first. Spare columns flow back to the name.
+func layoutBudgets(width int, showNames bool, route string) (bw, labelCap int, showRoute bool) {
+	bw = min(barWidth, max(10, width-fixedFurniture))
+	spare := width - fixedFurniture - bw
+	if showNames && spare >= 5+6 { // "  ·  " + a minimal name
+		labelCap = 20
+		spare -= labelCap + 5
 	}
-	if route != "" {
-		pad += len(route) + 5
+	if route != "" && spare >= len(route)+5 {
+		showRoute = true
+		spare -= len(route) + 5
 	}
-	bw = min(barWidth, max(10, width-pad))
 	if labelCap > 0 {
-		// pad carries the chip's separator; spare columns go to the name.
-		labelCap += max(0, width-pad-bw-chipMargin)
+		labelCap += max(0, spare) // spare columns grow the name
 	}
-	return bw, labelCap
+	return bw, labelCap, showRoute
 }
 
 // terminalWidth returns stderr's current width, or fallback when stderr
@@ -252,7 +258,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	}
 	// Only the bar's budget is fixed here; the chip re-derives from the
 	// live width every refresh frame, so a mid-transfer resize re-flows.
-	bw, _ := layoutBudgets(width, showNames, route)
+	bw, _, _ := layoutBudgets(width, showNames, route)
 
 	p := &Progress{}
 	defer setActive(p)
@@ -383,10 +389,17 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		)
 	}
 	if route != "" {
-		// Static route chip, plain default foreground — the bar's other
-		// decorators (rate, ETA, file chip) provide the emphasis around
-		// it; a grey or dim chip here only costs readability.
-		appendDecs = append(appendDecs, decor.Name("  ·  "+route))
+		// Route chip, plain default foreground — the bar's other
+		// decorators provide the emphasis around it. Dropped first when
+		// the terminal is too narrow to hold it beside the bar and the
+		// file chip: the route was already stated on the phase line
+		// above, so it is the cheapest thing to lose.
+		appendDecs = append(appendDecs, decor.Any(func(decor.Statistics) string {
+			if _, _, ok := layoutBudgets(terminalWidth(width), showNames, route); !ok {
+				return ""
+			}
+			return "  ·  " + route
+		}))
 	}
 	if showNames {
 		// Current-file chip, last so its per-file width changes don't
@@ -401,7 +414,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 			if name == "" {
 				return ""
 			}
-			_, chipCap := layoutBudgets(terminalWidth(width), showNames, route)
+			_, chipCap, _ := layoutBudgets(terminalWidth(width), showNames, route)
 			if chipCap == 0 {
 				return ""
 			}
