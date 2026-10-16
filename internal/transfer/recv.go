@@ -321,14 +321,26 @@ func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(u
 	}
 }
 
-// maxVerifyIDsPerFrame bounds one VERIFY_REQUEST. The request is a gob-encoded
-// []uint32 inside a single control frame, and MaxControlFrameSize is 64 KiB;
-// the gob body grows ~3 B per index (measured: 10k→29.6 KB, 40k→119.6 KB), so
-// a bigger tree of equal-size files would overflow one frame and surface the
-// honest input as E099. 8000 stays near 30 KB with headroom. The sender's
-// senderNegotiate already answers one VERIFY_RESPONSE per request, so batching
-// needs no wire change.
-const maxVerifyIDsPerFrame = 8000
+// maxVerifyIDsPerFrame bounds one VERIFY_REQUEST batch. Both frames of the
+// round trip must fit MaxControlFrameSize (64 KiB): the gob []uint32 request
+// grows ~2.5 B/idx, but the sender's []FileHash response (senderNegotiate
+// answers one response per request) is the long pole — a 32-byte root plus
+// per-field overhead, and gob encodes each hash byte as a varint so an
+// all-0xFF (worst-case) root costs the most. Measured gob bodies, worst case:
+//
+//	idx    request    response
+//	 100    ~0.4 KB      7.0 KB
+//	 500    ~1.4 KB     35.4 KB
+//	 800    ~2.1 KB     56.5 KB   ← this bound
+//	 900    ~2.4 KB     63.6 KB   (3% headroom)
+//	1000    ~2.6 KB     70.7 KB   (overflow)
+//
+// so the response, not the request, sets the ceiling. 800 keeps the response
+// near 57 KB; a larger tree just becomes more round trips, each bounded (the
+// sender caps the count at maxVerifyRounds). Without this, any tree past
+// ~900 equal-size files overflowed the response frame and surfaced honest
+// input as E099.
+const maxVerifyIDsPerFrame = 800
 
 // resolveVerify (--checksum) asks the sender for the BLAKE3 root of every
 // same-size candidate, hashes the local copies, and rewrites each dispVerify
