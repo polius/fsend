@@ -617,7 +617,7 @@ func TestDispatch_ForceReceive(t *testing.T) {
 //  2. No progress-bar collision: the bar is materialized lazily on the
 //     first chunk, so mpb's stderr repaint can't overlap the password
 //     input line. A regression would re-introduce a garbled line like
-//     "Password for this transfer:   0 % [---]   0.00 b" — what the
+//     "Enter the password the sender shared:   0 % [---]   0.00 b" — what the
 //     original UX bug report flagged.
 func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	requireE2E(t)
@@ -638,7 +638,7 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	r.requireSuccess(t)
 
 	saveIdx := strings.Index(r.receiverErr, "Save to")
-	passwordIdx := strings.Index(r.receiverErr, "Password for this transfer:")
+	passwordIdx := strings.Index(r.receiverErr, "Enter the password the sender shared:")
 	if saveIdx < 0 {
 		t.Fatalf("save prompt not found in receiver stderr:\n%s", r.receiverErr)
 	}
@@ -654,7 +654,7 @@ func TestPassword_NoBarCollisionOnPrompt(t *testing.T) {
 	// must not also contain progress-bar tokens. "% [" is the leading
 	// fragment mpb emits ("  X % [######...").
 	for _, line := range strings.Split(r.receiverErr, "\n") {
-		if strings.Contains(line, "Password for this transfer:") && strings.Contains(line, "% [") {
+		if strings.Contains(line, "Enter the password the sender shared:") && strings.Contains(line, "% [") {
 			t.Fatalf("progress bar rendered on password prompt line: %q", line)
 		}
 	}
