@@ -109,7 +109,7 @@ Examples:
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
 	c.Flags().StringVar(&f.passArg, "password", "",
-		"password gate. Bare --password prompts (sender: suggests a random default); inline: --password=SECRET. Env: FSEND_PASSWORD")
+		"password gate. Bare --password prompts (sender: suggests a random default); inline: --password=SECRET. Env: FSEND_PASSWORD (or FSEND_PASSWORD_FILE)")
 	// Bare --password (no value) collapses to this sentinel; the dispatch
 	// layer treats it as "ask interactively, with input hidden." We
 	// blank DefValue so cobra's --help doesn't print the sentinel.
@@ -259,7 +259,8 @@ EXAMPLES
 
 SENDING
   --password             Require a password to receive. Bare --password prompts;
-                         inline --password=SECRET; env FSEND_PASSWORD.
+                         inline --password=SECRET; env FSEND_PASSWORD or
+                         FSEND_PASSWORD_FILE.
   --exclude <glob,…>     Skip entries matching these globs in a directory
   --text "<string>"      Send a literal string instead of a file
                          (the receiver prints it — nothing is saved;
@@ -275,7 +276,8 @@ RECEIVING
   --out -                Receive to stdout (single file, text, or piped
                          stream — pipe-friendly: fsend <code> --out - | …)
   --password             Supply the sender's password. Bare --password prompts;
-                         inline --password=SECRET; env FSEND_PASSWORD.
+                         inline --password=SECRET; env FSEND_PASSWORD or
+                         FSEND_PASSWORD_FILE.
   --overwrite            Replace existing files that differ (identical files
                          are always skipped)
   --checksum             Decide identical files by content hash, not
@@ -300,6 +302,7 @@ ADVANCED
                          Set the server (persisted)
   --connect <host[:port]>,<password>
                          Set the server + shared password
+                         (or env FSEND_SERVER_PASSWORD / FSEND_SERVER_PASSWORD_FILE)
   --connect default      Revert to the compiled-in default server
   --send / --receive     Force mode (skip code/path auto-detect)
   --update               Update fsend to the latest release
@@ -586,7 +589,9 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// lets users keep it out of argv. We only consult it when the flag
 	// wasn't explicitly given, so scripts that set both keep the flag's
 	// value (matching every other CLI's override convention).
-	applyEnvFallbacks(f, cmd)
+	if err := applyEnvFallbacks(f, cmd); err != nil {
+		return err
+	}
 
 	// Bare --password (no value) is resolved inside runSend / runReceive so
 	// each role can show the right prompt: the sender gets a random
@@ -708,18 +713,26 @@ func wrappedCode(arg string) (string, bool) {
 // FSEND_PASSWORD. Doing it the other way around (env wins only when the
 // flag is absent entirely) silently ignored FSEND_PASSWORD for users who
 // typed `--password` to opt in.
-func applyEnvFallbacks(f *flags, cmd *cobra.Command) {
+//
+// FSEND_PASSWORD_FILE is the fallback when FSEND_PASSWORD is unset, so the
+// secret can come from a mounted file instead of the environment.
+func applyEnvFallbacks(f *flags, cmd *cobra.Command) error {
 	bare := f.passArg == passPromptSentinel
 	if !cmd.Flags().Changed("password") || bare {
-		if v := os.Getenv("FSEND_PASSWORD"); v != "" {
+		v, err := passwordFromEnv("FSEND_PASSWORD")
+		if err != nil {
+			return err
+		}
+		if v != "" {
 			f.passArg = v
 			// The user who typed bare --password expects a prompt; say why
 			// none appears rather than silently pre-empting it.
 			if bare && !f.quiet {
-				fmt.Fprintln(os.Stderr, uxlog.Info(), "Using FSEND_PASSWORD from the environment — skipping the prompt.")
+				fmt.Fprintln(os.Stderr, uxlog.Info(), "Using the password from the environment — skipping the prompt.")
 			}
 		}
 	}
+	return nil
 }
 
 // startReceive rejects send-only flags before handing off to runReceive,

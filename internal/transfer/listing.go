@@ -12,8 +12,13 @@ import (
 const maxListingBatchBytes = 56 * 1024
 
 // maxListingEntries caps a single transfer's entry count, bounding receiver
-// memory against a hostile sender streaming an unbounded listing.
-const maxListingEntries = 5_000_000
+// memory against a hostile sender streaming an unbounded listing. An
+// authenticated-but-hostile peer that knows the protocol can push a huge
+// listing; the receiver then holds the entries plus a same-sized key map and
+// the per-entry plans, so the cap is a memory bound, not a product limit.
+// 200k entries is far past any honest transfer and keeps the receiver in the
+// tens of MB.
+const maxListingEntries = 200_000
 
 // sendListing streams the sources' entries as batched control frames followed
 // by TypeListingEnd.

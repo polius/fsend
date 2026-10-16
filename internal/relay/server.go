@@ -297,7 +297,12 @@ func (s *Server) Run(ctx context.Context) error {
 		// overhead). Forward is one syscall. Recover per datagram so a
 		// crafted packet that trips a panic in handle can't take the whole
 		// server down with it.
-		s.handleSafe(buf[:n], addr.(*net.UDPAddr))
+		ua, ok := addr.(*net.UDPAddr)
+		if !ok {
+			bufPool.Put(bufPtr)
+			continue
+		}
+		s.handleSafe(buf[:n], ua)
 		bufPool.Put(bufPtr)
 	}
 }

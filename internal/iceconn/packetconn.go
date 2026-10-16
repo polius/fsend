@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/pion/ice/v4"
+
+	"github.com/polius/fsend/internal/relay"
 )
 
 // icePacketConn adapts *ice.Conn (a stream-style net.Conn) into the
@@ -20,16 +22,10 @@ type icePacketConn struct {
 	peerAddr net.Addr
 }
 
-// syntheticPeer is a stable address we hand to quic-go as the peer's
-// remote address. ice.Conn.Write ignores the destination because the
-// selected candidate pair is already fixed, and quic-go uses the value
-// only as a routing tag — so a fixed synthetic UDPAddr is sufficient.
-var syntheticPeer = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1}
-
 func wrapAsPacket(c *ice.Conn) net.PacketConn {
 	addr := c.RemoteAddr()
 	if addr == nil {
-		addr = syntheticPeer
+		addr = relay.SyntheticPeer
 	}
 	return &icePacketConn{c: c, peerAddr: addr}
 }

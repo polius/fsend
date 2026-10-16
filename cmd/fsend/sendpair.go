@@ -184,7 +184,10 @@ var errPairedGone = fmt.Errorf("%w: the receiver paired but the connection could
 // guarantees the server session is Deleted and resources released on
 // any teardown path.
 func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Config) (*internetSenderPairing, error) {
-	client, _ := signalingClient(cfg)
+	client, _, err := signalingClient(cfg)
+	if err != nil {
+		return nil, err
+	}
 	created, err := client.Create(ctx, code)
 	if err != nil {
 		return nil, err
@@ -389,7 +392,7 @@ func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID,
 	if alloc.ForwardingDisabled {
 		return nil, connpath.Info{}, fmt.Errorf("%w: this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 	}
-	rc, err := dialRelay(alloc)
+	rc, err := dialRelay(alloc, client.ServerHost())
 	if err != nil {
 		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 	}
@@ -708,7 +711,10 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
 		}
-		return quicconn.SenderHandshake(ctx, qc, pair.code)
+		// Bound the SPAKE2 handshake by the same window: a peer that
+		// completes the QUIC accept then stalls the PAKE must not hang
+		// "retrying…" forever.
+		return quicconn.SenderHandshake(acceptCtx, qc, pair.code)
 	})
 	if pair.pathInfo.Kind == connpath.KindRelay {
 		return classifyRelayDrop(ctx, pair.sigClient, pair.sessionID, pair.roleToken, err)

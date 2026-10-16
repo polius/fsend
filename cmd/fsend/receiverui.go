@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/polius/fsend/internal/atomicfile"
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
@@ -415,27 +417,38 @@ func (ui *receiverUI) onConflictKept(string) {
 // --manifest path. Fired only after a successful receive, so the file isn't
 // left describing a transfer that failed.
 func (ui *receiverUI) onManifest(entries []transfer.ManifestEntry) {
-	f, err := os.Create(ui.f.manifest)
-	if err != nil {
-		ui.manifestErr = fmt.Errorf("%w: %v", fserrors.ErrManifestWriteFailed, err)
-		return
-	}
-	// A flush-time write failure can surface only at Close; swallowing it
-	// would evade E038.
-	defer func() {
-		if cerr := f.Close(); cerr != nil && ui.manifestErr == nil {
-			ui.manifestErr = fmt.Errorf("%w: %s: %v", fserrors.ErrManifestWriteFailed, ui.f.manifest, cerr)
-		}
-	}()
-	cw := csv.NewWriter(f)
+	var buf bytes.Buffer
+	cw := csv.NewWriter(&buf)
 	_ = cw.Write([]string{"path", "size", "status", "sha256"})
 	for _, e := range entries {
-		_ = cw.Write([]string{e.RelativePath, strconv.FormatUint(e.Size, 10), e.Status, e.SHA256})
+		_ = cw.Write([]string{csvSafe(e.RelativePath), strconv.FormatUint(e.Size, 10), csvSafe(e.Status), e.SHA256})
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {
 		ui.manifestErr = fmt.Errorf("%w: %s: %v", fserrors.ErrManifestWriteFailed, ui.f.manifest, err)
+		return
 	}
+	// Atomic write (tmp + fsync + rename): a crash or a concurrent reader
+	// never sees a truncated manifest describing a completed transfer.
+	if err := atomicfile.Write(ui.f.manifest, buf.Bytes(), 0o644); err != nil {
+		ui.manifestErr = fmt.Errorf("%w: %s: %v", fserrors.ErrManifestWriteFailed, ui.f.manifest, err)
+	}
+}
+
+// csvSafe defuses spreadsheet formula injection. A cell whose first byte is
+// =, +, -, @ (or a tab/CR that a parser skips before one) is evaluated as a
+// formula when the CSV is opened in Excel/Sheets, which can exfiltrate data
+// or run a DDE payload. A leading apostrophe is the standard defang: the
+// spreadsheet treats the remainder as literal text. Paths and statuses are
+// the attacker-influenced fields; size and sha256 are numeric/hex.
+func csvSafe(s string) string {
+	switch {
+	case s == "":
+		return s
+	case strings.ContainsRune("=+-@\t\r", rune(s[0])):
+		return "'" + s
+	}
+	return s
 }
 
 func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
@@ -452,7 +465,13 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 		ui.bar.SetLabel(name)
 		ui.bar.SetFilePos(ui.ordinal[fileIndex], len(ui.names))
 	}
-	d := bytesWritten - ui.prev[fileIndex]
+	// Clamp: on a retry bytesWritten can dip below the prior attempt's
+	// high-water mark (prev persists across attempts), and unsigned
+	// subtraction would wrap into a huge negative bar/summary.
+	d := uint64(0)
+	if bytesWritten > ui.prev[fileIndex] {
+		d = bytesWritten - ui.prev[fileIndex]
+	}
 	ui.prev[fileIndex] = bytesWritten
 	ui.total += int64(d)
 	ui.bar.Add(int64(d))

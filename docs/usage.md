@@ -295,6 +295,9 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | Variable | Equivalent flag | Purpose |
 |---|---|---|
 | `FSEND_PASSWORD` | `--password` | Supply the transfer password out-of-band. |
+| `FSEND_PASSWORD_FILE` | `--password` | Read the transfer password from this file (trailing newline trimmed). Used only when `FSEND_PASSWORD` is unset; keeps the secret out of both argv and the environment. |
+| `FSEND_SERVER_PASSWORD` | `--connect <host:port>,<password>` | Shared secret for a self-hosted pairing server. |
+| `FSEND_SERVER_PASSWORD_FILE` | `--connect <host:port>,<password>` | Read the server password from this file instead. Used only when `FSEND_SERVER_PASSWORD` is unset. |
 | `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
 | `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
 | `NO_COLOR` | — | Set to any non-empty value to disable ANSI colors ([no-color.org](https://no-color.org)). |

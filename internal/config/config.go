@@ -24,6 +24,7 @@ import (
 
 	"github.com/adrg/xdg"
 
+	"github.com/polius/fsend/internal/atomicfile"
 	"github.com/polius/fsend/internal/fserrors"
 )
 
@@ -191,5 +192,8 @@ func Save(c *Config) error {
 	if err := os.Rename(tmpName, p); err != nil {
 		return fmt.Errorf("renaming into place: %w", err)
 	}
+	// Flush the directory entry so the rename itself survives a crash, not
+	// just the file contents synced above.
+	atomicfile.SyncDir(dir)
 	return nil
 }

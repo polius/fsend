@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -58,6 +59,19 @@ func New(baseURL, clientVersion string) *Client {
 func (c *Client) WithPassword(pw string) *Client {
 	c.password = pw
 	return c
+}
+
+// ServerHost returns the host (no port) of the signaling base URL, or ""
+// if the URL can't be parsed. Callers use it to decide whether a relay
+// address handed out by the server is peer-to-peer-safe: a relay on the
+// same host as the server is the operator's own, so loopback/private
+// relay addresses are expected and allowed there.
+func (c *Client) ServerHost() string {
+	u, err := url.Parse(c.baseURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // CreateResult is Create's return value: the server's session metadata
@@ -274,7 +288,10 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	// Cap the decode at 1 MiB: every signaling response is a small JSON
+	// document, so a hostile or buggy endpoint returning an unbounded
+	// stream should fail fast rather than balloon the client's memory.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
@@ -309,7 +326,7 @@ func mapNetworkErr(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
-	// A DeadlineExceeded here means the http.Client's 30s Timeout fired
+	// A DeadlineExceeded here means the http.Client's 40s Timeout fired
 	// (no signaling call uses a caller-supplied deadline), which is the
 	// firewall-drops-our-packets flavor of "server unreachable". Map it
 	// to the same sentinel as connection-refused / DNS-failure so the

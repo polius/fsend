@@ -207,12 +207,16 @@ func containsDirectory(paths []string) (bool, error) {
 	return hasDir, nil
 }
 
-// shortRand returns an 8-char crypto-random alphanumeric string.
+// shortRand returns an 8-char crypto-random alphanumeric string used only to
+// make default display names distinct.
 func shortRand() string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "00000000"
+		// crypto/rand failing is effectively impossible, but the old constant
+		// "00000000" would let two runs share a default name; a timestamp at
+		// least keeps them distinct. Display-name only — never security-bearing.
+		return fmt.Sprintf("%08x", uint32(time.Now().UnixNano()))
 	}
 	for i := range b {
 		b[i] = alphabet[int(b[i])%len(alphabet)]
@@ -416,7 +420,13 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 		func(fi uint32, b uint64) {
 			ensureBar()
 			setLabel(fi)
-			d := b - prev[fi]
+			// Clamp: on a retry the sender can report a byte count below the
+			// prior attempt's high-water mark (prev persists across attempts),
+			// and unsigned subtraction would wrap into a huge negative bar.
+			d := uint64(0)
+			if b > prev[fi] {
+				d = b - prev[fi]
+			}
 			prev[fi] = b
 			bar.Add(int64(d))
 			s.moved += int64(d)

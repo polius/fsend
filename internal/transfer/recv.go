@@ -321,10 +321,23 @@ func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(u
 	}
 }
 
+// maxVerifyIDsPerFrame bounds one VERIFY_REQUEST. The request is a gob-encoded
+// []uint32 inside a single control frame, and MaxControlFrameSize is 64 KiB;
+// the gob body grows ~3 B per index (measured: 10k→29.6 KB, 40k→119.6 KB), so
+// a bigger tree of equal-size files would overflow one frame and surface the
+// honest input as E099. 8000 stays near 30 KB with headroom. The sender's
+// senderNegotiate already answers one VERIFY_RESPONSE per request, so batching
+// needs no wire change.
+const maxVerifyIDsPerFrame = 8000
+
 // resolveVerify (--checksum) asks the sender for the BLAKE3 root of every
 // same-size candidate, hashes the local copies, and rewrites each dispVerify
 // to dispIdentical (match) or dispDiffers. Hashing failures fall to dispDiffers
 // so an unreadable/changed file is re-sent rather than wrongly skipped.
+//
+// The candidate list is sent one bounded batch per frame (one request, one
+// response per batch) so an arbitrarily large equal-size tree can't overflow
+// the control frame.
 func resolveVerify(s *Streams, plans []entryPlan) error {
 	var idx []uint32
 	for i := range plans {
@@ -335,26 +348,29 @@ func resolveVerify(s *Streams, plans []entryPlan) error {
 	if len(idx) == 0 {
 		return nil
 	}
-	if err := wire.WriteControl(s.Control, wire.TypeVerifyRequest, idx); err != nil {
-		return fmt.Errorf("recv: verify request: %w", err)
-	}
-	ft, body, err := wire.ReadControlRaw(s.Control)
-	if err != nil {
-		return fmt.Errorf("recv: verify response: %w", err)
-	}
-	if ft == wire.TypeError {
-		return peerError(body)
-	}
-	if ft != wire.TypeVerifyResponse {
-		return fmt.Errorf("%w: expected VERIFY_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
-	}
-	var resp []wire.FileHash
-	if err := wire.Decode(body, &resp); err != nil {
-		return fmt.Errorf("recv: verify decode: %w", err)
-	}
-	hashes := make(map[uint32][32]byte, len(resp))
-	for _, fh := range resp {
-		hashes[fh.Index] = fh.Hash
+	hashes := make(map[uint32][32]byte, len(idx))
+	for start := 0; start < len(idx); start += maxVerifyIDsPerFrame {
+		batch := idx[start:min(start+maxVerifyIDsPerFrame, len(idx))]
+		if err := wire.WriteControl(s.Control, wire.TypeVerifyRequest, batch); err != nil {
+			return fmt.Errorf("recv: verify request: %w", err)
+		}
+		ft, body, err := wire.ReadControlRaw(s.Control)
+		if err != nil {
+			return fmt.Errorf("recv: verify response: %w", err)
+		}
+		if ft == wire.TypeError {
+			return peerError(body)
+		}
+		if ft != wire.TypeVerifyResponse {
+			return fmt.Errorf("%w: expected VERIFY_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
+		}
+		var resp []wire.FileHash
+		if err := wire.Decode(body, &resp); err != nil {
+			return fmt.Errorf("recv: verify decode: %w", err)
+		}
+		for _, fh := range resp {
+			hashes[fh.Index] = fh.Hash
+		}
 	}
 	for i := range plans {
 		p := &plans[i]
@@ -479,6 +495,20 @@ type recvFile struct {
 	overwr   bool
 }
 
+// guardRegular fails closed when a non-regular file (a planted symlink or
+// directory) sits where fsend is about to write or rename into. Applied to the
+// .fsend-partial sidecar and the target on every receive path — files, empty
+// files, and the stream sink — so a pre-planted link can't redirect a write
+// out of the receive tree. Needs local write access to the output dir, so it
+// is defense in depth, not a remote-exploitable hole.
+func guardRegular(s *Streams, path, what string) error {
+	if st, err := os.Lstat(path); err == nil && !st.Mode().IsRegular() {
+		declineTransfer(s, wire.ErrCodeProtocolError, what+" not a regular file")
+		return fmt.Errorf("%w: %s %s not a regular file", fserrors.ErrWriteFailed, what, path)
+	}
+	return nil
+}
+
 func openRecvFile(s *Streams, p *entryPlan, opts RecvOptions) (*recvFile, error) {
 	target := p.target
 	partial := target + partialSuffix
@@ -486,10 +516,8 @@ func openRecvFile(s *Streams, p *entryPlan, opts RecvOptions) (*recvFile, error)
 		declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir parent")
 		return nil, fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
 	}
-	// Lstat-guard: a planted symlink at the sidecar must not redirect writes.
-	if st, err := os.Lstat(partial); err == nil && !st.Mode().IsRegular() {
-		declineTransfer(s, wire.ErrCodeProtocolError, "partial sidecar not a regular file")
-		return nil, fmt.Errorf("%w: partial %s not a regular file", fserrors.ErrWriteFailed, partial)
+	if err := guardRegular(s, partial, "partial sidecar"); err != nil {
+		return nil, err
 	}
 
 	rf := &recvFile{plan: p, partial: partial, verifier: blake3.New(), sha: sha256.New(), overwr: p.needsConsent()}
@@ -627,6 +655,9 @@ func materialize(s *Streams, p *entryPlan, approveOverwrite bool, opts RecvOptio
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir parent")
 			return fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
+		}
+		if err := guardRegular(s, target, "target"); err != nil {
+			return err
 		}
 		f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(p.entry.Mode)&os.ModePerm)
 		if err != nil {
@@ -778,6 +809,9 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 				declineTransfer(s, wire.ErrCodeTargetExists, base)
 				return fmt.Errorf("%w: %s (use --overwrite to replace it)", fserrors.ErrTargetExists, base)
 			}
+		}
+		if err := guardRegular(s, target+partialSuffix, "partial sidecar"); err != nil {
+			return err
 		}
 		var err error
 		f, err = os.OpenFile(target+partialSuffix, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)

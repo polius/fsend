@@ -228,23 +228,90 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("DELETE /v1/session/{id}", s.deleteSession)
 	m.HandleFunc("POST /v1/relay/allocate", s.allocateRelay)
 	m.HandleFunc("GET /v1/relay/status", s.relayStatus)
+	// /health is the legacy combined probe (kept for existing monitors and
+	// the documented Docker HEALTHCHECK); /healthz is pure liveness (always
+	// 200 — the process is up); /readyz is readiness (503 while a wired
+	// relay's read loop is dead, so an orchestrator stops routing here).
 	m.HandleFunc("GET /health", s.health)
+	m.HandleFunc("GET /healthz", s.liveness)
+	m.HandleFunc("GET /readyz", s.readiness)
 	m.HandleFunc("GET /metrics", s.metrics)
 	// {$} matches exactly "/" so unknown paths still 404.
 	m.HandleFunc("GET /{$}", s.root)
-	if s.cfg.ServerPassword == "" {
-		return m
+	var h http.Handler = m
+	if s.cfg.ServerPassword != "" {
+		h = s.withServerAuth(h)
 	}
-	return s.withServerAuth(m)
+	h = s.accessLog(h)
+	return withSecurityHeaders(h)
+}
+
+// withSecurityHeaders sets the low-cost hardening headers on every response.
+// HSTS is only acted on over HTTPS (the TLS terminator sits in front); on
+// plaintext it is ignored by browsers, so one unconditional set is safe.
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Strict-Transport-Security", "max-age=31536000")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// accessLog emits one structured line per request. Failures (4xx/5xx) log at
+// info so an operator gets an audit trail out of the box; successes log at
+// debug so a busy public server isn't drowned at the default level.
+func (s *Server) accessLog(inner http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		inner.ServeHTTP(rec, r)
+		level := slog.LevelDebug
+		if rec.status >= http.StatusBadRequest {
+			level = slog.LevelInfo
+		}
+		s.cfg.Logger.Log(r.Context(), level, "http request",
+			"method", r.Method, "path", r.URL.Path, "status", rec.status,
+			"bytes", rec.written, "duration_ms", time.Since(start).Milliseconds(),
+			"ip", clientIP(r))
+	})
+}
+
+// statusRecorder captures the status and byte count of a response for the
+// access log. The server's handlers use no optional ResponseWriter interfaces
+// (Flusher/Hijacker), so a plain embed is enough.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.written += n
+	return n, err
 }
 
 // withServerAuth wraps inner with a header check that constant-time
-// compares X-Fsend-Auth against the configured password. /health
-// passes through unconditionally.
+// compares X-Fsend-Auth against the configured password. The probe
+// endpoints (/health, /healthz, /readyz) and / pass through so Docker
+// HEALTHCHECK and monitoring don't need to share the secret.
 func (s *Server) withServerAuth(inner http.Handler) http.Handler {
 	want := []byte(s.cfg.ServerPassword)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" || r.URL.Path == "/" {
+		switch r.URL.Path {
+		case "/health", "/healthz", "/readyz", "/":
 			inner.ServeHTTP(w, r)
 			return
 		}
@@ -308,7 +375,7 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body RelayAllocateRequest
-	if err := decodeJSON(r, &body); err != nil {
+	if err := decodeJSON(w, r, &body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -447,11 +514,22 @@ func (s *Server) root(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, "fsend server is up and running\n")
 }
 
-func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+// health is the legacy combined probe: same semantics as readiness, kept so
+// existing monitors and the documented Docker HEALTHCHECK keep working.
+func (s *Server) health(w http.ResponseWriter, r *http.Request) { s.readiness(w, r) }
+
+// liveness reports only that the process is up, so an orchestrator can
+// distinguish "restart me" from "don't route to me yet".
+func (s *Server) liveness(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, HealthResponse{Status: "ok"})
+}
+
+// readiness reports whether the server is ready to take traffic. If a relay is
+// wired and its read loop has died, report the degradation so an orchestrator
+// restarts the container instead of trusting a zombie that still hands out
+// relay tokens for a relay that forwards nothing.
+func (s *Server) readiness(w http.ResponseWriter, _ *http.Request) {
 	status, code := "ok", http.StatusOK
-	// If a relay is wired and its read loop has died, report the degradation
-	// so an orchestrator restarts the container instead of trusting a zombie
-	// that still hands out relay tokens for a relay that forwards nothing.
 	if h, ok := s.relayAllocator.(interface{ Healthy() bool }); ok && !h.Healthy() {
 		status, code = "degraded", http.StatusServiceUnavailable
 	}
@@ -468,7 +546,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// either peer. Validate the shape so the session table only ever
 	// holds well-formed slots.
 	var body CreateSessionRequest
-	if err := decodeJSON(r, &body); err != nil {
+	if err := decodeJSON(w, r, &body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -503,13 +581,26 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sid := ulid.Make().String()
-	senderTok := newRoleToken()
+	senderTok, err := newRoleToken()
+	if err != nil {
+		s.mu.Unlock()
+		s.cfg.Logger.Error("session create: role token", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	senderICE, err := newIceCreds()
+	if err != nil {
+		s.mu.Unlock()
+		s.cfg.Logger.Error("session create: ICE credentials", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	sess := &session{
 		ID:            sid,
 		Slot:          slot,
 		SenderAddr:    clientIP,
 		SenderRateKey: rateKey,
-		SenderICE:     newIceCreds(),
+		SenderICE:     senderICE,
 		SenderToken:   senderTok,
 		State:         "waiting",
 		CreatedAt:     time.Now(),
@@ -569,10 +660,24 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusTooManyRequests, "too many concurrent sessions for this IP")
 		return
 	}
+	recvICE, err := newIceCreds()
+	if err != nil {
+		s.mu.Unlock()
+		s.cfg.Logger.Error("session join: ICE credentials", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	recvTok, err := newRoleToken()
+	if err != nil {
+		s.mu.Unlock()
+		s.cfg.Logger.Error("session join: role token", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	sess.ReceiverAddr = clientIP
 	sess.ReceiverRateKey = rateKey
-	sess.ReceiverICE = newIceCreds()
-	sess.ReceiverToken = newRoleToken()
+	sess.ReceiverICE = recvICE
+	sess.ReceiverToken = recvTok
 	sess.State = "paired"
 	sess.PairedAt = time.Now()
 	s.ipCounts[rateKey]++
@@ -618,6 +723,7 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	// Snapshot what we need under the lock so concurrent joinSession
 	// writes don't race the reads below.
 	state := sess.State
+	sessID := sess.ID
 	receiverAddr := sess.ReceiverAddr
 	receiverICE := sess.ReceiverICE
 	waiters := sess.waiters
@@ -636,14 +742,19 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	case <-ctx.Done():
 		w.WriteHeader(http.StatusNoContent)
 	case <-waiters:
-		// Re-fetch in case janitor evicted between wakeup and now.
+		// Re-fetch in case janitor evicted between wakeup and now. Compare the
+		// session ID too: the slot may have been reclaimed and reused by a new
+		// session while we were parked, and reporting the new session's peer
+		// address to this sender would pair it with the wrong session.
 		s.mu.Lock()
 		final, ok := s.bySlot[slot]
 		var finalAddr string
 		var finalICE IceCreds
-		if ok {
+		if ok && final.ID == sessID {
 			finalAddr = final.ReceiverAddr
 			finalICE = final.ReceiverICE
+		} else {
+			ok = false
 		}
 		s.mu.Unlock()
 		if !ok {
@@ -660,7 +771,7 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) pushCandidates(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body CandidatesPushRequest
-	if err := decodeJSON(r, &body); err != nil {
+	if err := decodeJSON(w, r, &body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -700,11 +811,10 @@ func (s *Server) pullCandidates(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	since := 0
 	if v := r.URL.Query().Get("since"); v != "" {
-		// Skip silently on parse error — clients that send garbage just
-		// get the full candidate list starting at 0, which is harmless.
-		_, _ = fmt.Sscanf(v, "%d", &since)
-		if since < 0 {
-			since = 0 // negative would panic the slice below
+		// A non-numeric or negative value means "start from 0" — a negative
+		// index would panic the slice below.
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			since = n
 		}
 	}
 	tok := bearerToken(r)
@@ -800,10 +910,13 @@ var iceCredEnc = base32.NewEncoding("ABCDEFGHJKMNPQRSTVWXYZ0123456789").
 // identify which side (sender/receiver) is making a candidate call.
 // Replaces the older source-IP heuristic that broke whenever both
 // peers shared a public IP (same NAT, corporate network, VPN exit).
-func newRoleToken() string {
+// Fails closed on a CSPRNG error rather than minting an all-zero token.
+func newRoleToken() (string, error) {
 	var b [16]byte
-	_, _ = rand.Read(b[:])
-	return iceCredEnc.EncodeToString(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("server: role token entropy: %w", err)
+	}
+	return iceCredEnc.EncodeToString(b[:]), nil
 }
 
 // bearerToken extracts the bearer token from the Authorization header.
@@ -838,16 +951,21 @@ func (s *session) sideForToken(tok string) (string, bool) {
 }
 
 // newIceCreds returns a fresh ICE ufrag+pwd pair. ICE expects ufrag at
-// least 4 chars and pwd at least 22 chars (RFC 5245 §15.4).
-func newIceCreds() IceCreds {
+// least 4 chars and pwd at least 22 chars (RFC 5245 §15.4). Fails closed
+// on a CSPRNG error rather than issuing predictable credentials.
+func newIceCreds() (IceCreds, error) {
 	var u [4]byte
 	var p [16]byte
-	_, _ = rand.Read(u[:])
-	_, _ = rand.Read(p[:])
+	if _, err := rand.Read(u[:]); err != nil {
+		return IceCreds{}, fmt.Errorf("server: ICE ufrag entropy: %w", err)
+	}
+	if _, err := rand.Read(p[:]); err != nil {
+		return IceCreds{}, fmt.Errorf("server: ICE password entropy: %w", err)
+	}
 	return IceCreds{
 		Ufrag: iceCredEnc.EncodeToString(u[:]),
 		Pwd:   iceCredEnc.EncodeToString(p[:]),
-	}
+	}, nil
 }
 
 // clientIP returns the connection's source address. Proxy headers are ignored:
@@ -895,9 +1013,11 @@ func writeJSONError(w http.ResponseWriter, code int, msg string) {
 }
 
 // decodeJSON reads at most maxRequestBodyBytes from r.Body and decodes
-// it into v. Callers handle the error as a 400 — we don't try to
-// distinguish "malformed JSON" from "body too large" because either way
-// the right response is the same.
-func decodeJSON(r *http.Request, v any) error {
-	return json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxRequestBodyBytes)).Decode(v)
+// it into v. The ResponseWriter is handed to MaxBytesReader so an oversize
+// body trips the reader's Close (and the deferred 400) instead of silently
+// streaming a truncated document. Callers handle the error as a 400 — we
+// don't try to distinguish "malformed JSON" from "body too large" because
+// either way the right response is the same.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	return json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)).Decode(v)
 }

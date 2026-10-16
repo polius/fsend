@@ -33,10 +33,12 @@ type Conn struct {
 	closed bool
 }
 
-// syntheticPeer is the address we surface to quic-go as the remote peer.
-// We always WriteTo the relay regardless of destination, so the address
-// is purely a routing tag — a stable synthetic UDPAddr suffices.
-var syntheticPeer = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1}
+// SyntheticPeer is the address we surface to quic-go as the remote peer.
+// We always route to the real destination through a fixed underlying path
+// (the relay, or the ICE conn), so the address is purely a routing tag — a
+// stable synthetic UDPAddr suffices. Shared by internal/iceconn and the CLI
+// so both hand quic-go the same tag.
+var SyntheticPeer = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1}
 
 // NewClient wraps an underlying UDP socket for relay-mode operation.
 //
@@ -112,7 +114,10 @@ func (c *Conn) Close() error {
 // Datagrams whose token doesn't match ours are dropped silently (defense
 // in depth: should not happen given the relay's demux, but cheap to check).
 func (c *Conn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	buf := make([]byte, len(p)+HeaderSize)
+	// One byte more than a payload of len(p) needs: if the datagram fills
+	// this buffer, its payload is oversize for the caller's buffer, so the
+	// loop drops it instead of handing back a silently truncated packet.
+	buf := make([]byte, len(p)+HeaderSize+1)
 	for {
 		nn, _, err := c.underlying.ReadFrom(buf)
 		if err != nil {
@@ -125,11 +130,14 @@ func (c *Conn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 		if token != c.token {
 			continue
 		}
+		if len(payload) > len(p) {
+			continue // oversize: drop rather than truncate
+		}
 		// The relay only forwards once both peers are registered, so any
 		// inbound datagram means our address is known — stop resending.
 		c.gotInbound.Store(true)
 		n = copy(p, payload)
-		return n, syntheticPeer, nil
+		return n, SyntheticPeer, nil
 	}
 }
 

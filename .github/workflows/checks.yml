@@ -62,7 +62,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - run: govulncheck ./...
 
   # Bounded fuzzing of the parsers most exposed to a malicious peer (the wire
@@ -84,6 +84,8 @@ jobs:
       - run: go test -run '^$' -fuzz='^FuzzReadControlRaw$' -fuzztime=2000000x ./internal/wire/
       - run: go test -run '^$' -fuzz='^FuzzReadChunk$' -fuzztime=200000x ./internal/wire/
       - run: go test -run '^$' -fuzz='^FuzzSanitizeRelativePath$' -fuzztime=1000000x ./internal/transfer/
+      - run: go test -run '^$' -fuzz='^FuzzHandleDatagram$' -fuzztime=1000000x ./internal/relay/
+      - run: go test -run '^$' -fuzz='^FuzzDecodeJSON$' -fuzztime=500000x ./internal/server/
 
   deadcode:
     runs-on: ubuntu-latest
@@ -93,7 +95,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go install golang.org/x/tools/cmd/deadcode@latest
+      - run: go install golang.org/x/tools/cmd/deadcode@v0.52.0
       - run: |
           out=$(deadcode -test ./...)
           if [ -n "$out" ]; then

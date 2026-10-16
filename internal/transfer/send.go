@@ -168,6 +168,12 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 	return nil
 }
 
+// maxVerifyRounds caps how many VERIFY_REQUESTs the sender will answer in one
+// negotiation. The honest maximum is ceil(maxListingEntries/maxVerifyIDsPerFrame)
+// (~25), so this only stops a hostile receiver replaying the request to make
+// the sender re-hash forever.
+const maxVerifyRounds = 1024
+
 // senderNegotiate reads the receiver's classification, answering any
 // TypeVerifyRequest (--checksum) by hashing just the requested files before
 // the decision vector arrives.
@@ -178,6 +184,7 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 	}
 	out := make(map[uint32]wire.Decision)
 	hashed := make(map[uint32][32]byte) // hash each file at most once per session
+	verifyRounds := 0
 	for {
 		ft, body, err := wire.ReadControlRaw(s.Control)
 		if err != nil {
@@ -185,6 +192,10 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 		}
 		switch ft {
 		case wire.TypeVerifyRequest:
+			verifyRounds++
+			if verifyRounds > maxVerifyRounds {
+				return nil, fmt.Errorf("%w: too many verify requests", fserrors.ErrProtocolError)
+			}
 			var idx []uint32
 			if err := wire.Decode(body, &idx); err != nil {
 				return nil, fmt.Errorf("send: verify request: %w", err)
