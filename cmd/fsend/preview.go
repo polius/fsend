@@ -108,16 +108,17 @@ func noteText(note string) string {
 
 // stripCommonDir removes the longest leading directory prefix shared by every
 // row (e.g. the wrapping "proj/" already shown in the headline), leaving the
-// part that distinguishes each row. A no-op when the rows don't share a root
-// (multi-path or contents sends). Only whole path segments are stripped, and
-// never a basename.
-func stripCommonDir(items []previewItem) {
+// part that distinguishes each row, and returns that prefix ("" when nothing
+// was stripped). A no-op when the rows don't share a root (multi-path or
+// contents sends). Only whole path segments are stripped, and never a
+// basename.
+func stripCommonDir(items []previewItem) string {
 	if len(items) < 2 {
-		return
+		return ""
 	}
 	segs := strings.Split(items[0].name, "/")
 	if len(segs) < 2 {
-		return // first row has no directory component
+		return "" // first row has no directory component
 	}
 	prefix := segs[:len(segs)-1] // candidate: item0's directories
 	for _, it := range items[1:] {
@@ -128,13 +129,15 @@ func stripCommonDir(items []previewItem) {
 		}
 		prefix = prefix[:n]
 		if len(prefix) == 0 {
-			return
+			return ""
 		}
 	}
-	cut := len(strings.Join(prefix, "/")) + 1 // include the trailing slash
+	stripped := strings.Join(prefix, "/") + "/"
+	cut := len(stripped) // include the trailing slash
 	for i := range items {
 		if len(items[i].name) > cut {
 			items[i].name = items[i].name[cut:]
 		}
 	}
+	return stripped
 }

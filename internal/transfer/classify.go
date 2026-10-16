@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
@@ -81,6 +82,7 @@ type Conflict struct {
 	RelativePath string
 	Kind         string // "differs" | "file vs folder" | "folder vs file" | "symlink"
 	LocalSize    int64
+	LocalModTime time.Time // local copy's mtime; the tiebreaker when sizes read equal
 	IncomingSize uint64
 }
 
@@ -325,6 +327,7 @@ func conflicts(plans []entryPlan) []Conflict {
 		c := Conflict{RelativePath: p.entry.RelativePath, IncomingSize: p.entry.Size, Kind: "differs"}
 		if st, err := os.Lstat(p.target); err == nil {
 			c.LocalSize = st.Size()
+			c.LocalModTime = st.ModTime()
 			if p.disp == dispConflict {
 				switch {
 				case st.IsDir():
