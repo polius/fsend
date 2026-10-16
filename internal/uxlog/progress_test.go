@@ -220,6 +220,19 @@ func TestProgress_PlainModePercentClamped(t *testing.T) {
 	}
 }
 
+// The plain fallback carries the same "· file i/N" counter the TTY chip
+// does, so a folder of many small files reads as finite in CI logs too.
+func TestProgress_PlainModeFileCounter(t *testing.T) {
+	var buf bytes.Buffer
+	p := &plainProgress{w: &buf, total: 1000, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second)}
+	p.setLabel("data.bin")
+	p.setFilePos(1, 3)
+	p.add(500)
+	if out := buf.String(); !strings.Contains(out, "data.bin  ·  file 1/3") {
+		t.Errorf("plain line missing label + counter: %q", out)
+	}
+}
+
 // A negative running total (a caller under-accounting) must clamp to 0%, not
 // print a "-N%" line.
 func TestProgress_PlainModePercentClampedLow(t *testing.T) {

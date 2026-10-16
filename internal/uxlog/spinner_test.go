@@ -24,6 +24,29 @@ func TestStartSpinner_NonTTY_PrintsStaticLineAndStopIsNilSafe(t *testing.T) {
 	s.Stop() // double-stop must not panic or block
 }
 
+// The optional hint rides after the message (and, on a TTY, after the
+// elapsed chip) so a long wait advertises its escape hatch; the non-TTY
+// static line records it too.
+func TestSpinner_HintFollowsMessage(t *testing.T) {
+	var buf bytes.Buffer
+	s := &Spinner{msg: "Waiting for receiver", hint: HintCancel, w: &buf}
+	s.draw("⠋")
+	out := buf.String()
+	if !strings.Contains(out, "Waiting for receiver") || !strings.Contains(out, HintCancel) {
+		t.Fatalf("draw missing message or hint: %q", out)
+	}
+	if strings.Index(out, "Waiting for receiver") > strings.Index(out, HintCancel) {
+		t.Errorf("hint must follow the message: %q", out)
+	}
+
+	buf.Reset()
+	nonTTY := &Spinner{msg: "first", hint: HintCancel, w: &buf}
+	nonTTY.SetMessage("second")
+	if got := buf.String(); !strings.Contains(got, "second  ·  "+HintCancel) {
+		t.Errorf("non-TTY line missing hint: %q", got)
+	}
+}
+
 func TestSpinner_NilReceiverStopIsNoOp(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
