@@ -3,6 +3,8 @@ package uxlog
 import (
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -33,7 +35,7 @@ func Marker(kind glyphKind) string {
 	if !renderTTY(os.Stderr) {
 		return ascii
 	}
-	if colorEnabled() {
+	if colorEnabled() && token.dark != "" {
 		return fg(token) + utf8 + colorReset
 	}
 	return utf8
@@ -87,10 +89,13 @@ func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken) {
 		// (success) and yellow (warning).
 		return "ℹ", "[i]", tokenInfo
 	case gStep:
-		// Cyan like ℹ — neutral narration. The › is the same glyph the
-		// install scripts print for every step, so --update's lines and
-		// the installer output that follows them match.
-		return "›", ">", tokenInfo
+		// Default foreground: narration, not information. The › is the
+		// same glyph the install scripts print for every step, so
+		// --update's lines and the installer output that follows them
+		// match. Reserving cyan for the ℹ glyph, --help syntax and links
+		// keeps that hue for the things worth noticing — a narration
+		// marker competing in cyan only added noise.
+		return "›", ">", colourToken{}
 	case gRetry:
 		// Yellow signals "in-flight recovery" — same family as warn,
 		// so the retry line catches the eye without crying error.
@@ -108,11 +113,11 @@ func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken) {
 // Colour handling
 // ---------------------------------------------------------------------
 
-// colourToken is one semantic colour role, holding its truecolour hex
-// and the 256-colour approximation used when the terminal doesn't
-// advertise truecolour. The roles mirror the theme keys opencode's
-// theme system defines (primary / accent / success / warning / error /
-// info), so the CLI vocabulary and the TUI vocabulary stay parallel:
+// colourToken is one semantic colour role, holding a truecolour hex for
+// each background the terminal might have. The roles mirror the theme
+// keys opencode's theme system defines (primary / accent / success /
+// warning / error / info), so the CLI vocabulary and the TUI vocabulary
+// stay parallel:
 //
 //	accent   — act: the share code, code box, spinner, direction arrows
 //	primary  — decide: question lines, overwrite prompts, password prompts
@@ -120,23 +125,29 @@ func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken) {
 //	           eye learns to read as "a file on disk")
 //	warning  — caution (⚠, "differs", stalled bar)
 //	error    — failure (✗)
-//	info     — neutral status (ℹ, --help flags)
+//	info     — neutral status (ℹ, --help flags, links)
 //
-// Rendering follows opencode's documented model: truecolour when the
-// terminal reports it (COLORTERM=truecolor/24bit), nearest 256-colour
-// approximation otherwise.
+// dark is the pastel family the roles were tuned for (Tokyo Night): it
+// glows on a near-black terminal but drops to ~2:1 on a light one. light
+// is the same hue family darkened to clear WCAG AA on white, so a light
+// terminal gets the same vocabulary at a readable contrast. The zero
+// token (both fields empty) means "no colour" — the default foreground.
+//
+// Rendering uses truecolour when the terminal reports it
+// (COLORTERM=truecolor/24bit), else the nearest 256-colour approximation
+// of whichever hex applies.
 type colourToken struct {
-	hex  string // "#rrggbb", used when truecolour is available
-	c256 string // nearest 256-colour index, the fallback
+	dark  string // "#rrggbb" for a dark terminal background
+	light string // "#rrggbb" for a light terminal background
 }
 
 var (
-	tokenAccent  = colourToken{"#ff9e64", "209"}
-	tokenPrimary = colourToken{"#bb9af7", "140"}
-	tokenSuccess = colourToken{"#9ece6a", "114"}
-	tokenWarning = colourToken{"#e0af68", "179"}
-	tokenError   = colourToken{"#f7768e", "204"}
-	tokenInfo    = colourToken{"#7dcfff", "117"}
+	tokenAccent  = colourToken{"#ff9e64", "#b15c00"}
+	tokenPrimary = colourToken{"#bb9af7", "#7847bd"}
+	tokenSuccess = colourToken{"#9ece6a", "#587539"}
+	tokenWarning = colourToken{"#e0af68", "#8c6c3e"}
+	tokenError   = colourToken{"#f7768e", "#b3261e"}
+	tokenInfo    = colourToken{"#7dcfff", "#007197"}
 )
 
 const (
@@ -165,13 +176,96 @@ func truecolorEnabled() bool {
 
 // sgr returns the SGR foreground parameters for the token at the
 // terminal's best fidelity: "38;2;r;g;b" under truecolour, else
-// "38;5;<idx>".
+// "38;5;<idx>" using the nearest 256-colour cell.
 func sgr(t colourToken) string {
+	hex := t.hex()
 	if truecolorEnabled() {
-		r, g, b := parseHex(t.hex)
+		r, g, b := parseHex(hex)
 		return "38;2;" + r + ";" + g + ";" + b
 	}
-	return "38;5;" + t.c256
+	return "38;5;" + nearest256(hex)
+}
+
+// hex is the token's truecolour for the terminal's background.
+func (t colourToken) hex() string {
+	if darkBackground() {
+		return t.dark
+	}
+	return t.light
+}
+
+// darkBackground reports whether the terminal's background is dark, so
+// the palette picks the sibling tuned to contrast against it. Dark is the
+// default: the roles were designed around the dark form, and an
+// unset/unknown terminal is overwhelmingly a dark theme.
+//
+//  1. FSEND_THEME=light|dark — explicit, documented override.
+//  2. COLORFGBG — the de-facto var iTerm2/Konsole/rxvt export as
+//     "<fg>;<bg>"; the last field is the background's ANSI colour index.
+//     Index 7 (white) and 9..15 (bright) are the light end.
+//  3. dark.
+var (
+	bgOnce sync.Once
+	bgDark bool
+)
+
+func darkBackground() bool {
+	bgOnce.Do(func() {
+		switch {
+		case strings.EqualFold(os.Getenv("FSEND_THEME"), "light"):
+			bgDark = false
+		case strings.EqualFold(os.Getenv("FSEND_THEME"), "dark"):
+			bgDark = true
+		default:
+			bgDark = true // unknown/unset → the designed-for default
+			if c := os.Getenv("COLORFGBG"); c != "" {
+				if i := strings.LastIndexByte(c, ';'); i >= 0 {
+					if bg, err := strconv.Atoi(c[i+1:]); err == nil {
+						bgDark = !(bg == 7 || bg >= 9)
+					}
+				}
+			}
+		}
+	})
+	return bgDark
+}
+
+// nearest256 returns the xterm-256 palette index closest to hex (plain
+// RGB distance — the tokens sit far apart, so a perceptual metric agrees).
+// Deriving it beats hand-picking: a preset index silently drifts from the
+// palette it approximates (the old lime green pointed at a mint cell).
+func nearest256(hex string) string {
+	hr, hg, hb := parseHexInts(hex)
+	best, bestD := 0, 1<<30
+	for i := 0; i < 256; i++ {
+		r, g, b := cube256(i)
+		d := (r-hr)*(r-hr) + (g-hg)*(g-hg) + (b-hb)*(b-hb)
+		if d < bestD {
+			best, bestD = i, d
+		}
+	}
+	return itoa(best)
+}
+
+// cube256 maps an xterm-256 index to its RGB: the 16 system colours, the
+// 6×6×6 colour cube, then the 24-step greyscale ramp.
+func cube256(i int) (r, g, b int) {
+	if i < 16 {
+		sys := [16][3]int{
+			{0, 0, 0}, {128, 0, 0}, {0, 128, 0}, {128, 128, 0},
+			{0, 0, 128}, {128, 0, 128}, {0, 128, 128}, {192, 192, 192},
+			{128, 128, 128}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0},
+			{0, 0, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255},
+		}
+		return sys[i][0], sys[i][1], sys[i][2]
+	}
+	if i < 232 {
+		i -= 16
+		lv := [6]int{0, 95, 135, 175, 215, 255}
+		return lv[i/36], lv[(i/6)%6], lv[i%6]
+	}
+	v := 8 + (i-232)*10
+	return v, v, v
 }
 
 // fg renders s in the token's colour; caller wraps with colorReset (or
@@ -182,10 +276,16 @@ func fg(t colourToken) string { return "\x1b[" + sgr(t) + "m" }
 // and other hero moments that need the extra weight.
 func fgBold(t colourToken) string { return "\x1b[" + "1;" + sgr(t) + "m" }
 
-// parseHex splits "#rrggbb" into decimal channel strings. Tokens are
-// compile-time data, so an error path is unreachable; on malformed input
-// it degrades to mid-grey rather than emitting a broken escape.
+// parseHex splits "#rrggbb" into decimal channel strings.
 func parseHex(hex string) (r, g, b string) {
+	ri, gi, bi := parseHexInts(hex)
+	return itoa(ri), itoa(gi), itoa(bi)
+}
+
+// parseHexInts is parseHex's numeric core. Tokens are compile-time data,
+// so an error path is unreachable; on malformed input it degrades to
+// mid-grey rather than emitting a broken escape.
+func parseHexInts(hex string) (r, g, b int) {
 	if len(hex) == 7 && hex[0] == '#' {
 		var v [3]int
 		ok := true
@@ -199,10 +299,10 @@ func parseHex(hex string) (r, g, b string) {
 			v[i] = hi*16 + lo
 		}
 		if ok {
-			return itoa(v[0]), itoa(v[1]), itoa(v[2])
+			return v[0], v[1], v[2]
 		}
 	}
-	return "128", "128", "128"
+	return 128, 128, 128
 }
 
 func hexVal(c byte) (int, bool) {
@@ -313,6 +413,15 @@ func resetColorForTesting() {
 	defer colorMu.Unlock()
 	colorChecked = false
 	colorAllow = false
+}
+
+// resetThemeForTesting clears the cached background/truecolour detection
+// so tests can flip FSEND_THEME / COLORFGBG / COLORTERM between cases.
+func resetThemeForTesting() {
+	bgOnce = sync.Once{}
+	bgDark = false
+	tcOnce = sync.Once{}
+	tcOK = false
 }
 
 // Compile-time assertion that os.Stderr satisfies the writer we expect.
