@@ -1,0 +1,325 @@
+/* fsend explainer — stage styling.
+   Fixed 1920x1080; every animation is driven from JS by absolute time, so the
+   page is fully deterministic frame-by-frame (no CSS animations / transitions). */
+
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "JBMono";
+  src: url("fonts/JetBrainsMono.ttf") format("truetype");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  --bg: #0c0a09;
+  --panel: #17120f;
+  --ink: #f8f5f3;
+  --dim: #a99f97;
+  --faint: #6d645d;
+  --accent: #e0805a;
+  --accent-l: #f4b092;
+  --green: #7ccb8b;
+  --blue: #8fb4de;
+  --red: #dd6d63;
+  --card: rgba(255, 255, 255, 0.045);
+  --card-2: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.10);
+  --shadow: 0 22px 52px -34px rgba(0, 0, 0, 0.6);
+  --font: "Inter", system-ui, sans-serif;
+  --mono: "JBMono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 1920px; height: 1080px; overflow: hidden;
+  background: #000;
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+#stage {
+  position: relative; width: 1920px; height: 1080px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* ---- ambient background (persistent across scenes) ---------------------- */
+#bg { position: absolute; inset: 0; overflow: hidden; }
+
+#bg .blob {
+  position: absolute; width: 1200px; height: 1200px;
+  border-radius: 50%;
+  will-change: transform;
+}
+/* radial gradients are already soft — no `filter: blur()` (which the software
+   rasterizer would re-run for every captured frame) */
+#bg .blob.a {
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 62%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 26%, transparent) 34%, transparent 70%);
+  opacity: 0.5;
+}
+#bg .blob.b {
+  background: radial-gradient(circle, rgba(42, 74, 107, 0.9) 0%, rgba(42, 74, 107, 0.34) 36%, transparent 70%);
+  opacity: 0.45;
+}
+#bg .blob.c {
+  background: radial-gradient(circle, rgba(58, 107, 83, 0.85) 0%, rgba(58, 107, 83, 0.3) 36%, transparent 70%);
+  opacity: 0.34;
+}
+
+#bg .glow-floor {
+  position: absolute; inset: 0;
+  background: radial-gradient(120% 70% at 50% 120%, color-mix(in srgb, var(--accent) 22%, transparent) 0%, transparent 60%);
+}
+#bg .vignette {
+  position: absolute; inset: 0;
+  background: radial-gradient(115% 110% at 50% 44%, transparent 42%, rgba(0,0,0,0.62) 100%);
+}
+
+/* ---- scene layers ------------------------------------------------------- */
+.layer {
+  position: absolute; inset: 0;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity, filter;
+}
+
+/* reveal wrapper: JS sets opacity + translate + blur on these */
+.rv { will-change: transform, opacity, filter; }
+
+/* ---- typography --------------------------------------------------------- */
+.h1 {
+  font-weight: 650; font-size: 104px; line-height: 1.02;
+  letter-spacing: -0.035em; color: var(--ink);
+}
+.h2 {
+  font-weight: 640; font-size: 62px; line-height: 1.05;
+  letter-spacing: -0.028em; color: var(--ink);
+}
+.lead {
+  font-weight: 450; font-size: 38px; line-height: 1.35;
+  letter-spacing: -0.012em; color: var(--dim);
+}
+.mono { font-family: var(--mono); }
+
+/* ---- generic card ------------------------------------------------------- */
+.card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.035));
+  border: 1px solid var(--border);
+  border-radius: 26px;
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+.chip {
+  display: inline-flex; align-items: center; gap: 14px;
+  padding: 14px 34px; border-radius: 999px;
+  font-weight: 700; font-size: 30px; letter-spacing: 0.18em;
+  color: var(--accent-l);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--accent) 46%, transparent);
+  box-shadow: 0 0 44px -8px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.chip .dot {
+  width: 12px; height: 12px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 16px 2px var(--accent);
+}
+
+.pill {
+  display: inline-flex; align-items: center; gap: 12px;
+  padding: 13px 30px; border-radius: 999px;
+  font-weight: 520; font-size: 29px; letter-spacing: -0.006em;
+  color: var(--ink); background: var(--card); border: 1px solid var(--border);
+}
+
+/* ---- terminal card ------------------------------------------------------ */
+.term {
+  border-radius: 20px; overflow: hidden;
+  background: linear-gradient(180deg, #14100e 0%, #0e0b0a 100%);
+  border: 1px solid rgba(255,255,255,0.09);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.term .bar {
+  height: 54px; display: flex; align-items: center; gap: 11px;
+  padding: 0 22px; background: rgba(255,255,255,0.045);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+.term .bar i { width: 15px; height: 15px; border-radius: 50%; display: block; }
+.term .bar i.r { background: #dd6d63; } .term .bar i.y { background: #e2b066; } .term .bar i.g { background: #7ccb8b; }
+.term .bar .name {
+  margin-left: 12px; font-family: var(--mono); font-size: 22px; color: var(--faint);
+  letter-spacing: 0.02em;
+}
+.term .body { padding: 30px 34px 34px; }
+.term .ln {
+  font-family: var(--mono); font-size: 30px; line-height: 1.62; white-space: pre;
+  color: var(--ink);
+}
+.term .ln.dim { color: var(--dim); }
+.term .ln.acc { color: var(--accent-l); }
+.term .ln.ok  { color: var(--green); }
+
+.bar-track {
+  height: 14px; border-radius: 8px; background: rgba(255,255,255,0.08); overflow: hidden;
+}
+.bar-fill {
+  height: 100%; border-radius: 8px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--green) 70%, #fff), var(--green));
+  box-shadow: 0 0 22px -2px var(--green);
+}
+
+/* ---- diagram ------------------------------------------------------------ */
+.diagram { position: absolute; inset: 0; }
+.diagram svg { position: absolute; inset: 0; width: 1920px; height: 1080px; }
+.hub-name { font-family: var(--mono); font-size: 27px; fill: var(--ink); }
+.hub-tag  { font-size: 23px; fill: var(--dim); letter-spacing: 0.01em; }
+.net-label{ font-size: 25px; fill: var(--dim); letter-spacing: 0.04em; }
+.dev-name { font-size: 27px; fill: var(--ink); font-weight: 550; }
+
+/* ---- poster affordance -------------------------------------------------- */
+/* Not part of the video: `capture.py --poster` layers this over a still so the
+   README thumbnail reads as "play me". Sits in the empty band under the hero so
+   it never fights the wordmark. */
+#poster-play {
+  position: absolute; left: 50%; bottom: 116px; width: 148px; height: 148px;
+  margin-left: -74px; border-radius: 50%; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent);
+  box-shadow: 0 22px 64px -16px rgba(0,0,0,0.8),
+              inset 0 0 0 1.5px rgba(255,255,255,0.20);
+}
+#poster-play::after {
+  content: ""; margin-left: 10px; border-style: solid;
+  border-width: 25px 0 25px 40px;
+  border-color: transparent transparent transparent #fff;
+}
+
+/* ---- the fsend wordmark ------------------------------------------------- */
+.wordmark { display: inline-flex; align-items: baseline; font-family: var(--mono); font-weight: 800; }
+.wordmark .chev { color: var(--accent); margin-right: 0.34em; }
+.wordmark .name { color: var(--ink); letter-spacing: -0.02em; }
+.wordmark .cur {
+  display: inline-block; background: var(--accent); border-radius: 2px;
+  margin-left: 0.07em; transform: translateY(0.03em);
+}
+
+.install-row {
+  display: flex; align-items: center; gap: 30px;
+  padding: 0 34px; height: 76px; border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
+  border: 1px solid var(--border);
+}
+.install-row .os { width: 348px; font-size: 27px; font-weight: 550; color: var(--dim); }
+.install-row .sep { width: 1px; height: 40px; background: rgba(255,255,255,0.12); }
+.install-row .cmd { font-family: var(--mono); font-size: 28px; color: var(--accent-l); }
+
+/* ---- accent underline --------------------------------------------------- */
+.underline {
+  width: 200px; height: 5px; margin: 0 auto; border-radius: 3px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  transform-origin: 50% 50%;
+}
+
+/* ---- role badge (Sender / Receiver) ------------------------------------- */
+.badge {
+  font-size: 24px; font-weight: 650; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--accent-l);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  padding: 10px 24px; border-radius: 999px;
+  box-shadow: 0 0 40px -12px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.badge.ok {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 13%, transparent);
+  border-color: color-mix(in srgb, var(--green) 42%, transparent);
+  box-shadow: 0 0 40px -12px color-mix(in srgb, var(--green) 55%, transparent);
+}
+
+/* ---- device + hub cards (the transfer diagram) -------------------------- */
+.dev {
+  width: 320px; height: 200px; color: #cfc7c1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+}
+.dev .name { font-size: 27px; font-weight: 550; color: var(--ink); }
+
+.hub {
+  width: 300px; padding: 24px 18px 26px;
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  color: #d6cfc9; --hub: 1;
+}
+.hub::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  box-shadow: 0 0 80px -4px var(--accent);
+  opacity: calc(0.10 + 0.65 * var(--hub)); pointer-events: none;
+}
+.hub .glyph { opacity: calc(0.4 + 0.6 * var(--hub)); }
+.hub .name {
+  font-family: var(--mono); font-size: 25px; color: var(--ink);
+  opacity: calc(0.52 + 0.48 * var(--hub));
+}
+.hub .tag {
+  margin-top: 2px; font-size: 21px; letter-spacing: 0.02em;
+  color: var(--accent-l);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  padding: 5px 15px; border-radius: 999px;
+}
+
+/* ---- modes cards -------------------------------------------------------- */
+.modecard {
+  width: 1180px; height: 108px; padding: 0 40px;
+  display: flex; align-items: center; gap: 30px; position: relative;
+  --mc: var(--accent); --on: 0;
+}
+.modecard::before {
+  content: ""; position: absolute; inset: -1px; border-radius: 27px;
+  border: 1.5px solid var(--mc); opacity: calc(0.12 + 0.78 * var(--on));
+  pointer-events: none;
+}
+.modecard::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  box-shadow: 0 0 90px -22px var(--mc);
+  opacity: calc(0.08 + 0.92 * var(--on)); pointer-events: none;
+}
+.modecard .mlabel {
+  width: 250px; display: flex; align-items: center; gap: 14px;
+  font-family: var(--mono); font-weight: 700; font-size: 34px; letter-spacing: 0.06em;
+  color: var(--mc); opacity: calc(0.42 + 0.58 * var(--on));
+}
+.modecard .mdot {
+  width: 11px; height: 11px; border-radius: 50%; background: var(--mc);
+  box-shadow: 0 0 16px 1px var(--mc);
+}
+.modecard .mdiv { width: 1px; height: 56px; background: rgba(255,255,255,0.14); }
+.modecard .mtext { flex: 1; }
+.modecard .mdesc { font-size: 31px; font-weight: 520; color: var(--ink); }
+.modecard .mnote { font-size: 25px; color: var(--dim); margin-top: 6px; }
+.modecard .mcheck {
+  font-size: 34px; color: var(--mc); font-weight: 700;
+  opacity: var(--on); transform: scale(calc(0.6 + 0.4 * var(--on)));
+}
+
+/* ---- e2e lock row ------------------------------------------------------- */
+.lockrow {
+  display: inline-flex; align-items: center; gap: 13px;
+  font-size: 27px; color: var(--green);
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green) 32%, transparent);
+  padding: 12px 28px; border-radius: 999px;
+}
+.lockrow .lock { display: inline-flex; }
+
+/* ---- info row (docker / docs) ------------------------------------------ */
+.inforow { display: flex; align-items: center; gap: 22px; padding: 26px 32px; }
+.inforow .ic { display: flex; color: var(--accent-l); }
+.inforow .ilabel { font-size: 22px; color: var(--dim); margin-bottom: 7px; }
+.inforow .ivalue { font-size: 27px; color: var(--ink); }
+

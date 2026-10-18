@@ -124,7 +124,7 @@ fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
 <p align="center">
   <a href="https://getfsend.alzina.dev/video.mp4">
     <img src="docs/assets/video-poster.png"
-      alt="Watch the fsend video — a 90-second walkthrough of how it works">
+      alt="Watch the fsend video — a 60-second walkthrough of how it works">
   </a>
 </p>
 

@@ -1,0 +1,8 @@
+# Frame capture
+playwright
+
+# Local neural voice-over (Kokoro-82M, ONNX)
+onnxruntime
+kokoro-onnx
+soundfile
+numpy
