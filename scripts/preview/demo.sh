@@ -21,10 +21,10 @@ UDP_ADDR="${FSEND_DEMO_UDP:-127.0.0.1:8798}"
 HOME_DIR="$ROOT/home"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# What gets transferred. A 1 GiB file so the transfer runs a few seconds and
-# shows the progress bar; a realistic name (not a 1 GB "pdf"). The payload is
-# fresh /dev/urandom (incompressible, so zstd can't shrink it away) and cached.
-FILE="drone-4k.mov"
+# What gets transferred. A ~100 MB file so the transfer runs a few seconds and
+# shows the progress bar; a realistic name (not a plain "file.bin"). The payload
+# is fresh /dev/urandom (incompressible, so zstd can't shrink it away) and cached.
+FILE="backup.zip"
 PAYLOAD="$ROOT/payload.bin"
 
 # Two stacked panes: sender on top, receiver below. The terminal padding is the
@@ -34,13 +34,14 @@ PAYLOAD="$ROOT/payload.bin"
 P0="$SESSION.0"     # sender
 P1="$SESSION.1"     # receiver
 
-# ensure_payload generates the cached 1 GiB transfer payload if missing. Fresh
-# /dev/urandom so it stays incompressible (a real ~1 GB video would be too).
-PAYLOAD_BYTES=500000000   # ~500 MB as fsend displays it; ~6s transfer in-render
+# ensure_payload generates the cached ~100 MB transfer payload if missing. Fresh
+# /dev/urandom so it stays incompressible — a compressible payload would shrink
+# on the wire and the progress bar would misreport the transfer.
+PAYLOAD_BYTES=100000000   # ~100 MB as fsend displays it; a few seconds in-render
 ensure_payload() {
   [ -f "$PAYLOAD" ] && [ "$(wc -c <"$PAYLOAD")" -eq "$PAYLOAD_BYTES" ] && return
   mkdir -p "$(dirname "$PAYLOAD")"
-  dd if=/dev/urandom of="$PAYLOAD" bs=1000000 count=500 2>/dev/null
+  dd if=/dev/urandom of="$PAYLOAD" bs=1000000 count=100 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -115,13 +116,13 @@ printf '$8\033[38;2;224;128;90m▌\033[0m \033[1m%s\033[0m  \033[2m%s\033[0m\n\n
 EOF
   }
   #                                                                            $8 = leading blank lines
-  mkrc "$ROOT/sender.rc" "you@laptop"     "32" "$HOME_DIR"           "laptop"  "SENDER"   "· your laptop"  ""
+  mkrc "$ROOT/sender.rc" "you@laptop"     "32" "$HOME_DIR"           "laptop"  "SENDER"   "· your laptop"  "\n"
   mkrc "$ROOT/recver.rc" "friend@desktop" "36" "$HOME_DIR/Downloads" "desktop" "RECEIVER" "· their laptop" ""
 
   # Two stacked panes top→bottom: sender, receiver. The divider between them is
   # hidden (blended into the bg) so the gap reads as whitespace. The director
   # sizes them after the recorder attaches (see "balance the layout").
-  tmux new-session  -d -s "$SESSION" -x 100 -y 28 "bash --rcfile '$ROOT/sender.rc' -i"
+  tmux new-session  -d -s "$SESSION" -x 100 -y 34 "bash --rcfile '$ROOT/sender.rc' -i"
   tmux split-window -v -t "$SESSION" "bash --rcfile '$ROOT/recver.rc' -i"
 
   tmux set -t "$SESSION" status off
@@ -168,12 +169,12 @@ director() {
   done
 
   # Balance the layout, sized to the *final* content so nothing scrolls (the
-  # SENDER/RECEIVER card headers must stay visible). Final content is 13 rows
-  # (sender) and 11 rows (receiver), each ending in the returned shell prompt.
-  # The sender pane gets a middle gap of blank rows below it; the receiver pane
-  # takes the remainder (its trailing blanks are the bottom margin). The -1
-  # absorbs the invisible divider row between the panes.
-  local sc=13 mid=2
+  # SENDER/RECEIVER card headers must stay visible). The sender now prints a
+  # boxed code block + a safety note, so its final content is ~18 rows (incl. its
+  # leading blank row); the receiver is ~12. The sender pane gets a middle gap of
+  # blank rows below it; the receiver pane takes the remainder (its trailing
+  # blanks are the bottom margin). The -1 absorbs the invisible divider row.
+  local sc=19 mid=2
   tmux resize-pane -t "$P0" -y $(( sc + mid - 1 ))
   sleep 1.5 # let the panes register first
 

@@ -9,7 +9,7 @@
 #   python3 scripts/preview/ptyrec.py out.cast
 import os, pty, sys, time, json, fcntl, termios, struct, select, codecs
 
-COLS, ROWS = 100, 28
+COLS, ROWS = 100, 34
 OUT = sys.argv[1] if len(sys.argv) > 1 else "demo.cast"
 CMD = ["bash", "-lc", "scripts/preview/demo.sh play"]
 

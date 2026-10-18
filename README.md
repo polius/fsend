@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<p align="center"><strong>Peer-to-peer, end-to-end encrypted file transfer.</strong></p>
+<p align="center"><strong>Private file transfer, straight between two computers.</strong></p>
 
 <p align="center">
   <a href="https://github.com/polius/fsend/actions/workflows/checks.yml"><img src="https://github.com/polius/fsend/actions/workflows/checks.yml/badge.svg" alt="checks"></a>
@@ -16,25 +16,32 @@
 
 <p align="center">
   <img src="docs/assets/demo.svg" width="820"
-    alt="fsend demo: the sender runs 'fsend drone-4k.mov' and gets a share code; the receiver runs 'fsend <code>', accepts, and the file lands in ~/Downloads.">
+    alt="fsend demo: the sender runs 'fsend backup.zip' and gets a share code; the receiver runs 'fsend <code>', accepts, and the file lands in ~/Downloads.">
 </p>
 
 <p align="center"><em>One command to send, one to receive.</em></p>
 
-## About
+## Why fsend
 
-fsend is a **command-line tool** that lets any two computers transfer files and folders **straight to each other**.
+`fsend` moves a file from one computer to another with as little ceremony as
+possible. No account, no upload step, no ports to open — just two commands and a
+short share code.
 
-- **Peer-to-peer** — bytes go straight from sender to receiver at your own internet speed (relay only as a fallback)
-- **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the share code (PAKE); even the fallback relay never sees the file
-- **No ports to open** — works on any network, no router or firewall setup
-- **Send anything** — files, folders, multiple at once, stdin streams, or literal text
-- **Resumable** — a dropped transfer continues where it left off on the next send (with a fresh code), instead of starting over
-- **Skips what's already there** — re-send a folder and only the new or changed files transfer
-- **Password-protected** — gate any transfer with `--password`; receiver supplies it to unlock
-- **Post-quantum** — X25519 + ML-KEM-768 (NIST); designed so future quantum computers can't decrypt today's transfers
-- **Self-hostable** — deploy your own pairing server + relay with Docker compose
-- **Runs anywhere** — single static binary on Linux, macOS, FreeBSD, Windows; x86 and ARM
+- **Direct by default** — the bytes stream straight from sender to receiver at
+  your own internet speed. A relay is used only when a direct path can't be found.
+- **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the
+  share code (PAKE). Even the fallback relay only ever sees ciphertext.
+- **No network setup** — works behind NAT and firewalls. Nothing to configure.
+- **Send anything** — a file, a folder, several at once, a stdin stream, or a
+  literal string.
+- **Resumable** — if a transfer drops, the next send picks up where it left off
+  instead of starting over.
+- **Skips what's there** — re-send a folder and only the new or changed files move.
+- **Optional password** — gate any transfer with `--password`.
+- **Post-quantum** — X25519 + ML-KEM-768 (NIST), so today's transfers stay
+  private against future quantum computers.
+- **Runs anywhere** — one static binary for Linux, macOS, FreeBSD and Windows,
+  on x86 and ARM. Self-host the pairing server if you like.
 
 ## Install
 
@@ -85,31 +92,14 @@ fsend completion powershell | Out-String | Invoke-Expression   # powershell
 
 ## Examples
 
-**Send** a file — fsend hands you a share code:
-
-```console
-$ fsend report.pdf
-  Sending report.pdf  ·  1 file  ·  2.4 MB
-
-  On the other machine, run:
-
-      fsend abc-defg-jkm
-```
-
-**Receive** — run that code, and the file lands in the current folder:
-
-```console
-$ fsend abc-defg-jkm
-```
-
-More ways to send:
+Send a file, a folder, several at once, a stdin stream, or a literal string:
 
 ```bash
 fsend ./project                    # a whole folder
-fsend a.txt b.txt c.txt            # several at once
+fsend a.txt b.txt c.txt            # several files at once
 pg_dump mydb | fsend               # a stream from stdin
 fsend --text "wifi: hunter2"       # a literal string
-fsend report.pdf --password        # gated behind a password
+fsend backup.zip --password        # gated behind a password
 ```
 
 …and to receive:
@@ -117,6 +107,7 @@ fsend report.pdf --password        # gated behind a password
 ```bash
 fsend --yes abc-defg-jkm              # skip the confirmation prompt
 fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
+fsend --out - abc-defg-jkm | tar xz   # stream to stdout and pipe it
 ```
 
 ## How it works
