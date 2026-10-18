@@ -247,32 +247,36 @@ func TestProgress_PlainModePercentClampedLow(t *testing.T) {
 
 // Priority is bar → file chip → route chip: the bar keeps its width while
 // the columns are there, the chip takes a minimum, the route is dropped
-// first, and only the leftover grows the name.
+// first, and only the leftover grows the name. The rate/ETA chips are booked
+// against the bar, so they can't resize it later.
 func TestLayoutBudgets(t *testing.T) {
+	const big = 100_000_000 // 100 MB: rate/ETA chips ride along
 	cases := []struct {
 		name      string
 		width     int
+		total     int64
 		showNames bool
 		route     string
 		wantBW    int
 		wantChip  int
 		wantRoute bool
 	}{
-		{"narrow keeps only the bar", 70, true, "LAN", 40, 0, false},
-		{"room for the chip, not the route", 90, true, "LAN", 40, 20, false},
-		{"both chips fit", 100, true, "LAN", 40, 22, true},
-		{"wide terminal grows the chip", 200, true, "LAN", 40, 122, true},
-		{"spare past the bar cap flows to the chip", 140, true, "LAN", 40, 62, true},
-		{"shorter route frees columns for the chip", 200, true, "relay", 40, 120, true},
-		{"no names means no chip", 200, false, "LAN", 40, 0, true},
-		{"sub-furniture width shrinks the bar", 60, true, "LAN", 35, 0, false},
-		{"very narrow floors the bar at 10", 50, true, "LAN", 25, 0, false},
+		{"narrow keeps only the bar", 70, big, true, "LAN", 12, 0, false},
+		{"room for the chip, not the route", 90, big, true, "LAN", 10, 20, false},
+		{"chip floor costs the bar its cap", 100, big, true, "LAN", 17, 20, false},
+		{"wide terminal grows the chip", 200, big, true, "LAN", 40, 89, true},
+		{"spare past the bar cap flows to the chip", 140, big, true, "LAN", 40, 29, true},
+		{"shorter route frees columns for the chip", 200, big, true, "relay", 40, 87, true},
+		{"no names means no chip", 200, big, false, "LAN", 40, 0, true},
+		{"no rate/ETA below the threshold", 100, 900_000, true, "LAN", 40, 20, true},
+		{"sub-furniture width shrinks the bar", 60, big, true, "LAN", 10, 0, false},
+		{"very narrow floors the bar at 10", 50, big, true, "LAN", 10, 0, false},
 	}
 	for _, c := range cases {
-		bw, chip, route := layoutBudgets(c.width, c.showNames, c.route)
+		bw, chip, route := layoutBudgets(c.width, c.total, c.showNames, c.route)
 		if bw != c.wantBW || chip != c.wantChip || route != c.wantRoute {
-			t.Errorf("%s: layoutBudgets(%d, %v, %q) = (%d, %d, %v), want (%d, %d, %v)",
-				c.name, c.width, c.showNames, c.route, bw, chip, route, c.wantBW, c.wantChip, c.wantRoute)
+			t.Errorf("%s: layoutBudgets(%d, %d, %v, %q) = (%d, %d, %v), want (%d, %d, %v)",
+				c.name, c.width, c.total, c.showNames, c.route, bw, chip, route, c.wantBW, c.wantChip, c.wantRoute)
 		}
 	}
 }
@@ -282,6 +286,25 @@ func TestTerminalWidthFallback(t *testing.T) {
 	silenceStderr(t)
 	if got := terminalWidth(42); got != 42 {
 		t.Errorf("terminalWidth(42) = %d on a non-terminal, want fallback 42", got)
+	}
+}
+
+// The counter must be the same width on every frame: mpb sizes the bar off
+// what the decorators leave, so a counter that gained a column ("44 MB" vs
+// "43.8 MB") would visibly resize the bar mid-transfer.
+func TestCounterLineWidthIsStable(t *testing.T) {
+	for _, total := range []int64{999, 100_000_000, 1_000_000_000, 23_456_789_000} {
+		want := len(counterLine(0, total))
+		for cur := int64(0); cur <= total; cur += total/997 + 1 {
+			if got := len(counterLine(cur, total)); got != want {
+				t.Fatalf("counterLine(%d, %d) = %q (%d wide), want %d",
+					cur, total, counterLine(cur, total), got, want)
+			}
+		}
+	}
+	// Unknown total (streaming): no bar track, so only the figure renders.
+	if got := counterLine(1234, 0); got != "1.2 KB" {
+		t.Errorf("counterLine with no total = %q", got)
 	}
 }
 

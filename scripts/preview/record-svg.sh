@@ -31,9 +31,9 @@ scripts/preview/demo.sh setup
 
 # Auto-stop: once the receiver shows "Saved", let it settle then kill the
 # session so the recorder's `tmux attach` returns and recording ends. Hard cap
-# at ~70s as a fallback.
+# at ~150s as a fallback (a loaded machine can slow the loopback transfer).
 (
-  for _ in $(seq 1 70); do
+  for _ in $(seq 1 150); do
     if tmux capture-pane -p -t "$SESSION.1" 2>/dev/null | grep -q "Saved"; then
       sleep "$HOLD_AFTER_SAVED"; break
     fi
@@ -44,6 +44,9 @@ scripts/preview/demo.sh setup
 
 # Record the director-driven session, then render + frame the SVG.
 python3 scripts/preview/ptyrec.py "$CAST"
+# Handy while iterating on the post-processing: FSEND_KEEP_CAST=<path> preserves
+# the recording so you can re-run svg-postprocess.py without re-recording.
+if [ -n "${FSEND_KEEP_CAST:-}" ]; then cp "$CAST" "$FSEND_KEEP_CAST"; fi
 python3 scripts/preview/svg-postprocess.py "$CAST" "$OUT"
 
 echo "wrote $OUT ($(du -h "$OUT" | cut -f1))"

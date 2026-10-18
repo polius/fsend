@@ -54,7 +54,7 @@ it needs **none** of the recording deps above — only Chrome + ffmpeg).
 | file | role |
 |------|------|
 | `demo.sh`                  | Sets up the isolated session and **drives** the two terminals (the "director"). |
-| `ptyrec.py`                | Records the session to an asciinema **cast** at a fixed 100x28 PTY size. |
+| `ptyrec.py`                | Records the session to an asciinema **cast** at a fixed 100x34 PTY size. |
 | `catppuccin-mocha.xresources` | The terminal **palette** svg-term applies to the cast. |
 | `svg-postprocess.py`       | Renders the cast with svg-term, then adds the **hold, embedded font, and chrome**. |
 | `record-svg.sh`            | Orchestrates: build → record → render → write `docs/assets/demo.svg`. |
@@ -64,9 +64,9 @@ it needs **none** of the recording deps above — only Chrome + ffmpeg).
 Outputs:
 - `docs/assets/demo.svg` — embedded in the repo README via
   `<img src="docs/assets/demo.svg" width="820">`.
-- `docs/assets/demo.mp4` (~0.6 MB) — H.264, the file to upload where SVG isn't
-  rendered.
-- `docs/assets/demo.gif` (~0.4 MB) — fallback for places that take only GIF.
+- `docs/assets/demo.mp4` (~1.1 MB) — H.264 at 2x, the file to upload where SVG
+  isn't rendered.
+- `docs/assets/demo.gif` (~2.2 MB) — 1x fallback for places that take only GIF.
 
 ---
 
@@ -75,13 +75,15 @@ Outputs:
 ```
 record-svg.sh
   ├─ demo.sh setup            (off-camera: build fsend, loopback server, panes)
-  ├─ ptyrec.py demo.cast      (records demo.sh play at a fixed 100x28 PTY)
+  ├─ ptyrec.py demo.cast      (records demo.sh play at a fixed 100x34 PTY)
   │     └─ demo.sh play       (attach; the director types the transfer)
   └─ svg-postprocess.py demo.cast docs/assets/demo.svg
-        ├─ svg-term           (cast -> animated SVG, Catppuccin palette)
-        ├─ extend hold        (rescale @keyframes: final frame holds 5s)
-        ├─ embed fonts        (JetBrains Mono Regular+Bold, subset, woff2 data-URI)
-        └─ add chrome         (coral rounded frame + macOS traffic lights)
+        ├─ svg-term           (cast -> animated SVG, Catppuccin palette, no cursor)
+        ├─ extend hold        (rescale @keyframes: final frame holds 6s)
+        ├─ clip frames        (each frame gets its own viewport: no cross-frame bleed)
+        ├─ fit grid           (snap text to the 100-column grid: no edge overhang)
+        ├─ add chrome         (title bar + coral frame + macOS traffic lights)
+        └─ embed fonts        (JetBrains Mono Regular+Medium+Bold, subset, woff2)
 ```
 
 ### 1. `demo.sh setup` — the stage
@@ -97,7 +99,7 @@ deterministic and leaks no hostname, while the on-screen command stays a plain
 ### 2. `ptyrec.py` — the recorder
 
 svg-term needs an asciinema cast, and the demo is a **full-screen tmux** session
-that must record at an exact 100x28 geometry. `ptyrec.py` is a ~40-line PTY
+that must record at an exact 100x34 geometry. `ptyrec.py` is a ~40-line PTY
 recorder that forces that window size (so both panes render fully) and streams a
 v2 cast — `asciinema rec` can't fix the geometry headlessly, and `termtosvg`
 can't capture a full-screen tmux app at all. `record-svg.sh` runs the director in
@@ -109,13 +111,25 @@ ends on the completed transfer.
 - **svg-term** renders the cast to an animated SVG, applying
   `catppuccin-mocha.xresources` as the 16-colour palette + background.
 - **Hold:** svg-term has no "pause on the last frame" option, so we rescale its
-  `@keyframes` timeline to hold the final "Saved" frame ~5s before looping
+  `@keyframes` timeline to hold the final "Saved" frame ~6s before looping
   (content timing is preserved; only the tail grows).
-- **Font:** JetBrains Mono (the fsend wordmark font) Regular + Bold are subset to
-  the glyphs actually used and inlined as `woff2` data-URIs, so the demo renders
-  in the right font even where it isn't installed.
-- **Chrome:** a coral rounded outer frame and larger macOS traffic lights are
-  drawn as static vector shapes around the untouched animation.
+- **Frame clip + grid:** svg-term animates a filmstrip of side-by-side frames
+  spaced exactly 100 units apart, but lays its text out on a 1.002-unit column
+  pitch (its font metric rounded to three decimals), so a line that fills all
+  100 columns — the mpb progress bar always does — runs ~0.2 units (two pixels)
+  past the end of its own frame. Because the previous frame sits exactly 100
+  units to the left, that overhang lands on the left edge of the current frame
+  as a stray glyph fragment that reads as a `:` in front of the bar. `fit_grid()`
+  snaps every run back onto integer columns so the grid ends flush with the
+  frame, and `clip_frames()` gives each frame its own viewport so no renderer can
+  bleed one frame into the next.
+- **Chrome:** a macOS title bar — traffic lights plus the `> fsend_` wordmark,
+  mirroring the explainer video's title-bar style — and a coral rounded outer
+  frame are drawn as static vector shapes around the untouched animation.
+- **Font:** JetBrains Mono (the fsend wordmark font) Regular + Medium + Bold are
+  subset to the glyphs actually used and inlined as `woff2` data-URIs, so the
+  demo renders in the right font even where it isn't installed. Subsetting runs
+  after the chrome step, so the subset also covers the title-bar text.
 
 Every assumption about svg-term's output is asserted, so a future svg-term
 version that changes its format fails loudly here instead of silently shipping a
@@ -139,8 +153,8 @@ render-video.py docs/assets/demo.svg
   │     ├─ pause animation  (Web Animations API: el.getAnimations()[0].pause())
   │     └─ scrub + shoot     (set currentTime per fps tick; screenshot each stop)
   └─ ffmpeg
-        ├─ demo.mp4     (libx264 -crf 18, yuv420p, +faststart, 2158x1414 @30fps)
-        └─ demo.gif     (global palette, dither=none, full 2x res @15fps)
+        ├─ demo.mp4     (libx264 -crf 18, yuv420p, +faststart, 2158x1674 @30fps)
+        └─ demo.gif     (global palette, dither=none, half res @12fps)
 ```
 
 ### How it stays sharp **and** steady
@@ -155,8 +169,8 @@ script is built to avoid both:
   each. Held frames come out byte-identical and exactly `1/FPS` apart, so the
   image is rock-steady and x264/GIF dedupe the repeats (which is why the files
   stay tiny). We only screenshot once per distinct `@keyframes` stop and reuse it
-  for the held ticks, so a 27 s clip is ~250 screenshots, not 800.
-- **2× supersample.** Capturing at `deviceScaleFactor=2` (→ 2158×1414) renders
+  for the held ticks, so a ~30 s clip is ~380 screenshots, not 950.
+- **2× supersample.** Capturing at `deviceScaleFactor=2` (→ 2158×1674) renders
   the small terminal text at double density; encoding from that keeps it crisp
   where a 1× capture would look soft under chroma subsampling.
 - **Exact viewport.** `Emulation.setDeviceMetricsOverride` forces the viewport to
@@ -166,14 +180,15 @@ script is built to avoid both:
 ### mp4 vs gif
 
 - **`demo.mp4`** is the one to share: H.264 / `yuv420p` / even dimensions plays
-  everywhere (Reddit converts it to native video), and it's ~0.6 MB.
+  everywhere (Reddit converts it to native video), and it's ~1.1 MB.
 - **`demo.gif`** is the fallback for the few places that accept only GIF. It's
-  kept at the **full 2× resolution** (no downscale — averaging the supersampled
-  text is exactly what reintroduces blur) with a global 256-colour palette and
-  `dither=none` (the terminal art is flat colour, so error-diffusion would only
-  add grain with no gradients to smooth). Built from the clean PNG frames it's
-  ~0.4 MB; building a GIF from the mp4 instead balloons it ~7× because the mp4's
-  chroma noise wrecks inter-frame compression.
+  exported at **half the capture resolution (1x)** with a global 256-colour
+  palette and `dither=none` (the terminal art is flat colour, so error-diffusion
+  would only add grain). The demo's two live progress bars repaint the full width
+  of the frame every ~80 ms, so a full-2× gif balloons past 12 MB for no real
+  legibility gain — at 1x it lands around 2.2 MB. Always build the gif from the
+  clean PNG frames, never from the mp4: the mp4's chroma noise wrecks
+  inter-frame compression and balloons it several-fold.
 
 ---
 
@@ -224,15 +239,18 @@ session are cleaned up on exit.
 |----------------|-------|
 | Pacing / the share-code handoff | `director()` in `demo.sh` (the `sleep`s) |
 | Pane labels, colours, layout | `do_setup()` in `demo.sh` |
-| Terminal size (columns x rows) | `COLS, ROWS` in `ptyrec.py` (and `--width/--height` in `svg-postprocess.py`) |
+| Terminal size (columns x rows) | `COLS, ROWS` in `ptyrec.py` (100x34; also `--width/--height` in `svg-postprocess.py`) |
+| svg-term's column pitch (if svg-term bumps versions) | `CELL` in `svg-postprocess.py` (asserted against the runs) |
 | Colour theme | `catppuccin-mocha.xresources` |
 | End-of-loop pause | `HOLD_S` in `svg-postprocess.py` |
 | Coral border / window radius | `MARGIN`, `WIN_R` in `svg-postprocess.py` |
-| Traffic-light size / position | `DOT_R`, `DOTS`, `DOT_CY` in `svg-postprocess.py` |
+| Transfer size shown in the demo | `PAYLOAD_BYTES` in `demo.sh` (drives the payload + the on-screen size) |
+| Title bar fill | `TITLE_BG`, `HAIRLINE` in `svg-postprocess.py` |
+| Traffic-light size / position | `DOT_R`, `DOTS`, `DOT_CX0`/`DOT_GAP` in `svg-postprocess.py` |
 | Embedded font | `find_font()` in `svg-postprocess.py` |
 | mp4 frame rate / scrub cadence | `FPS` in `render-video.py` |
 | Supersample factor (sharpness vs size) | `SCALE` in `render-video.py` |
-| gif frame rate (smoothness vs size) | `GIF_FPS` in `render-video.py` |
+| gif frame rate / resolution (smoothness vs size) | `GIF_FPS`, `GIF_SCALE` in `render-video.py` |
 | Chrome location | `CHROME` in `render-video.py` |
 
 ---
@@ -256,8 +274,9 @@ session are cleaned up on exit.
 - **`render-video.py`: "Chrome did not expose a DevTools port".** Chrome failed
   to launch — confirm it's installed and that `CHROME` points at the binary.
 - **`render-video.py`: "could not hook the SVG animation".** svg-term's output
-  changed so the animated `<g style="animation-name:p">` element or its
-  `@keyframes p` no longer matches; update the selector/parse near the top of
+  changed so the animated `<g style="animation-name:…">` element or its
+  `@keyframes` block no longer matches. The script reads whatever animation name
+  `svg-term` emitted, so update the selector/parse near the top of
   `render-video.py`.
 - **mp4/gif look blurry or jittery.** Both are guarded by design (2× supersample
   + constant-cadence scrub). If it regresses, check `SCALE` is ≥2 and that no

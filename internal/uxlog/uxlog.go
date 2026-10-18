@@ -135,45 +135,65 @@ func (p *plainProgress) done() {
 	p.closed = true
 }
 
-// barWidth caps the progress bar at a fixed column count. 40 leaves room
-// for a leading percentage block, a generous "1.5 GB / 2.3 GB" counter,
-// and the rate/ETA chips without bumping past 100 columns even on narrow
-// terminals. Full-width bars look "loud" — see CLI UX review notes.
+// barWidth caps the progress bar at a fixed column count — full-width bars
+// look "loud" (see CLI UX review notes). It is a cap, not a promise: the bar
+// only reaches it when the chips beside it leave the columns.
 const barWidth = 40
 
-// fixedFurniture is the column cost of the decorators the bar can never
-// reclaim: the "  100%  " block (8) and the counter plus its "  ·  "
-// separator at a realistic "1.5 GB / 12.4 GB" width (2 + 15). The rate and
-// ETA chips are deliberately not reserved: mpb draws the append
-// decorators first and hands the bar whatever remains, so a rate chip
-// appearing costs the bar a few columns instead of wrapping the line —
-// reserving ~24 columns for chips that stay hidden for the first second
-// would waste the bar on every wide terminal instead.
-const fixedFurniture = 8 + 2 + 15
+// barMin floors the bar so even a cramped terminal keeps a track.
+const barMin = 10
+
+// The chips' widest forms, booked against the bar up front. mpb hands the bar
+// whatever the decorators leave on a given frame, so a chip whose text gained
+// a column ("44 MB" vs "43.8 MB") — or that appeared mid-transfer — would
+// resize the bar on that frame; a bar that changes width ten times a second
+// reads as broken. Booking the widest form costs the bar a few columns on
+// terminals where the chips would have stayed hidden for the first second;
+// a steady bar is worth them.
+const (
+	pctFurniture  = 8      // "  100%  ", or the "  ...  " streaming stand-in
+	rateFurniture = 15     // "  ·  999.9 MB/s"
+	etaFurniture  = 16     // "  ·  ETA 1h02m03s"
+	chipFurniture = 5 + 20 // the file chip's floor: "  ·  " + a 20-rune name
+	chipFit       = 5 + 6  // columns below which the chip isn't worth showing
+)
+
+// counterFurniture is the widest the counter decorator can render: its two
+// leading spaces, the current figure's fixed field, the " / " and the total.
+func counterFurniture(total int64) int {
+	if total <= 0 {
+		return 2 + 8 // streaming: "  " + a maximal HumanBytes figure
+	}
+	return 2 + counterField(total) + 3 + len(HumanBytes(total))
+}
 
 // layoutBudgets splits a terminal of the given width between the bar, the
-// current-file chip, and the route chip: bw is the bar's requested width,
-// labelCap the chip's cap in runes (0 = no chip), showRoute whether the
-// route chip fits. Pure; cheap enough for every frame.
+// chips it can never reclaim, the current-file chip, and the route chip: bw
+// is the bar's requested width, labelCap the chip's cap in runes (0 = no
+// chip), showRoute whether the route chip fits. Pure; cheap enough for every
+// frame.
 //
-// Priority is bar → file chip → route chip. The bar asks for its full
-// width and mpb takes it whenever the columns are there; the chip claims a
-// minimum only once the bar has room, and the route — the one chip the
-// user has already read on the phase line above the bar — is dropped
-// first. Spare columns flow back to the name.
-func layoutBudgets(width int, showNames bool, route string) (bw, labelCap int, showRoute bool) {
-	bw = min(barWidth, max(10, width-fixedFurniture))
-	spare := width - fixedFurniture - bw
-	if showNames && spare >= 5+6 { // "  ·  " + a minimal name
-		labelCap = 20
-		spare -= labelCap + 5
+// Priority is bar → file chip → route chip: the chip claims a minimum once
+// the bar has its floor, and the route — the one chip the user has already
+// read on the phase line above the bar — takes only what is left. Spare
+// columns flow back to the name.
+func layoutBudgets(width int, total int64, showNames bool, route string) (bw, labelCap int, showRoute bool) {
+	fixed := pctFurniture + counterFurniture(total)
+	if total >= rateThreshold {
+		fixed += rateFurniture + etaFurniture
 	}
+	chip := 0
+	if showNames && width-fixed-barMin >= chipFit {
+		chip = chipFurniture
+	}
+	bw = min(barWidth, max(barMin, width-fixed-chip))
+	spare := width - fixed - chip - bw
 	if route != "" && spare >= len(route)+5 {
 		showRoute = true
 		spare -= len(route) + 5
 	}
-	if labelCap > 0 {
-		labelCap += max(0, spare) // spare columns grow the name
+	if chip > 0 {
+		labelCap = chip - 5 + max(0, spare) // spare columns grow the name
 	}
 	return bw, labelCap, showRoute
 }
@@ -181,8 +201,8 @@ func layoutBudgets(width int, showNames bool, route string) (bw, labelCap int, s
 // chipBudget is just layoutBudgets' chip cap, re-derived from the live
 // terminal width (falling back to the construction-time width) for the
 // per-frame chip decorators.
-func chipBudget(width int, showNames bool, route string) int {
-	_, cap, _ := layoutBudgets(terminalWidth(width), showNames, route)
+func chipBudget(width int, total int64, showNames bool, route string) int {
+	_, cap, _ := layoutBudgets(terminalWidth(width), total, showNames, route)
 	return cap
 }
 
@@ -282,7 +302,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	}
 	// Only the bar's budget is fixed here; the chip re-derives from the
 	// live width every refresh frame, so a mid-transfer resize re-flows.
-	bw, _, _ := layoutBudgets(width, showNames, route)
+	bw, _, _ := layoutBudgets(width, totalBytes, showNames, route)
 
 	p := &Progress{}
 	defer setActive(p)
@@ -336,10 +356,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	// Counters: always render via HumanBytes so units stay uppercase
 	// and small whole-byte values don't gain a "%.2f" tail.
 	counters := decor.Any(func(s decor.Statistics) string {
-		if s.Total <= 0 {
-			return HumanBytes(s.Current)
-		}
-		return fmt.Sprintf("%s / %s", HumanBytes(s.Current), HumanBytes(s.Total))
+		return counterLine(s.Current, s.Total)
 	})
 
 	appendDecs := []decor.Decorator{
@@ -419,7 +436,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		// file chip: the route was already stated on the phase line
 		// above, so it is the cheapest thing to lose.
 		appendDecs = append(appendDecs, decor.Any(func(decor.Statistics) string {
-			if _, _, ok := layoutBudgets(terminalWidth(width), showNames, route); !ok {
+			if _, _, ok := layoutBudgets(terminalWidth(width), totalBytes, showNames, route); !ok {
 				return ""
 			}
 			return "  ·  " + route
@@ -436,11 +453,11 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		// construction if the size query starts failing.
 		appendDecs = append(appendDecs,
 			decor.Meta(decor.Any(func(decor.Statistics) string {
-				name, _ := p.chipParts(chipBudget(width, showNames, route))
+				name, _ := p.chipParts(chipBudget(width, totalBytes, showNames, route))
 				return name
 			}), func(str string) string { return Path(str) }),
 			decor.Any(func(decor.Statistics) string {
-				_, tail := p.chipParts(chipBudget(width, showNames, route))
+				_, tail := p.chipParts(chipBudget(width, totalBytes, showNames, route))
 				return tail
 			}),
 		)
@@ -457,6 +474,28 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		mpb.AppendDecorators(appendDecs...),
 	)
 	return p
+}
+
+// counterField is the width of the current figure's right-aligned field.
+// HumanBytes trims a ".0" tail ("44 MB" vs "43.8 MB"), and a figure just
+// under the total can carry a digit more than it ("1.0 GB" arrives as
+// "1000 MB"), so the field is the total's own width plus one — or the eight
+// columns the widest rendering ("999.9 KB") needs.
+func counterField(total int64) int {
+	if total <= 0 {
+		return 8
+	}
+	return max(8, len(HumanBytes(total))+1)
+}
+
+// counterLine renders the "transferred / total" counter, the current figure
+// right-aligned in counterField's fixed width so the counter occupies the same
+// columns on every frame.
+func counterLine(current, total int64) string {
+	if total <= 0 {
+		return HumanBytes(current)
+	}
+	return fmt.Sprintf("%*s / %s", counterField(total), HumanBytes(current), HumanBytes(total))
 }
 
 // etaLabel renders an ETA projection, rounding up to whole seconds: at

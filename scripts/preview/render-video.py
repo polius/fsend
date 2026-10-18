@@ -26,7 +26,8 @@ MP4 = os.path.join(OUT_DIR, BASE + ".mp4")
 GIF = os.path.join(OUT_DIR, BASE + ".gif")
 FPS = 30
 SCALE = 2          # device scale: supersample the small text, then encode crisp
-GIF_FPS = 15
+GIF_FPS = 12
+GIF_SCALE = 2       # gif is exported at half the capture res (see "encoding gif")
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 svg = open(SRC).read()
@@ -34,10 +35,16 @@ m = re.search(r'<svg[^>]*\bwidth="([0-9.]+)"[^>]*\bheight="([0-9.]+)"', svg)
 W, H = (round(float(m.group(1))), round(float(m.group(2)))) if m else (1079, 707)
 dur_m = re.search(r'animation-duration:([0-9.]+)s', svg)
 LOOP = float(dur_m.group(1)) if dur_m else 27.3
+# svg-term's minifier renames the @keyframes per run; read the name it chose
+# rather than assuming a fixed letter, so a new svg-term can't silently break us.
+name_m = re.search(r'animation-name:([A-Za-z_][\w-]*)', svg)
+if not name_m:
+    sys.exit("could not find the animation name in the SVG")
+ANIM = name_m.group(1)
 
-# @keyframes p stops -> the times at which the frame actually changes; we only
+# @keyframes stops -> the times at which the frame actually changes; we only
 # screenshot one image per distinct stop and reuse it for the held samples.
-ks = svg.index('@keyframes p{') + len('@keyframes p{')
+ks = svg.index(f'@keyframes {ANIM}{{') + len(f'@keyframes {ANIM}{{')
 depth, i = 1, ks
 while depth:
     depth += {'{': 1, '}': -1}.get(svg[i], 0)
@@ -106,7 +113,7 @@ try:
             break
         time.sleep(0.1)
     # Grab the SVG's CSS animation and pause it so we can scrub frame-exactly.
-    ok = js('(()=>{const el=document.querySelector(\'g[style*="animation-name:p"]\');'
+    ok = js(f'(()=>{{const el=document.querySelector(\'g[style*="animation-name:{ANIM}"]\');'
             'if(!el)return "noel";const a=el.getAnimations()[0];'
             'if(!a)return "noanim";a.pause();window.__a=a;return "ok";})()')
     if ok != "ok":
@@ -147,9 +154,11 @@ try:
 
     print("encoding gif...", file=sys.stderr)
     pal = os.path.join(tmp, "pal.png")
-    # Keep the gif at the full 2x capture resolution — any downscale averages
-    # the supersampled text and reintroduces blur, so we match the mp4's detail.
-    gif_vf = f"fps={GIF_FPS}"
+    # Half the capture resolution: the gif is a fallback for hosts that won't take
+    # the mp4, and the demo's two live progress bars change the full width of the
+    # frame every ~80ms — at the full 2x that balloons the gif to ~10x this size
+    # for no real legibility gain (terminal text stays readable at 1x).
+    gif_vf = f"fps={GIF_FPS},scale=iw/{GIF_SCALE}:ih/{GIF_SCALE}"
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat,
                     "-vf", f"{gif_vf},palettegen=stats_mode=full", pal],
                    check=True, stdin=subprocess.DEVNULL)
@@ -160,6 +169,22 @@ try:
 finally:
     if chrome:
         chrome.terminate()
+        chrome.wait()
+    # FSEND_KEEP_FRAMES=<dir> preserves the captured PNGs + concat list so the
+    # GIF encoding can be re-tuned without paying for the Chrome capture again.
+    # Copy only those (never Chrome's profile dir, which holds sockets that
+    # can't be duplicated), and never let this convenience break the run.
+    keep = os.environ.get("FSEND_KEEP_FRAMES")
+    if keep:
+        try:
+            shutil.rmtree(keep, ignore_errors=True)
+            os.makedirs(keep, exist_ok=True)
+            for name in os.listdir(tmp):
+                if name.endswith(".png") or name in ("concat.txt", "demo.html"):
+                    shutil.copy2(os.path.join(tmp, name), keep)
+            print(f"kept frames in {keep}", file=sys.stderr)
+        except OSError as e:
+            print(f"could not keep frames: {e}", file=sys.stderr)
     shutil.rmtree(tmp, ignore_errors=True)
 
 for p in (MP4, GIF):
