@@ -85,8 +85,22 @@
     return { node: n, cursor: cur };
   }
 
+  // ---- fonts --------------------------------------------------------------
+  // Text metrics are needed for the measured layouts (see scenes.js), so scenes
+  // register a one-shot layout callback that must not run until the real fonts
+  // are in place. The capture harness awaits window.__ready before frame 0.
+  const AFTER_FONTS = [];
+  function afterFonts(fn) { AFTER_FONTS.push(fn); }
+  let fontsSettled = false;
+  function settleFonts() {
+    if (fontsSettled) return;
+    fontsSettled = true;
+    AFTER_FONTS.forEach((fn) => fn());
+  }
+
   const A = { clamp, lerp, ramp, reveal, set, el, svg, text, box, wordmark, EASE,
-              easeOutQuint, easeOutCubic, easeOutExpo, easeInOutCubic, easeOutBack };
+              easeOutQuint, easeOutCubic, easeOutExpo, easeInOutCubic, easeOutBack,
+              afterFonts };
   window.Toolkit = A;
 
   // ---- timeline -----------------------------------------------------------
@@ -131,7 +145,7 @@
       const s = sc[i];
       const c = hex2rgb(ACCENTS[s.name] || "#e0805a");
       if (t < s.end) {
-        const h = 0.3;   // half transition window — matches the dip in render()
+        const h = 0.46;   // half transition window — matches the dip in render()
         if (i > 0 && t < s.start + h) {
           const p = easeInOutCubic(ramp(t, s.start - h, s.start + h));
           const a = hex2rgb(ACCENTS[sc[i - 1].name] || "#e0805a");
@@ -164,6 +178,7 @@
   // *layout* before the boundary (see scenes.js) so the frame that fades in is
   // already whole, and only narration-timed content animates afterwards.
   function render(t) {
+    settleFonts();
     const scenes = built.order;
     let active = 0;
     for (let i = 0; i < scenes.length; i++) if (scenes[i].start <= t) active = i;
@@ -176,14 +191,14 @@
 
     for (let i = 0; i < scenes.length; i++) {
       const s = scenes[i], layer = built.layers[s.name];
-      const outP = i < scenes.length - 1 ? ramp(t, s.end - 0.28, s.end - 0.02) : 0;
-      const inP = i > 0 ? ramp(t, s.start - 0.02, s.start + 0.30) : 1;
+      const outP = i < scenes.length - 1 ? ramp(t, s.end - 0.44, s.end - 0.06) : 0;
+      const inP = i > 0 ? ramp(t, s.start - 0.06, s.start + 0.48) : 1;
       const a = (1 - outP) * inP;
       if (a <= 0.004) { layer.style.opacity = 0; layer.style.visibility = "hidden"; continue; }
       layer.style.visibility = "visible";
       layer.style.opacity = a.toFixed(4);
-      const sc = lerp(1, 1.025, outP) * lerp(0.985, 1, inP);
-      const bl = 5 * outP + 5 * (1 - inP);
+      const sc = lerp(1, 1.022, outP) * lerp(0.986, 1, inP);
+      const bl = 4 * outP + 4 * (1 - inP);
       layer.style.transform = `scale(${sc.toFixed(5)})`;
       layer.style.filter = bl > 0.2 ? `blur(${bl.toFixed(2)}px)` : "none";
       built.renders[s.name](t - s.start, { world: t, scene: s, index: i });
@@ -205,7 +220,13 @@
     const bo = el("div", "", document.getElementById("stage")); bo.id = "blackout";
     bo.style.cssText = "position:absolute;inset:0;background:#000;z-index:999;pointer-events:none";
     build();
-    window.__ready = document.fonts.ready.then(() => true);
+    // Force the two faces to load (nothing on the page has used them yet at this
+    // point) and only then let the capture harness start: the measured layouts in
+    // scenes.js depend on real font metrics.
+    window.__ready = Promise.all([
+      document.fonts.load('640 104px "Inter"'),
+      document.fonts.load('800 150px "JBMono"'),
+    ]).then(() => document.fonts.ready).then(() => true);
   };
   window.__render = render;
   window.__duration = () => (TL ? TL.d.video_end : 0);

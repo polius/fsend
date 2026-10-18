@@ -245,8 +245,14 @@ html, body {
 
 /* ---- device + hub cards (the transfer diagram) -------------------------- */
 .dev {
-  width: 320px; height: 200px; color: #cfc7c1;
+  width: 320px; height: 200px; color: #cfc7c1; position: relative; --lit: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+}
+/* the endpoints come alive once a path between them is live */
+.dev::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  box-shadow: 0 0 72px -14px var(--accent);
+  opacity: calc(0.9 * var(--lit)); pointer-events: none;
 }
 .dev .name { font-size: 27px; font-weight: 550; color: var(--ink); }
 
@@ -273,38 +279,73 @@ html, body {
   padding: 5px 15px; border-radius: 999px;
 }
 
+/* the same card, promoted to the hero of the self-hosting beat */
+.hub.pub { width: 430px; padding: 40px 30px 38px; gap: 14px; }
+.hub.pub .glyph svg { width: 132px; height: 126px; }
+.hub.pub .name { font-size: 33px; }
+.hub.pub .tag { font-size: 25px; padding: 8px 22px; }
+
+/* ---- terminal caret (typed lines) --------------------------------------- */
+.term .ln .tx { white-space: pre; }
+.term .ln .caret {
+  display: inline-block; width: 0.52em; height: 1.02em; margin-left: 0.09em;
+  background: var(--accent-l); border-radius: 1.5px;
+  transform: translateY(0.12em); opacity: 1;
+}
+
 /* ---- modes cards -------------------------------------------------------- */
+/* three tall columns — one per route. The active one lifts out of the set. */
 .modecard {
-  width: 1180px; height: 108px; padding: 0 40px;
-  display: flex; align-items: center; gap: 30px; position: relative;
+  width: 496px; height: 640px; padding: 44px 38px 40px;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  position: relative; overflow: hidden;
   --mc: var(--accent); --on: 0;
 }
 .modecard::before {
   content: ""; position: absolute; inset: -1px; border-radius: 27px;
-  border: 1.5px solid var(--mc); opacity: calc(0.12 + 0.78 * var(--on));
+  border: 1.5px solid var(--mc); opacity: calc(0.10 + 0.80 * var(--on));
   pointer-events: none;
 }
 .modecard::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit;
-  box-shadow: 0 0 90px -22px var(--mc);
-  opacity: calc(0.08 + 0.92 * var(--on)); pointer-events: none;
+  box-shadow: 0 0 90px -20px var(--mc);
+  opacity: calc(0.05 + 0.95 * var(--on)); pointer-events: none;
+}
+.modecard .msweep { position: absolute; inset: 0; pointer-events: none; }
+.modecard .msweep::before {
+  content: ""; position: absolute; top: -30%; bottom: -30%; width: 45%;
+  background: linear-gradient(100deg, transparent,
+    color-mix(in srgb, var(--mc) 20%, transparent), transparent);
+  transform: translateX(calc(-170% + var(--on) * 440%));
+  opacity: calc(var(--on) * (1 - var(--on)) * 3.6);
+}
+.modecard .mwrap {
+  position: relative; width: 100%; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  opacity: calc(0.58 + 0.42 * var(--on));
+}
+.modecard .mglyph {
+  height: 224px; display: flex; align-items: center; justify-content: center;
+  color: #bdb4ad;
+  transform: translateY(calc((1 - var(--on)) * 4px));
 }
 .modecard .mlabel {
-  width: 250px; display: flex; align-items: center; gap: 14px;
-  font-family: var(--mono); font-weight: 700; font-size: 34px; letter-spacing: 0.06em;
-  color: var(--mc); opacity: calc(0.42 + 0.58 * var(--on));
+  margin-top: 30px; display: flex; align-items: center; gap: 14px;
+  font-family: var(--mono); font-weight: 700; font-size: 34px; letter-spacing: 0.15em;
+  color: var(--mc);
 }
 .modecard .mdot {
-  width: 11px; height: 11px; border-radius: 50%; background: var(--mc);
+  width: 12px; height: 12px; border-radius: 50%; background: var(--mc);
   box-shadow: 0 0 16px 1px var(--mc);
 }
-.modecard .mdiv { width: 1px; height: 56px; background: rgba(255,255,255,0.14); }
-.modecard .mtext { flex: 1; }
-.modecard .mdesc { font-size: 31px; font-weight: 520; color: var(--ink); }
-.modecard .mnote { font-size: 25px; color: var(--dim); margin-top: 6px; }
+.modecard .mdesc {
+  margin-top: 16px; font-size: 36px; font-weight: 560;
+  letter-spacing: -0.012em; color: var(--ink);
+}
+.modecard .mnote { margin-top: 10px; font-size: 27px; color: var(--dim); }
 .modecard .mcheck {
-  font-size: 34px; color: var(--mc); font-weight: 700;
-  opacity: var(--on); transform: scale(calc(0.6 + 0.4 * var(--on)));
+  margin-top: 28px; font-size: 33px; font-weight: 700; color: var(--mc);
+  opacity: var(--on); transform: scale(calc(0.5 + 0.5 * var(--on)));
 }
 
 /* ---- e2e lock row ------------------------------------------------------- */

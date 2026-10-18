@@ -37,11 +37,15 @@ LANG = "en-us"
 # ---- pacing ----------------------------------------------------------------
 FPS = 30
 LEAD_IN = 0.9              # silence before the first line
-GAP_SAME = 0.42            # pause between two lines in the same scene
-GAP_SCENE = 0.85           # pause when the scene changes (breathing room)
+GAP_SAME = 0.55            # pause between two lines in the same scene
+GAP_SCENE = 2.20           # pause when the scene changes. This is the single
+                           # most important number in the film: it is the time
+                           # the viewer gets to *finish reading* one screen
+                           # before the next one arrives. Short gaps read as
+                           # "too fast to retain".
 TAIL = 6.0                 # hold after the last line (long, settled outro)
 # extra hold before a line (on top of the normal gap), to let a screen land
-GAP_EXTRA = {"cmd2": 0.9, "modes1": 0.7}
+GAP_EXTRA = {"cmd2": 0.85}
 
 # ---- the script ------------------------------------------------------------
 # id, scene, voice-over, anchors {label: spoken substring} — anchors mark when a

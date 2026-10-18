@@ -1,6 +1,6 @@
 # fsend explainer
 
-The fsend explainer/promo — a **60-second, 1920×1080 MP4** with a neural
+The fsend explainer/promo — a **~70-second, 1920×1080 MP4** with a neural
 voice-over, a synthesized ambient bed, and a soft Apple-keynote look.
 
 It walks through the value prop and the **three transfer modes**
@@ -72,7 +72,7 @@ Stages (`build.py` prints them as `[n/6]`):
    `timeline.json`: scene windows plus *word onsets*, so a scene can reveal
    something on the exact word it is spoken.
 2. **capture** — `capture.py` serves `web/` and drives headless Chromium,
-   calling `window.__render(t)` and screenshotting each of the ~1,800 frames at
+   calling `window.__render(t)` and screenshotting each of the ~2,100 frames at
    **2×** (3840×2160). Runs across several processes in parallel.
 3. **audio** — normalizes the voice to −16 LUFS and mixes in the ambient bed
    from `music.py` (synthesized C–Am–F–G pad, no samples to license).
@@ -99,7 +99,7 @@ To regenerate the README thumbnail (a still with a play button, downscaled and
 grained exactly like the encode):
 
 ```sh
-.venv/bin/python capture.py --poster 5.3                # -> docs/assets/video-poster.png
+.venv/bin/python capture.py --poster 4.5                # -> docs/assets/video-poster.png
 ```
 
 ---
@@ -125,6 +125,9 @@ grained exactly like the encode):
 ## Customizing
 
 - **Wording & pacing** — edit `LINES` in `narration.py`, then `./make.sh`.
+  `GAP_SAME` / `GAP_SCENE` are the two pacing knobs: the latter is the silence
+  between two screens, i.e. how long the viewer gets to finish reading one slide
+  before the next one arrives. It is deliberately generous.
   Adding a line? Give it the scene it belongs to and, if a visual should land on
   a particular word, an anchor (`{"sealed": "sealed"}`); scenes read those with
   `api.on("<line-id>", "<anchor>")`. Everything re-syncs automatically, because

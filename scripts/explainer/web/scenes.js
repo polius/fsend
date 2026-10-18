@@ -3,65 +3,227 @@
  * Every scene is a function (layer, api) -> render(t) where t is seconds since
  * the scene started. Nothing is animated by CSS: render(t) computes the state of
  * every moving part from the timeline onsets, so a frame is a pure function of t.
+ *
+ * Layout is measured, not guessed. Each screen is a single top-down stack placed
+ * by *top edge*, so a box that grows (a terminal gaining a line) pushes what
+ * follows instead of colliding with it, and every screen shares one vertical
+ * rhythm. Measurements run once, after the real fonts are in place.
  */
 (function () {
   const A = window.Toolkit;
-  const { el, svg, text, box, reveal, ramp, lerp, clamp } = A;
+  const { el, svg, text, box, reveal, ramp, lerp, clamp, afterFonts } = A;
 
   /* ------------------------------------------------------------------ *
-   *  shared bits
+   *  placement
    * ------------------------------------------------------------------ */
 
   // an absolutely-placed, centre-anchored element whose *own* transform is free
   function anchor(layer, x, y, cls) {
-    const outer = box(layer, x, y);
-    const inner = el("div", "rv" + (cls ? " " + cls : ""), outer);
+    const inner = el("div", "rv" + (cls ? " " + cls : ""), box(layer, x, y));
     return inner;
   }
-  function layerPos(x, y) { return `left:${x}px;top:${y}px`; }
-  // left-anchored variant (for badges that sit above a card's left edge)
-  function anchorLeft(layer, x, y, cls) {
-    const outer = box(layer, x, y);
-    outer.style.transform = "translate(0, -50%)";
-    const inner = el("div", "rv" + (cls ? " " + cls : ""), outer);
-    return inner;
+  // centre-x, top-anchored: the element's top edge lands on `top`
+  function atTop(layer, x, top, cls) {
+    const outer = box(layer, x, top);
+    outer.style.transform = "translate(-50%, 0)";
+    // absolute boxes shrink to whatever room is left of `left`, which would
+    // wrap a headline at 960px. Size to the content instead and centre it.
+    outer.style.width = "max-content";
+    return el("div", "rv" + (cls ? " " + cls : ""), outer);
+  }
+  // left-anchored (badges that line up with a card's left edge), top-anchored
+  function atTopLeft(layer, x, top, cls) {
+    const outer = box(layer, x, top);
+    outer.style.transform = "translate(0, 0)";
+    return el("div", "rv" + (cls ? " " + cls : ""), outer);
+  }
+  const hOf = (node) => node.parentElement.getBoundingClientRect().height;
+  function moveTo(node, y) { node.parentElement.style.top = y.toFixed(1) + "px"; }
+  // place a run of boxes top-down. rows = [node, gapAfterTheNode]
+  function stack(top, rows) {
+    let y = top;
+    for (const [node, gapAfter] of rows) {
+      if (!node) continue;
+      moveTo(node, y);
+      y += hOf(node) + gapAfter;
+    }
+    return y;
   }
 
+  /* ------------------------------------------------------------------ *
+   *  geometry: a tiny polyline sampler
+   *  (used instead of getPointAtLength so the capture loop never touches
+   *  the layout engine for motion)
+   * ------------------------------------------------------------------ */
+  function sampler(d) {
+    const n = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
+    const pts = [];
+    for (let i = 0; i + 1 < n.length; i += 2) pts.push([n[i], n[i + 1]]);
+    const segs = [];
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1];
+      const l = Math.sqrt(dx * dx + dy * dy);
+      segs.push({ a: pts[i - 1], b: pts[i], l, s: total });
+      total += l;
+    }
+    return {
+      length: total,
+      at(u) {
+        let x = clamp(u) * total;
+        for (const g of segs) {
+          if (x <= g.l || g === segs[segs.length - 1]) {
+            const f = g.l ? clamp(x / g.l) : 0;
+            return [lerp(g.a[0], g.b[0], f), lerp(g.a[1], g.b[1], f)];
+          }
+          x -= g.l;
+        }
+        return pts[pts.length - 1];
+      },
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  icons — all drawn, never typeset, so they never depend on metrics
+   * ------------------------------------------------------------------ */
+
   const LAPTOP = `<svg width="118" height="88" viewBox="0 0 118 88" fill="none" aria-hidden="true">
-    <rect x="15" y="6" width="88" height="60" rx="9" stroke="currentColor" stroke-width="3.4" opacity="0.9"/>
-    <rect x="23" y="14" width="72" height="44" rx="5" fill="var(--accent)" opacity="0.10"/>
-    <text x="59" y="38" text-anchor="middle" dominant-baseline="central"
-      font-family="JBMono" font-size="21" font-weight="700" fill="var(--accent-l)">&gt;_</text>
-    <rect x="4" y="71" width="110" height="9" rx="4.5" fill="currentColor" opacity="0.55"/>
+    <rect x="15" y="5" width="88" height="62" rx="11" stroke="currentColor" stroke-width="3.4" opacity="0.85"/>
+    <rect x="23" y="13" width="72" height="46" rx="5" fill="currentColor" opacity="0.07"/>
+    <path d="M42 29l10 8.5-10 8.5" stroke="var(--accent-l)" stroke-width="4.4"
+      stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M58 46h13" stroke="var(--accent-l)" stroke-width="4.4" stroke-linecap="round"/>
+    <rect x="4" y="73" width="110" height="9" rx="4.5" fill="currentColor" opacity="0.5"/>
   </svg>`;
 
   const SERVER = `<svg width="92" height="88" viewBox="0 0 92 88" fill="none" aria-hidden="true">
-    <rect x="8" y="4" width="76" height="80" rx="10" stroke="currentColor" stroke-width="3.2" opacity="0.9"/>
+    <rect x="8" y="4" width="76" height="80" rx="12" stroke="currentColor" stroke-width="3.2" opacity="0.85"/>
     ${[0, 1, 2].map((i) => {
-      const y = 18 + i * 22;
-      return `<rect x="18" y="${y}" width="56" height="15" rx="4" fill="currentColor" opacity="0.12"/>
-              <circle cx="27" cy="${y + 7.5}" r="3.4" fill="var(--accent)"/>`;
+      const y = 17 + i * 22;
+      return `<rect x="18" y="${y}" width="56" height="16" rx="5" fill="currentColor" opacity="0.09"/>
+        <circle cx="27.5" cy="${y + 8}" r="3.6" fill="var(--accent)"/>
+        <rect x="38" y="${y + 6}" width="27" height="4" rx="2" fill="currentColor" opacity="0.22"/>`;
     }).join("")}
   </svg>`;
 
+  const LOCK = `<svg viewBox="0 0 24 24" width="23" height="23" fill="none" aria-hidden="true">
+    <rect x="4.6" y="10.4" width="14.8" height="10.2" rx="3.2" stroke="currentColor" stroke-width="2.2"/>
+    <path d="M7.9 10.4V7.9a4.1 4.1 0 0 1 8.2 0v2.5" stroke="currentColor"
+      stroke-width="2.2" stroke-linecap="round"/>
+    <circle cx="12" cy="15.5" r="1.7" fill="currentColor"/></svg>`;
+
+  const CONTAINER = `<svg viewBox="0 0 28 26" width="31" height="29" fill="none" aria-hidden="true">
+    <path d="M14 3.2l11 6.2v8.4L14 24 3 17.8V9.4z" stroke="currentColor" stroke-width="1.9"
+      stroke-linejoin="round"/>
+    <path d="M3 9.4l11 6.2 11-6.2M14 15.6V24" stroke="currentColor" stroke-width="1.9"
+      stroke-linejoin="round" opacity="0.65"/></svg>`;
+
+  const DOC = `<svg viewBox="0 0 26 26" width="28" height="28" fill="none" aria-hidden="true">
+    <rect x="4.6" y="2.6" width="16.8" height="20.8" rx="3.4" stroke="currentColor"
+      stroke-width="1.9"/>
+    <path d="M9 9h8M9 13.2h8M9 17.4h5" stroke="currentColor" stroke-width="1.9"
+      stroke-linecap="round"/></svg>`;
+
+  // the three routes, drawn as a family so they can be read side by side.
+  // each carries a `mflow` dot that travels the live path while the card is lit.
+  function modeGlyph(kind) {
+    const dev = (x) => `
+      <rect x="${x}" y="78" width="58" height="42" rx="9" stroke="currentColor" stroke-width="3.2" opacity="0.85"/>
+      <rect x="${x + 8}" y="86" width="42" height="26" rx="4" fill="currentColor" opacity="0.08"/>
+      <rect x="${x + 12}" y="124" width="34" height="4" rx="2" fill="currentColor" opacity="0.3"/>`;
+    const box_ = `<rect x="102" y="18" width="36" height="30" rx="9"
+      stroke="currentColor" stroke-width="3.2"/>`;
+    const head = `<svg width="364" height="212" viewBox="0 0 240 140" fill="none" aria-hidden="true">`;
+    const devices = dev(10) + dev(172);
+    if (kind === "local") {
+      return head + devices +
+        `<path d="M68 99h104" stroke="var(--green)" stroke-width="6" stroke-linecap="round"/>
+         <circle class="mflow" cx="68" cy="99" r="7" fill="var(--green)" opacity="0"/>
+         <circle cx="120" cy="99" r="9" fill="var(--green)"/></svg>`;
+    }
+    if (kind === "direct") {
+      return head + `<g stroke="currentColor" stroke-width="3" fill="none" opacity="0.35">${box_}</g>` +
+        devices +
+        `<path d="M68 99L120 48M172 99L120 48" stroke="currentColor" stroke-width="2.4"
+           stroke-dasharray="9 9" opacity="0.32"/>
+         <path d="M68 99h104" stroke="var(--blue)" stroke-width="6" stroke-linecap="round"/>
+         <circle class="mflow" cx="68" cy="99" r="7" fill="var(--blue)" opacity="0"/></svg>`;
+    }
+    return head + `<g fill="#17120f">${box_}</g>` + devices +
+      `<path d="M68 99h104" stroke="currentColor" stroke-width="2.6" stroke-dasharray="2 11"
+         stroke-linecap="round" opacity="0.35"/>
+       <path d="M68 99L120 48M172 99L120 48" stroke="var(--accent)" stroke-width="6"
+         stroke-linecap="round"/>
+       <circle class="mflow" cx="68" cy="99" r="7" fill="var(--accent)" opacity="0"/></svg>`;
+  }
+
+  // where the `mflow` dot sits at u in [0,1) for each route
+  const MODE_FLOW = {
+    local: (u) => [lerp(68, 172, u), 99],
+    direct: (u) => [lerp(68, 172, u), 99],
+    relay: (u) => (u < 0.5
+      ? [lerp(68, 120, u * 2), lerp(99, 48, u * 2)]
+      : [lerp(120, 172, (u - 0.5) * 2), lerp(48, 99, (u - 0.5) * 2)]),
+  };
+
+  /* ------------------------------------------------------------------ *
+   *  cards
+   * ------------------------------------------------------------------ */
+
   function deviceCard(layer, x, y, name) {
     const card = anchor(layer, x, y, "card dev");
-    card.style.cssText += layerPos(0, 0);
     card.innerHTML = `<div class="glyph">${LAPTOP}</div><div class="name">${name}</div>`;
     return card;
   }
-  function hubCard(layer, x, y, name, tag) {
+  function hubCard(layer, x, y, name) {
     const card = anchor(layer, x, y, "card hub");
-    card.innerHTML = `<div class="glyph">${SERVER}</div>
-      <div class="name">${name}</div>${tag ? `<div class="tag">${tag}</div>` : ""}`;
+    card.innerHTML = `<div class="glyph">${SERVER}</div><div class="name">${name}</div>
+      <div class="tag"></div>`;
     return card;
   }
 
-  /* SVG link / markers ---------------------------------------------------- */
+  // a terminal window. lines are either typed out character by character
+  // (`type: true`) or simply revealed.
+  function makeTerm(layer, cx, width, name, lines) {
+    const c = atTop(layer, cx, 0, "term");
+    c.style.width = width + "px";
+    c.innerHTML = `<div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i>
+      <span class="name">${name}</span></div><div class="body"></div>`;
+    const body = c.querySelector(".body");
+    const rows = lines.map((l) => {
+      const n = el("div", "ln" + (l.cls ? " " + l.cls : ""), body);
+      n.style.visibility = "hidden";
+      if (l.type) {
+        const tx = el("span", "tx", n);
+        const cur = el("span", "caret", n);
+        return { node: n, text: l.text, type: true, tx, cur };
+      }
+      n.textContent = l.text;
+      return { node: n, text: l.text, type: false };
+    });
+    return { card: c, rows };
+  }
+  // type `text` into a row, p = 0..1
+  function typeInto(row, p) {
+    const shown = Math.round(clamp(p) * row.text.length);
+    row.tx.textContent = row.text.slice(0, shown);
+    row.cur.style.opacity = shown >= row.text.length ? 0 : 1;
+  }
+
+  // the accent tick belongs under the *word*, not under the whole lockup
+  // (the chevron hangs to the left and would drag the centre off)
+  function alignUnderline(wm, under) {
+    afterFonts(() => {
+      const name = wm.querySelector(".name");
+      const r = name.getBoundingClientRect();
+      under.parentElement.style.left = (r.left + r.width / 2).toFixed(1) + "px";
+    });
+  }
+
+  /* SVG links ------------------------------------------------------------ */
   function dashLink(parent, d, color, width) {
-    const p = svg("path", { d, fill: "none", stroke: color, "stroke-width": width,
+    return svg("path", { d, fill: "none", stroke: color, "stroke-width": width,
       "stroke-dasharray": "14 16", "stroke-linecap": "round" }, parent);
-    return p;
   }
   function solidLink(parent, d, color, width) {
     // a wide, low-opacity stroke reads as a glow without an SVG filter (which
@@ -73,22 +235,21 @@
     return { glow, core };
   }
 
-  /* flowing packets ------------------------------------------------------- */
-  function makeFlow(parent, d, opts) {
+  /* flowing packets — a head with a fading comet trail -------------------- */
+  function makeFlow(parent, smp, opts) {
     const { n = 3, r = 9, color = "#fff", sealed = false, size = 1 } = opts;
-    const path = svg("path", { d, fill: "none", stroke: "none" }, parent);
-    const L = path.getTotalLength();
     const items = [];
     for (let i = 0; i < n; i++) {
-      let node;
+      const g = svg("g", {}, parent);
+      const trails = [];
       if (!sealed) {
-        const g = svg("g", {}, parent);
-        svg("circle", { r: r * 2.8, fill: color, opacity: 0.12 }, g);
-        svg("circle", { r: r * 1.7, fill: color, opacity: 0.26 }, g);
+        for (let j = 0; j < 3; j++) {
+          trails.push(svg("circle",
+            { r: r * (1 - j * 0.24), fill: color, opacity: (0.30 - j * 0.08).toFixed(2) }, g));
+        }
+        svg("circle", { r: r * 1.95, fill: color, opacity: 0.16 }, g);
         svg("circle", { r, fill: color }, g);
-        node = g;
       } else {
-        const g = svg("g", {}, parent);
         const w = 34 * size, h = 24 * size;
         svg("circle", { r: r * 2.4, fill: color, opacity: 0.14 }, g);
         svg("rect", { x: -w / 2, y: -h / 2, width: w, height: h, rx: 4 * size,
@@ -96,28 +257,33 @@
         svg("path", { d: `M ${-w / 2} ${-h / 2 + 2} L 0 ${2 * size} L ${w / 2} ${-h / 2 + 2}`,
           fill: "none", stroke: color, "stroke-width": 2.2 }, g);
         svg("circle", { cx: 0, cy: 2 * size, r: 3.1 * size, fill: color }, g);
-        node = g;
       }
-      items.push(node);
-      node.style.opacity = 0;   // nothing shows until update() runs
+      items.push({ node: g, trails });
+      g.style.opacity = 0;   // nothing shows until update() runs
     }
     return {
       update(t, speed, alpha) {
-        if (alpha <= 0.001) { items.forEach((n) => (n.style.opacity = 0)); return; }
-        items.forEach((node, i) => {
+        if (alpha <= 0.001) { items.forEach((it) => (it.node.style.opacity = 0)); return; }
+        items.forEach((it, i) => {
           const u = ((t * speed + i / items.length) % 1 + 1) % 1;
-          const pt = path.getPointAtLength(u * L);
-          node.setAttribute("transform", `translate(${pt.x.toFixed(2)},${pt.y.toFixed(2)})`);
+          const [px, py] = smp.at(u);
+          it.node.setAttribute("transform",
+            `translate(${px.toFixed(2)},${py.toFixed(2)})`);
           // fade in/out at the ends for a clean entry/exit
           const edge = Math.min(1, Math.min(u, 1 - u) / 0.12);
-          node.style.opacity = (alpha * clamp(edge)).toFixed(3);
+          it.node.style.opacity = (alpha * clamp(edge)).toFixed(3);
+          it.trails.forEach((c, j) => {
+            const [tx, ty] = smp.at(u - (j + 1) * 0.026);
+            c.setAttribute("cx", (tx - px).toFixed(2));
+            c.setAttribute("cy", (ty - py).toFixed(2));
+          });
         });
       },
-      hide() { items.forEach((n) => (n.style.opacity = 0)); },
+      hide() { items.forEach((it) => (it.node.style.opacity = 0)); },
     };
   }
 
-  /* a soft cloud behind the hub (gradient, so no blur filter is needed) ---- */
+  /* a soft cloud behind the hub (gradient, so no blur filter is needed) --- */
   function cloud(parent, cx, cy, alpha) {
     const g = svg("g", { opacity: 0 }, parent);
     [[0, 6, 300, 168], [-168, 26, 152, 112], [176, 26, 152, 112], [0, 58, 214, 108]]
@@ -130,30 +296,28 @@
    *  SCENE: brand
    * ====================================================================== */
   function brand(layer, api) {
-    const wm = anchor(layer, 960, 452);
+    const wm = anchor(layer, 960, 440);
     const w = A.wordmark(wm, 150);
-    const under = anchor(layer, 960, 545);
+    const under = anchor(layer, 960, 534);
     under.innerHTML = `<div class="underline"></div>`;
-    under.style.cssText += "transform-origin:50% 50%";
-    const tag = anchor(layer, 960, 610);
+    alignUnderline(wm, under);
+    const tag = anchor(layer, 960, 604);
     tag.className += " lead";
     tag.style.textAlign = "center";
     tag.textContent = "Send any file, straight from one computer to another.";
 
-    const labels = ["peer-to-peer", "end-to-end encrypted", "open source"];
-    const pills = labels.map((lab, i) => {
+    const pills = ["peer-to-peer", "end-to-end encrypted", "open source"].map((lab) => {
       const p = anchor(layer, 0, 706, "pill");
       p.textContent = lab;
       return p;
     });
 
     return function (t) {
-      reveal(wm, ramp(t, 0.75, 1.6));
-      const cur = wm.querySelector(".cur");
-      if (cur) cur.style.opacity = Math.floor(t * 2) % 2 === 0 ? 1 : 0.05;
-      const up = A.easeOutExpo(ramp(t, 0.95, 2.0));
+      reveal(wm, ramp(t, 0.7, 1.55));
+      if (w.cursor) w.cursor.style.opacity = Math.floor(t * 2) % 2 === 0 ? 1 : 0.05;
+      const up = A.easeOutExpo(ramp(t, 0.92, 1.95));
       under.querySelector(".underline").style.transform = `scaleX(${up.toFixed(3)})`;
-      reveal(tag, ramp(t, 2.5, 3.4));
+      reveal(tag, ramp(t, 2.45, 3.35));
       // pills: measure, then lay out centred
       const gap = 24;
       const widths = pills.map((p) => p.getBoundingClientRect().width);
@@ -162,8 +326,9 @@
       pills.forEach((p, i) => {
         const outer = p.parentElement;
         outer.style.left = x + widths[i] / 2 + "px";
-        outer.style.top = "712px";
-        reveal(p, ramp(t, 3.5 + i * 0.16, 4.15 + i * 0.16), { ease: A.easeOutBack, dy: 16, scale: 0.9, blur: 6 });
+        outer.style.top = "706px";
+        reveal(p, ramp(t, 3.5 + i * 0.16, 4.15 + i * 0.16),
+          { ease: A.easeOutBack, dy: 16, scale: 0.9, blur: 6 });
         x += widths[i] + gap;
       });
     };
@@ -173,61 +338,67 @@
    *  SCENE: cmd — the two terminals
    * ====================================================================== */
   function cmd(layer, api) {
-    const head = anchor(layer, 960, 132, "h2");
-    head.textContent = "One command to send, one to receive.";
-    head.style.fontSize = "54px";
-
     const CW = 1080;
-    function term(x, y, name, lines) {
-      const c = anchor(layer, x, y, "term");
-      c.style.width = CW + "px";
-      c.innerHTML = `<div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i>
-        <span class="name">${name}</span></div><div class="body"></div>`;
-      const body = c.querySelector(".body");
-      const nodes = lines.map((l) => {
-        const n = el("div", "ln" + (l.cls ? " " + l.cls : ""), body);
-        n.textContent = l.text;
-        n.style.visibility = "hidden";
-        return n;
-      });
-      return { card: c, nodes };
-    }
+    const LEFT = 960 - CW / 2;
 
-    const sBadge = anchorLeft(layer, 420, 268, "badge");
+    const head = atTop(layer, 960, 0, "h2");
+    head.textContent = "One command to send, one to receive.";
+
+    const sBadge = atTopLeft(layer, LEFT, 0, "badge");
     sBadge.textContent = "Sender";
-    const sender = term(960, 452, "you — zsh", [
-      { text: "$ fsend drone-4k.mov" },
+    const sender = makeTerm(layer, 960, CW, "you — zsh", [
+      { text: "$ fsend drone-4k.mov", type: true },
       { text: "  drone-4k.mov   ·   2.3 GB", cls: "dim" },
       { text: "  share code:  abc-defg-jkm", cls: "acc" },
     ]);
 
-    const rBadge = anchorLeft(layer, 420, 620, "badge ok");
+    const rBadge = atTopLeft(layer, LEFT, 0, "badge ok");
     rBadge.textContent = "Receiver";
-    const recv = term(960, 800, "your friend — zsh", [
-      { text: "$ fsend abc-defg-jkm" },
+    const recv = makeTerm(layer, 960, CW, "your friend — zsh", [
+      { text: "$ fsend abc-defg-jkm", type: true },
       { text: "  from your friend   ·   accept? y", cls: "dim" },
     ]);
 
-    const bar = anchor(layer, 960, 948, "");
-    bar.style.width = CW - 68 + "px";
+    const bar = atTop(layer, 960, 0);
+    bar.style.width = CW + "px";
     bar.innerHTML = `<div class="bar-track"><div class="bar-fill"></div></div>`;
     const fill = bar.querySelector(".bar-fill");
-    const status = anchor(layer, 960, 992, "mono");
+    const status = atTop(layer, 960, 0, "mono");
     status.style.fontSize = "28px";
+
+    afterFonts(() => {
+      // A section label belongs to the card *below* it: 14px under the label
+      // starts the card, 58px above the label separates it from the card above.
+      stack(96, [
+        [head, 46],
+        [sBadge, 14],
+        [sender.card, 58],
+        [rBadge, 14],
+        [recv.card, 46],
+        [bar, 26],
+        [status, 0],
+      ]);
+    });
 
     return function (t) {
       reveal(head, ramp(t, -0.6, -0.05));
       reveal(sBadge, ramp(t, -0.55, -0.05));
       reveal(sender.card, ramp(t, -0.5, 0.0));
-      reveal(sender.nodes[0], ramp(t, -0.35, 0.12), { dy: 12, blur: 6 });
-      reveal(sender.nodes[1], ramp(t, 1.2, 1.7), { dy: 12, blur: 6 });
-      reveal(sender.nodes[2], ramp(t, api.on("cmd1", "code") - 0.2, api.on("cmd1", "code") + 0.35), { dy: 12, blur: 6 });
+      // the command types itself, then its output lands
+      const tp = ramp(t, 0.05, 0.95);
+      typeInto(sender.rows[0], tp);
+      reveal(sender.rows[0].node, ramp(t, 0.0, 0.2), { dy: 12, blur: 6 });
+      reveal(sender.rows[1].node, ramp(t, 1.15, 1.65), { dy: 12, blur: 6 });
+      reveal(sender.rows[2].node,
+        ramp(t, api.on("cmd1", "code") - 0.2, api.on("cmd1", "code") + 0.35), { dy: 12, blur: 6 });
 
       const r0 = api.segStart("cmd2");
       reveal(rBadge, ramp(t, r0, r0 + 0.55));
       reveal(recv.card, ramp(t, r0 + 0.08, r0 + 0.85));
-      reveal(recv.nodes[0], ramp(t, r0 + 0.35, r0 + 0.8), { dy: 12, blur: 6 });
-      reveal(recv.nodes[1], ramp(t, api.on("cmd2", "runs") - 0.25, api.on("cmd2", "runs") + 0.2), { dy: 12, blur: 6 });
+      typeInto(recv.rows[0], ramp(t, r0 + 0.4, r0 + 1.15));
+      reveal(recv.rows[0].node, ramp(t, r0 + 0.3, r0 + 0.6), { dy: 12, blur: 6 });
+      reveal(recv.rows[1].node,
+        ramp(t, api.on("cmd2", "runs") - 0.25, api.on("cmd2", "runs") + 0.2), { dy: 12, blur: 6 });
 
       const p0 = api.on("cmd2", "runs") + 0.2, p1 = api.on("cmd2", "lands") + 0.35;
       const p = A.easeInOutCubic(ramp(t, p0, p1));
@@ -242,51 +413,74 @@
   }
 
   /* ====================================================================== *
-   *  SCENE: modes — the three paths, revealed as the narration names them
+   *  SCENE: modes — the three routes, lit as the narration names them
    * ====================================================================== */
   function modes(layer, api) {
-    const head = anchor(layer, 960, 172, "h2");
+    const head = atTop(layer, 960, 0, "h2");
     head.textContent = "How fsend works";
+
     const defs = [
-      ["LOCAL", "same network → connect directly", "server not needed · works offline", "var(--green)"],
-      ["DIRECT", "across the internet → connect directly", "server only introduces them", "var(--blue)"],
-      ["RELAY", "across the internet → relayed", "relayed data is always encrypted", "var(--accent)"],
+      ["LOCAL", "local", "Direct", "same network", "works offline", "var(--green)"],
+      ["DIRECT", "direct", "Direct", "across the internet", "server only introduces", "var(--blue)"],
+      ["RELAY", "relay", "Relayed", "when direct is blocked", "ciphertext only", "var(--accent)"],
     ];
-    const cards = defs.map(([name, desc, note, color], i) => {
-      const card = anchor(layer, 960, 360 + i * 150, "card modecard");
-      card.style.cssText += `--mc:${color}`;
+    const CW = 496, CGAP = 46;
+    const x0 = 960 - (CW * 3 + CGAP * 2) / 2 + CW / 2;
+    const kinds = defs.map((d) => d[1]);
+    const flows = [];
+    const cards = defs.map(([name, kind, desc, n1, n2, color], i) => {
+      const card = atTop(layer, x0 + i * (CW + CGAP), 0, "card modecard");
+      card.style.width = CW + "px";
+      card.style.setProperty("--mc", color);
       card.innerHTML =
-        `<div class="mlabel"><span class="mdot"></span>${name}</div>
-         <div class="mdiv"></div>
-         <div class="mtext"><div class="mdesc">${desc}</div><div class="mnote">${note}</div></div>
-         <div class="mcheck">✓</div>`;
+        `<div class="msweep"></div>
+         <div class="mwrap">
+           <div class="mglyph">${modeGlyph(kind)}</div>
+           <div class="mlabel"><span class="mdot"></span>${name}</div>
+           <div class="mdesc">${desc}</div>
+           <div class="mnote">${n1}</div>
+           <div class="mnote">${n2}</div>
+           <div class="mcheck">✓</div>
+         </div>`;
+      flows.push(card.querySelector(".mflow"));
       return card;
     });
-    const foot = anchor(layer, 960, 880, "");
-    foot.innerHTML = `<div class="lockrow"><span class="lock">${LOCK}</span>End-to-end encrypted on every path</div>`;
+
+    afterFonts(() => {
+      moveTo(head, 96);
+      const top = 96 + hOf(head) + 92;
+      cards.forEach((c) => moveTo(c, top));
+    });
 
     return function (t) {
       reveal(head, ramp(t, -0.62, -0.06));
       cards.forEach((card, i) => {
         const appear = -0.72 - i * 0.12;
         const act = api.on("modes1", ["local", "direct", "relay"][i]);
-        // ghost in
-        reveal(card, ramp(t, appear, appear + 0.55), { dy: 20, scale: 0.97 });
+        reveal(card, ramp(t, appear, appear + 0.55), { dy: 22, scale: 0.97 });
         const on = ramp(t, act - 0.06, act + 0.4);
         card.classList.toggle("active", on > 0.02);
         card.style.setProperty("--on", on.toFixed(3));
+        // a packet runs the route while the card is lit
+        const f = flows[i];
+        if (f) {
+          const u = ((t * 0.34) % 1 + 1) % 1;
+          const [fx, fy] = MODE_FLOW[kinds[i]](u);
+          f.setAttribute("cx", fx.toFixed(1));
+          f.setAttribute("cy", fy.toFixed(1));
+          f.setAttribute("opacity", (on * clamp(Math.min(u, 1 - u) / 0.09)).toFixed(3));
+        }
       });
-      reveal(foot, ramp(t, api.on("modes1", "relay") + 0.4, api.on("modes1", "relay") + 1.1), { dy: 16, blur: 8 });
     };
   }
 
   /* ====================================================================== *
    *  the transfer diagram (local / direct / relay share all of this)
    * ====================================================================== */
-  const LXC = 430, RXC = 1490, DYC = 705, HUBC = 355;
-  const NET = { x0: 150, x1: 1770, y0: 580, y1: 830 };
-  const BOXL = { x0: 168, x1: 692, y0: 580, y1: 830 };
-  const BOXR = { x0: 1228, x1: 1752, y0: 580, y1: 830 };
+  const LXC = 430, RXC = 1490, DYC = 725, HUBC = 392;
+  const NET = { x0: 150, x1: 1770, y0: 600, y1: 850 };
+  const BOXL = { x0: 168, x1: 692, y0: 600, y1: 850 };
+  const BOXR = { x0: 1228, x1: 1752, y0: 600, y1: 850 };
 
   function transferScene(layer, api, mode) {
     const MC = { local: "var(--green)", direct: "var(--blue)", relay: "var(--accent)" }[mode];
@@ -294,10 +488,9 @@
                   direct: "over the internet",
                   relay: "over the internet · when a direct path is blocked" }[mode];
 
-    const chip = anchor(layer, 960, 150, "chip");
+    const chip = atTop(layer, 960, 0, "chip");
     chip.innerHTML = `<span class="dot"></span>${mode.toUpperCase()}`;
-    const sub = anchor(layer, 960, 214);
-    sub.className += " lead";
+    const sub = atTop(layer, 960, 0, "lead");
     sub.style.fontSize = "30px";
     sub.textContent = SUB;
 
@@ -324,52 +517,73 @@
     // devices + hub
     const devA = deviceCard(layer, LXC, DYC, "your device");
     const devB = deviceCard(layer, RXC, DYC, "their device");
-    const hub = hubCard(layer, 960, HUBC, mode === "local" ? "server" : "fsend.alzina.dev", "");
+    const hub = hubCard(layer, 960, HUBC, mode === "local" ? "server" : "fsend.alzina.dev");
+    const hubTag = hub.querySelector(".tag");
+    const setHub = (state) => hub.style.setProperty("--hub", state);
 
-    // links. The hub geometry is measured after layout so the links always meet
-    // the card's bottom edge, whatever its content makes it.
-    const hr = hub.getBoundingClientRect();
-    const svY = hr.bottom + 26;
-    const lp = [LXC + 160, DYC], rp = [RXC - 160, DYC];
-    const svl = [960 - 92, svY], svr = [960 + 92, svY];
-    const direct = solidLink(s, `M ${lp[0]} ${lp[1]} L ${rp[0]} ${rp[1]}`, MC, 6);
-    direct.glow.style.opacity = 0; direct.core.style.opacity = 0;
-    const dA = dashLink(s, `M ${lp[0]} ${lp[1]} L ${svl[0]} ${svl[1]}`, MC, 4); dA.setAttribute("opacity", 0);
-    const dB = dashLink(s, `M ${rp[0]} ${rp[1]} L ${svr[0]} ${svr[1]}`, MC, 4); dB.setAttribute("opacity", 0);
-    const relD = `M ${lp[0]} ${lp[1]} L ${svl[0]} ${svl[1]} L ${svr[0]} ${svr[1]} L ${rp[0]} ${rp[1]}`;
-    const relayPath = svg("path", { d: relD, fill: "none", stroke: MC, "stroke-width": 6, opacity: 0 }, s);
-    const relayGlow = svg("path", { d: relD, fill: "none", stroke: MC, "stroke-width": 20, opacity: 0, class: "spark" }, s);
-
-    // the "direct attempt" (relay scene) — two halves that meet in the middle
-    const halfA = svg("path", { d: `M ${lp[0]} ${lp[1]} L 930 ${DYC}`, fill: "none", stroke: "var(--red)", "stroke-width": 5, opacity: 0 }, s);
-    const halfB = svg("path", { d: `M ${rp[0]} ${rp[1]} L 990 ${DYC}`, fill: "none", stroke: "var(--red)", "stroke-width": 5, opacity: 0 }, s);
-    const xg = svg("g", { opacity: 0 }, s);
-    svg("circle", { cx: 960, cy: DYC, r: 34, fill: "#1a1110", stroke: "var(--red)", "stroke-width": 3 }, xg);
-    svg("path", { d: `M 945 ${DYC - 15} L 975 ${DYC + 15} M 975 ${DYC - 15} L 945 ${DYC + 15}`, stroke: "var(--red)", "stroke-width": 5, "stroke-linecap": "round" }, xg);
-
-    // packet streams
-    const fDirect = makeFlow(s, `M ${lp[0]} ${lp[1]} L ${rp[0]} ${rp[1]}`, { n: 3, r: 8, color: MC });
-    const fA = makeFlow(s, `M ${lp[0]} ${lp[1]} L ${svl[0]} ${svl[1]}`, { n: 2, r: 7, color: MC });
-    const fB = makeFlow(s, `M ${rp[0]} ${rp[1]} L ${svr[0]} ${svr[1]}`, { n: 2, r: 7, color: MC });
-    const fRelay = makeFlow(s, relD, { n: 3, sealed: true, color: MC, size: 1.15 });
-
-    // captions
-    const cap = anchor(layer, 960, DYC + 172, "mono");
+    const cap = atTop(layer, 960, 0, "mono");
     cap.style.fontSize = "28px";
     cap.style.color = "var(--dim)";
-    const cap2 = anchor(layer, 960, DYC + 236, "");
+    const cap2 = atTop(layer, 960, 0);
     cap2.innerHTML = `<div class="lockrow"><span class="lock">${LOCK}</span>End-to-end encrypted</div>`;
-    const tagOnHub = (txt) => {
-      const t = hub.querySelector(".tag");
-      if (t) t.textContent = txt;
-    };
-    const hubTag = el("div", "tag", null);
-    hubTag.textContent = "";
-    hub.appendChild(hubTag);
 
-    function setHub(state) {
-      hub.style.setProperty("--hub", state);   // 1 = lit, 0 = dormant
-    }
+    // everything below is built once the real font metrics are known, so the
+    // links always meet the cards exactly
+    let direct, dA, dB, relayPath, relayGlow, halfA, halfB, xg;
+    let fDirect, fA, fB, fRelay;
+
+    afterFonts(() => {
+      moveTo(chip, 100);
+      moveTo(sub, 100 + hOf(chip) + 30);
+      // the hub card is centre-anchored, so give it its centre
+      const hubH = hOf(hub);
+      const hubTop = 100 + hOf(chip) + 30 + hOf(sub) + 58;
+      moveTo(hub, hubTop + hubH / 2);
+      const hubBottom = hubTop + hubH;
+      const svY = hubBottom + 26;
+      const lp = [LXC + 160, DYC], rp = [RXC - 160, DYC];
+      const svl = [960 - 92, svY], svr = [960 + 92, svY];
+
+      const dDirect = `M ${lp[0]} ${lp[1]} L ${rp[0]} ${rp[1]}`;
+      const dRelay = `M ${lp[0]} ${lp[1]} L ${svl[0]} ${svl[1]} L ${svr[0]} ${svr[1]} L ${rp[0]} ${rp[1]}`;
+      const smpDirect = sampler(dDirect), smpRelay = sampler(dRelay);
+      const smpA = sampler(`M ${lp[0]} ${lp[1]} L ${svl[0]} ${svl[1]}`);
+      const smpB = sampler(`M ${rp[0]} ${rp[1]} L ${svr[0]} ${svr[1]}`);
+
+      direct = solidLink(s, dDirect, MC, 6);
+      direct.glow.style.opacity = 0; direct.core.style.opacity = 0;
+      dA = dashLink(s, `M ${lp[0]} ${lp[1]} L ${svl[0]} ${svl[1]}`, MC, 4);
+      dB = dashLink(s, `M ${rp[0]} ${rp[1]} L ${svr[0]} ${svr[1]}`, MC, 4);
+      dA.setAttribute("opacity", 0); dB.setAttribute("opacity", 0);
+      relayPath = svg("path", { d: dRelay, fill: "none", stroke: MC, "stroke-width": 6, opacity: 0 }, s);
+      relayGlow = svg("path", { d: dRelay, fill: "none", stroke: MC, "stroke-width": 20,
+        opacity: 0, class: "spark" }, s);
+
+      // the "direct attempt" (relay scene) — two halves that meet in the middle
+      halfA = svg("path", { d: `M ${lp[0]} ${lp[1]} L 930 ${DYC}`, fill: "none",
+        stroke: "var(--red)", "stroke-width": 5, opacity: 0 }, s);
+      halfB = svg("path", { d: `M ${rp[0]} ${rp[1]} L 990 ${DYC}`, fill: "none",
+        stroke: "var(--red)", "stroke-width": 5, opacity: 0 }, s);
+      xg = svg("g", { opacity: 0 }, s);
+      svg("circle", { cx: 960, cy: DYC, r: 34, fill: "#1a1110", stroke: "var(--red)",
+        "stroke-width": 3 }, xg);
+      svg("path", { d: `M 945 ${DYC - 15} L 975 ${DYC + 15} M 975 ${DYC - 15} L 945 ${DYC + 15}`,
+        stroke: "var(--red)", "stroke-width": 5, "stroke-linecap": "round" }, xg);
+
+      fDirect = makeFlow(s, smpDirect, { n: 3, r: 8, color: MC });
+      fA = makeFlow(s, smpA, { n: 2, r: 7, color: MC });
+      fB = makeFlow(s, smpB, { n: 2, r: 7, color: MC });
+      fRelay = makeFlow(s, smpRelay, { n: 3, sealed: true, color: MC, size: 1.15 });
+
+      // lengths for the "draw on" dash reveal
+      direct.core.dataset.len = smpDirect.length;
+      relayPath.dataset.len = smpRelay.length;
+      halfA.dataset.len = Math.hypot(930 - lp[0], DYC - lp[1]);
+      halfB.dataset.len = Math.hypot(990 - rp[0], DYC - rp[1]);
+
+      moveTo(cap, DYC + 160);
+      moveTo(cap2, DYC + 218);
+    });
 
     return function (t) {
       reveal(chip, ramp(t, -0.62, -0.06));
@@ -384,14 +598,15 @@
       // the local path never leaves the LAN, so there is no internet cloud
       cl.set(mode === "local" ? 0 : appear);
       setHub(mode === "local" ? 0.25 : 1);
+      let lit = 0;   // how alive the two endpoints are
 
       if (mode === "local") {
-        // the link draws on, then packets flow
         const linkP = A.easeOutCubic(ramp(t, api.on("local1", "connects") - 0.15, api.on("local1", "connects") + 0.6));
+        lit = linkP;
         direct.core.style.opacity = linkP;
         direct.glow.style.opacity = 0.30 * linkP;
         if (linkP > 0) {
-          const L = direct.core.getTotalLength();
+          const L = direct.core.dataset.len;
           direct.core.setAttribute("stroke-dasharray", `${L * linkP} ${L}`);
           direct.glow.setAttribute("stroke-dasharray", `${L * linkP} ${L}`);
         }
@@ -414,8 +629,9 @@
         dB.setAttribute("opacity", pairA);
         if (pairA > 0.01) { dA.setAttribute("stroke-dashoffset", (-t * 60).toFixed(1)); dB.setAttribute("stroke-dashoffset", (t * 60).toFixed(1)); }
         const linkP = A.easeOutCubic(ramp(t, api.on("direct1", "connects") - 0.15, api.on("direct1", "connects") + 0.65));
+        lit = linkP;
         direct.core.style.opacity = linkP; direct.glow.style.opacity = 0.30 * linkP;
-        if (linkP > 0) { const L = direct.core.getTotalLength();
+        if (linkP > 0) { const L = direct.core.dataset.len;
           direct.core.setAttribute("stroke-dasharray", `${L * linkP} ${L}`);
           direct.glow.setAttribute("stroke-dasharray", `${L * linkP} ${L}`); }
         fDirect.update(t, 0.36, ramp(t, api.on("direct1", "connects") + 0.7, api.on("direct1", "connects") + 1.15));
@@ -438,7 +654,7 @@
         // the direct attempt fails …
         const att = A.easeOutCubic(ramp(t, 0.95, 1.85));
         if (att > 0) {
-          const la = halfA.getTotalLength(), lb = halfB.getTotalLength();
+          const la = Number(halfA.dataset.len), lb = Number(halfB.dataset.len);
           halfA.setAttribute("opacity", att); halfB.setAttribute("opacity", att);
           halfA.setAttribute("stroke-dasharray", `${la * att} ${la}`);
           halfB.setAttribute("stroke-dasharray", `${lb * att} ${lb}`);
@@ -450,8 +666,9 @@
         halfB.setAttribute("opacity", att * fadeAttempt);
         // … so it relays, end to end encrypted
         const rp2 = A.easeOutCubic(ramp(t, api.on("relay1", "relay") - 0.2, api.on("relay1", "relay") + 0.7));
+        lit = rp2;
         relayPath.setAttribute("opacity", rp2); relayGlow.setAttribute("opacity", 0.26 * rp2);
-        if (rp2 > 0) { const L = relayPath.getTotalLength();
+        if (rp2 > 0) { const L = relayPath.dataset.len;
           relayPath.setAttribute("stroke-dasharray", `${L * rp2} ${L}`);
           relayGlow.setAttribute("stroke-dasharray", `${L * rp2} ${L}`); }
         fRelay.update(t, 0.24, ramp(t, api.on("relay1", "relay") + 0.75, api.on("relay1", "relay") + 1.3));
@@ -469,6 +686,9 @@
         hubTag.style.opacity = rp2;
         reveal(cap2, ramp(t, api.on("relay1", "sealed") + 0.15, api.on("relay1", "sealed") + 0.7));
       }
+
+      devA.style.setProperty("--lit", lit.toFixed(3));
+      devB.style.setProperty("--lit", lit.toFixed(3));
     };
   }
 
@@ -476,50 +696,51 @@
    *  SCENE: cta — self-hosting
    * ====================================================================== */
   function cta(layer, api) {
-    const head = anchor(layer, 960, 176, "h2");
+    const head = atTop(layer, 960, 96, "h2");
     head.textContent = "Want full control? Run your own.";
-    const sub = anchor(layer, 960, 248);
-    sub.className += " lead";
+    const sub = atTop(layer, 960, 0, "lead");
     sub.style.fontSize = "30px";
     sub.textContent = "the public server is free — and needs no setup";
 
     // beat 1: the public server itself, sitting in the same slot the terminal
     // later takes over — so the frame is never empty and the hand-off reads.
-    const pub = anchor(layer, 960, 470, "card hub");
+    const pub = anchor(layer, 960, 520, "card hub pub");
     pub.innerHTML = `<div class="glyph">${SERVER}</div><div class="name">fsend.alzina.dev</div>
       <div class="tag">free · no setup</div>`;
 
-    const term = anchor(layer, 960, 470, "term");
-    term.style.width = "760px";
-    term.innerHTML = `<div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i>
-      <span class="name">your server — zsh</span></div>
-      <div class="body">
-        <div class="ln" id="l1">$ fsend server</div>
-        <div class="ln ok" id="l2">→ listening on :443</div>
-      </div>`;
-    const l2 = term.querySelector("#l2");
+    const term = makeTerm(layer, 960, 900, "your server — zsh", [
+      { text: "$ fsend server" },
+      { text: "→ listening on :443", cls: "ok" },
+    ]);
+    moveTo(term.card, 512 - 108);
+    const l2 = term.rows[1].node;
 
     const cards = [
-      ["Docker image", "poliuscorp/fsend", DOCKER],
-      ["Self-hosting guide", "docs/self-hosting.md", BOOK],
+      ["Docker image", "poliuscorp/fsend", CONTAINER],
+      ["Self-hosting guide", "docs/self-hosting.md", DOC],
     ].map(([label, value, icon], i) => {
-      const c = anchor(layer, 960 + (i === 0 ? -270 : 270), 650, "card inforow");
+      const c = anchor(layer, 960 + (i === 0 ? -270 : 270), 730, "card inforow");
       c.style.width = "480px";
       c.innerHTML = `<div class="ic">${icon}</div><div><div class="ilabel">${label}</div>
         <div class="ivalue mono">${value}</div></div>`;
       return c;
     });
-    const foot = anchor(layer, 960, 812, "mono");
+    const foot = anchor(layer, 960, 862, "mono");
     foot.style.fontSize = "26px";
     foot.style.color = "var(--dim)";
     foot.textContent = "github.com/polius/fsend";
 
+    afterFonts(() => moveTo(sub, 96 + hOf(head) + 30));
+
     return function (t) {
       reveal(head, ramp(t, -0.62, -0.06));
       reveal(sub, ramp(t, 1.28, 1.98));
-      reveal(pub, ramp(t, 1.05, 1.8) * (1 - ramp(t, 3.15, 3.65)), { dy: 20, scale: 0.95 });
       const r0 = api.segStart("cta2");
-      reveal(term, ramp(t, r0 + 0.05, r0 + 0.85), { dy: 22 });
+      // the two beats cross-fade in the same slot, so the stage is never empty
+      reveal(pub, ramp(t, 1.05, 1.8) * (1 - ramp(t, r0 - 0.55, r0 + 0.35)),
+        { dy: 20, scale: 0.95 });
+      reveal(term.card, ramp(t, r0 + 0.05, r0 + 0.85), { dy: 22 });
+      reveal(term.rows[0].node, ramp(t, r0 + 0.35, r0 + 0.75), { dy: 10, blur: 5 });
       reveal(l2, ramp(t, api.on("cta2", "control") + 0.05, api.on("cta2", "control") + 0.5), { dy: 10, blur: 5 });
       reveal(cards[0], ramp(t, 5.05, 5.75), { dy: 20 });
       reveal(cards[1], ramp(t, 5.7, 6.4), { dy: 20 });
@@ -531,11 +752,12 @@
    *  SCENE: outro — install + sign-off
    * ====================================================================== */
   function outro(layer, api) {
-    const wm = anchor(layer, 960, 268);
-    A.wordmark(wm, 140);
-    const under = anchor(layer, 960, 356);
+    const wm = anchor(layer, 960, 226);
+    const w = A.wordmark(wm, 140);
+    const under = anchor(layer, 960, 314);
     under.innerHTML = `<div class="underline"></div>`;
-    const head = anchor(layer, 960, 430);
+    alignUnderline(wm, under);
+    const head = anchor(layer, 960, 392);
     head.className += " lead";
     head.style.fontSize = "28px";
     head.style.letterSpacing = "0.14em";
@@ -547,29 +769,28 @@
       ["macOS (Homebrew)", "brew install polius/tap/fsend"],
       ["Windows (PowerShell)", "irm https://getfsend.alzina.dev/windows | iex"],
     ].map(([os, cmd], i) => {
-      const r = anchor(layer, 960, 512 + i * 88, "install-row");
+      const r = anchor(layer, 960, 476 + i * 88, "install-row");
       r.style.width = "1320px";
       r.innerHTML = `<span class="os">${os}</span><span class="sep"></span><span class="cmd">${cmd}</span>`;
       return r;
     });
 
-    const words = ["Simple", "Private", "Free"];
-    const pills = words.map((w) => {
-      const p = anchor(layer, 0, 852, "pill");
+    const pills = ["Simple", "Private", "Free"].map((w2) => {
+      const p = anchor(layer, 0, 822, "pill");
       p.style.fontSize = "30px";
-      p.textContent = w;
+      p.textContent = w2;
       return p;
     });
-    const foot = anchor(layer, 960, 940, "mono");
+    const foot = anchor(layer, 960, 914, "mono");
     foot.style.fontSize = "26px";
     foot.style.color = "var(--dim)";
     foot.textContent = "github.com/polius/fsend";
 
     return function (t) {
       reveal(wm, ramp(t, -0.62, -0.06));
-      const cur = wm.querySelector(".cur");
-      if (cur) cur.style.opacity = Math.floor(t * 2) % 2 === 0 ? 1 : 0.05;
-      under.querySelector(".underline").style.transform = `scaleX(${A.easeOutExpo(ramp(t, -0.45, 0.35)).toFixed(3)})`;
+      if (w.cursor) w.cursor.style.opacity = Math.floor(t * 2) % 2 === 0 ? 1 : 0.05;
+      under.querySelector(".underline").style.transform =
+        `scaleX(${A.easeOutExpo(ramp(t, -0.45, 0.35)).toFixed(3)})`;
       reveal(head, ramp(t, -0.32, 0.28), { dy: 14, blur: 8 });
       rows.forEach((r, i) => reveal(r, ramp(t, -0.24 + i * 0.12, 0.3 + i * 0.12), { dy: 20 }));
       reveal(foot, ramp(t, 0.1, 0.7));
@@ -582,7 +803,7 @@
         const at = api.on("outro2", ["simple", "private", "free"][i]);
         const outer = p.parentElement;
         outer.style.left = x + widths[i] / 2 + "px";
-        outer.style.top = "852px";
+        outer.style.top = "822px";
         reveal(p, ramp(t, at, at + 0.32), { ease: A.easeOutBack, dy: 14, scale: 0.88, blur: 5 });
         x += widths[i] + gap;
       });
@@ -591,16 +812,6 @@
       [head, under, foot, ...rows].forEach((n) => { n.style.opacity = (1 - 0.4 * settle).toFixed(3); });
     };
   }
-
-  /* ------------------------------------------------------------------ */
-  const LOCK = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true">
-    <rect x="5" y="10.5" width="14" height="10" rx="2.6" fill="currentColor"/>
-    <path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="2.2"/></svg>`;
-  const DOCKER = `<svg viewBox="0 0 32 24" width="34" height="26" fill="none" aria-hidden="true">
-    <path d="M6 12h4v4H6zM11 12h4v4h-4zM16 12h4v4h-4zM11 7h4v4h-4zM16 7h4v4h-4z" fill="currentColor" opacity="0.85"/>
-    <path d="M3 16h26c0 4-3.4 6-8.4 6H11C6.2 22 3 19.7 3 16z" fill="currentColor" opacity="0.5"/></svg>`;
-  const BOOK = `<svg viewBox="0 0 24 24" width="26" height="26" fill="none" aria-hidden="true">
-    <path d="M4 5.5C4 4.7 4.6 4 5.4 4H11v16H5.4C4.6 20 4 19.3 4 18.5zM20 5.5C20 4.7 19.4 4 18.6 4H13v16h5.6c.8 0 1.4-.7 1.4-1.5z" stroke="currentColor" stroke-width="1.8" fill="none"/></svg>`;
 
   window.SCENES.brand = brand;
   window.SCENES.cmd = cmd;
