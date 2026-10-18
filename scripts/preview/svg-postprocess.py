@@ -11,8 +11,8 @@
 #                           apart, so a full-width line spills into the frame
 #                           behind it. See fit_grid() and clip_frames().
 #   3. Title bar          — a macOS title bar (traffic lights + the "> fsend_"
-#                           wordmark and a right-aligned tagline), drawn as
-#                           static vector shapes in svg-term's spare top strip.
+#                           wordmark), drawn as static vector shapes in
+#                           svg-term's spare top strip.
 #   4. Embedded font      — JetBrains Mono (the fsend wordmark font), subset to
 #                           the glyphs used and inlined as woff2 data-URIs, so it
 #                           renders even where the font isn't installed (GitHub).
@@ -38,8 +38,6 @@ DOT_CX0, DOT_GAP = 23, 24   # first traffic-light centre + spacing
 TITLE_BG = "#181825"    # mantle — a hair darker than the terminal base
 HAIRLINE = "#313244"    # surface0 — a 1px rule under the bar
 WORD_FG  = "#faf7f5"    # off-white, matched to the icon wordmark
-SUB_FG   = "#7f849c"    # overlay1 — quiet secondary text
-TAGLINE  = "Private file transfer, straight between two computers."
 COLS, ROWS, PADDING = 100, 34, 14
 # svg-term's column pitch in terminal units: its font metric (0.6em at the size
 # it picks) rounded to three decimals. Frames are spaced a clean 100, so the
@@ -165,7 +163,7 @@ def clip_frames(s):
 
 
 def _title_bar(w, h):
-    """Traffic lights + '> fsend_' wordmark + tagline, in the top strip.
+    """Traffic lights + '> fsend_' wordmark, in the top strip.
 
     Drawn as flat vector so it stays crisp and needs no font metrics beyond the
     known monospace advance (0.6em). Coordinates are in the window's own space.
@@ -188,8 +186,6 @@ def _title_bar(w, h):
         f' font-weight="500" fill="{WORD_FG}">fsend</text>',
         f'<rect x="{cur_x:.2f}" y="{base - 0.10 * f:.2f}" width="{0.46 * f:g}" height="{0.10 * f:g}"'
         f' rx="{0.035 * f:g}" fill="{CORAL}"/>',
-        f'<text x="{w - 26:g}" y="{base:.2f}" text-anchor="end" font-family="{FAMILY}"'
-        f' font-size="21" fill="{SUB_FG}">{html.escape(TAGLINE)}</text>',
     ]
     return "".join(parts)
 

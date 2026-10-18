@@ -64,9 +64,9 @@ it needs **none** of the recording deps above — only Chrome + ffmpeg).
 Outputs:
 - `docs/assets/demo.svg` — embedded in the repo README via
   `<img src="docs/assets/demo.svg" width="820">`.
-- `docs/assets/demo.mp4` (~1.3 MB) — H.264 at 2x, the file to upload where SVG
+- `docs/assets/demo.mp4` (~1.1 MB) — H.264 at 2x, the file to upload where SVG
   isn't rendered.
-- `docs/assets/demo.gif` (~2.3 MB) — 1x fallback for places that take only GIF.
+- `docs/assets/demo.gif` (~2.2 MB) — 1x fallback for places that take only GIF.
 
 ---
 
@@ -123,10 +123,9 @@ ends on the completed transfer.
   snaps every run back onto integer columns so the grid ends flush with the
   frame, and `clip_frames()` gives each frame its own viewport so no renderer can
   bleed one frame into the next.
-- **Chrome:** a macOS title bar — traffic lights plus the `> fsend_` wordmark and
-  a right-aligned tagline (set by `TAGLINE`) — mirroring the explainer video's
-  title-bar style, and a coral rounded outer frame are drawn as static vector
-  shapes around the untouched animation.
+- **Chrome:** a macOS title bar — traffic lights plus the `> fsend_` wordmark,
+  mirroring the explainer video's title-bar style — and a coral rounded outer
+  frame are drawn as static vector shapes around the untouched animation.
 - **Font:** JetBrains Mono (the fsend wordmark font) Regular + Medium + Bold are
   subset to the glyphs actually used and inlined as `woff2` data-URIs, so the
   demo renders in the right font even where it isn't installed. Subsetting runs
@@ -181,13 +180,13 @@ script is built to avoid both:
 ### mp4 vs gif
 
 - **`demo.mp4`** is the one to share: H.264 / `yuv420p` / even dimensions plays
-  everywhere (Reddit converts it to native video), and it's ~1.3 MB.
+  everywhere (Reddit converts it to native video), and it's ~1.1 MB.
 - **`demo.gif`** is the fallback for the few places that accept only GIF. It's
   exported at **half the capture resolution (1x)** with a global 256-colour
   palette and `dither=none` (the terminal art is flat colour, so error-diffusion
   would only add grain). The demo's two live progress bars repaint the full width
   of the frame every ~80 ms, so a full-2× gif balloons past 12 MB for no real
-  legibility gain — at 1x it lands around 2.3 MB. Always build the gif from the
+  legibility gain — at 1x it lands around 2.2 MB. Always build the gif from the
   clean PNG frames, never from the mp4: the mp4's chroma noise wrecks
   inter-frame compression and balloons it several-fold.
 
@@ -246,7 +245,7 @@ session are cleaned up on exit.
 | End-of-loop pause | `HOLD_S` in `svg-postprocess.py` |
 | Coral border / window radius | `MARGIN`, `WIN_R` in `svg-postprocess.py` |
 | Transfer size shown in the demo | `PAYLOAD_BYTES` in `demo.sh` (drives the payload + the on-screen size) |
-| Title bar fill + tagline text | `TITLE_BG`, `HAIRLINE`, `TAGLINE` in `svg-postprocess.py` |
+| Title bar fill | `TITLE_BG`, `HAIRLINE` in `svg-postprocess.py` |
 | Traffic-light size / position | `DOT_R`, `DOTS`, `DOT_CX0`/`DOT_GAP` in `svg-postprocess.py` |
 | Embedded font | `find_font()` in `svg-postprocess.py` |
 | mp4 frame rate / scrub cadence | `FPS` in `render-video.py` |
