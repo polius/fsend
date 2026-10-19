@@ -29,4 +29,4 @@ jobs:
           languages: go
       # Build first so CodeQL extracts the full program, not just the source.
       - run: go build ./...
-      - uses: github/codeql-action/analyze@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3.39.0
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
