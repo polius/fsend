@@ -37,15 +37,30 @@ LANG = "en-us"
 # ---- pacing ----------------------------------------------------------------
 FPS = 30
 LEAD_IN = 0.9              # silence before the first line
-GAP_SAME = 0.55            # pause between two lines in the same scene
-GAP_SCENE = 2.20           # pause when the scene changes. This is the single
+GAP_SAME = 0.70            # pause between two lines in the same scene
+GAP_SCENE = 2.40           # pause when the scene changes. This is the single
                            # most important number in the film: it is the time
                            # the viewer gets to *finish reading* one screen
                            # before the next one arrives. Short gaps read as
                            # "too fast to retain".
-TAIL = 6.0                 # hold after the last line (long, settled outro)
+TAIL = 3.0                 # hold after the last line (settled end card)
 # extra hold before a line (on top of the normal gap), to let a screen land
-GAP_EXTRA = {"cmd2": 0.85}
+GAP_EXTRA = {
+    "cmd2": 0.85,          # the receiver appears after the code has been read
+    "modes2": 0.25,        # the three route cards are already on screen
+    "local2": 0.35,        # let the LAN link finish drawing
+    "direct2": 0.40,       # let the pairing handshake finish
+    "relay2": 0.65,        # let the failed direct attempt land
+    "cta2": 0.45,          # let the server card land before explaining it
+    "cta3": 0.35,          # the two roles stay up long enough to be read
+    "outro1": 0.80,        # let the self-host links settle before the end card
+    "outro2": -0.60,       # keep the closing line close to the name
+}
+
+# How long before its first line a scene should appear (seconds). The default
+# is half the scene-change gap; the end card is the exception: the wordmark has
+# to be on screen when the voice says the name.
+SCENE_LEAD = {"outro": 0.60}
 
 # ---- the script ------------------------------------------------------------
 # id, scene, voice-over, anchors {label: spoken substring} — anchors mark when a
@@ -54,28 +69,49 @@ GAP_EXTRA = {"cmd2": 0.85}
 LINES = [
     ("brand1", "brand", "Presenting fsend.",
      {}),
-    ("brand2", "brand", "Send any file, straight from one computer to another.",
+    ("brand2", "brand", "Send any file to any device, straight from your terminal.",
      {"anyfile": "any file"}),
     ("cmd1", "cmd", "Point it at a file, and fsend hands you a short code.",
      {"code": "code"}),
     ("cmd2", "cmd", "Your friend runs that code — and the file lands on their machine.",
      {"runs": "runs", "lands": "lands"}),
-    ("modes1", "modes", "Behind the scenes, fsend picks the best path on its own — local, direct, or relayed.",
-     {"local": "local", "direct": "direct", "relay": "relayed"}),
-    ("local1", "local", "On the same network, it connects straight to the other device — your file never touches a server.",
-     {"connects": "connects", "noserver": "never touches"}),
-    ("direct1", "direct", "Across the internet, it connects directly — peer to peer. The server only introduces them, then steps aside.",
-     {"connects": "connects", "introduces": "introduces", "steps": "steps"}),
-    ("relay1", "relay", "And if a strict network blocks a direct path, it falls back to a relay, which only ever sees sealed, encrypted packets.",
-     {"blocked": "blocks", "relay": "relay", "sealed": "sealed"}),
+    # the overview: name the three routes, one short line each, so the slide has
+    # something to say for every card it lights up. Each line has to say *why*
+    # that route exists, not just its name — this is the only place the film
+    # explains all three at once.
+    ("modes1", "modes", "Behind the scenes, fsend picks the best path on its own.",
+     {}),
+    ("modes2", "modes", "Local, when both devices share a network — nothing in between.",
+     {"local": "Local"}),
+    ("modes3", "modes", "Direct, across the internet — the server just introduces them.",
+     {"direct": "Direct"}),
+    ("modes4", "modes", "Relayed, when a strict network blocks that — the server carries the file.",
+     {"relay": "Relayed"}),
+    # the detail slides: one sentence per beat, so nothing has to be rushed
+    ("local1", "local", "On the same network, it connects straight to the other device.",
+     {"connects": "connects"}),
+    ("local2", "local", "The server is not used.",
+     {"noserver": "not used"}),
+    ("direct1", "direct", "Across the internet, it connects directly — peer to peer.",
+     {"connects": "connects"}),
+    ("direct2", "direct", "The server only introduces them, then steps aside.",
+     {"introduces": "introduces", "steps": "steps"}),
+    ("relay1", "relay", "If a strict network blocks a direct connection, fsend relays the file.",
+     {"blocked": "blocks", "relays": "relays"}),
+    ("relay2", "relay", "The relay only ever sees sealed, encrypted packets.",
+     {"sees": "only ever", "sealed": "sealed"}),
+    # the server slide: free to use, what it actually does, then how to own one
     ("cta1", "cta", "The public server is free, and needs no setup.",
      {"free": "free"}),
-    ("cta2", "cta", "Want full control? Run your own with a single command.",
+    ("cta2", "cta", "Its only jobs: pairing two devices, and relaying the file when direct is blocked.",
+     {"pairing": "pairing", "relaying": "relaying"}),
+    ("cta3", "cta", "Want full control? Run your own with a single command.",
      {"control": "control", "command": "command"}),
     ("outro1", "outro", "fsend.",
      {}),
-    ("outro2", "outro", "Simple, private, free.",
-     {"simple": "Simple", "private": "private", "free": "free"}),
+    ("outro2", "outro", "Install it with one command. It runs on Linux, macOS, Windows, and FreeBSD.",
+     {"install": "one command", "runs": "runs", "linux": "Linux",
+      "windows": "Windows"}),
 ]
 
 
@@ -177,7 +213,12 @@ def main():
             order[-1]["last_end"] = s["end"]
     scenes = []
     for i, sc in enumerate(order):
-        start = 0.0 if i == 0 else (order[i - 1]["last_end"] + sc["first"]) / 2
+        if i == 0:
+            start = 0.0
+        elif sc["name"] in SCENE_LEAD:
+            start = sc["first"] - SCENE_LEAD[sc["name"]]
+        else:
+            start = (order[i - 1]["last_end"] + sc["first"]) / 2
         scenes.append({"name": sc["name"], "start": round(start, 3)})
     for i in range(len(scenes)):
         scenes[i]["end"] = round(scenes[i + 1]["start"], 3) if i + 1 < len(scenes) else video_end

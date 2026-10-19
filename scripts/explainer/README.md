@@ -1,12 +1,28 @@
 # fsend explainer
 
-The fsend explainer/promo — a **~70-second, 1920×1080 MP4** with a neural
+The fsend explainer/promo — an **~90-second, 1920×1080 MP4** with a neural
 voice-over, a synthesized ambient bed, and a soft Apple-keynote look.
 
 It walks through the value prop and the **three transfer modes**
-(local / direct / relay) in the same order as the previous pipeline, but it is
-built from scratch: a small **web "video engine"** (HTML/CSS/JS) rendered
-deterministically by headless Chromium, one frame at a time.
+(local / direct / relay), but it is built from scratch: a small **web "video
+engine"** (HTML/CSS/JS) rendered deterministically by headless Chromium, one
+frame at a time.
+
+Design rules the film follows, so any future edit stays on-model:
+
+- **One idea per screen, one idea per sentence.** The overview screen names the
+  three routes and explains each in a single line; the three detail screens then
+  own one mechanism each (nothing in the middle / the server steps aside /
+  ciphertext only), with the narration split so neither beat is rushed.
+- **The three routes share one stage.** Your device left, their device right, one
+  wire, and a single middle slot that holds whatever that route needs — a greyed
+  "unused" server, the introducer, or the relay. The three slides read as three
+  answers to the same question, so the viewer is only ever learning one new thing.
+- **Nothing is dimmed to make a point.** Every card is fully readable from the
+  first frame; the route being narrated gains the glow, the sheen and a faster
+  packet instead of the others losing theirs.
+- **The film ends on a promise, not a feature list** — the name, one line, and
+  where to get it.
 
 This folder holds **only the source**. Frames, audio, the model weights and the
 MP4 itself are all generated and git-ignored — regenerate with `./make.sh`.
@@ -119,6 +135,12 @@ grained exactly like the encode):
 | `music.py` | the ambient bed |
 | `build.py` | orchestrates all six stages |
 | `setup.sh` / `make.sh` | one-time setup / one-shot build |
+
+Pacing lives in `narration.py`, not in the scenes: a screen's window is derived
+from its lines' measured lengths, so `GAP_SAME` (between lines of one scene),
+`GAP_EXTRA` (per-line air, keyed by line id) and `GAP_SCENE` (between screens)
+are the only knobs that decide how fast the film feels. Every scene then reads
+its own moments out of that timeline with `api.on(...)` / `api.segStart(...)`.
 
 ---
 

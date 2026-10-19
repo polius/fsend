@@ -104,10 +104,21 @@ html, body {
   font-weight: 640; font-size: 62px; line-height: 1.05;
   letter-spacing: -0.028em; color: var(--ink);
 }
+/* slide headline for a screen that also carries a chip above and a lead below */
+.title {
+  font-weight: 620; font-size: 54px; line-height: 1.08;
+  letter-spacing: -0.026em; color: var(--ink);
+}
 .lead {
   font-weight: 450; font-size: 38px; line-height: 1.35;
   letter-spacing: -0.012em; color: var(--dim);
 }
+/* the film's closing promise */
+.tagline {
+  font-weight: 560; font-size: 46px; line-height: 1.2;
+  letter-spacing: -0.022em; color: var(--ink);
+}
+.tagline.muted { color: var(--dim); }
 .mono { font-family: var(--mono); }
 
 /* ---- generic card ------------------------------------------------------- */
@@ -285,6 +296,13 @@ html, body {
 .hub.pub .name { font-size: 33px; }
 .hub.pub .tag { font-size: 25px; padding: 8px 22px; }
 
+/* the middle slot of a transfer diagram — a smaller card, because it shares
+   the frame with the header, the two devices and the evidence row */
+.hub.sm { padding: 16px 16px 18px; gap: 6px; }
+.hub.sm .glyph svg { width: 72px; height: 68px; }
+.hub.sm .name { font-size: 22px; }
+.hub.sm .tag { font-size: 19px; padding: 4px 13px; }
+
 /* ---- terminal caret (typed lines) --------------------------------------- */
 .term .ln .tx { white-space: pre; }
 .term .ln .caret {
@@ -294,58 +312,67 @@ html, body {
 }
 
 /* ---- modes cards -------------------------------------------------------- */
-/* three tall columns — one per route. The active one lifts out of the set. */
+/* three columns, one per route. Every card is fully lit from the first frame
+   (the packets are already running); the route the narration names gains the
+   tinted border, the glow, the sheen and a faster packet. */
 .modecard {
-  width: 496px; height: 640px; padding: 44px 38px 40px;
-  display: flex; flex-direction: column; align-items: center; text-align: center;
+  width: 500px; height: 590px; padding: 40px 34px 36px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center;
   position: relative; overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 27px;
   --mc: var(--accent); --on: 0;
 }
+/* --on is the only thing the scenes write: everything below reads it */
 .modecard::before {
   content: ""; position: absolute; inset: -1px; border-radius: 27px;
-  border: 1.5px solid var(--mc); opacity: calc(0.10 + 0.80 * var(--on));
-  pointer-events: none;
+  border: 1.5px solid var(--mc); opacity: var(--on); pointer-events: none;
 }
 .modecard::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit;
-  box-shadow: 0 0 90px -20px var(--mc);
-  opacity: calc(0.05 + 0.95 * var(--on)); pointer-events: none;
+  box-shadow: 0 0 96px -18px var(--mc);
+  opacity: calc(0.06 + 0.94 * var(--on)); pointer-events: none;
 }
 .modecard .msweep { position: absolute; inset: 0; pointer-events: none; }
 .modecard .msweep::before {
   content: ""; position: absolute; top: -30%; bottom: -30%; width: 45%;
   background: linear-gradient(100deg, transparent,
-    color-mix(in srgb, var(--mc) 20%, transparent), transparent);
+    color-mix(in srgb, var(--mc) 22%, transparent), transparent);
   transform: translateX(calc(-170% + var(--on) * 440%));
   opacity: calc(var(--on) * (1 - var(--on)) * 3.6);
 }
-.modecard .mwrap {
-  position: relative; width: 100%; height: 100%;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  opacity: calc(0.58 + 0.42 * var(--on));
-}
 .modecard .mglyph {
-  height: 224px; display: flex; align-items: center; justify-content: center;
-  color: #bdb4ad;
-  transform: translateY(calc((1 - var(--on)) * 4px));
+  height: 248px; display: flex; align-items: center; justify-content: center;
+  color: #b8afa8;
+  transform: translateY(calc(var(--on) * -4px));
 }
+/* the route itself brightens when its card is the one being talked about */
+.modecard .mtrace { opacity: calc(0.62 + 0.38 * var(--on)); }
 .modecard .mlabel {
-  margin-top: 30px; display: flex; align-items: center; gap: 14px;
-  font-family: var(--mono); font-weight: 700; font-size: 34px; letter-spacing: 0.15em;
+  margin-top: 26px; display: flex; align-items: center; gap: 13px;
+  font-family: var(--mono); font-weight: 700; font-size: 33px; letter-spacing: 0.15em;
   color: var(--mc);
+  opacity: calc(0.82 + 0.18 * var(--on));
 }
 .modecard .mdot {
-  width: 12px; height: 12px; border-radius: 50%; background: var(--mc);
+  width: 11px; height: 11px; border-radius: 50%; background: var(--mc);
   box-shadow: 0 0 16px 1px var(--mc);
 }
-.modecard .mdesc {
-  margin-top: 16px; font-size: 36px; font-weight: 560;
-  letter-spacing: -0.012em; color: var(--ink);
+.modecard .mname {
+  margin-top: 20px; font-size: 38px; font-weight: 570;
+  letter-spacing: -0.014em; color: var(--ink);
 }
-.modecard .mnote { margin-top: 10px; font-size: 27px; color: var(--dim); }
-.modecard .mcheck {
-  margin-top: 28px; font-size: 33px; font-weight: 700; color: var(--mc);
-  opacity: var(--on); transform: scale(calc(0.5 + 0.5 * var(--on)));
+.modecard .mnote {
+  margin-top: 12px; font-size: 27px; color: var(--dim); letter-spacing: -0.004em;
+}
+.modecard .mbar {
+  position: absolute; left: 50%; bottom: 34px; height: 3px; border-radius: 2px;
+  background: var(--mc);
+  width: calc(96px + 148px * var(--on));
+  margin-left: calc(-48px - 74px * var(--on));
+  opacity: calc(0.22 + 0.78 * var(--on));
+  box-shadow: 0 0 18px 0 color-mix(in srgb, var(--mc) 60%, transparent);
 }
 
 /* ---- e2e lock row ------------------------------------------------------- */
@@ -358,9 +385,89 @@ html, body {
 }
 .lockrow .lock { display: inline-flex; }
 
+/* ---- evidence row (what the slide just proved) -------------------------- */
+.facts { position: absolute; }
+.fact {
+  display: inline-flex; align-items: center; gap: 13px;
+  padding: 13px 28px; border-radius: 999px;
+  font-size: 27px; color: var(--ink); white-space: nowrap;
+  background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.035));
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.fact .ic { display: inline-flex; }
+
+/* ---- the live state line under the transfer diagram --------------------- */
+/* this line names the route that just went live, so it is full-strength ink,
+   not a dim caption (the relay scene overrides it with red/green) */
+.state { color: var(--ink); letter-spacing: -0.01em; }
+
+/* ---- the middle slot, when it is deliberately NOT used ------------------ */
+.hub.ghost {
+  background: transparent;
+  border: 1.5px dashed rgba(255,255,255,0.20);
+  box-shadow: none;
+}
+/* the "unused" card must not glow like a live one */
+.hub.ghost::after { opacity: 0 !important; }
+.hub.ghost .glyph { opacity: 0.5; }
+.hub.ghost .name { opacity: 0.75; }
+.hub.ghost .tag {
+  color: var(--dim);
+  background: rgba(255,255,255,0.045);
+  border-color: rgba(255,255,255,0.16);
+}
+
+/* ---- end card ----------------------------------------------------------- */
+/* the install promise reads as a badge, not as a stray sentence */
+.install-pill {
+  display: inline-flex; align-items: center; gap: 16px;
+  padding: 15px 38px; border-radius: 999px;
+  font-size: 33px; font-weight: 620; letter-spacing: -0.012em;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  box-shadow: 0 0 52px -12px color-mix(in srgb, var(--accent) 60%, transparent),
+              inset 0 1px 0 rgba(255,255,255,0.07);
+}
+.install-pill .dot {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 16px 1px var(--accent);
+}
+.endlabel {
+  font-size: 23px; font-weight: 600; letter-spacing: 0.17em;
+  text-transform: uppercase; color: var(--faint);
+}
+.endurl { font-size: 26px; color: var(--dim); }
+.endurl b { color: var(--accent-l); font-weight: 500; }
+.endurl .dot { color: var(--faint); margin: 0 16px; }
+
+/* the share code is the one thing you must copy — make it look like it */
+.code {
+  padding: 2px 13px; border-radius: 9px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, transparent);
+  box-shadow: 0 0 26px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
 /* ---- info row (docker / docs) ------------------------------------------ */
 .inforow { display: flex; align-items: center; gap: 22px; padding: 26px 32px; }
 .inforow .ic { display: flex; color: var(--accent-l); }
 .inforow .ilabel { font-size: 22px; color: var(--dim); margin-bottom: 7px; }
 .inforow .ivalue { font-size: 27px; color: var(--ink); }
+
+/* ---- the server's two jobs (self-hosting slide) ------------------------- */
+.role { display: flex; align-items: center; gap: 24px; padding: 26px 30px; text-align: left; }
+.role .rnum {
+  flex: none; width: 46px; height: 46px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-weight: 700; font-size: 24px;
+  color: var(--accent-l);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+}
+.role .rtitle { font-size: 29px; font-weight: 560; color: var(--ink); letter-spacing: -0.012em; }
+.role .rnote { margin-top: 6px; font-size: 23px; color: var(--dim); }
 
