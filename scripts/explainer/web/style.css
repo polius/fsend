@@ -1,0 +1,473 @@
+/* fsend explainer — stage styling.
+   Fixed 1920x1080; every animation is driven from JS by absolute time, so the
+   page is fully deterministic frame-by-frame (no CSS animations / transitions). */
+
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "JBMono";
+  src: url("fonts/JetBrainsMono.ttf") format("truetype");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  --bg: #0c0a09;
+  --panel: #17120f;
+  --ink: #f8f5f3;
+  --dim: #a99f97;
+  --faint: #6d645d;
+  --accent: #e0805a;
+  --accent-l: #f4b092;
+  --green: #7ccb8b;
+  --blue: #8fb4de;
+  --red: #dd6d63;
+  --card: rgba(255, 255, 255, 0.045);
+  --card-2: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.10);
+  --shadow: 0 22px 52px -34px rgba(0, 0, 0, 0.6);
+  --font: "Inter", system-ui, sans-serif;
+  --mono: "JBMono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 1920px; height: 1080px; overflow: hidden;
+  background: #000;
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+#stage {
+  position: relative; width: 1920px; height: 1080px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* ---- ambient background (persistent across scenes) ---------------------- */
+#bg { position: absolute; inset: 0; overflow: hidden; }
+
+#bg .blob {
+  position: absolute; width: 1200px; height: 1200px;
+  border-radius: 50%;
+  will-change: transform;
+}
+/* radial gradients are already soft — no `filter: blur()` (which the software
+   rasterizer would re-run for every captured frame) */
+#bg .blob.a {
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 62%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 26%, transparent) 34%, transparent 70%);
+  opacity: 0.5;
+}
+#bg .blob.b {
+  background: radial-gradient(circle, rgba(42, 74, 107, 0.9) 0%, rgba(42, 74, 107, 0.34) 36%, transparent 70%);
+  opacity: 0.45;
+}
+#bg .blob.c {
+  background: radial-gradient(circle, rgba(58, 107, 83, 0.85) 0%, rgba(58, 107, 83, 0.3) 36%, transparent 70%);
+  opacity: 0.34;
+}
+
+#bg .glow-floor {
+  position: absolute; inset: 0;
+  background: radial-gradient(120% 70% at 50% 120%, color-mix(in srgb, var(--accent) 22%, transparent) 0%, transparent 60%);
+}
+#bg .vignette {
+  position: absolute; inset: 0;
+  background: radial-gradient(115% 110% at 50% 44%, transparent 42%, rgba(0,0,0,0.62) 100%);
+}
+
+/* ---- scene layers ------------------------------------------------------- */
+.layer {
+  position: absolute; inset: 0;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity, filter;
+}
+
+/* reveal wrapper: JS sets opacity + translate + blur on these */
+.rv { will-change: transform, opacity, filter; }
+
+/* ---- typography --------------------------------------------------------- */
+.h1 {
+  font-weight: 650; font-size: 104px; line-height: 1.02;
+  letter-spacing: -0.035em; color: var(--ink);
+}
+.h2 {
+  font-weight: 640; font-size: 62px; line-height: 1.05;
+  letter-spacing: -0.028em; color: var(--ink);
+}
+/* slide headline for a screen that also carries a chip above and a lead below */
+.title {
+  font-weight: 620; font-size: 54px; line-height: 1.08;
+  letter-spacing: -0.026em; color: var(--ink);
+}
+.lead {
+  font-weight: 450; font-size: 38px; line-height: 1.35;
+  letter-spacing: -0.012em; color: var(--dim);
+}
+/* the film's closing promise */
+.tagline {
+  font-weight: 560; font-size: 46px; line-height: 1.2;
+  letter-spacing: -0.022em; color: var(--ink);
+}
+.tagline.muted { color: var(--dim); }
+.mono { font-family: var(--mono); }
+
+/* ---- generic card ------------------------------------------------------- */
+.card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.035));
+  border: 1px solid var(--border);
+  border-radius: 26px;
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+.chip {
+  display: inline-flex; align-items: center; gap: 14px;
+  padding: 14px 34px; border-radius: 999px;
+  font-weight: 700; font-size: 30px; letter-spacing: 0.18em;
+  color: var(--accent-l);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--accent) 46%, transparent);
+  box-shadow: 0 0 44px -8px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.chip .dot {
+  width: 12px; height: 12px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 16px 2px var(--accent);
+}
+
+.pill {
+  display: inline-flex; align-items: center; gap: 12px;
+  padding: 13px 30px; border-radius: 999px;
+  font-weight: 520; font-size: 29px; letter-spacing: -0.006em;
+  color: var(--ink); background: var(--card); border: 1px solid var(--border);
+}
+
+/* ---- terminal card ------------------------------------------------------ */
+.term {
+  border-radius: 20px; overflow: hidden;
+  background: linear-gradient(180deg, #14100e 0%, #0e0b0a 100%);
+  border: 1px solid rgba(255,255,255,0.09);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.term .bar {
+  height: 54px; display: flex; align-items: center; gap: 11px;
+  padding: 0 22px; background: rgba(255,255,255,0.045);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+.term .bar i { width: 15px; height: 15px; border-radius: 50%; display: block; }
+.term .bar i.r { background: #dd6d63; } .term .bar i.y { background: #e2b066; } .term .bar i.g { background: #7ccb8b; }
+.term .bar .name {
+  margin-left: 12px; font-family: var(--mono); font-size: 22px; color: var(--faint);
+  letter-spacing: 0.02em;
+}
+.term .body { padding: 30px 34px 34px; }
+.term .ln {
+  font-family: var(--mono); font-size: 30px; line-height: 1.62; white-space: pre;
+  color: var(--ink);
+}
+.term .ln.dim { color: var(--dim); }
+.term .ln.acc { color: var(--accent-l); }
+.term .ln.ok  { color: var(--green); }
+
+.bar-track {
+  height: 14px; border-radius: 8px; background: rgba(255,255,255,0.08); overflow: hidden;
+}
+.bar-fill {
+  height: 100%; border-radius: 8px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--green) 70%, #fff), var(--green));
+  box-shadow: 0 0 22px -2px var(--green);
+}
+
+/* ---- diagram ------------------------------------------------------------ */
+.diagram { position: absolute; inset: 0; }
+.diagram svg { position: absolute; inset: 0; width: 1920px; height: 1080px; }
+.hub-name { font-family: var(--mono); font-size: 27px; fill: var(--ink); }
+.hub-tag  { font-size: 23px; fill: var(--dim); letter-spacing: 0.01em; }
+.net-label{ font-size: 25px; fill: var(--dim); letter-spacing: 0.04em; }
+.dev-name { font-size: 27px; fill: var(--ink); font-weight: 550; }
+
+/* ---- poster affordance -------------------------------------------------- */
+/* Not part of the video: `capture.py --poster` layers this over a still so the
+   README thumbnail reads as "play me". Sits in the empty band under the hero so
+   it never fights the wordmark. */
+#poster-play {
+  position: absolute; left: 50%; bottom: 116px; width: 148px; height: 148px;
+  margin-left: -74px; border-radius: 50%; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent);
+  box-shadow: 0 22px 64px -16px rgba(0,0,0,0.8),
+              inset 0 0 0 1.5px rgba(255,255,255,0.20);
+}
+#poster-play::after {
+  content: ""; margin-left: 10px; border-style: solid;
+  border-width: 25px 0 25px 40px;
+  border-color: transparent transparent transparent #fff;
+}
+
+/* ---- the fsend wordmark ------------------------------------------------- */
+.wordmark { display: inline-flex; align-items: baseline; font-family: var(--mono); font-weight: 800; }
+.wordmark .chev { color: var(--accent); margin-right: 0.34em; }
+.wordmark .name { color: var(--ink); letter-spacing: -0.02em; }
+.wordmark .cur {
+  display: inline-block; background: var(--accent); border-radius: 2px;
+  margin-left: 0.07em; transform: translateY(0.03em);
+}
+
+.install-row {
+  display: flex; align-items: center; gap: 30px;
+  padding: 0 34px; height: 76px; border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
+  border: 1px solid var(--border);
+}
+.install-row .os { width: 348px; font-size: 27px; font-weight: 550; color: var(--dim); }
+.install-row .sep { width: 1px; height: 40px; background: rgba(255,255,255,0.12); }
+.install-row .cmd { font-family: var(--mono); font-size: 28px; color: var(--accent-l); }
+
+/* ---- accent underline --------------------------------------------------- */
+.underline {
+  width: 200px; height: 5px; margin: 0 auto; border-radius: 3px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  transform-origin: 50% 50%;
+}
+
+/* ---- role badge (Sender / Receiver) ------------------------------------- */
+.badge {
+  font-size: 24px; font-weight: 650; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--accent-l);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  padding: 10px 24px; border-radius: 999px;
+  box-shadow: 0 0 40px -12px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.badge.ok {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 13%, transparent);
+  border-color: color-mix(in srgb, var(--green) 42%, transparent);
+  box-shadow: 0 0 40px -12px color-mix(in srgb, var(--green) 55%, transparent);
+}
+
+/* ---- device + hub cards (the transfer diagram) -------------------------- */
+.dev {
+  width: 320px; height: 200px; color: #cfc7c1; position: relative; --lit: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+}
+/* the endpoints come alive once a path between them is live */
+.dev::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  box-shadow: 0 0 72px -14px var(--accent);
+  opacity: calc(0.9 * var(--lit)); pointer-events: none;
+}
+.dev .name { font-size: 27px; font-weight: 550; color: var(--ink); }
+
+.hub {
+  width: 300px; padding: 24px 18px 26px;
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  color: #d6cfc9; --hub: 1;
+}
+.hub::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  box-shadow: 0 0 80px -4px var(--accent);
+  opacity: calc(0.10 + 0.65 * var(--hub)); pointer-events: none;
+}
+.hub .glyph { opacity: calc(0.4 + 0.6 * var(--hub)); }
+.hub .name {
+  font-family: var(--mono); font-size: 25px; color: var(--ink);
+  opacity: calc(0.52 + 0.48 * var(--hub));
+}
+.hub .tag {
+  margin-top: 2px; font-size: 21px; letter-spacing: 0.02em;
+  color: var(--accent-l);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  padding: 5px 15px; border-radius: 999px;
+}
+
+/* the same card, promoted to the hero of the self-hosting beat */
+.hub.pub { width: 430px; padding: 40px 30px 38px; gap: 14px; }
+.hub.pub .glyph svg { width: 132px; height: 126px; }
+.hub.pub .name { font-size: 33px; }
+.hub.pub .tag { font-size: 25px; padding: 8px 22px; }
+
+/* the middle slot of a transfer diagram — a smaller card, because it shares
+   the frame with the header, the two devices and the evidence row */
+.hub.sm { padding: 16px 16px 18px; gap: 6px; }
+.hub.sm .glyph svg { width: 72px; height: 68px; }
+.hub.sm .name { font-size: 22px; }
+.hub.sm .tag { font-size: 19px; padding: 4px 13px; }
+
+/* ---- terminal caret (typed lines) --------------------------------------- */
+.term .ln .tx { white-space: pre; }
+.term .ln .caret {
+  display: inline-block; width: 0.52em; height: 1.02em; margin-left: 0.09em;
+  background: var(--accent-l); border-radius: 1.5px;
+  transform: translateY(0.12em); opacity: 1;
+}
+
+/* ---- modes cards -------------------------------------------------------- */
+/* three columns, one per route. Every card is fully lit from the first frame
+   (the packets are already running); the route the narration names gains the
+   tinted border, the glow, the sheen and a faster packet. */
+.modecard {
+  width: 500px; height: 590px; padding: 40px 34px 36px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center;
+  position: relative; overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 27px;
+  --mc: var(--accent); --on: 0;
+}
+/* --on is the only thing the scenes write: everything below reads it */
+.modecard::before {
+  content: ""; position: absolute; inset: -1px; border-radius: 27px;
+  border: 1.5px solid var(--mc); opacity: var(--on); pointer-events: none;
+}
+.modecard::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  box-shadow: 0 0 96px -18px var(--mc);
+  opacity: calc(0.06 + 0.94 * var(--on)); pointer-events: none;
+}
+.modecard .msweep { position: absolute; inset: 0; pointer-events: none; }
+.modecard .msweep::before {
+  content: ""; position: absolute; top: -30%; bottom: -30%; width: 45%;
+  background: linear-gradient(100deg, transparent,
+    color-mix(in srgb, var(--mc) 22%, transparent), transparent);
+  transform: translateX(calc(-170% + var(--on) * 440%));
+  opacity: calc(var(--on) * (1 - var(--on)) * 3.6);
+}
+.modecard .mglyph {
+  height: 248px; display: flex; align-items: center; justify-content: center;
+  color: #b8afa8;
+  transform: translateY(calc(var(--on) * -4px));
+}
+/* the route itself brightens when its card is the one being talked about */
+.modecard .mtrace { opacity: calc(0.62 + 0.38 * var(--on)); }
+.modecard .mlabel {
+  margin-top: 26px; display: flex; align-items: center; gap: 13px;
+  font-family: var(--mono); font-weight: 700; font-size: 33px; letter-spacing: 0.15em;
+  color: var(--mc);
+  opacity: calc(0.82 + 0.18 * var(--on));
+}
+.modecard .mdot {
+  width: 11px; height: 11px; border-radius: 50%; background: var(--mc);
+  box-shadow: 0 0 16px 1px var(--mc);
+}
+.modecard .mname {
+  margin-top: 20px; font-size: 38px; font-weight: 570;
+  letter-spacing: -0.014em; color: var(--ink);
+}
+.modecard .mnote {
+  margin-top: 12px; font-size: 27px; color: var(--dim); letter-spacing: -0.004em;
+}
+.modecard .mbar {
+  position: absolute; left: 50%; bottom: 34px; height: 3px; border-radius: 2px;
+  background: var(--mc);
+  width: calc(96px + 148px * var(--on));
+  margin-left: calc(-48px - 74px * var(--on));
+  opacity: calc(0.22 + 0.78 * var(--on));
+  box-shadow: 0 0 18px 0 color-mix(in srgb, var(--mc) 60%, transparent);
+}
+
+/* ---- e2e lock row ------------------------------------------------------- */
+.lockrow {
+  display: inline-flex; align-items: center; gap: 13px;
+  font-size: 27px; color: var(--green);
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green) 32%, transparent);
+  padding: 12px 28px; border-radius: 999px;
+}
+.lockrow .lock { display: inline-flex; }
+
+/* ---- evidence row (what the slide just proved) -------------------------- */
+.facts { position: absolute; }
+.fact {
+  display: inline-flex; align-items: center; gap: 13px;
+  padding: 13px 28px; border-radius: 999px;
+  font-size: 27px; color: var(--ink); white-space: nowrap;
+  background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.035));
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.fact .ic { display: inline-flex; }
+
+/* ---- the live state line under the transfer diagram --------------------- */
+/* this line names the route that just went live, so it is full-strength ink,
+   not a dim caption (the relay scene overrides it with red/green) */
+.state { color: var(--ink); letter-spacing: -0.01em; }
+
+/* ---- the middle slot, when it is deliberately NOT used ------------------ */
+.hub.ghost {
+  background: transparent;
+  border: 1.5px dashed rgba(255,255,255,0.20);
+  box-shadow: none;
+}
+/* the "unused" card must not glow like a live one */
+.hub.ghost::after { opacity: 0 !important; }
+.hub.ghost .glyph { opacity: 0.5; }
+.hub.ghost .name { opacity: 0.75; }
+.hub.ghost .tag {
+  color: var(--dim);
+  background: rgba(255,255,255,0.045);
+  border-color: rgba(255,255,255,0.16);
+}
+
+/* ---- end card ----------------------------------------------------------- */
+/* the install promise reads as a badge, not as a stray sentence */
+.install-pill {
+  display: inline-flex; align-items: center; gap: 16px;
+  padding: 15px 38px; border-radius: 999px;
+  font-size: 33px; font-weight: 620; letter-spacing: -0.012em;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  box-shadow: 0 0 52px -12px color-mix(in srgb, var(--accent) 60%, transparent),
+              inset 0 1px 0 rgba(255,255,255,0.07);
+}
+.install-pill .dot {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 16px 1px var(--accent);
+}
+.endlabel {
+  font-size: 23px; font-weight: 600; letter-spacing: 0.17em;
+  text-transform: uppercase; color: var(--faint);
+}
+.endurl { font-size: 26px; color: var(--dim); }
+.endurl b { color: var(--accent-l); font-weight: 500; }
+.endurl .dot { color: var(--faint); margin: 0 16px; }
+
+/* the share code is the one thing you must copy — make it look like it */
+.code {
+  padding: 2px 13px; border-radius: 9px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, transparent);
+  box-shadow: 0 0 26px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* ---- info row (docker / docs) ------------------------------------------ */
+.inforow { display: flex; align-items: center; gap: 22px; padding: 26px 32px; }
+.inforow .ic { display: flex; color: var(--accent-l); }
+.inforow .ilabel { font-size: 22px; color: var(--dim); margin-bottom: 7px; }
+.inforow .ivalue { font-size: 27px; color: var(--ink); }
+
+/* ---- the server's two jobs (self-hosting slide) ------------------------- */
+.role { display: flex; align-items: center; gap: 24px; padding: 26px 30px; text-align: left; }
+.role .rnum {
+  flex: none; width: 46px; height: 46px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-weight: 700; font-size: 24px;
+  color: var(--accent-l);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+}
+.role .rtitle { font-size: 29px; font-weight: 560; color: var(--ink); letter-spacing: -0.012em; }
+.role .rnote { margin-top: 6px; font-size: 23px; color: var(--dim); }
+
