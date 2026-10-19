@@ -78,7 +78,7 @@ wordmark and the README icon use it because a logo may hold a colour the
 terminal theme cannot shift; it is a muted, print-safe sibling of `accent`
 (`#ff9e64`, ~6:1 on the dark background). Do not "correct" it to the
 accent — `docs/assets/icon*.svg` is the reference. The README demo
-(`docs/assets/demo.svg`, produced by `scripts/video`) should be re-rendered
+(`docs/assets/demo.svg`, produced by `scripts/preview`) should be re-rendered
 in the six tokens above when that pipeline next runs: its current greens
 and cyans are Catppuccin Mocha and appear nowhere in the product.
 
