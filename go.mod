@@ -7,10 +7,10 @@ require (
 	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.20.3
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/pion/ice/v4 v4.4.7
+	github.com/pion/ice/v4 v4.4.8
 	github.com/pion/mdns/v2 v2.2.2
 	github.com/pion/stun/v4 v4.0.1
-	github.com/quic-go/quic-go v0.64.0
+	github.com/quic-go/quic-go v0.64.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/vbauerster/mpb/v8 v8.16.2
