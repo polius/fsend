@@ -13,14 +13,18 @@ package signaling
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/polius/fsend/internal/code"
@@ -33,6 +37,11 @@ import (
 // (25s) so /wait long-polls complete via a server-side 204 rather than
 // a client-side transport timeout that wastes the round-trip.
 const DefaultRequestTimeout = 40 * time.Second
+
+// connectTimeout bounds the TCP connect and the TLS handshake separately
+// from the long-poll ceiling above: an unreachable server should fail in
+// seconds, not after DefaultRequestTimeout.
+const connectTimeout = 5 * time.Second
 
 // Client talks to a fsend signaling endpoint.
 type Client struct {
@@ -62,9 +71,12 @@ func (c *Client) slotFor(codeStr string) string {
 // `https://fsend.alzina.dev` and `http://localhost:8080` are both valid. The
 // scheme is preserved as-is — callers control TLS via the URL.
 func New(baseURL, clientVersion string) *Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = (&net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}).DialContext
+	tr.TLSHandshakeTimeout = connectTimeout
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		hc:      &http.Client{Timeout: DefaultRequestTimeout},
+		hc:      &http.Client{Timeout: DefaultRequestTimeout, Transport: tr},
 		version: clientVersion,
 	}
 }
@@ -213,6 +225,14 @@ func (c *Client) Delete(ctx context.Context, sessionID, roleToken string) error 
 	return c.do(ctx, http.MethodDelete, "/v1/session/"+sessionID, nil, nil, withAuth(roleToken))
 }
 
+// Consume ends a session whose code was used: the server keeps a short
+// tombstone on the slot, so a late second receiver gets 409 (E003, "already
+// claimed") instead of 404 (E002, "no sender"). Servers without tombstones
+// treat it as a plain Delete.
+func (c *Client) Consume(ctx context.Context, sessionID, roleToken string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/session/"+sessionID+"?consumed=1", nil, nil, withAuth(roleToken))
+}
+
 // AllocateRelay asks the server for a relay token for this session.
 //
 // roleToken is the bearer credential the caller obtained from Create or
@@ -349,6 +369,16 @@ func statusToFsendErr(resp *http.Response) error {
 	return fmt.Errorf("signaling: status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 }
 
+// NetError carries why the server was unreachable, in words a user can act
+// on ("DNS lookup failed"), alongside the raw error.
+type NetError struct {
+	Reason string
+	Err    error
+}
+
+func (e *NetError) Error() string { return e.Reason + ": " + e.Err.Error() }
+func (e *NetError) Unwrap() error { return e.Err }
+
 func mapNetworkErr(err error) error {
 	if err == nil {
 		return nil
@@ -358,10 +388,32 @@ func mapNetworkErr(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
-	// A DeadlineExceeded here means the http.Client's 40s Timeout fired
-	// (no signaling call uses a caller-supplied deadline), which is the
-	// firewall-drops-our-packets flavor of "server unreachable". Map it
-	// to the same sentinel as connection-refused / DNS-failure so the
-	// catalog renders E001 instead of E099.
-	return fmt.Errorf("%w: %v", fserrors.ErrServerUnreachable, err)
+	// A failed certificate check is a captive portal or an intercepting
+	// proxy far more often than an outage; say so instead of "unreachable".
+	var unknownCA x509.UnknownAuthorityError
+	var hostErr x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	var verifyErr *tls.CertificateVerificationError
+	if errors.As(err, &unknownCA) || errors.As(err, &hostErr) ||
+		errors.As(err, &invalid) || errors.As(err, &verifyErr) {
+		return fmt.Errorf("%w: %v", fserrors.ErrServerCertUntrusted, err)
+	}
+	return fmt.Errorf("%w: %w", fserrors.ErrServerUnreachable, &NetError{Reason: netReason(err), Err: err})
+}
+
+// netReason names the failure class of a transport error.
+func netReason(err error) string {
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	switch {
+	case errors.As(err, &dnsErr):
+		return "DNS lookup failed"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETDOWN):
+		return "no network route"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "timed out"
+	}
+	return "connection failed"
 }

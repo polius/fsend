@@ -22,6 +22,7 @@ import (
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/signaling"
 	"github.com/polius/fsend/internal/uxlog"
 )
 
@@ -134,6 +135,11 @@ func renderError(err error, debug bool) int {
 	if errors.Is(err, fserrors.ErrServerUnreachable) || errors.Is(err, fserrors.ErrServerRetired) {
 		if cfg, cfgErr := config.Load(); cfgErr == nil {
 			detail = "Server: " + cfg.EffectiveServer()
+		}
+		// Name the failure class ("DNS lookup failed", "connection refused").
+		var ne *signaling.NetError
+		if detail != "" && errors.As(err, &ne) {
+			detail += " (" + ne.Reason + ")"
 		}
 	}
 	if known && (errors.Is(err, fserrors.ErrUsage) ||

@@ -18,7 +18,14 @@ directly and don't need the server. Only *cross-network* receivers
 (someone on a different network) can't connect right now.
 
 When the server can't be reached at all — no local-network fallback in
-play — the run ends with `E001`: "Could not reach the server (timeout)."
+play — the run ends with `E001`: "Could not reach the server." The
+`Server:` line under it names the cause (timed out, DNS lookup failed,
+connection refused, no network route).
+
+If the server answers but its certificate doesn't check out, the run
+ends with `E047` instead. That is almost always a Wi-Fi login page or a
+filtering proxy: sign in to the network (open any website) or switch
+networks.
 
 Two variants of this warning name a cause you can fix yourself:
 
@@ -40,8 +47,9 @@ What to try:
 | Code | Meaning | Fix |
 |---|---|---|
 | `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. |
-| `E002` | No such code on the server | It expired, was mistyped, the sender stopped, or another receiver already claimed it. Have the sender run again for a fresh code. |
+| `E002` | No sender is waiting on that code | It was mistyped, expired, or the sender stopped. Have the sender run again for a fresh code. |
 | `E003` | Someone already claimed this code | Codes are one-shot. Have the sender run again and share the new code. |
+| `E046` | The sender stopped after too many failed attempts on its code (sender side) | Someone may be guessing it. Run fsend again and share the new code only with the receiver. |
 
 Codes can't be reused — a new send always produces a new code to share.
 
