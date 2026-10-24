@@ -152,7 +152,7 @@ func TestIsTransient_Classification(t *testing.T) {
 		// Peer-abort: receiver Ctrl-C'd mid-transfer and the sender's
 		// next chunk write surfaces "Application error 0x0 (remote)".
 		// Must retry — the peer can come back and resume from its
-		// .fsend-partial. Without this, E099 lies about a routine
+		// partial in .fsend/. Without this, E099 lies about a routine
 		// interruption.
 		{"quic_application_error_remote_transient",
 			errors.New("wire: writing chunk payload: Application error 0x0 (remote)"), true},

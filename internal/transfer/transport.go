@@ -1,7 +1,8 @@
 // Package transfer implements fsend's end-to-end transfer protocol: HELLO
 // negotiation, optional password gating, per-file metadata + acceptance,
-// chunked data streaming with BLAKE3 verification, and resume via imohash
-// on partial sidecars. Directories travel as per-file entries, not a tar.
+// chunked data streaming with BLAKE3 verification, and resume from partials
+// whose received prefix is verified against the source. Directories travel
+// as per-file entries, not a tar.
 //
 // The Send and Recv entry points operate on a Streams pair (one control,
 // one data) — production wires them to QUIC streams, tests wire them to

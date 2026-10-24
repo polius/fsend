@@ -196,7 +196,7 @@ func IsTransient(err error) bool {
 	//     CloseWithError. In fsend this fires when a peer is killed
 	//     mid-transfer (Ctrl-C, OOM, network drop) and the surviving side's
 	//     next read/write surfaces the abrupt close. The peer can come back on
-	//     a retry and resume from its .fsend-partial, so this is the canonical
+	//     a retry and resume from its partial in .fsend/, so this is the canonical
 	//     transient case.
 	//   - StreamError{Remote}: the peer's teardown cancels its data-stream
 	//     read (STOP_SENDING) just before the connection close, and an

@@ -563,7 +563,7 @@ func senderQUICAccept(ctx context.Context, sess *sendSession, pc net.PacketConn,
 // receiver" when the receiver vanishes mid-transfer. After the first
 // pairing, rounds rendezvous on the resume key, so only the original
 // receiver device can come back — a rerun `fsend <code>` there finds the
-// sender and resumes from its .fsend-partial.
+// sender and resumes from its partial in .fsend/
 //
 // Stdin/--text transfers can't replay their reader, so they fail as
 // before instead of re-pairing.
