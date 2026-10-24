@@ -416,6 +416,11 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 		dctx, dcancel := context.WithTimeout(ctx, iceBudget)
 		conn, dialErr = agent.Dial(dctx)
 		dcancel()
+		if dialErr == nil {
+			if _, _, ok := agent.SelectedPair(); !ok {
+				dialErr = errors.New("ice: no selected candidate pair")
+			}
+		}
 		choice := pathChoiceICE
 		if dialErr != nil {
 			choice = pathChoiceRelay
