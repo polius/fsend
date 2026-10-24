@@ -176,7 +176,21 @@ or with the wrong one — fails with `E028`.
 
 ## Metrics
 
-`GET /metrics` returns a small JSON snapshot for monitoring:
+Metrics are off by default. Set `FSEND_METRICS_ADDR` to serve them on a
+**separate listener** that the public signaling port never exposes:
+
+```yaml
+    environment:
+      FSEND_METRICS_ADDR: ":9090"   # not published; reachable on the compose network
+```
+
+That listener serves two paths:
+
+- `GET /metrics` — Prometheus text format (also accepted by OpenMetrics
+  scrapers). Names are `fsend_<field>`, e.g. `fsend_sessions_created_total`,
+  `fsend_sessions_rejected_total{reason="rate_limit"}`,
+  `fsend_relay_forwarded_bytes_total`, `fsend_build_info{version="…"}`.
+- `GET /metrics.json` — the same snapshot as JSON:
 
 ```json
 {
@@ -200,8 +214,8 @@ or with the wrong one — fails with `E028`.
 
 Every value is an **aggregate count or gauge** — there is no per-IP,
 per-session, or per-code data, so it can't leak anything the server doesn't
-store. That's deliberate: the endpoint is public on an open server precisely
-so anyone can verify the server holds nothing sensitive.
+store. It does name the running build, though, which is why it stays off
+the public port.
 
 | Field | What it tells you |
 |---|---|
@@ -224,29 +238,10 @@ so anyone can verify the server holds nothing sensitive.
 
 The `relay` block is omitted when the server runs without a relay.
 
-**Access.** `/metrics` inherits the server's own openness, like every
-endpoint except `/`, `/health`, `/healthz`, and `/readyz`:
-
-- **Open server (no `FSEND_SERVER_PASSWORD`)** — public, no credentials:
-
-  ```sh
-  curl https://fs.example.com/metrics
-  ```
-
-- **Password-protected server** — pass the password in the `X-Fsend-Auth`
-  header (the same one clients use):
-
-  ```sh
-  curl -H "X-Fsend-Auth: your-secret" https://fs.example.com/metrics
-  ```
-
-  Without it you get `401`. Note a **web browser can't open this URL**
-  directly — it can't set the header — so use `curl`, or configure your
-  monitoring scraper to send `X-Fsend-Auth` (Prometheus: a static header
-  under the scrape job).
-
-So a public server is transparently inspectable by anyone, and a locked-down
-one keeps its metrics to whoever holds the password.
+**Access.** Bind `FSEND_METRICS_ADDR` to loopback (`127.0.0.1:9090`) when
+the scraper runs on the host, or leave the port unpublished in Docker and
+attach the scraper to the compose network. There is no authentication on
+this listener; never publish it.
 
 ## Troubleshooting
 
@@ -288,7 +283,9 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 
 | Variable | Default | Notes |
 |---|---|---|
-| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable. |
+| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable. Only `debug` logs client IPs and request paths (which carry slots). |
+| `FSEND_LOG_FORMAT` | `text` | `json` emits one JSON object per line, for log shippers. |
+| `FSEND_METRICS_ADDR` | _(off)_ | Extra listener for `/metrics` (Prometheus) and `/metrics.json` — see [Metrics](#metrics). Never publish it. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/`, `/health`, `/healthz`, and `/readyz` — see [Require a password](#require-a-password-optional). |
 | `FSEND_SERVER_PASSWORD_FILE` | _(unset)_ | Read the password from this file (trailing newline trimmed) instead of `FSEND_SERVER_PASSWORD` — for Docker secrets / systemd credentials. Used only when `FSEND_SERVER_PASSWORD` is unset. |
 | `FSEND_SERVER_ADDR` | `:8080` | TCP signaling listener. |

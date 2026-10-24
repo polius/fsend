@@ -82,7 +82,12 @@ func runServer() error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrServerStartup, err)
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.logLevel}))
+	logOpts := &slog.HandlerOptions{Level: cfg.logLevel}
+	var logHandler slog.Handler = slog.NewTextHandler(os.Stdout, logOpts)
+	if cfg.logJSON {
+		logHandler = slog.NewJSONHandler(os.Stdout, logOpts)
+	}
+	logger := slog.New(logHandler)
 	slog.SetDefault(logger)
 
 	// Print the effective config before the structured logs so an operator
@@ -150,18 +155,33 @@ func runServer() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		logger.Info("fsend server starting", "http", cfg.httpAddr, "version", version.Version)
 		errCh <- httpSrv.ListenAndServe()
 	}()
+	if cfg.metricsAddr != "" {
+		// Its own listener so metrics never ride the public signaling port.
+		metricsSrv := &http.Server{
+			Addr:              cfg.metricsAddr,
+			Handler:           s.MetricsHandler(),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		defer func() { _ = metricsSrv.Close() }()
+		go func() {
+			logger.Info("metrics listener up", "addr", cfg.metricsAddr)
+			if err := metricsSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("metrics: %w", err)
+			}
+		}()
+	}
 
 	select {
 	case <-sigCh:
 		logger.Info("shutdown requested")
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("%w: http listen on %s: %v", fserrors.ErrServerStartup, cfg.httpAddr, err)
+			return fmt.Errorf("%w: listen: %v", fserrors.ErrServerStartup, err)
 		}
 	}
 
@@ -226,6 +246,8 @@ const (
 	envLogLevel             = "FSEND_LOG_LEVEL"
 	envMinClientVersion     = "FSEND_MIN_CLIENT_VERSION"
 	envRelayPublicAddr      = "FSEND_RELAY_PUBLIC_ADDR"
+	envMetricsAddr          = "FSEND_METRICS_ADDR"
+	envLogFormat            = "FSEND_LOG_FORMAT"
 
 	defaultServerAddr = ":8080"
 	defaultRelayAddr  = ":443"
@@ -252,6 +274,8 @@ type serverRuntimeConfig struct {
 	enableRelay          bool
 	minClientVersion     string
 	relayPublicAddr      string
+	metricsAddr          string
+	logJSON              bool
 }
 
 func loadServerConfig() (serverRuntimeConfig, error) {
@@ -295,6 +319,14 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		}
 		cfg.relayPublicAddr = v
 	}
+	cfg.metricsAddr = strings.TrimSpace(os.Getenv(envMetricsAddr))
+	switch v := strings.TrimSpace(os.Getenv(envLogFormat)); strings.ToLower(v) {
+	case "", "text":
+	case "json":
+		cfg.logJSON = true
+	default:
+		return cfg, fmt.Errorf("%s=%q: not a log format (use text or json)", envLogFormat, v)
+	}
 	// A typo'd level fails loudly like every other FSEND_* var — silently
 	// running at info would hide the debug logs the operator asked for.
 	switch v := strings.TrimSpace(os.Getenv(envLogLevel)); strings.ToLower(v) {
@@ -332,6 +364,8 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		// plane (its listener + session limits), then the relay data plane
 		// (its listener + byte limits). Matches the docs table order.
 		{envLogLevel, logLevelName(cfg.logLevel), cfg.logLevel != slog.LevelInfo},
+		{envLogFormat, map[bool]string{false: "text", true: "json"}[cfg.logJSON], cfg.logJSON},
+		{envMetricsAddr, orNone(cfg.metricsAddr), cfg.metricsAddr != ""},
 		// Env-var name inlined (not a shared const) so gosec G101 doesn't
 		// mistake a password-named identifier for a hardcoded credential.
 		{"FSEND_SERVER_PASSWORD", password, cfg.serverPassword != ""},
@@ -544,6 +578,12 @@ CONFIGURATION (environment variables — all optional)
 
   Server-wide:
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
+                                      Only debug logs client IPs and slots.
+    FSEND_LOG_FORMAT                  Default text; json for log shippers.
+    FSEND_METRICS_ADDR                Serve /metrics (Prometheus) and
+                                      /metrics.json on this extra listener,
+                                      e.g. 127.0.0.1:9090. Default off. Keep
+                                      it off the public internet.
     FSEND_SERVER_PASSWORD             Optional shared secret. When set, all
                                       endpoints except /health, /healthz,
                                       /readyz, and / require the X-Fsend-Auth

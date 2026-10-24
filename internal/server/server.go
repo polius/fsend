@@ -274,7 +274,6 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /health", s.health)
 	m.HandleFunc("GET /healthz", s.liveness)
 	m.HandleFunc("GET /readyz", s.readiness)
-	m.HandleFunc("GET /metrics", s.metrics)
 	// {$} matches exactly "/" so unknown paths still 404.
 	m.HandleFunc("GET /{$}", s.root)
 	var h http.Handler = m
