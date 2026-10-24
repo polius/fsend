@@ -46,6 +46,11 @@ type Config struct {
 	// MinClientVersion, when set, makes create/join answer 426 to fsend
 	// releases below it (by the User-Agent semver). Dev builds pass.
 	MinClientVersion string
+
+	// RelayPublicAddr, when set, is the host:port advertised for STUN and
+	// the relay instead of host(request.Host):relayUDPPort — for a CDN-
+	// proxied or split signaling hostname.
+	RelayPublicAddr string
 }
 
 // Default fills in zero values with sensible defaults.
@@ -158,6 +163,9 @@ func (s *Server) WithRelay(allocator RelayAllocator, udpPort int) *Server {
 // the request's Host header (what the client used to reach signaling)
 // with the relay's UDP port.
 func (s *Server) relayAddrFor(r *http.Request) string {
+	if s.cfg.RelayPublicAddr != "" {
+		return s.cfg.RelayPublicAddr
+	}
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h

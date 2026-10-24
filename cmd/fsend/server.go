@@ -96,6 +96,7 @@ func runServer() error {
 		Logger:               logger,
 		ServerPassword:       cfg.serverPassword,
 		MinClientVersion:     cfg.minClientVersion,
+		RelayPublicAddr:      cfg.relayPublicAddr,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -224,6 +225,7 @@ const (
 	envRelayEnabled         = "FSEND_RELAY_ENABLED"
 	envLogLevel             = "FSEND_LOG_LEVEL"
 	envMinClientVersion     = "FSEND_MIN_CLIENT_VERSION"
+	envRelayPublicAddr      = "FSEND_RELAY_PUBLIC_ADDR"
 
 	defaultServerAddr = ":8080"
 	defaultRelayAddr  = ":443"
@@ -249,6 +251,7 @@ type serverRuntimeConfig struct {
 	serverPassword       string
 	enableRelay          bool
 	minClientVersion     string
+	relayPublicAddr      string
 }
 
 func loadServerConfig() (serverRuntimeConfig, error) {
@@ -284,6 +287,13 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 			return cfg, fmt.Errorf("%s=%q: not a release version (use MAJOR.MINOR.PATCH)", envMinClientVersion, v)
 		}
 		cfg.minClientVersion = v
+	}
+	if v := strings.TrimSpace(os.Getenv(envRelayPublicAddr)); v != "" {
+		host, _, err := net.SplitHostPort(v)
+		if _, perr := udpPortFromAddr(v); err != nil || perr != nil || host == "" {
+			return cfg, fmt.Errorf("%s=%q: want host:port, e.g. relay.example.com:443", envRelayPublicAddr, v)
+		}
+		cfg.relayPublicAddr = v
 	}
 	// A typo'd level fails loudly like every other FSEND_* var — silently
 	// running at info would hide the debug logs the operator asked for.
@@ -331,6 +341,7 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		{envMinClientVersion, orNone(cfg.minClientVersion), cfg.minClientVersion != ""},
 		{envRelayEnabled, strconv.FormatBool(cfg.enableRelay), !cfg.enableRelay},
 		{envRelayAddr, cfg.udpAddr, cfg.udpAddr != defaultRelayAddr},
+		{envRelayPublicAddr, orNone(cfg.relayPublicAddr), cfg.relayPublicAddr != ""},
 		{envMaxBytesPerSession, capBytes(cfg.maxBytesPerSession), cfg.maxBytesPerSession != defaultMaxBytesPerSession},
 		{envMaxBytesPerDay, capBytes(cfg.maxBytesPerDay), cfg.maxBytesPerDay != defaultMaxBytesPerDay},
 	}
@@ -566,6 +577,11 @@ CONFIGURATION (environment variables — all optional)
     FSEND_RELAY_ADDR                  Default :443 (UDP). Also the STUN
                                       endpoint, so it stays in use even
                                       when forwarding is disabled.
+    FSEND_RELAY_PUBLIC_ADDR           host:port clients dial for STUN and
+                                      the relay. Default: the signaling
+                                      request's host + FSEND_RELAY_ADDR's
+                                      port. Set it when signaling sits
+                                      behind a CDN or another hostname.
     FSEND_RELAY_MAX_BYTES_PER_SESSION Per-session wire bytes after
                                       compression. Accepts B, KB, MB, GB,
                                       TB, or a plain byte count. Default 0 =

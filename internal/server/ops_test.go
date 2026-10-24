@@ -116,3 +116,14 @@ func TestWait_ExpiryIs404(t *testing.T) {
 		t.Errorf("status %d, want 404", got)
 	}
 }
+
+// RelayPublicAddr overrides the Host-derived relay/STUN address.
+func TestRelayPublicAddr(t *testing.T) {
+	s := New(Config{RelayPublicAddr: "relay.example.com:3478"})
+	s.WithRelay(&fakeRelay{}, 9999)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	if got := createSession(t, ts.URL, testSlot).RelayAddr; got != "relay.example.com:3478" {
+		t.Errorf("relay_addr = %q, want the configured public address", got)
+	}
+}
