@@ -1,7 +1,7 @@
 # Pinned by digest; Dependabot (docker ecosystem) keeps tag and digest current.
 # Builds on the runner's native platform and cross-compiles, so multi-arch
 # images don't run the Go toolchain under QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
 ARG TARGETOS
 ARG TARGETARCH
 # Injected by docker.yml so released images don't report "fsend dev".
