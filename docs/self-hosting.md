@@ -16,8 +16,9 @@ jobs:
   share code, and the server tells each where the other is. It never
   learns the code or anything about your files.
 - **Relay (fallback only)** — when NAT topology blocks a direct
-  connection, it forwards the **encrypted** bytes between the two sides.
-  It can't decrypt them, but they do pass through it.
+  connection, it forwards the **encrypted** bytes between the two sides,
+  over UDP or, for clients on networks that block UDP, over a WebSocket
+  on the HTTPS port. It can't decrypt them, but they do pass through it.
 
 Run your own when you want:
 
@@ -51,23 +52,36 @@ You'll need:
   or set `net.ipv4.ip_unprivileged_port_start=443` on the host.
 - Three inbound ports open:
   - `80/tcp` — Let's Encrypt certificate issuance
-  - `443/tcp` — HTTPS signaling
-  - `443/udp` — UDP relay (file data)
+  - `443/tcp` — HTTPS signaling, and the relay's TCP fallback
+  - `443/udp` — UDP relay (file data) and STUN
 
 ## What you're deploying
 
 Two containers on one host. Caddy terminates TLS on TCP/443 and proxies
 HTTP signaling to fsend's `:8080`; UDP/443 goes straight to the fsend
-container, so Caddy is never in the data path. (The Caddyfile turns off
-Caddy's HTTP/3 for that reason: UDP/443 belongs to the relay.) The fsend
-container runs as a non-root user with a read-only filesystem and no
-capabilities; base images are pinned by digest.
+container, so Caddy is never in the UDP data path. (The Caddyfile turns
+off Caddy's HTTP/3 for that reason: UDP/443 belongs to the relay.) The
+fsend container runs as uid 65532 (non-root) from a `scratch` image,
+with a read-only filesystem and no capabilities; base images are pinned
+by digest.
+
+**TCP fallback.** Clients on networks that block UDP reach the relay over
+a WebSocket at `/v1/relay/ws` on the same HTTPS endpoint. Caddy's
+`reverse_proxy` passes the upgrade through as-is, so there is no extra
+port or config: the fallback rides TCP/443, and fsend pairs a TCP peer
+with a UDP peer in the same allocation. The server pings each WebSocket
+every 15 s, which keeps it alive through the Caddyfile's 30 s timeouts.
+Behind another proxy (nginx, Traefik), make sure WebSocket upgrades are
+passed through on `/v1/relay/ws` and idle timeouts exceed 15 s; behind a
+CDN that can't carry UDP, set `FSEND_RELAY_PUBLIC_ADDR` so clients can
+still reach the UDP relay directly. Relayed transfers over TCP pass
+through Caddy, so they cost it some CPU.
 
 ```
                 ┌───────────────── Your VM ──────────────────┐
                 │                                            │
   tcp/443  ────►│  ┌─────────┐                ┌───────────┐  │
-  HTTPS sig.    │  │  Caddy  │ ──http:8080──► │  fsend    │  │
+  sig. + relay  │  │  Caddy  │ ──http:8080──► │  fsend    │  │
                 │  │ (TLS)   │                │  server   │  │
   tcp/80   ────►│  │ + ACME  │                │           │  │
   cert renewal  │  └─────────┘                │           │  │
@@ -78,8 +92,9 @@ capabilities; base images are pinned by digest.
                 └────────────────────────────────────────────┘
 ```
 
-TCP/443 and UDP/443 share a number but are different protocols, so both
-bind at once.
+TCP/443 carries signaling and the relay's WebSocket fallback; UDP/443
+carries the relay and STUN. They share a number but are different
+protocols, so both bind at once.
 
 ## Deploy
 
@@ -134,6 +149,9 @@ It's saved to the client's
 [config file](usage.md#choosing-a-server---connect), so every later
 `fsend` uses your server automatically — no need to repeat the flag.
 Switch back to the public default any time with `fsend --connect default`.
+To try a server without saving it, pass `--server fs.example.com` (or set
+`FSEND_SERVER`) on a single run; `fsend doctor --server fs.example.com`
+checks it end to end, including the UDP relay and the TCP fallback.
 
 ## Require a password (optional)
 
@@ -190,10 +208,12 @@ or with the wrong one — fails with `E028`.
   random session tokens, never IPs or codes; it is written `0600` and
   deleted as soon as it is read. Codes a receiver already joined are not
   kept: those transfers were already drained in step one.
-- **Single instance only.** Pairing state lives in one process's memory,
-  so run exactly one `fsend` server per hostname: two replicas behind a
-  load balancer would split senders and receivers across processes that
-  can't see each other's codes. Scale up the VM instead of out.
+- **Single instance only.** Pairing state, relay allocations and used-code
+  tombstones live in one process's memory, so run exactly one `fsend`
+  server per hostname: two replicas behind a load balancer would split
+  senders and receivers across processes that can't see each other's
+  codes. Scale up the VM instead of out. The state file is not a way to
+  share state between instances: it is read once at start and deleted.
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
   within an hour; certificates live in the `caddy_data` volume, and Caddy
   reissues them automatically if you lose it. That reissue is the recovery
@@ -279,7 +299,9 @@ this listener; never publish it.
 |---|---|
 | `docker compose up` errors out asking for `FSEND_DOMAIN` | You forgot `export FSEND_DOMAIN=…`. Set it and rerun. |
 | Caddy logs show "obtain certificate failed" (ACME error) | DNS A-record not yet pointing at this host, or `80/tcp` blocked at the firewall. |
-| `curl` to `/health` works but clients hit `E001` on cross-network transfers | `443/udp` blocked at the firewall — many setups open TCP only and forget UDP. |
+| `curl` to `/health` works but `fsend doctor` shows the `UDP` check failing, or cross-network transfers are slow or fail with `E042` | `443/udp` blocked at the firewall — many setups open TCP only and forget UDP. Clients then hole-punch less often (no STUN) and relay over the slower TCP fallback. |
+| `fsend doctor` says the server has no TCP fallback | The server predates it, or a proxy in front of fsend blocks the WebSocket upgrade on `/v1/relay/ws`. |
+| Old clients fail with `E060` | You set `FSEND_MIN_CLIENT_VERSION`, or the clients speak an older wire protocol than this server. They need `fsend --update`. |
 | Pairing starts but the transfer hangs or drops | A reverse proxy in front of fsend (not the bundled Caddy) is buffering long-poll signaling. Caddy is configured for 30s read/write; nginx/Traefik need the same. |
 | Clients hit `E028` ("pairing server requires a password") | You set `FSEND_SERVER_PASSWORD` on the server. Clients must connect with `fsend --connect host:443,<password>`. |
 

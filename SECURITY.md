@@ -18,7 +18,10 @@ otherwise. There is no bug bounty.
 ## Supported versions
 
 Only the latest release is supported. fsend is a single self-updating
-binary — update with `fsend --update`.
+binary — update with `fsend --update` (or `brew upgrade fsend` for a
+Homebrew install). Releases are signed with keyless Sigstore and carry
+GitHub build attestations; see
+[Release integrity](docs/security.md#release-integrity) to verify one.
 
 ## Scope
 
@@ -27,5 +30,6 @@ relay, and the install scripts. Out of scope: vulnerabilities in
 third-party dependencies (report those upstream) and denial of service
 against your own self-hosted instance.
 
-For the threat model and cryptographic design, see
-[docs/security.md](docs/security.md).
+For the threat model and cryptographic design (CPace bound to TLS 1.3,
+the PQ-hybrid key exchange, what the pairing server and relay can see),
+see [docs/security.md](docs/security.md).

@@ -27,19 +27,24 @@
 possible. No account, no upload step, no ports to open — just two commands and a
 short share code.
 
-- **Direct by default** — the bytes stream straight from sender to receiver at
-  your own internet speed. A relay is used only when a direct path can't be found.
+- **Direct by default** — on the same network or across NATs that can be
+  hole-punched, the bytes go straight from sender to receiver. A relay is used
+  only when a direct path can't be found.
 - **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the
-  share code (PAKE). Even the fallback relay only ever sees ciphertext.
-- **No network setup** — works behind NAT and firewalls. Nothing to configure.
+  share code through a PAKE (CPace) bound to the TLS session. Even the
+  fallback relay only ever sees ciphertext.
+- **No network setup** — works behind NAT, and falls back to a relay over
+  HTTPS (TCP 443) when a network blocks UDP. Nothing to configure.
 - **Send anything** — a file, a folder, several at once, a stdin stream, or a
   literal string.
 - **Resumable** — if a transfer drops, the next send picks up where it left off
   instead of starting over.
 - **Skips what's there** — re-send a folder and only the new or changed files move.
+- **One receiver per code** — the first receiver to connect owns the
+  transfer; if it drops, only that device can resume it.
 - **Optional password** — gate any transfer with `--password`.
-- **Post-quantum** — X25519 + ML-KEM-768 (NIST), so today's transfers stay
-  private against future quantum computers.
+- **PQ-hybrid key exchange** — X25519MLKEM768, required between peers, so
+  recorded transfers stay private against a future quantum computer.
 - **Runs anywhere** — one static binary for Linux, macOS, FreeBSD and Windows,
   on x86 and ARM. Self-host the pairing server if you like.
 
@@ -62,6 +67,11 @@ brew install polius/tap/fsend
 ```powershell
 irm https://getfsend.alzina.dev/windows | iex
 ```
+
+Releases are signed (keyless Sigstore) and carry GitHub build attestations;
+the install script and `fsend --update` verify checksums, and the signature
+too when `cosign` is installed. See
+[Security → Release integrity](docs/security.md#release-integrity).
 
 <details>
 <summary>Other install methods</summary>
@@ -107,7 +117,7 @@ fsend backup.zip --password        # gated behind a password
 ```bash
 fsend --yes abc-defg-jkm              # skip the confirmation prompt
 fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
-fsend --out - abc-defg-jkm | tar xz   # stream to stdout and pipe it
+fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as tar)
 ```
 
 ## How it works
@@ -132,8 +142,9 @@ fsend --out - abc-defg-jkm | tar xz   # stream to stdout and pipe it
 
 ## Comparison
 
-**[fsend vs croc vs magic-wormhole](docs/comparison.md)** — a side-by-side
-table on data path, cryptography, codes, and features.
+**[fsend vs croc vs magic-wormhole vs sendme](docs/comparison.md)** — a
+side-by-side table on data path, cryptography, codes, and features,
+including where fsend falls short.
 
 ## Contributing
 
