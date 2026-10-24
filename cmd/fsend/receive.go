@@ -68,6 +68,7 @@ func runReceive(f *flags, c string) error {
 	if err := resolvePassword(ctx, f, false); err != nil {
 		return err
 	}
+	startUpdateCheck(f)
 
 	// Name the phase rather than showing a bare "Connecting": the LAN probe
 	// and the server fallback are very different waits, and a named phase

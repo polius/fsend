@@ -6,39 +6,35 @@ import (
 	"testing"
 )
 
-// passwordAlphabet mirrors the alphabet inside generateRandomPassword.
-// Duplicated rather than exported so the production constant stays
-// scoped to the function that needs it.
-const passwordAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
-
-func TestGenerateRandomPassword_LengthAndAlphabet(t *testing.T) {
-	pw, err := generateRandomPassword(16)
-	if err != nil {
-		t.Fatalf("generateRandomPassword: %v", err)
+// The word list must be big enough for the entropy the comment claims
+// (512 words → 9 bits each), unique, and easy to type: lowercase a–z.
+func TestPassphraseList(t *testing.T) {
+	words := strings.Fields(passphraseList)
+	if len(words) < 512 {
+		t.Errorf("passphraseList has %d words, want at least 512", len(words))
 	}
-	if len(pw) != 16 {
-		t.Errorf("len = %d, want 16", len(pw))
-	}
-	for _, r := range pw {
-		if !strings.ContainsRune(passwordAlphabet, r) {
-			t.Errorf("character %q not in safe alphabet (%s)", r, passwordAlphabet)
+	seen := map[string]bool{}
+	for _, w := range words {
+		if seen[w] {
+			t.Errorf("duplicate word %q", w)
+		}
+		seen[w] = true
+		if strings.Trim(w, "abcdefghijklmnopqrstuvwxyz") != "" || len(w) < 2 || len(w) > 8 {
+			t.Errorf("word %q is not a short lowercase word", w)
 		}
 	}
 }
 
-// Distinctness: two consecutive draws should not collide. With a
-// 53-letter alphabet at length 16 the collision probability is
-// effectively zero, so a single collision is a real bug (e.g. a fixed
-// seed slipped in).
-func TestGenerateRandomPassword_DistinctDraws(t *testing.T) {
-	a, err := generateRandomPassword(16)
+func TestGeneratePassphrase(t *testing.T) {
+	a, err := generatePassphrase(passphraseWords)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := generateRandomPassword(16)
-	if err != nil {
-		t.Fatal(err)
+	if n := len(strings.Split(a, "-")); n != passphraseWords {
+		t.Errorf("%q has %d words, want %d", a, n, passphraseWords)
 	}
+	// Two draws colliding at 36 bits means a broken source (a fixed seed).
+	b, _ := generatePassphrase(passphraseWords)
 	if a == b {
 		t.Fatalf("two random draws collided: %q == %q", a, b)
 	}

@@ -196,6 +196,13 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	renderArtifact(os.Stderr, h, summary, ui.sink)
 	fmt.Fprintln(os.Stderr)
 
+	// Nothing would be written — every file is already here, identical — so
+	// there is nothing to consent to. Accepting lets both sides record the
+	// "already up to date" outcome.
+	if h.Mode == wire.ModeFiles && summary.NewItems == 0 && summary.Differing == 0 &&
+		summary.BytesToRecv == 0 && summary.Identical > 0 && !ui.sink {
+		return true
+	}
 	if f.yes {
 		fmt.Fprintln(os.Stderr, uxlog.Info(), "Accepting (--yes)")
 		// --yes answers the accept prompt, not the overwrite one — differing
@@ -216,7 +223,7 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	case ui.sink:
 		question = uxlog.Prompt("Write to stdout?")
 	case h.Mode == wire.ModeStream && h.IsText:
-		question = uxlog.Prompt("Accept?")
+		question = uxlog.Prompt("Show the text?")
 	default:
 		question = uxlog.Prompt("Save to ") + boldIfColor(saveTargetLabel(ui.outDir)) + uxlog.Prompt("?")
 	}
@@ -387,8 +394,8 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 		// reads past 100%. Both sides then show absolute-over-full-size,
 		// matching the sender.
 		ui.bytesHint += d
-		if ui.bar == nil && !ui.f.quiet {
-			ui.bar = uxlog.New(ui.bytesHint, ui.names != nil, ui.pathInfo.BarTag())
+		if ui.bar == nil {
+			ui.ensureBar()
 		} else {
 			ui.bar.SetTotal(ui.bytesHint, false)
 		}
@@ -398,6 +405,18 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 	ui.mu.Unlock()
 	if !quiet {
 		uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
+	}
+}
+
+// ensureBar creates the progress bar for a transfer that earns one (see
+// wantsBar). Callers hold ui.mu.
+func (ui *receiverUI) ensureBar() {
+	if ui.bar != nil || ui.f.quiet {
+		return
+	}
+	stream := ui.hello != nil && ui.hello.Mode == wire.ModeStream && !ui.hello.IsText
+	if wantsBar(ui.bytesHint, stream) {
+		ui.bar = uxlog.New(ui.bytesHint, ui.names != nil, ui.pathInfo.BarTag())
 	}
 }
 
@@ -456,9 +475,7 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	defer ui.mu.Unlock()
 	if ui.firstByte.IsZero() {
 		ui.firstByte = time.Now()
-	}
-	if ui.bar == nil && !ui.f.quiet {
-		ui.bar = uxlog.New(ui.bytesHint, ui.names != nil, ui.pathInfo.BarTag())
+		ui.ensureBar()
 	}
 	if name, ok := ui.names[fileIndex]; ok && fileIndex != ui.curFile {
 		ui.curFile = fileIndex
@@ -519,8 +536,19 @@ func printCancelKeptHint(f *flags, ui *receiverUI) {
 		// Via uxlog.Println: the aborted bar is still live here (ui.close
 		// runs on a defer), and its next refresh frame would erase a raw
 		// stderr write.
-		uxlog.Println(fmt.Sprintf("%s Partial data kept — run the same fsend <code> again to resume while the sender is still waiting.", uxlog.Info()))
+		uxlog.Println(fmt.Sprintf("%s Partial data kept. While the sender waits, resume with: %s",
+			uxlog.Info(), uxlog.Code(receiveResume)))
 	}
+}
+
+// resumeCommand is the exact command that resumes a receive: the same
+// code, into the same directory.
+func resumeCommand(f *flags, code string) string {
+	cmd := "fsend " + code
+	if f.outDir != "" && f.outDir != "-" {
+		cmd += " --out " + f.outDir
+	}
+	return cmd
 }
 
 func (ui *receiverUI) close() {
@@ -599,7 +627,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		// overcount what actually landed — say how many of the offer were written.
 		if kept > 0 && !ui.sink {
 			headline = fmt.Sprintf("Saved %d of %s to %s",
-				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), uxlog.Path(displayPath(ui.outDir)))
+				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), uxlog.Path(saveTargetLabel(ui.outDir)))
 		}
 		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
 	}
@@ -621,6 +649,9 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	if retErr != nil {
 		entry, _ := fserrors.Lookup(retErr)
 		ev.Error, ev.Exit = entry.Code, entry.Exit
+		if deliberateChoice(retErr) {
+			ev.Exit = 0
+		}
 	}
 	if !isText {
 		ev.FilesSaved, ev.FilesSame, ev.FilesKept = ptrInt(len(files)), ptrInt(skippedSame), ptrInt(kept)
@@ -696,17 +727,17 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	if ui.sink {
 		return "Received"
 	}
-	name := ""
-	if h != nil {
-		if h.Mode == wire.ModeStream {
-			if len(files) > 0 {
-				name = filepath.Base(files[0])
-			}
-		} else {
-			name = sanitizeForDisplay(h.DisplayName, 128)
-		}
+	// One file landed under the name it was offered as (a single-file or
+	// stream send): name the saved file itself, path and all.
+	if len(files) == 1 && h != nil &&
+		(h.Mode == wire.ModeStream || sanitizeForDisplay(h.DisplayName, 128) == filepath.Base(files[0])) {
+		return "Saved " + uxlog.Path(displayPath(files[0]))
 	}
-	dest := uxlog.Path(displayPath(ui.outDir))
+	name := ""
+	if h != nil && h.Mode != wire.ModeStream {
+		name = sanitizeForDisplay(h.DisplayName, 128)
+	}
+	dest := uxlog.Path(saveTargetLabel(ui.outDir))
 	if name == "" {
 		return "Saved to " + dest
 	}
@@ -762,6 +793,8 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(kept, "file")+" kept")
 	}
 	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, moved, "received", elapsed, path), clauses)
-	uxlog.Notify("Received " + uxlog.HumanBytes(total))
+	if kept == 0 && moved > 0 {
+		uxlog.Notify("Received "+uxlog.HumanBytes(total), time.Since(runStart))
+	}
 	printUpdateNotice(f)
 }

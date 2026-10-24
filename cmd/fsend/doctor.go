@@ -101,6 +101,13 @@ func runDoctor() {
 		}
 		say(true, "config", "%s", detail)
 	}
+	// FSEND_SERVER redirects every run, so check the server runs would use.
+	if err := setServerOverride(""); err != nil {
+		say(false, "config", "FSEND_SERVER is invalid (%v)", err)
+	} else if serverOverride != "" {
+		server = serverOverride
+		say(true, "config", "FSEND_SERVER overrides it: %s", server)
+	}
 
 	// Server reachability: /health is the one endpoint that never requires
 	// the self-hosted password, so it works against any server.

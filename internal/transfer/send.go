@@ -38,6 +38,10 @@ type SendOptions struct {
 	// "unknown" (old receivers don't send the flag).
 	OnSkip         func(index uint32, kept bool)
 	OnStreamingEOF func(index uint32, finalBytes uint64)
+	// OnPeer fires when the receiver answers the HELLO: its self-reported
+	// device name (peer-supplied — sanitize before display) and whether it
+	// accepted the transfer.
+	OnPeer func(hostname string, accepted bool)
 }
 
 // Send executes the full sender-side protocol over the supplied streams.
@@ -91,6 +95,9 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	}
 	if _, ok := wire.Negotiate(ack.MinVersion, ack.MaxVersion); !ok {
 		return fserrors.ErrIncompatibleVersion
+	}
+	if opts.OnPeer != nil {
+		opts.OnPeer(ack.Hostname, ack.Accepts)
 	}
 	if !ack.Accepts {
 		return fserrors.ErrReceiverDeclined

@@ -294,10 +294,11 @@ func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
 	}
 	_ = r1.Wait()
 
-	// The interrupt must explain itself: the force-quit escape hatch and
-	// the fact that the partial survives for the resume exercised below.
-	if !strings.Contains(r1Err.String(), "press Ctrl-C again to force quit") {
-		t.Errorf("no force-quit hint on first SIGINT\n--- recv1 stderr ---\n%s", r1Err.String())
+	// The interrupt must explain itself: that it is cancelling (the
+	// force-quit hint only follows if teardown passes a second) and that
+	// the partial survives for the resume exercised below.
+	if !strings.Contains(r1Err.String(), "Cancelling") {
+		t.Errorf("no cancel notice on first SIGINT\n--- recv1 stderr ---\n%s", r1Err.String())
 	}
 	if !strings.Contains(r1Err.String(), "Partial data kept") {
 		t.Errorf("no partial-kept resume hint after mid-transfer SIGINT\n--- recv1 stderr ---\n%s", r1Err.String())
@@ -307,7 +308,7 @@ func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
 	// upper bound costs nothing when healthy, and 30s flaked on loaded
 	// runners (the sender can sit in a QUIC handshake attempt before
 	// classifying the drop).
-	if !waitForStderr(s, "Receiver disconnected", 60*time.Second) {
+	if !waitForStderr(s, " stopped", 60*time.Second) {
 		t.Fatalf("sender never re-entered pairing\n--- sender stderr ---\n%s", s.stderr.String())
 	}
 
@@ -406,7 +407,7 @@ func TestSignal_ReceiverKilledCodeStaysLive(t *testing.T) {
 	_ = r1.Wait()
 
 	// Idle timeout (2 s) + two bounded re-accepts (15 s each) + backoff.
-	if !waitForStderr(s, "Lost contact with the receiver", 60*time.Second) {
+	if !waitForStderr(s, "Lost contact with", 60*time.Second) {
 		t.Fatalf("sender never reported the lost receiver\n--- sender stderr ---\n%s", s.stderr.String())
 	}
 	// The user-facing retry notice must carry a rounded wait, not the raw

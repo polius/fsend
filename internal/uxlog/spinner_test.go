@@ -39,11 +39,28 @@ func TestSpinner_HintFollowsMessage(t *testing.T) {
 		t.Errorf("hint must follow the message: %q", out)
 	}
 
+	// Non-TTY logs drop the hint: nobody reading a log can press Ctrl-C.
 	buf.Reset()
 	nonTTY := &Spinner{msg: "first", hint: HintCancel, w: &buf}
 	nonTTY.SetMessage("second")
-	if got := buf.String(); !strings.Contains(got, "second  ·  "+HintCancel) {
-		t.Errorf("non-TTY line missing hint: %q", got)
+	if got := buf.String(); !strings.Contains(got, "second") || strings.Contains(got, HintCancel) {
+		t.Errorf("non-TTY line = %q, want the message without the hint", got)
+	}
+}
+
+// A notice printed while a spinner animates must start on a cleared line,
+// not glued to the end of the current frame.
+func TestPrintln_ClearsLiveSpinnerLine(t *testing.T) {
+	var buf bytes.Buffer
+	s := &Spinner{msg: "Waiting", w: &buf, tty: true}
+	setActiveSpinner(s)
+	defer clearActiveSpinner(s)
+	s.draw("⠋")
+	printlnTo(&buf, "Cancelling…")
+	out := buf.String()
+	i := strings.Index(out, "Cancelling…")
+	if i < 0 || !strings.HasSuffix(out[:i], "\r\x1b[2K") {
+		t.Errorf("notice not preceded by a line clear: %q", out)
 	}
 }
 
