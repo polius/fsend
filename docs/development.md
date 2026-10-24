@@ -5,7 +5,7 @@ is the `fsend server` subcommand) from source.
 
 ## Prerequisites
 
-- **Go ≥ 1.26.10** (matches `go.mod`).
+- **Go ≥ 1.27.3** (matches `go.mod`).
 - Optional: **Docker** + **docker compose v2**, only for the reverse-proxy
   stack in [`deploy/compose/`](../deploy/compose/).
 
