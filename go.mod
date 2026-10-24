@@ -1,8 +1,9 @@
 module github.com/polius/fsend
 
-go 1.26.9
+go 1.26.10
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/adrg/xdg v0.5.3
 	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.20.3
@@ -19,7 +20,6 @@ require (
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
-	salsa.debian.org/vasudev/gospake2 v0.0.0-20210510093858-d91629950ad1
 )
 
 require (

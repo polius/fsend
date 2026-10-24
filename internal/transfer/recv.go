@@ -91,7 +91,7 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 			// The peer speaks a different wire protocol (a breaking release).
 			// Reply with our own version-stamped frame so the sender's read
 			// trips the same check and both sides report it clearly.
-			_ = wire.WriteControl(s.Control, wire.TypeHelloAck, &wire.ReceiverHello{Accepts: false})
+			ackProceed(s, opts, false)
 			drainControl(s)
 			return fserrors.ErrIncompatibleVersion
 		}
@@ -100,7 +100,9 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	if ft != wire.TypeHello {
 		return fmt.Errorf("%w: expected HELLO, got %v", fserrors.ErrProtocolError, ft)
 	}
-	if hello.ProtocolVersion != wire.ProtocolVersion {
+	if _, ok := wire.Negotiate(hello.MinVersion, hello.MaxVersion); !ok {
+		ackProceed(s, opts, false)
+		drainControl(s)
 		return fserrors.ErrIncompatibleVersion
 	}
 
@@ -909,6 +911,7 @@ func manifestStatus(d disposition, a wire.DecisionAction) string {
 
 func ackProceed(s *Streams, opts RecvOptions, accepts bool) {
 	ack := &wire.ReceiverHello{
+		MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, Caps: wire.CapsSupported,
 		Hostname: opts.Hostname, OS: opts.OS, ClientVersion: opts.ClientVersion, Accepts: accepts,
 	}
 	_ = wire.WriteControl(s.Control, wire.TypeHelloAck, ack)
@@ -991,68 +994,4 @@ func mapPeerError(ef wire.ErrorFrame) error {
 	default:
 		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
 	}
-}
-
-// receiverPasswordHandshake answers the sender's --password challenge. On a
-// mismatch the sender issues a fresh challenge (up to PasswordAttempts), so
-// an interactively-prompted receiver can retry a typo without burning the
-// one-shot code. A fixed password (--password / FSEND_PASSWORD) gets one
-// try — resending the same value can't succeed. The loop is bounded by the
-// same PasswordAttempts cap the sender enforces, so a hostile sender can't
-// hold the receiver in an endless password prompt.
-func receiverPasswordHandshake(s *Streams, opts RecvOptions) error {
-	for attempt := 1; attempt <= PasswordAttempts; attempt++ {
-		var ch wire.PasswordChallenge
-		ft, err := wire.ReadControl(s.Control, &ch)
-		if err != nil {
-			// An old sender closes the stream after one mismatch instead of
-			// re-challenging; the honest error is still the password.
-			if attempt > 1 {
-				return fserrors.ErrWrongPassword
-			}
-			return fmt.Errorf("recv: read password challenge: %w", err)
-		}
-		if ft != wire.TypePasswordChallenge {
-			return fmt.Errorf("%w: expected PASSWORD_CHALLENGE, got %v", fserrors.ErrProtocolError, ft)
-		}
-		password := opts.Password
-		if password == "" {
-			if opts.PromptPass == nil {
-				declineTransfer(s, wire.ErrCodePasswordRequired, "receiver has no password to offer")
-				return fserrors.ErrPasswordRequired
-			}
-			password, err = opts.PromptPass(attempt)
-			if err != nil {
-				return fmt.Errorf("recv: read password: %w", err)
-			}
-		}
-		mac := hmacPassword(password, ch.Nonce[:])
-		var resp wire.PasswordResponse
-		copy(resp.HMAC[:], mac)
-		if err := wire.WriteControl(s.Control, wire.TypePasswordResponse, &resp); err != nil {
-			return fmt.Errorf("recv: write password response: %w", err)
-		}
-		var ef wire.ErrorFrame
-		ft, err = wire.ReadControl(s.Control, &ef)
-		if err != nil {
-			return fmt.Errorf("recv: read password verdict: %w", err)
-		}
-		switch ft {
-		case wire.TypePasswordVerified:
-			return nil
-		case wire.TypeError:
-			if ef.Code != wire.ErrCodeWrongPassword {
-				return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
-			}
-			if opts.Password == "" && opts.PromptPass != nil {
-				continue // loop back for the sender's next challenge
-			}
-			return fserrors.ErrWrongPassword
-		default:
-			return fmt.Errorf("%w: expected PASSWORD_VERIFIED, got %v", fserrors.ErrProtocolError, ft)
-		}
-	}
-	// Exhausted the attempt cap without a verified verdict (a sender that keeps
-	// re-challenging past its own limit): the honest outcome is a bad password.
-	return fserrors.ErrWrongPassword
 }

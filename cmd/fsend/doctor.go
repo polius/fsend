@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	codepkg "github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/landisc"
@@ -134,7 +135,7 @@ func runDoctor() {
 	//      there; when that happens, discovering *other* devices falls
 	//      back to the pairing server (transfers still complete, and
 	//      same-device transfers keep working via loopback).
-	ann, err := landisc.Announce(doctorCode, ip)
+	ann, err := landisc.Announce(doctorCode, codepkg.Epoch(time.Now()), ip)
 	if err != nil {
 		say(false, "mDNS", "cannot open multicast sockets (%v) — LAN discovery unavailable", err)
 		return

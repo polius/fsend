@@ -19,6 +19,9 @@ import "io"
 type Streams struct {
 	Control io.ReadWriteCloser
 	Data    io.ReadWriteCloser
+	// Binding is a secret only the two authenticated peers share (derived
+	// from the code PAKE). In-session PAKEs such as --password bind to it.
+	Binding []byte
 }
 
 // Close shuts both streams, swallowing individual close errors.

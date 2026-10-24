@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	codepkg "github.com/polius/fsend/internal/code"
 )
 
 // TestQuery_MissIsBounded pins the watchdog contract: with no sender
@@ -53,7 +55,7 @@ func TestQuery_CancelledContext(t *testing.T) {
 // environment limitation, not a code regression, so it skips.
 func TestAnnounceQuery_Roundtrip(t *testing.T) {
 	ip := PreferredLocalIP()
-	ann, err := Announce("round-trip-chk", ip)
+	ann, err := Announce("round-trip-chk", codepkg.Epoch(time.Now()), ip)
 	if err != nil {
 		t.Skipf("multicast unavailable on this host: %v", err)
 	}
@@ -72,8 +74,8 @@ func TestAnnounceQuery_Roundtrip(t *testing.T) {
 	if !res.IP.Equal(ip) {
 		t.Errorf("Query returned %v, want the announced %v", res.IP, ip)
 	}
-	if res.Port != PortForCode("round-trip-chk") {
-		t.Errorf("Query port = %d, want %d", res.Port, PortForCode("round-trip-chk"))
+	if res.Port != PortForCode("round-trip-chk", codepkg.Epoch(time.Now())) {
+		t.Errorf("Query port = %d, want %d", res.Port, PortForCode("round-trip-chk", codepkg.Epoch(time.Now())))
 	}
 }
 
@@ -82,7 +84,7 @@ func TestAnnounceQuery_Roundtrip(t *testing.T) {
 // to dial without a second mDNS round-trip.
 func TestPortForCode_Deterministic(t *testing.T) {
 	const code = "abc-defg-jkm"
-	a, b := PortForCode(code), PortForCode(code)
+	a, b := PortForCode(code, codepkg.Epoch(time.Now())), PortForCode(code, codepkg.Epoch(time.Now()))
 	if a != b {
 		t.Errorf("PortForCode is not deterministic: %d vs %d", a, b)
 	}
@@ -129,9 +131,9 @@ func (nopCloser) Close() error { return nil }
 func TestPortForCode_InRange(t *testing.T) {
 	cases := []string{"", "a", "abc-defg-jkm", "ZZZ-zzzz-ZZZ", "0123456789", strings.Repeat("x", 64)}
 	for _, c := range cases {
-		p := PortForCode(c)
+		p := PortForCode(c, codepkg.Epoch(time.Now()))
 		if p < 50000 || p >= 51000 {
-			t.Errorf("PortForCode(%q) = %d, want [50000, 51000)", c, p)
+			t.Errorf("PortForCode(%q, codepkg.Epoch(time.Now())) = %d, want [50000, 51000)", c, p)
 		}
 	}
 }
@@ -142,14 +144,14 @@ func TestPortForCode_InRange(t *testing.T) {
 // PAKE secret and the name is multicast across the LAN.
 func TestServiceName(t *testing.T) {
 	const code = "abc-defg-jkm"
-	got := serviceName(code)
+	got := serviceName(code, 1)
 	if !strings.HasSuffix(got, ".local") {
 		t.Errorf("serviceName(%q) = %q; missing .local suffix", code, got)
 	}
 	if strings.Contains(got, code) {
 		t.Errorf("serviceName(%q) = %q leaks the code in cleartext", code, got)
 	}
-	if got != serviceName(code) {
+	if got != serviceName(code, 1) {
 		t.Errorf("serviceName(%q) is not deterministic", code)
 	}
 }

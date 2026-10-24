@@ -61,7 +61,7 @@ func TestClient_CreateAndJoin_Roundtrip(t *testing.T) {
 
 // The whole point of the slot scheme: the raw code must never cross the
 // wire to the pairing server — not in a URL, not in a body. A server
-// that learned the code could run the SPAKE2 handshake itself and MITM
+// that learned the code could run the PAKE handshake itself and MITM
 // the transfer. This snoops every request of a full Create/Join/Wait
 // round and asserts the code appears nowhere.
 func TestClient_RawCodeNeverSentToServer(t *testing.T) {

@@ -2,10 +2,6 @@ package transfer
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +9,6 @@ import (
 	"time"
 
 	"github.com/zeebo/blake3"
-	"golang.org/x/crypto/argon2"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
@@ -68,14 +63,16 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	defer stop()
 
 	hello := &wire.SenderHello{
-		ProtocolVersion: wire.ProtocolVersion,
-		Hostname:        opts.Hostname,
-		OS:              opts.OS,
-		ClientVersion:   opts.ClientVersion,
-		HasPassword:     opts.Password != "",
-		Mode:            opts.Mode,
-		IsText:          opts.IsText,
-		DisplayName:     opts.DisplayName,
+		MinVersion:    wire.MinProtocolVersion,
+		MaxVersion:    wire.ProtocolVersion,
+		Caps:          wire.CapsSupported,
+		Hostname:      opts.Hostname,
+		OS:            opts.OS,
+		ClientVersion: opts.ClientVersion,
+		HasPassword:   opts.Password != "",
+		Mode:          opts.Mode,
+		IsText:        opts.IsText,
+		DisplayName:   opts.DisplayName,
 	}
 	if err := wire.WriteControl(s.Control, wire.TypeHello, hello); err != nil {
 		return fmt.Errorf("send: hello: %w", err)
@@ -91,6 +88,9 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	}
 	if ft != wire.TypeHelloAck {
 		return fmt.Errorf("%w: expected HELLO_ACK, got %v", fserrors.ErrProtocolError, ft)
+	}
+	if _, ok := wire.Negotiate(ack.MinVersion, ack.MaxVersion); !ok {
+		return fserrors.ErrIncompatibleVersion
 	}
 	if !ack.Accepts {
 		return fserrors.ErrReceiverDeclined
@@ -423,70 +423,4 @@ func peerError(body []byte) error {
 	var ef wire.ErrorFrame
 	_ = wire.Decode(body, &ef)
 	return mapPeerError(ef)
-}
-
-// PasswordAttempts is how many password tries the sender allows per session
-// before aborting the transfer. A typo at the receiver's no-echo prompt
-// shouldn't burn the one-shot code.
-const PasswordAttempts = 3
-
-// senderPasswordHandshake runs the challenge/response that gates --password.
-// Each mismatch below the attempt cap answers with a WrongPassword error and
-// a fresh challenge; the final mismatch closes the stream as before.
-func senderPasswordHandshake(s *Streams, password string) error {
-	for attempt := 1; ; attempt++ {
-		var nonce [32]byte
-		if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
-			return fmt.Errorf("send: password nonce: %w", err)
-		}
-		if err := wire.WriteControl(s.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
-			// A receiver that can't retry (fixed password, old fsend) hangs
-			// up after its mismatch; the honest error is still the password.
-			if attempt > 1 {
-				return fserrors.ErrWrongPassword
-			}
-			return fmt.Errorf("send: password challenge: %w", err)
-		}
-		ft, body, err := wire.ReadControlRaw(s.Control)
-		if err != nil {
-			if attempt > 1 {
-				return fserrors.ErrWrongPassword
-			}
-			return fmt.Errorf("send: read password response: %w", err)
-		}
-		if ft == wire.TypeError {
-			return peerError(body)
-		}
-		if ft != wire.TypePasswordResponse {
-			return fmt.Errorf("%w: expected PASSWORD_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
-		}
-		var resp wire.PasswordResponse
-		if err := wire.Decode(body, &resp); err != nil {
-			return fmt.Errorf("send: decode password response: %w", err)
-		}
-		expected := hmacPassword(password, nonce[:])
-		if subtle.ConstantTimeCompare(expected, resp.HMAC[:]) == 1 {
-			if err := wire.WriteControl(s.Control, wire.TypePasswordVerified, nil); err != nil {
-				return fmt.Errorf("send: password verified: %w", err)
-			}
-			return nil
-		}
-		_ = wire.WriteControl(s.Control, wire.TypeError, &wire.ErrorFrame{
-			Code: wire.ErrCodeWrongPassword, Message: "wrong password",
-		})
-		if attempt == PasswordAttempts {
-			_ = s.Control.Close()
-			_, _ = io.Copy(io.Discard, s.Control)
-			return fserrors.ErrWrongPassword
-		}
-	}
-}
-
-// hmacPassword is the shared response tag; argon2id stretches the password
-// (salted by the session nonce) before keying the HMAC.
-func hmacPassword(password string, nonce []byte) []byte {
-	key := argon2.IDKey([]byte(password), nonce, 2, 64*1024, 4, 32)
-	m := hmac.New(sha256.New, key)
-	m.Write(nonce)
-	return m.Sum(nil)
 }

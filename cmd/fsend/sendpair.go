@@ -13,6 +13,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	codepkg "github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
@@ -87,12 +88,13 @@ type sendPairOutcome struct {
 // immediately. Context cancellation while waiting for Accept surfaces
 // as ctx.Err() — the coordinator treats that as "loser, no-op".
 func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
-	port := landisc.PortForCode(code)
+	epoch := codepkg.Epoch(time.Now())
+	port := landisc.PortForCode(code, epoch)
 	ln, err := listenLANWithRetry(ctx, port, code)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", fserrors.ErrLANListenerFailed, err)
 	}
-	mdnsConn, err := landisc.Announce(code, landisc.PreferredLocalIP())
+	mdnsConn, err := landisc.Announce(code, epoch, landisc.PreferredLocalIP())
 	if err != nil {
 		_ = ln.Close()
 		return nil, fmt.Errorf("%w: mDNS announce: %v", fserrors.ErrLANListenerFailed, err)
@@ -104,7 +106,7 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 
 	// Keep accepting until the real receiver completes the handshake or the
 	// pairing window closes. A malicious LAN host can reach the deterministic
-	// port and complete TLS but fail SPAKE2 (it lacks the code); surrendering
+	// port and complete TLS but fail the PAKE (it lacks the code); surrendering
 	// the LAN fast path to the first such impostor would be a trivial,
 	// repeatable denial of the same-LAN shortcut. Only ctx cancellation (the
 	// internet path won, or pairing gave up) ends the loop — the transfer
@@ -401,7 +403,7 @@ func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID,
 
 // senderQUICAccept brings up a quic.Transport on the established
 // PacketConn, accepts the first inbound QUIC connection, runs the
-// SPAKE2 sender handshake, and returns the listener (for retries), the
+// PAKE sender handshake, and returns the listener (for retries), the
 // first AcceptResult, and a teardown closure.
 func senderQUICAccept(ctx context.Context, pc net.PacketConn, code string) (*quic.Listener, *quicconn.AcceptResult, func(), error) {
 	tlsCfg, err := quicconn.SenderTLSConfig()
@@ -711,7 +713,7 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
 		}
-		// Bound the SPAKE2 handshake by the same window: a peer that
+		// Bound the PAKE handshake by the same window: a peer that
 		// completes the QUIC accept then stalls the PAKE must not hang
 		// "retrying…" forever.
 		return quicconn.SenderHandshake(acceptCtx, qc, pair.code)

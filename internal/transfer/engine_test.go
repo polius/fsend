@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/pake"
 	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -677,15 +679,17 @@ func TestEngine_ReceiverPasswordPromptBounded(t *testing.T) {
 	go func() {
 		defer sender.Close()
 		_ = wire.WriteControl(sender.Control, wire.TypeHello, &wire.SenderHello{
-			ProtocolVersion: wire.ProtocolVersion, HasPassword: true, Mode: wire.ModeFiles,
+			MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, HasPassword: true, Mode: wire.ModeFiles,
 		})
 		var rh wire.ReceiverHello
 		if _, err := wire.ReadControl(sender.Control, &rh); err != nil {
 			return
 		}
 		for {
-			var nonce [32]byte
-			if err := wire.WriteControl(sender.Control, wire.TypePasswordChallenge, &wire.PasswordChallenge{Nonce: nonce}); err != nil {
+			var ch wire.PasswordChallenge
+			st, _ := pake.New(pake.Initiator, pake.Params{PRS: []byte("secret"), SID: ch.Nonce[:], AD: adPwSender})
+			copy(ch.Share[:], st.Share())
+			if err := wire.WriteControl(sender.Control, wire.TypePasswordChallenge, &ch); err != nil {
 				return
 			}
 			if _, _, err := wire.ReadControlRaw(sender.Control); err != nil {
@@ -905,5 +909,41 @@ func TestEngine_DirModePropagatesOnIdenticalResend(t *testing.T) {
 	}
 	if st, _ := os.Stat(filepath.Join(dst, "d")); st.Mode()&os.ModePerm != 0o700 {
 		t.Errorf("dir mode not propagated: %o, want 0700", st.Mode()&os.ModePerm)
+	}
+}
+
+// A sender that doesn't know the password must not be able to wave the
+// receiver through: PASSWORD_VERIFIED carries the sender's own confirmation
+// tag, and a forged one fails authentication.
+func TestEngine_PasswordImpostorSenderRejected(t *testing.T) {
+	ctrlA, ctrlB := net.Pipe()
+	dataA, dataB := net.Pipe()
+	sender := &Streams{Control: ctrlA, Data: dataA}
+	receiver := &Streams{Control: ctrlB, Data: dataB}
+
+	go func() {
+		defer sender.Close()
+		_ = wire.WriteControl(sender.Control, wire.TypeHello, &wire.SenderHello{
+			MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, HasPassword: true, Mode: wire.ModeFiles,
+		})
+		var rh wire.ReceiverHello
+		if _, err := wire.ReadControl(sender.Control, &rh); err != nil {
+			return
+		}
+		var ch wire.PasswordChallenge
+		st, _ := pake.New(pake.Initiator, pake.Params{PRS: []byte("guess"), SID: ch.Nonce[:], AD: adPwSender})
+		copy(ch.Share[:], st.Share())
+		_ = wire.WriteControl(sender.Control, wire.TypePasswordChallenge, &ch)
+		if _, _, err := wire.ReadControlRaw(sender.Control); err != nil {
+			return
+		}
+		_ = wire.WriteControl(sender.Control, wire.TypePasswordVerified, &wire.PasswordVerified{})
+		_, _ = io.Copy(io.Discard, sender.Control)
+	}()
+
+	err := Recv(context.Background(), receiver, RecvOptions{TargetDir: t.TempDir(), Password: "real-secret"})
+	receiver.Close()
+	if !errors.Is(err, fserrors.ErrPeerAuthFailed) {
+		t.Fatalf("recv err = %v, want ErrPeerAuthFailed", err)
 	}
 }

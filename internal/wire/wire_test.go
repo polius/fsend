@@ -14,12 +14,12 @@ import (
 
 func TestControl_HelloRoundtrip(t *testing.T) {
 	want := SenderHello{
-		ProtocolVersion: ProtocolVersion,
-		Hostname:        "Pol's MacBook",
-		OS:              "darwin",
-		ClientVersion:   "0.1.0",
-		Mode:            ModeFiles,
-		DisplayName:     "my-project/",
+		MinVersion: MinProtocolVersion, MaxVersion: ProtocolVersion,
+		Hostname:      "Pol's MacBook",
+		OS:            "darwin",
+		ClientVersion: "0.1.0",
+		Mode:          ModeFiles,
+		DisplayName:   "my-project/",
 	}
 	var buf bytes.Buffer
 	if err := WriteControl(&buf, TypeHello, &want); err != nil {

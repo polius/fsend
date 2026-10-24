@@ -45,7 +45,7 @@ func hostileSetup(t *testing.T, dstDir string, entries []wire.ListingEntry, opts
 	}()
 
 	if err := wire.WriteControl(sender.Control, wire.TypeHello, &wire.SenderHello{
-		ProtocolVersion: wire.ProtocolVersion, Mode: wire.ModeFiles, Hostname: "evil",
+		MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, Mode: wire.ModeFiles, Hostname: "evil",
 	}); err != nil {
 		t.Fatalf("hello: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestHostile_SymlinkListingRejected(t *testing.T) {
 	go func() { _, _ = io.Copy(io.Discard, sender.Data) }()
 
 	if err := wire.WriteControl(sender.Control, wire.TypeHello, &wire.SenderHello{
-		ProtocolVersion: wire.ProtocolVersion, Mode: wire.ModeFiles, Hostname: "evil",
+		MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, Mode: wire.ModeFiles, Hostname: "evil",
 	}); err != nil {
 		t.Fatalf("hello: %v", err)
 	}

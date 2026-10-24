@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/polius/fsend/internal/code"
@@ -39,6 +40,21 @@ type Client struct {
 	hc       *http.Client
 	version  string
 	password string // optional: self-hosted server's shared secret
+
+	// pinned maps a created code to its slot, so a sender's /wait polls
+	// keep hitting the same slot across a UTC day boundary.
+	pinMu  sync.Mutex
+	pinned map[string]string
+}
+
+// slotFor returns the slot pinned at Create, or the current one.
+func (c *Client) slotFor(codeStr string) string {
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	if s, ok := c.pinned[codeStr]; ok {
+		return s
+	}
+	return code.Slot(codeStr)
 }
 
 // New builds a client for the given http(s) base URL.
@@ -109,9 +125,16 @@ func (c *Client) Create(ctx context.Context, codeStr string) (*CreateResult, err
 			}
 		}
 		var out server.CreateSessionResponse
+		slot := c.slotFor(codeStr)
 		err := c.do(ctx, http.MethodPost, "/v1/session",
-			server.CreateSessionRequest{ClientVersion: c.version, Slot: code.Slot(codeStr)}, &out, nil)
+			server.CreateSessionRequest{ClientVersion: c.version, Slot: slot}, &out, nil)
 		if err == nil {
+			c.pinMu.Lock()
+			if c.pinned == nil {
+				c.pinned = map[string]string{}
+			}
+			c.pinned[codeStr] = slot
+			c.pinMu.Unlock()
 			return &CreateResult{CreateSessionResponse: out, Code: codeStr}, nil
 		}
 		if generated && errors.Is(err, fserrors.ErrCodeAlreadyClaimed) && attempt < createAttempts {
@@ -123,11 +146,20 @@ func (c *Client) Create(ctx context.Context, codeStr string) (*CreateResult, err
 
 // Join attempts to pair as a receiver, returning the sender's reflected
 // address and ICE credentials. The session is addressed by the code's
-// slot; the code itself stays on this machine.
+// slot; the code itself stays on this machine. Near a UTC day boundary
+// the sender may have used the neighbouring epoch, so a not-found there
+// retries with it.
 func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionResponse, error) {
 	var out server.JoinSessionResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session/"+code.Slot(codeStr)+"/join",
-		server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
+	var err error
+	for _, epoch := range code.EpochsFor(time.Now()) {
+		out = server.JoinSessionResponse{}
+		err = c.do(ctx, http.MethodPost, "/v1/session/"+code.SlotAt(codeStr, epoch)+"/join",
+			server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
+		if !errors.Is(err, fserrors.ErrCodeNotFound) {
+			break
+		}
+	}
 	return &out, err
 }
 
@@ -139,7 +171,7 @@ func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionR
 // the session TTL expires.
 func (c *Client) Wait(ctx context.Context, codeStr string) (*server.WaitResponse, error) {
 	var out server.WaitResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session/"+code.Slot(codeStr)+"/wait",
+	err := c.do(ctx, http.MethodPost, "/v1/session/"+c.slotFor(codeStr)+"/wait",
 		server.WaitRequest{}, &out, allowNoContent())
 	if errors.Is(err, errNoContent) {
 		return nil, nil

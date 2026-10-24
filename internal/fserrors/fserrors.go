@@ -67,7 +67,7 @@ var (
 	// E021 — receiver did not match the sender's --password challenge.
 	ErrWrongPassword = errors.New("wrong password")
 	// E022 — peers did not agree on the short code (or someone in the
-	// middle tried to MITM): SPAKE2-derived key + TLS exporter mismatch.
+	// middle tried to MITM): PAKE-derived key + TLS exporter mismatch.
 	ErrPeerAuthFailed = errors.New("peer authentication failed")
 	// E023 — relay's per-session byte cap was hit and the allocation
 	// was torn down. Tells the user *why* the transfer stopped, instead

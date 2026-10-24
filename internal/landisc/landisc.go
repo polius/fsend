@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/pion/mdns/v2"
+
+	"github.com/polius/fsend/internal/code"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/ipv4"
@@ -37,26 +39,27 @@ import (
 )
 
 // derive stretches the code with argon2id and returns 18 key bytes:
-// 16 for the service name, 2 for the port. The salt is a fixed domain
-// label — the peers share no prior state, so a per-session salt is
-// impossible; the memory-hardness is what carries the defense (see the
-// package comment). Memoized because announce/query each need the same
-// key for both the name and the port.
-func derive(code string) []byte {
+// 16 for the service name, 2 for the port. The peers share no prior
+// state, so the salt is a domain label plus the UTC day (code.Epoch): the
+// memory-hardness carries the defense, and a precomputed table expires
+// daily. Memoized because announce/query each need the same key for both
+// the name and the port.
+func derive(c string, epoch int64) []byte {
 	deriveMu.Lock()
 	defer deriveMu.Unlock()
-	if code == derivedCode {
+	if c == derivedCode && epoch == derivedEpoch {
 		return derivedKey
 	}
-	key := argon2.IDKey([]byte(code), []byte("fsend-landisc-v2"), 2, 64*1024, 4, 18)
-	derivedCode, derivedKey = code, key
+	key := argon2.IDKey([]byte(c), code.EpochSalt("fsend-landisc-v3", epoch), 2, 64*1024, 4, 18)
+	derivedCode, derivedEpoch, derivedKey = c, epoch, key
 	return key
 }
 
 var (
-	deriveMu    sync.Mutex
-	derivedCode string
-	derivedKey  []byte
+	deriveMu     sync.Mutex
+	derivedCode  string
+	derivedEpoch int64
+	derivedKey   []byte
 )
 
 // serviceName builds the mDNS name we publish/query for a given code.
@@ -64,8 +67,8 @@ var (
 // We use `.local` so the name lives in the .local domain that every mDNS
 // stack on the planet honors. Both peers derive identically, so announce
 // and query still line up.
-func serviceName(code string) string {
-	return "fsend-" + hex.EncodeToString(derive(code)[:16]) + ".local"
+func serviceName(code string, epoch int64) string {
+	return "fsend-" + hex.EncodeToString(derive(code, epoch)[:16]) + ".local"
 }
 
 // unusableIfacePrefixes extends virtualIface with Apple-only interfaces
@@ -169,13 +172,14 @@ func closePacketConns(v4 *ipv4.PacketConn, v6 *ipv6.PacketConn) {
 //
 // The port is not part of the announcement: pion/mdns only carries the
 // IP, and both sides derive the UDP port from the code via PortForCode.
-func Announce(code string, ip net.IP) (*mdns.Conn, error) {
+// epoch must match the one passed to PortForCode (see code.Epoch).
+func Announce(code string, epoch int64, ip net.IP) (*mdns.Conn, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {
 		return nil, fmt.Errorf("landisc: opening multicast: %w", err)
 	}
 
-	name := serviceName(code)
+	name := serviceName(code, epoch)
 
 	conn, err := mdns.NewServer(v4Conn, v6Conn,
 		mdns.WithName("fsend-sender"),
@@ -297,7 +301,7 @@ func QueryInterface(ctx context.Context, code string, timeout time.Duration, ip 
 	})
 }
 
-func queryOn(ctx context.Context, code string, timeout time.Duration, extra func(net.Interface, []net.Addr) bool) (*QueryResult, error) {
+func queryOn(ctx context.Context, c string, timeout time.Duration, extra func(net.Interface, []net.Addr) bool) (*QueryResult, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {
 		return nil, fmt.Errorf("landisc: opening multicast: %w", err)
@@ -309,9 +313,15 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 	// pion/mdns doesn't expose service-browsing — only name queries. So
 	// the port is not part of the announcement: both sides derive it
 	// from the code via PortForCode, and we just query the well-known
-	// service name to discover the sender's IP.
-	port := PortForCode(code)
-	name := serviceName(code)
+	// service name to discover the sender's IP. Near a UTC day boundary
+	// the sender may have used the neighbouring epoch, so questions
+	// alternate between the candidate names.
+	epochs := code.EpochsFor(time.Now())
+	names := make([]string, len(epochs))
+	for i, e := range epochs {
+		names[i] = serviceName(c, e)
+	}
+	name := names[0]
 
 	ifaces := discoveryInterfaces()
 	if extra != nil {
@@ -335,6 +345,7 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 	type outcome struct {
 		addr netip.Addr
 		err  error
+		port int
 	}
 	ch := make(chan outcome, 1)
 	// connCh hands the mDNS conn to the watchdog as soon as it exists, so
@@ -369,9 +380,11 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 		// the attempt.
 		var addr netip.Addr
 		var qerr error
-		for {
+		var epoch int64
+		for i := 0; ; i++ {
+			epoch = epochs[i%len(epochs)]
 			sub, subCancel := context.WithTimeout(qCtx, queryRetry)
-			_, addr, qerr = conn.QueryAddr(sub, name)
+			_, addr, qerr = conn.QueryAddr(sub, names[i%len(names)])
 			subCancel()
 			if qerr == nil || qCtx.Err() != nil || sub.Err() == nil {
 				break
@@ -380,7 +393,7 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 
 		// Deliver the result before Close: a wedged Close leaks this
 		// goroutine until process exit but can no longer hang the caller.
-		ch <- outcome{addr: addr, err: qerr}
+		ch <- outcome{addr: addr, err: qerr, port: PortForCode(c, epoch)}
 		_ = conn.Close()
 		closePacketConns(v4Conn, v6Conn)
 	}()
@@ -400,7 +413,7 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 		if !o.addr.IsValid() || !onLinkSubnet(ip) {
 			return nil, fmt.Errorf("landisc: query: answer %v is not on-link", o.addr)
 		}
-		return &QueryResult{IP: ip, Port: port}, nil
+		return &QueryResult{IP: ip, Port: o.port}, nil
 	case <-ctx.Done():
 		// Caller is shutting down (e.g. SIGINT). Don't wait out the
 		// watchdog — kill the sockets so the query goroutine unblocks.
@@ -434,8 +447,8 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 // (sendpair.go always races the two) so the transfer still completes,
 // just without the same-LAN shortcut. A proper fix would require mDNS
 // service-browsing, which pion/mdns doesn't expose today.
-func PortForCode(code string) int {
-	return 50000 + int(binary.BigEndian.Uint16(derive(code)[16:18]))%1000
+func PortForCode(code string, epoch int64) int {
+	return 50000 + int(binary.BigEndian.Uint16(derive(code, epoch)[16:18]))%1000
 }
 
 // openMulticast creates the IPv4 and IPv6 multicast packet conns mDNS needs.

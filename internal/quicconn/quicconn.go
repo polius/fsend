@@ -103,7 +103,7 @@ func SenderTLSConfig() (*tls.Config, error) {
 //
 // InsecureSkipVerify is set because the sender's cert is self-signed:
 // peer identity is established afterwards by the PAKE channel-binding
-// step in authenticatePeer, which binds the SPAKE2-derived secret to
+// step in authenticatePeer, which binds the CPace-derived secret to
 // this specific TLS session via the RFC 5705 exporter. A MITM that
 // terminates the TLS session ends up with a different exporter and
 // fails that tag check — including the pairing server itself, which
@@ -166,7 +166,7 @@ func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
 }
 
 // SenderHandshake opens the control stream, authenticates the peer via
-// SPAKE2 + TLS channel binding, then opens and primes the data stream.
+// CPace + TLS channel binding, then opens and primes the data stream.
 // The prime byte lets the receiver's AcceptUniStream return before the
 // first real chunk — without it an empty transfer (e.g. a directory tar
 // with no entries) would deadlock the receiver.
@@ -179,7 +179,8 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptRes
 	// can't pin this side until the 30s QUIC idle timeout. Cleared on
 	// success so the transfer's own control reads are not capped.
 	_ = ctrl.SetReadDeadline(time.Now().Add(HandshakeTimeout))
-	if err := authenticatePeer(c, ctrl, code, roleSender); err != nil {
+	binding, err := authenticatePeer(c, ctrl, code, roleSender)
+	if err != nil {
 		return nil, err
 	}
 	_ = ctrl.SetReadDeadline(time.Time{})
@@ -195,6 +196,7 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptRes
 		Streams: transfer.Streams{
 			Control: &streamCloser{stream: ctrl},
 			Data:    wrapUniOut(data),
+			Binding: binding,
 		},
 	}, nil
 }
@@ -228,7 +230,7 @@ func Dial(ctx context.Context, addr, code string) (*AcceptResult, error) {
 }
 
 // ReceiverHandshake accepts the sender's control stream, authenticates
-// the peer via SPAKE2 + TLS channel binding, then accepts the data
+// the peer via CPace + TLS channel binding, then accepts the data
 // stream and consumes the priming byte.
 func ReceiverHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptResult, error) {
 	ctrl, err := c.AcceptStream(ctx)
@@ -237,7 +239,8 @@ func ReceiverHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptR
 	}
 	// Bound the handshake reads (see SenderHandshake); cleared on success.
 	_ = ctrl.SetReadDeadline(time.Now().Add(HandshakeTimeout))
-	if err := authenticatePeer(c, ctrl, code, roleReceiver); err != nil {
+	binding, err := authenticatePeer(c, ctrl, code, roleReceiver)
+	if err != nil {
 		return nil, err
 	}
 	_ = ctrl.SetReadDeadline(time.Time{})
@@ -254,6 +257,7 @@ func ReceiverHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptR
 		Streams: transfer.Streams{
 			Control: &streamCloser{stream: ctrl},
 			Data:    wrapUniIn(data),
+			Binding: binding,
 		},
 	}, nil
 }

@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/pake"
 )
 
 // A zero-length framed PAKE message must be rejected, not fed into the
-// SPAKE2 Finish (which indexes msg[0] and would panic the process).
+// PAKE.
 func TestReadFramed_RejectsEmptyFrame(t *testing.T) {
 	var hdr [2]byte
 	binary.BigEndian.PutUint16(hdr[:], 0)
@@ -59,4 +60,48 @@ func TestHandshake_WrongCodeRejected(t *testing.T) {
 	if !errors.Is(recvErr, fserrors.ErrPeerAuthFailed) {
 		t.Errorf("receiver: got %v, want ErrPeerAuthFailed", recvErr)
 	}
+}
+
+// Malformed PAKE messages from an unauthenticated peer must fail auth (or
+// report a version mismatch) and never panic. 'S' + 32 zero bytes crashed
+// the old SPAKE2 library.
+func TestParsePakeMsg(t *testing.T) {
+	share := make([]byte, 32)
+	cases := []struct {
+		name string
+		msg  []byte
+		want error
+	}{
+		{"v2 spake2", append([]byte{'S'}, share...), fserrors.ErrIncompatibleVersion},
+		{"future version", append([]byte{'C', 9}, share...), fserrors.ErrIncompatibleVersion},
+		{"short", []byte{'C', 1, 1}, fserrors.ErrPeerAuthFailed},
+		{"long", append([]byte{'C', 1, 0}, share...), fserrors.ErrPeerAuthFailed},
+		{"bad suite", append([]byte{'X', 1}, share...), fserrors.ErrPeerAuthFailed},
+	}
+	for _, c := range cases {
+		if _, err := parsePakeMsg(c.msg); !errors.Is(err, c.want) {
+			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
+		}
+	}
+	if got, err := parsePakeMsg(append([]byte{'C', 1}, share...)); err != nil || len(got) != 32 {
+		t.Errorf("valid message rejected: %v", err)
+	}
+}
+
+// FuzzParsePakeMsg feeds arbitrary peer bytes through the parser and the
+// CPace finish, the full unauthenticated input surface.
+func FuzzParsePakeMsg(f *testing.F) {
+	f.Add(append([]byte{'S'}, make([]byte, 32)...))
+	f.Add(append([]byte{'C', 1}, make([]byte, 32)...))
+	f.Fuzz(func(t *testing.T, msg []byte) {
+		share, err := parsePakeMsg(msg)
+		if err != nil {
+			return
+		}
+		st, err := pake.New(pake.Initiator, pake.Params{PRS: []byte("abc-defg-hjk")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = st.Finish(share, adReceiver)
+	})
 }
