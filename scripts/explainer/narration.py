@@ -31,87 +31,66 @@ AUD = os.path.join(HERE, "audio")
 MODEL = os.environ.get("KOKORO_MODEL", os.path.join(HERE, "models", "kokoro-v1.0.onnx"))
 VOICES = os.environ.get("KOKORO_VOICES", os.path.join(HERE, "models", "voices-v1.0.bin"))
 VOICE = os.environ.get("KOKORO_VOICE", "af_heart")   # warm, confident
-SPEED = float(os.environ.get("KOKORO_SPEED", "0.97"))
+SPEED = float(os.environ.get("KOKORO_SPEED", "1.02"))
 LANG = "en-us"
 
 # ---- pacing ----------------------------------------------------------------
-FPS = 30
-LEAD_IN = 0.9              # silence before the first line
-GAP_SAME = 0.70            # pause between two lines in the same scene
-GAP_SCENE = 2.40           # pause when the scene changes. This is the single
-                           # most important number in the film: it is the time
-                           # the viewer gets to *finish reading* one screen
-                           # before the next one arrives. Short gaps read as
-                           # "too fast to retain".
-TAIL = 3.0                 # hold after the last line (settled end card)
-# extra hold before a line (on top of the normal gap), to let a screen land
+FPS = int(os.environ.get("FPS", "60"))
+LEAD_IN = 1.7              # the cold open: a cursor types the name before any voice
+GAP_SAME = 0.45            # pause between two lines in the same scene
+GAP_SCENE = 1.25           # pause when the scene changes: long enough to finish
+                           # reading, short enough to keep a promo's momentum
+TAIL = 3.2                 # hold after the last line (settled end card)
+# extra hold before a line (on top of the normal gap), to let a visual land
 GAP_EXTRA = {
-    "cmd2": 0.85,          # the receiver appears after the code has been read
-    "modes2": 0.25,        # the three route cards are already on screen
-    "local2": 0.35,        # let the LAN link finish drawing
-    "direct2": 0.40,       # let the pairing handshake finish
-    "relay2": 0.65,        # let the failed direct attempt land
-    "cta2": 0.45,          # let the server card land before explaining it
-    "cta3": 0.35,          # the two roles stay up long enough to be read
-    "outro1": 0.80,        # let the self-host links settle before the end card
-    "outro2": -0.60,       # keep the closing line close to the name
+    "demo2": 0.55,         # the code box has to be read before it flies across
+    "demo3": 0.60,         # let the transfer finish before "that's it"
+    "routes2": 0.20,       # the stage builds before the first route
+    "routes3": 0.55,       # let the local link run for a beat
+    "routes4": 0.55,       # let the direct link run for a beat
+    "server2": 0.15,
+    "outro2": -0.35,       # keep the closing line close to the name
 }
 
 # How long before its first line a scene should appear (seconds). The default
-# is half the scene-change gap; the end card is the exception: the wordmark has
-# to be on screen when the voice says the name.
-SCENE_LEAD = {"outro": 0.60}
+# is half the scene-change gap.
+SCENE_LEAD = {"outro": 0.55}
 
 # ---- the script ------------------------------------------------------------
 # id, scene, voice-over, anchors {label: spoken substring} — anchors mark when a
-# word is actually spoken so the visuals can reveal in sync. Keep lines short and
-# warm; this is a promo, not a manual.
+# word is actually spoken so the visuals can reveal in sync. Short, warm lines:
+# this is a promo, not a manual.
 LINES = [
-    ("brand1", "brand", "Presenting fsend.",
+    ("open1", "open", "This is fsend.",
      {}),
-    ("brand2", "brand", "Send any file to any device, straight from your terminal.",
-     {"anyfile": "any file"}),
-    ("cmd1", "cmd", "Point it at a file, and fsend hands you a short code.",
-     {"code": "code"}),
-    ("cmd2", "cmd", "Your friend runs that code — and the file lands on their machine.",
-     {"runs": "runs", "lands": "lands"}),
-    # the overview: name the three routes, one short line each, so the slide has
-    # something to say for every card it lights up. Each line has to say *why*
-    # that route exists, not just its name — this is the only place the film
-    # explains all three at once.
-    ("modes1", "modes", "Behind the scenes, fsend picks the best path on its own.",
+    ("open2", "open", "Private file transfer, straight between two computers.",
+     {"straight": "straight"}),
+    ("demo1", "demo", "Point it at a file, and you get a short code.",
+     {"code": "short code"}),
+    ("demo2", "demo", "Your friend types the code, and the file lands on their machine.",
+     {"types": "types", "lands": "lands"}),
+    ("demo3", "demo", "That's it.",
      {}),
-    ("modes2", "modes", "Local, when both devices share a network — nothing in between.",
-     {"local": "Local"}),
-    ("modes3", "modes", "Direct, across the internet — the server just introduces them.",
-     {"direct": "Direct"}),
-    ("modes4", "modes", "Relayed, when a strict network blocks that — the server carries the file.",
-     {"relay": "Relayed"}),
-    # the detail slides: one sentence per beat, so nothing has to be rushed
-    ("local1", "local", "On the same network, it connects straight to the other device.",
-     {"connects": "connects"}),
-    ("local2", "local", "The server is not used.",
-     {"noserver": "not used"}),
-    ("direct1", "direct", "Across the internet, it connects directly — peer to peer.",
-     {"connects": "connects"}),
-    ("direct2", "direct", "The server only introduces them, then steps aside.",
-     {"introduces": "introduces", "steps": "steps"}),
-    ("relay1", "relay", "If a strict network blocks a direct connection, fsend relays the file.",
-     {"blocked": "blocks", "relays": "relays"}),
-    ("relay2", "relay", "The relay only ever sees sealed, encrypted packets.",
-     {"sees": "only ever", "sealed": "sealed"}),
-    # the server slide: free to use, what it actually does, then how to own one
-    ("cta1", "cta", "The public server is free, and needs no setup.",
+    ("trust1", "trust", "End-to-end encrypted. No accounts. No ports to open.",
+     {"e2e": "End-to-end", "accounts": "No accounts", "ports": "No ports"}),
+    # one stage, three answers: each route gets one line saying *why* it exists
+    ("routes1", "routes", "Under the hood, fsend finds the best path on its own.",
+     {"path": "best path"}),
+    ("routes2", "routes", "On the same network, it goes straight across. No server in between.",
+     {"across": "straight across", "noserver": "No server"}),
+    ("routes3", "routes", "Across the internet, the server introduces the two devices, then steps aside.",
+     {"introduces": "introduces", "steps": "steps aside"}),
+    ("routes4", "routes", "And if a strict network blocks that, the server relays it, sealed and encrypted.",
+     {"blocks": "blocks", "relays": "relays", "sealed": "sealed"}),
+    ("server1", "server", "The public server is free.",
      {"free": "free"}),
-    ("cta2", "cta", "Its only jobs: pairing two devices, and relaying the file when direct is blocked.",
-     {"pairing": "pairing", "relaying": "relaying"}),
-    ("cta3", "cta", "Want full control? Run your own with a single command.",
-     {"control": "control", "command": "command"}),
+    ("server2", "server", "Or run your own, with a single command.",
+     {"own": "your own", "command": "single command"}),
     ("outro1", "outro", "fsend.",
      {}),
-    ("outro2", "outro", "Install it with one command. It runs on Linux, macOS, Windows, and FreeBSD.",
-     {"install": "one command", "runs": "runs", "linux": "Linux",
-      "windows": "Windows"}),
+    ("outro2", "outro", "Install it in one line. It runs on Linux, macOS, Windows, and FreeBSD.",
+     {"install": "Install", "linux": "Linux", "macos": "macOS", "windows": "Windows",
+      "freebsd": "FreeBSD"}),
 ]
 
 
@@ -126,6 +105,12 @@ def duration(path):
     return float(out.strip())
 
 
+# The name, as the voice should say it: "F-send", stress on the F only. Kokoro's
+# own reading (ˈɛfsˈɛnd) stresses both syllables and the second drifts to "sand";
+# this is the one spelling two whisper models hear as "fsend" in every line.
+NAME_IPA = ("ˈɛfsˈɛnd", "ˈɛfsɛnd")
+
+
 def synth():
     """Synthesize every line with the local Kokoro neural voice -> audio/<id>.wav."""
     os.makedirs(AUD, exist_ok=True)
@@ -137,9 +122,57 @@ def synth():
     kokoro = Kokoro(MODEL, VOICES)
     for sid, _scene, vo, _anchors in LINES:
         path = os.path.join(AUD, f"{sid}.wav")
-        samples, sr = kokoro.create(vo, voice=VOICE, speed=SPEED, lang=LANG)
+        ph = kokoro.tokenizer.phonemize(vo, LANG).replace(*NAME_IPA)
+        samples, sr = kokoro.create(ph, voice=VOICE, speed=SPEED, is_phonemes=True)
         sf.write(path, samples, sr)
         print(f"  synth {sid:8s} {len(samples) / sr:5.2f}s  {vo}")
+
+
+_WHISPER = []
+
+
+def whisper_map(path, vo):
+    """Map character positions in `vo` to seconds inside its clip from real word
+    timestamps (faster-whisper). Also prints what was heard, so a mispronounced
+    word shows up in the build log. Returns None when whisper is unavailable."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return None
+    import difflib
+    import re
+    import numpy as np
+    import soundfile as sf
+    from scipy.signal import resample_poly
+    if not _WHISPER:
+        _WHISPER.append(WhisperModel("small.en", device="cpu", compute_type="int8",
+                                     download_root=os.path.join(HERE, "models", "whisper")))
+    x, sr = sf.read(path, dtype="float32")
+    x = resample_poly(x if x.ndim == 1 else x.mean(axis=1), 16000, sr).astype(np.float32)
+    segs, _ = _WHISPER[0].transcribe(x, word_timestamps=True, language="en")
+    heard = [w for s in segs for w in s.words]
+    print(f"    heard: {' '.join(w.word.strip() for w in heard)}")
+    if not heard:
+        return None
+    # align letters only: whisper splits and spells words its own way
+    norm = lambda c: c.lower() if c.isalnum() else ""
+    vo_pos = [i for i, c in enumerate(vo) if norm(c)]
+    vo_l = "".join(norm(vo[i]) for i in vo_pos)
+    hw_l, hw_t = "", []
+    for w in heard:
+        for c in w.word:
+            if norm(c):
+                hw_l += norm(c); hw_t.append(w.start)
+    at = {}
+    for a, b, n in difflib.SequenceMatcher(None, vo_l, hw_l, autojunk=False).get_matching_blocks():
+        for k in range(n):
+            at[vo_pos[a + k]] = hw_t[b + k]
+    keys = sorted(at)
+
+    def where(i):
+        later = [k for k in keys if k >= i]
+        return at[later[0]] if later else at[keys[-1]]
+    return where
 
 
 def make_silence(sec):
@@ -151,16 +184,53 @@ def make_silence(sec):
     return path
 
 
-def onset(vo, dur, start, sub):
-    """Time (s) at which `sub` is spoken, estimated from its character position.
+def speech_map(path, vo):
+    """Map character positions in `vo` to seconds inside its clip.
 
-    Speech pace is close enough to uniform within a short sentence; using the
-    character ratio keeps onsets adaptive to whatever the TTS engine's timing is.
+    Kokoro pauses at punctuation, so a plain character ratio drifts on lines
+    with several clauses. Find the pauses in the audio, pair the longest ones
+    with the punctuation breaks in the text, and interpolate by character
+    count only inside each clause.
     """
+    import numpy as np
+    import soundfile as sf
+    x, sr = sf.read(path)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    hop = int(sr * 0.01)
+    rms = np.sqrt(np.convolve(x ** 2, np.ones(hop) / hop, "same")[::hop])
+    loud = rms > max(1e-4, 0.08 * np.percentile(rms, 95))
+    idx = np.flatnonzero(loud)
+    if idx.size == 0:
+        return lambda i: len(vo) and 0.0
+    first, last = idx[0], idx[-1]
+    # silent runs (>= 90 ms) strictly inside the speech
+    pauses, run = [], None
+    for k in range(first, last + 1):
+        if not loud[k]:
+            run = k if run is None else run
+        elif run is not None:
+            if k - run >= 9:
+                pauses.append((k - run, run, k))
+            run = None
+    breaks = [m.end() for m in __import__("re").finditer(r"[,.;:?!\u2014]+\s*", vo) if m.end() < len(vo)]
+    knots = [(0, first * 0.01), (len(vo), (last + 1) * 0.01)]
+    if breaks and len(pauses) >= len(breaks):
+        chosen = sorted(sorted(pauses, reverse=True)[:len(breaks)], key=lambda p: p[1])
+        knots[1:1] = [(c, e * 0.01) for c, (_, _, e) in zip(breaks, chosen)]
+        # the clause before each break ends where its pause starts
+        ends = [(c - 1, s0 * 0.01) for c, (_, s0, _) in zip(breaks, chosen)]
+        knots = sorted(knots + ends)
+    cs, ts = zip(*knots)
+    return lambda i: float(np.interp(i, cs, ts))
+
+
+def onset(vo, start, where, sub):
+    """Time (s) at which `sub` is spoken."""
     i = vo.find(sub)
     if i < 0:
         raise ValueError(f"anchor {sub!r} not found in {vo!r}")
-    return round(start + dur * (i / max(1, len(vo))), 3)
+    return round(start + where(i), 3)
 
 
 def main():
@@ -184,13 +254,15 @@ def main():
             parts.append(make_silence(gap))
             t += gap
         start, dur = t, durs[i]
+        clip = os.path.join(AUD, f"{sid}.wav")
+        where = whisper_map(clip, vo) or speech_map(clip, vo)
         parts.append(os.path.join(AUD, f"{sid}.wav"))
         t += dur
         segs.append({
             "id": sid, "scene": scene, "vo": vo,
             "start": round(start, 3), "dur": round(dur, 3),
             "end": round(start + dur, 3),
-            "onsets": {k: onset(vo, dur, start, s) for k, s in anchors.items()},
+            "onsets": {k: onset(vo, start, where, s) for k, s in anchors.items()},
         })
     parts.append(make_silence(TAIL))
     video_end = round(t + TAIL, 3)

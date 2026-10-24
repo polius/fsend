@@ -8,6 +8,7 @@ and lets us supersample (render at Nx and downscale) for crisp type.
   capture.py --out frames                    # the whole video, 2x supersampled
   capture.py --preview 1.2,3.4,9.0           # a few stills into preview/ (fast, 1x)
   capture.py --out frames --frames 0:120     # a slice (used by --parallel)
+  capture.py --cues cues.json                # the sound-effect cue list only
 """
 from __future__ import annotations
 
@@ -93,6 +94,8 @@ def main():
     ap.add_argument("--poster-out",
                     default=os.path.join(HERE, "..", "..", "docs", "assets", "video-poster.png"),
                     help="where --poster writes (defaults to docs/assets/video-poster.png)")
+    ap.add_argument("--cues", default=None,
+                    help="write the scenes' sound-effect cue list to this JSON file and stop")
     ap.add_argument("--frames", default=None, help="start:end frame range")
     ap.add_argument("--prefix", default="f")
     args = ap.parse_args()
@@ -108,6 +111,16 @@ def main():
             if args.poster is not None:
                 capture_poster(pw, port, timeline, float(args.poster),
                                args.scale, args.poster_out)
+                return
+
+            if args.cues is not None:
+                browser, page = new_page(pw, port, 1)
+                init_page(page, timeline)
+                cues = page.evaluate("window.__cues()")
+                browser.close()
+                with open(args.cues, "w") as f:
+                    json.dump(cues, f, indent=1)
+                print(f"cues: {len(cues)} -> {args.cues}")
                 return
 
             if args.preview is not None:

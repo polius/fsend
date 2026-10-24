@@ -1,932 +1,703 @@
 /* fsend explainer — the scenes.
  *
- * Every scene is a function (layer, api) -> render(t) where t is seconds since
- * the scene started. Nothing is animated by CSS: render(t) computes the state of
- * every moving part from the timeline onsets, so a frame is a pure function of t.
- *
- * Layout is measured, not guessed. Each screen is a single top-down stack placed
- * by *top edge*, so a box that grows (a terminal gaining a line) pushes what
- * follows instead of colliding with it, and every screen shares one vertical
- * rhythm. Measurements run once, after the real fonts are in place.
+ * Every scene is a function (cam, api) -> render(t) where t is seconds since the
+ * scene's start (negative while it is cutting in). `cam` is the scene's camera:
+ * transform it to push, pan or drift the whole shot. Moments come from the
+ * narration via api.on(line, anchor) / api.segStart(line), so a frame is a pure
+ * function of t and the visuals track the voice. Sound effects are registered
+ * up front with api.cue(type, t) and mixed by sfx.py.
  */
 (function () {
   const A = window.Toolkit;
-  const { el, svg, text, box, reveal, ramp, lerp, clamp, afterFonts } = A;
+  const { clamp, lerp, ramp, rnd, outQuint, outCubic, outExpo, inCubic, inOutCubic, inOutSine,
+          outBack, spring, reveal, hide, el, svg, at, setText, setHTML, words, kin, afterFonts } = A;
 
-  // writing text only when it changed: a per-frame textContent write would
-  // rebuild the text node on every captured frame for nothing
-  const setText = (n, s) => { if (n.textContent !== s) n.textContent = s; };
-
-  /* ------------------------------------------------------------------ *
-   *  placement
-   * ------------------------------------------------------------------ */
-
-  // an absolutely-placed, centre-anchored element whose *own* transform is free
-  function anchor(layer, x, y, cls) {
-    const inner = el("div", "rv" + (cls ? " " + cls : ""), box(layer, x, y));
-    return inner;
-  }
-  // centre-x, top-anchored: the element's top edge lands on `top`
-  function atTop(layer, x, top, cls) {
-    const outer = box(layer, x, top);
-    outer.style.transform = "translate(-50%, 0)";
-    // absolute boxes shrink to whatever room is left of `left`, which would
-    // wrap a headline at 960px. Size to the content instead and centre it.
-    outer.style.width = "max-content";
-    return el("div", "rv" + (cls ? " " + cls : ""), outer);
-  }
-  // left-anchored (badges that line up with a card's left edge), top-anchored
-  function atTopLeft(layer, x, top, cls) {
-    const outer = box(layer, x, top);
-    outer.style.transform = "translate(0, 0)";
-    return el("div", "rv" + (cls ? " " + cls : ""), outer);
-  }
-  const hOf = (node) => node.parentElement.getBoundingClientRect().height;
-  function moveTo(node, y) { node.parentElement.style.top = y.toFixed(1) + "px"; }
-  // place a run of boxes top-down. rows = [node, gapAfterTheNode]
-  function stack(top, rows) {
-    let y = top;
-    for (const [node, gapAfter] of rows) {
-      if (!node) continue;
-      moveTo(node, y);
-      y += hOf(node) + gapAfter;
-    }
-    return y;
-  }
-  // a row of shrink-wrapped pills, centred on x=960 at `y`. Measured once:
-  // absolutely-positioned boxes would otherwise report a zero width.
-  function rowOf(nodes, y, gap = 22, cx = 960) {
-    afterFonts(() => {
-      const w = nodes.map((n) => n.getBoundingClientRect().width);
-      const total = w.reduce((a, b) => a + b, 0) + gap * (nodes.length - 1);
-      let x = cx - total / 2;
-      nodes.forEach((n, i) => {
-        n.parentElement.style.left = (x + w[i] / 2).toFixed(1) + "px";
-        n.parentElement.style.top = y + "px";
-        x += w[i] + gap;
-      });
-    });
-    return nodes;
-  }
+  const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+  const CODE = "abc-defg-jkm";
 
   /* ------------------------------------------------------------------ *
-   *  geometry: a tiny polyline sampler
-   *  (used instead of getPointAtLength so the capture loop never touches
-   *  the layout engine for motion)
+   *  icons — drawn, never typeset
    * ------------------------------------------------------------------ */
-  function sampler(d) {
-    const n = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
-    const pts = [];
-    for (let i = 0; i + 1 < n.length; i += 2) pts.push([n[i], n[i + 1]]);
-    const segs = [];
-    let total = 0;
-    for (let i = 1; i < pts.length; i++) {
-      const dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1];
-      const l = Math.sqrt(dx * dx + dy * dy);
-      segs.push({ a: pts[i - 1], b: pts[i], l, s: total });
-      total += l;
-    }
-    return {
-      length: total,
-      at(u) {
-        let x = clamp(u) * total;
-        for (const g of segs) {
-          if (x <= g.l || g === segs[segs.length - 1]) {
-            const f = g.l ? clamp(x / g.l) : 0;
-            return [lerp(g.a[0], g.b[0], f), lerp(g.a[1], g.b[1], f)];
-          }
-          x -= g.l;
-        }
-        return pts[pts.length - 1];
-      },
-    };
-  }
-
-  /* ------------------------------------------------------------------ *
-   *  icons — all drawn, never typeset, so they never depend on metrics
-   * ------------------------------------------------------------------ */
-
-  const LAPTOP = `<svg width="118" height="88" viewBox="0 0 118 88" fill="none" aria-hidden="true">
-    <rect x="15" y="5" width="88" height="62" rx="11" stroke="currentColor" stroke-width="3.4" opacity="0.85"/>
+  const LAPTOP = `<svg width="150" height="112" viewBox="0 0 118 88" fill="none" aria-hidden="true">
+    <rect x="15" y="5" width="88" height="62" rx="11" stroke="currentColor" stroke-width="3.4" opacity="0.9"/>
     <rect x="23" y="13" width="72" height="46" rx="5" fill="currentColor" opacity="0.07"/>
-    <path d="M42 29l10 8.5-10 8.5" stroke="var(--accent-l)" stroke-width="4.4"
-      stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M42 29l10 8.5-10 8.5" stroke="var(--accent-l)" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M58 46h13" stroke="var(--accent-l)" stroke-width="4.4" stroke-linecap="round"/>
-    <rect x="4" y="73" width="110" height="9" rx="4.5" fill="currentColor" opacity="0.5"/>
+    <rect x="4" y="73" width="110" height="9" rx="4.5" fill="currentColor" opacity="0.55"/>
   </svg>`;
 
-  const SERVER = `<svg width="92" height="88" viewBox="0 0 92 88" fill="none" aria-hidden="true">
-    <rect x="8" y="4" width="76" height="80" rx="12" stroke="currentColor" stroke-width="3.2" opacity="0.85"/>
+  const SERVER = `<svg width="100" height="96" viewBox="0 0 92 88" fill="none" aria-hidden="true">
+    <rect x="8" y="4" width="76" height="80" rx="12" stroke="currentColor" stroke-width="3.2" opacity="0.9"/>
     ${[0, 1, 2].map((i) => {
       const y = 17 + i * 22;
       return `<rect x="18" y="${y}" width="56" height="16" rx="5" fill="currentColor" opacity="0.09"/>
-        <circle cx="27.5" cy="${y + 8}" r="3.6" fill="var(--accent)"/>
-        <rect x="38" y="${y + 6}" width="27" height="4" rx="2" fill="currentColor" opacity="0.22"/>`;
+        <circle cx="27.5" cy="${y + 8}" r="3.6" fill="var(--hubc, var(--accent))"/>
+        <rect x="38" y="${y + 6}" width="27" height="4" rx="2" fill="currentColor" opacity="0.25"/>`;
     }).join("")}
   </svg>`;
 
-  const LOCK = `<svg viewBox="0 0 24 24" width="23" height="23" fill="none" aria-hidden="true">
-    <rect x="4.6" y="10.4" width="14.8" height="10.2" rx="3.2" stroke="currentColor" stroke-width="2.2"/>
-    <path d="M7.9 10.4V7.9a4.1 4.1 0 0 1 8.2 0v2.5" stroke="currentColor"
-      stroke-width="2.2" stroke-linecap="round"/>
-    <circle cx="12" cy="15.5" r="1.7" fill="currentColor"/></svg>`;
+  const ic = (body, size = 64) =>
+    `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+  const LOCK = ic(`<rect x="4.5" y="10.5" width="15" height="10.5" rx="3"/><path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7"/><circle cx="12" cy="15.7" r="1.3" fill="currentColor"/>`);
+  const NOUSER = ic(`<circle cx="12" cy="8" r="3.6"/><path d="M5 20.5c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6"/><path d="M3.5 3.5l17 17"/>`);
+  const NOPORT = ic(`<rect x="4" y="6" width="16" height="13" rx="2.5"/><path d="M8 10.5v2.5M11 10.5v2.5M14 10.5v2.5M17 10.5v2.5" opacity="0.8"/><path d="M3 3l18 18"/>`);
+  const WALL = ic(`<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M3 9.5h18M3 14.5h18M9 4.5v5M15 9.5v5M9 14.5v5"/>`, 70);
 
-  const CONTAINER = `<svg viewBox="0 0 28 26" width="31" height="29" fill="none" aria-hidden="true">
-    <path d="M14 3.2l11 6.2v8.4L14 24 3 17.8V9.4z" stroke="currentColor" stroke-width="1.9"
-      stroke-linejoin="round"/>
-    <path d="M3 9.4l11 6.2 11-6.2M14 15.6V24" stroke="currentColor" stroke-width="1.9"
-      stroke-linejoin="round" opacity="0.65"/></svg>`;
+  /* the fsend wordmark, outlined from the README logo so it is pixel-identical:
+     chevron, the name (revealed letter by letter through a clip), and the cursor */
+  let wmId = 0;
+  const NAME_PATH = "M111.41 132V96.58H96.88V88.3H111.41V78.09Q111.41 72.02 115.37 68.43Q119.32 64.84 126.13 64.84H140.94V73.03H126.13Q120.52 73.03 120.52 78.18V88.3H140.94V96.58H120.52V132Z M170.94 132.74Q162.29 132.74 157.5 128.87Q152.72 125.01 152.72 118.02H161.74Q161.74 121.33 164.17 123.21Q166.61 125.1 170.94 125.1H174.98Q179.49 125.1 181.93 123.17Q184.37 121.24 184.37 117.74Q184.37 111.58 178.3 110.84L164.68 108.91Q159.25 108.08 156.31 104.45Q153.36 100.81 153.36 95.02Q153.36 88.21 157.96 84.44Q162.56 80.66 170.84 80.66H174.89Q182.62 80.66 187.4 84.34Q192.19 88.02 192.46 94.1H183.26Q183.08 91.52 180.87 89.82Q178.66 88.12 174.89 88.12H170.84Q166.7 88.12 164.45 89.96Q162.2 91.8 162.2 94.92Q162.2 99.98 167.26 100.63L180.04 102.47Q193.2 104.22 193.2 117.74Q193.2 124.92 188.46 128.83Q183.72 132.74 174.98 132.74Z M226.32 132.92Q217.21 132.92 211.65 127.49Q206.08 122.06 206.08 112.68V100.72Q206.08 91.34 211.65 85.91Q217.21 80.48 226.32 80.48Q232.39 80.48 236.95 82.92Q241.5 85.36 244.03 89.73Q246.56 94.1 246.56 99.89V109H215V113.42Q215 118.94 218.04 122.06Q221.08 125.19 226.32 125.19Q230.74 125.19 233.59 123.54Q236.44 121.88 236.99 118.94H246.1Q245.18 125.38 239.75 129.15Q234.32 132.92 226.32 132.92ZM215 99.89V102.28H237.64V99.89Q237.64 94.1 234.69 90.97Q231.75 87.84 226.32 87.84Q220.89 87.84 217.95 90.97Q215 94.1 215 99.89Z M260.18 132V81.4H269.19V91.06H269.28Q269.93 86.09 273.47 83.29Q277.01 80.48 282.81 80.48Q290.35 80.48 294.86 85.26Q299.37 90.05 299.37 98.14V132H290.26V99.62Q290.26 94.1 287.5 91.15Q284.74 88.21 279.96 88.21Q274.99 88.21 272.14 91.29Q269.28 94.37 269.28 99.89V132Z M329.73 132.92Q322.09 132.92 317.58 127.81Q313.08 122.71 313.08 113.97V99.43Q313.08 90.69 317.58 85.59Q322.09 80.48 329.73 80.48Q335.34 80.48 339.07 83.33Q342.79 86.18 343.62 91.15L343.44 79.38V64.84H352.54V132H343.53V122.16Q342.7 127.22 339.02 130.07Q335.34 132.92 329.73 132.92ZM332.86 125.01Q337.73 125.01 340.58 121.97Q343.44 118.94 343.44 113.42V99.98Q343.44 94.46 340.58 91.43Q337.73 88.39 332.86 88.39Q327.8 88.39 324.99 91.01Q322.18 93.64 322.18 99.52V113.88Q322.18 119.76 324.99 122.39Q327.8 125.01 332.86 125.01Z";
+  const CLIP_X = [92, 147, 200, 253, 306, 360];      // clip edge after k letters
+  const CUR_X = [97, 150, 203, 256, 309, 360];       // cursor x after k letters
+  function wordmark(parent, width) {
+    const id = "wmclip" + wmId++;
+    const n = el("div", "", parent);
+    n.style.width = width + "px";
+    n.innerHTML = `<svg viewBox="10.5 53.5 409.5 98" width="${width}" height="${(width * 98 / 409.5).toFixed(1)}" fill="none" style="overflow:visible">
+      <defs><clipPath id="${id}"><rect x="0" y="40" height="120" width="0"/></clipPath></defs>
+      <path class="chev" d="M 37 72 L 64 98.5 L 37 125" stroke="var(--brand)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="80" stroke-dashoffset="80"/>
+      <path clip-path="url(#${id})" d="${NAME_PATH}" fill="#FAF7F5"/>
+      <rect class="cur" x="360" y="134" width="40" height="10" rx="3" fill="var(--brand)"/>
+    </svg>`;
+    const clip = n.querySelector("clipPath rect"), chev = n.querySelector(".chev"), cur = n.querySelector(".cur");
+    return {
+      node: n,
+      // chevron 0..1, typed letters 0..5 (fractional = between keystrokes), cursor alpha
+      set(ch, k, curA) {
+        chev.setAttribute("stroke-dashoffset", (80 * (1 - outCubic(ch))).toFixed(2));
+        const i = Math.floor(clamp(k, 0, 5));
+        clip.setAttribute("width", CLIP_X[i]);
+        cur.setAttribute("x", CUR_X[i]);
+        cur.setAttribute("opacity", curA.toFixed(3));
+      },
+    };
+  }
+  const blink = (t, period = 1.0) => (((t % period) + period) % period < period * 0.55 ? 1 : 0);
 
-  const DOC = `<svg viewBox="0 0 26 26" width="28" height="28" fill="none" aria-hidden="true">
-    <rect x="4.6" y="2.6" width="16.8" height="20.8" rx="3.4" stroke="currentColor"
-      stroke-width="1.9"/>
-    <path d="M9 9h8M9 13.2h8M9 17.4h5" stroke="currentColor" stroke-width="1.9"
-      stroke-linecap="round"/></svg>`;
-
-  // -- icons for the evidence row under each diagram ------------------------
-  const BOLT = `<svg viewBox="0 0 24 24" width="25" height="25" fill="none" aria-hidden="true">
-    <path d="M13.5 2.5 5.9 13.6h5.2l-1 7.9 7.9-11.1h-5.2z" stroke="currentColor"
-      stroke-width="1.9" stroke-linejoin="round"/></svg>`;
-
-  const STEP_ASIDE = `<svg viewBox="0 0 29 24" width="29" height="24" fill="none" aria-hidden="true">
-    <rect x="2.6" y="3.4" width="12.4" height="17.2" rx="2.9" stroke="currentColor" stroke-width="1.9"/>
-    <path d="M6.5 8.7h4.6M6.5 12.4h4.6" stroke="currentColor" stroke-width="1.7"
-      stroke-linecap="round" opacity="0.55"/>
-    <path d="M19 12h6.6M22.4 8.6 25.8 12l-3.4 3.4" stroke="currentColor" stroke-width="1.9"
-      stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-
-  const SHIELD = `<svg viewBox="0 0 22 24" width="23" height="24" fill="none" aria-hidden="true">
-    <path d="M11 2.4 20 5.8v6.4c0 4.4-3.4 7.6-9 9.2-5.6-1.6-9-4.8-9-9.2V5.8z" stroke="currentColor"
-      stroke-width="1.9" stroke-linejoin="round"/>
-    <path d="M7.2 12 10 14.8l5-5.6" stroke="currentColor" stroke-width="1.9"
-      stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-
-  // the three routes, drawn as a family so they can be read side by side.
-  // each carries a `mflow` packet that travels the live path from frame one.
-  function modeGlyph(kind) {
-    const dev = (x) => `
-      <rect x="${x}" y="78" width="58" height="42" rx="9" stroke="currentColor" stroke-width="3.2" opacity="0.85"/>
-      <rect x="${x + 8}" y="86" width="42" height="26" rx="4" fill="currentColor" opacity="0.08"/>
-      <rect x="${x + 12}" y="124" width="34" height="4" rx="2" fill="currentColor" opacity="0.3"/>`;
-    const srv = (extra) => `<rect x="102" y="18" width="36" height="30" rx="9"
-      stroke="currentColor" stroke-width="3.2" ${extra || ""}/>`;
-    const packet = (color) =>
-      `<circle class="mflowh" cx="68" cy="99" r="15" fill="${color}" opacity="0"/>
-       <circle class="mflow" cx="68" cy="99" r="7" fill="${color}" opacity="0"/>`;
-    const head = `<svg width="420" height="245" viewBox="0 0 240 140" fill="none" aria-hidden="true">`;
-    const devices = dev(10) + dev(172);
-    if (kind === "local") {
-      return head + devices +
-        `<g class="mtrace">
-           <path d="M68 99h104" stroke="var(--green)" stroke-width="6" stroke-linecap="round"/>
-           <circle cx="120" cy="99" r="9" fill="var(--green)"/>
-         </g>` + packet("var(--green)") + `</svg>`;
-    }
-    if (kind === "direct") {
-      return head + `<g class="mtrace" stroke="currentColor" stroke-width="3" fill="none"
-        opacity="0.35">${srv()}</g>` + devices +
-        `<g class="mtrace">
-           <path d="M68 99L120 48M172 99L120 48" stroke="currentColor" stroke-width="2.4"
-             stroke-dasharray="9 9" opacity="0.32"/>
-           <path d="M68 99h104" stroke="var(--blue)" stroke-width="6" stroke-linecap="round"/>
-         </g>` + packet("var(--blue)") + `</svg>`;
-    }
-    return head + `<g class="mtrace"><g fill="#17120f">${srv("stroke=\"none\"")}${srv()}</g></g>` + devices +
-      `<g class="mtrace">
-         <path d="M68 99h104" stroke="currentColor" stroke-width="2.6" stroke-dasharray="2 11"
-           stroke-linecap="round" opacity="0.35"/>
-         <path d="M68 99L120 48M172 99L120 48" stroke="var(--accent)" stroke-width="6"
-           stroke-linecap="round"/>
-       </g>` + packet("var(--accent)") + `</svg>`;
+  /* a soft light, drawn as a gradient (no blur filters) */
+  function bloom(parent, x, y, size, color) {
+    const b = el("div", "abs", parent);
+    Object.assign(b.style, { left: x - size / 2 + "px", top: y - size / 2 + "px", width: size + "px", height: size + "px",
+      borderRadius: "50%", background: `radial-gradient(closest-side, ${color}, transparent)` });
+    return b;
   }
 
-  // where the `mflow` packet sits at u in [0,1) for each route
-  const MODE_FLOW = {
-    local: (u) => [lerp(68, 172, u), 99],
-    direct: (u) => [lerp(68, 172, u), 99],
-    relay: (u) => (u < 0.5
-      ? [lerp(68, 120, u * 2), lerp(99, 48, u * 2)]
-      : [lerp(120, 172, (u - 0.5) * 2), lerp(48, 99, (u - 0.5) * 2)]),
+  /* camera: interpolate between keyframes [t, scale, x, y] with an ease */
+  function camera(cam, t, keys, drift = 1) {
+    let s = keys[0][1], x = keys[0][2], y = keys[0][3];
+    for (let i = 1; i < keys.length; i++) {
+      const [t1, s1, x1, y1, d = 0.9] = keys[i];
+      const p = inOutCubic(ramp(t, t1, t1 + d));
+      s = lerp(s, s1, p); x = lerp(x, x1, p); y = lerp(y, y1, p);
+    }
+    // handheld-free, but never dead still: a slow breathing drift
+    x += drift * 6 * Math.sin(t * 0.45); y += drift * 4 * Math.cos(t * 0.37);
+    s *= 1 + 0.004 * drift * Math.sin(t * 0.3);
+    cam.style.transform = `translate(${x.toFixed(2)}px, ${y.toFixed(2)}px) scale(${s.toFixed(5)})`;
+  }
+
+  /* typing: cue a key click per character */
+  function typeCues(api, t0, text, rate, gain = 0.6) {
+    for (let i = 0; i < text.length; i++) api.cue("key", t0 + i * rate + (rnd(i * 3.1 + t0) - 0.5) * rate * 0.35, gain);
+  }
+  const typed = (text, t, t0, rate) => text.slice(0, clamp(Math.floor((t - t0) / rate) + 1, 0, text.length) * (t >= t0 ? 1 : 0));
+
+  /* a terminal window at (x, y) of width w. Returns { node, body } */
+  function terminal(parent, x, y, w, h, title) {
+    const n = el("div", "term", parent);
+    Object.assign(n.style, { left: x + "px", top: y + "px", width: w + "px", height: h + "px" });
+    n.innerHTML = `<div class="tb"><i></i><i></i><i></i><div class="ttl">${title}</div></div><div class="body"></div>`;
+    return { node: n, body: n.querySelector(".body") };
+  }
+  const line = (body, cls) => el("div", "ln " + (cls || ""), body);
+  const bar = (p, w = 20) => {
+    const f = Math.round(clamp(p) * w);
+    return `<span class="a">${"━".repeat(f)}</span><span class="f">${"━".repeat(w - f)}</span>`;
   };
 
-  /* ------------------------------------------------------------------ *
-   *  cards
-   * ------------------------------------------------------------------ */
+  /* ====================================================================== *
+   *  OPEN — a cursor types the name; the promise rises underneath
+   * ====================================================================== */
+  function open(cam, api) {
+    const halo = bloom(cam, 960, 470, 1500, "color-mix(in srgb, var(--brand) 34%, transparent)");
+    const wmWrap = at(cam, 960, 470, "");
+    const wm = wordmark(wmWrap, 1000);
+    const l1 = at(cam, 960, 640, "headline");
+    const l2 = at(cam, 960, 740, "headline grad");
+    const w1 = words(l1, "Private file transfer,");
+    const w2 = words(l2, "straight between two computers.");
 
-  function deviceCard(layer, x, y, name) {
-    const card = anchor(layer, x, y, "card dev");
-    card.innerHTML = `<div class="glyph">${LAPTOP}</div><div class="name">${name}</div>`;
-    return card;
-  }
-  function hubCard(layer, x, y, name) {
-    const card = anchor(layer, x, y, "card hub");
-    card.innerHTML = `<div class="glyph">${SERVER}</div><div class="name">${name}</div>
-      <div class="tag"></div>`;
-    return card;
+    const CH0 = 0.5, K0 = 0.92, KR = 0.1, HIT = K0 + 5 * KR + 0.08;
+    api.cue("key", CH0 + 0.05, 0.9);
+    for (let i = 0; i < 5; i++) api.cue("key", K0 + i * KR, 0.85);
+    api.cue("hit", HIT, 1);
+    const s2 = api.segStart("open2");
+
+    return function (t) {
+      camera(cam, t, [[0, 1.0, 0, 0], [HIT, 1.05, 0, 0, 6]]);
+      const k = t < K0 ? 0 : (t - K0) / KR + 1;
+      const typing = t > K0 - 0.1 && t < HIT;
+      wm.set(ramp(t, CH0, CH0 + 0.3), k, typing ? 1 : blink(t - HIT, 1.06));
+      // the punch on the last keystroke, then the lockup lifts to make room
+      const punch = t > HIT ? Math.exp(-(t - HIT) * 7) * 0.06 : 0;
+      const lift = outQuint(ramp(t, s2 - 0.3, s2 + 0.6));
+      wmWrap.style.transform = `translateY(${(-150 * lift).toFixed(1)}px) scale(${(1 + punch - 0.2 * lift).toFixed(4)})`;
+      halo.style.opacity = (0.25 + 0.75 * Math.exp(-Math.max(0, t - HIT) * 2.2) * (t > HIT ? 1 : 0) + 0.2 * lift).toFixed(3);
+      halo.style.transform = `translateY(${(-150 * lift).toFixed(1)}px)`;
+      kin(w1, t, s2 - 0.05, 0.075, 0.6);
+      kin(w2, t, api.on("open2", "straight") - 0.15, 0.075, 0.6);
+    };
   }
 
-  // a terminal window. lines are either typed out character by character
-  // (`type: true`) or simply revealed.
-  function makeTerm(layer, cx, width, name, lines) {
-    const c = atTop(layer, cx, 0, "term");
-    c.style.width = width + "px";
-    c.innerHTML = `<div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i>
-      <span class="name">${name}</span></div><div class="body"></div>`;
-    const body = c.querySelector(".body");
-    const rows = lines.map((l) => {
-      const n = el("div", "ln" + (l.cls ? " " + l.cls : ""), body);
-      n.style.visibility = "hidden";
-      if (l.type) {
-        const tx = el("span", "tx", n);
-        const cur = el("span", "caret", n);
-        return { node: n, text: l.text, type: true, tx, cur };
+  /* ====================================================================== *
+   *  DEMO — one command to send, one to receive
+   * ====================================================================== */
+  function demo(cam, api) {
+    const layer = api.layer;
+    cam.style.transformOrigin = "960px 520px";
+    // the share code finds its way across first; the file follows the same arc
+    const arcSvg = svg("svg", { width: 1920, height: 1080, style: "position:absolute;inset:0;overflow:visible" }, cam);
+    const arcPath = svg("path", { d: "", fill: "none", stroke: "var(--brand)", "stroke-width": 3,
+      "stroke-linecap": "round", "stroke-dasharray": "2 14", opacity: 0 }, arcSvg);
+    // the comet tail behind the flying code (a dash that slides along the arc)
+    const trail = svg("path", { d: "", fill: "none", stroke: "var(--brand-l)", "stroke-width": 5,
+      "stroke-linecap": "round", pathLength: 1000, opacity: 0 }, arcSvg);
+    const dots = [...Array(26)].map(() => svg("circle", { r: 5, fill: "#ffd9c7" }, arcSvg));
+
+    const TW = 860, TH = 470, TY = 262, LX = 70, RX = 990;
+    const roleL = at(cam, LX + TW / 2, 226, "role", "<b></b>You");
+    const roleR = at(cam, RX + TW / 2, 226, "role", "<b></b>Your friend");
+    const S = terminal(cam, LX, TY, TW, TH, "you@laptop — zsh");
+    const R = terminal(cam, RX, TY, TW, TH, "friend@desktop — zsh");
+
+    const sCmd = line(S.body);
+    line(S.body);
+    const sInfo = line(S.body);
+    sInfo.innerHTML = `  Sending <b>drone-4k.mov</b>  <span class="d">· 2.3 GB</span>`;
+    const box = el("div", "codebox", S.body, `<div class="lbl">On the other machine, run:</div><div class="code">fsend <span class="cv">${CODE}</span></div>`);
+    const codeSpan = box.querySelector(".cv");
+    const sStat = line(S.body);
+
+    const rCmd = line(R.body);
+    line(R.body);
+    const rInfo = line(R.body);
+    rInfo.innerHTML = `  Incoming <b>drone-4k.mov</b>  <span class="d">· 2.3 GB</span>`;
+    const rAsk = line(R.body);
+    rAsk.innerHTML = `  <span class="d">from laptop · save to ~/Downloads?</span> <span class="a">Y</span>`;
+    line(R.body);
+    const rBar = line(R.body);
+    const rDone = line(R.body, "ok");
+    rDone.textContent = "  ✓ Saved  ~/Downloads/drone-4k.mov";
+    const okFlash = bloom(cam, RX + TW / 2, TY + TH / 2, 1100, "color-mix(in srgb, var(--green) 30%, transparent)");
+
+    const fly = at(cam, 0, 0, "flycode", CODE);
+
+    // captions ride outside the camera
+    const caps = [["One command to send.", ""], ["One to receive.", ""], ["That’s it.", "grad"]].map(([txt, cls]) => {
+      const c = at(layer, 960, 880, "headline " + cls);
+      return words(c, txt);
+    });
+
+    // geometry, measured once fonts are in (before the camera ever moves)
+    let P0 = [480, 560], P2 = [1500, 360];
+    afterFonts(() => {
+      const r = codeSpan.getBoundingClientRect();
+      P0 = [r.left + r.width / 2, r.top + r.height / 2];
+      // where the code will sit in the friend's prompt, measured in its own font
+      setHTML(rCmd, `<span class="p2">friend@pc</span> <span class="f">~ $</span> fsend <span class="cv">${CODE}</span>`);
+      const cr = rCmd.querySelector(".cv").getBoundingClientRect();
+      P2 = [cr.left + cr.width / 2, cr.top + cr.height / 2];
+      setHTML(rCmd, "");
+      const d = `M ${P0[0]} ${P0[1]} Q 960 ${Math.min(P0[1], P2[1]) - 330} ${P2[0]} ${P2[1]}`;
+      arcPath.setAttribute("d", d);
+      trail.setAttribute("d", d);
+    });
+    const arcAt = (u) => {
+      const c = [960, Math.min(P0[1], P2[1]) - 330];
+      const a = (1 - u) * (1 - u), b = 2 * u * (1 - u), d = u * u;
+      return [a * P0[0] + b * c[0] + d * P2[0], a * P0[1] + b * c[1] + d * P2[1]];
+    };
+
+    // ---- the beats ----
+    const CMD = "fsend drone-4k.mov", RATE = 0.052, T0 = 0.35;
+    const ENTER = T0 + CMD.length * RATE + 0.12;
+    const CODE_IN = api.on("demo1", "code") - 0.25;
+    const r0 = api.segStart("demo2");
+    const RT0 = r0 + 0.05, RCMD = "fsend ";
+    const FLY0 = api.on("demo2", "types") - 0.15, FLY1 = FLY0 + 0.75;
+    const RENTER = FLY1 + 0.22;
+    const X0 = RENTER + 0.35, X1 = api.on("demo2", "lands") + 0.12;
+    const that = api.segStart("demo3");
+    typeCues(api, T0, CMD, RATE);
+    api.cue("enter", ENTER, 0.9);
+    api.cue("pop", CODE_IN + 0.05, 0.9);
+    typeCues(api, RT0, RCMD, RATE);
+    api.cue("swish", FLY0, 1);
+    api.cue("pop", FLY1 - 0.05, 0.8);
+    api.cue("enter", RENTER, 0.9);
+    api.cue("stream", X0, 1);
+    api.cue("chime", X1, 1);
+
+    return function (t) {
+      // camera: start on the sender, pan out to both as the friend joins
+      camera(cam, t, [[0, 1.16, 530, -10], [r0 - 0.7, 1.0, 0, -10, 1.1], [that - 0.3, 1.05, 0, -20, 1.4]]);
+
+      reveal(roleL, ramp(t, -0.2, 0.3), { dy: 12 });
+      // the friend's terminal arrives when the friend is mentioned
+      reveal(roleR, ramp(t, r0 - 0.45, r0 + 0.1), { dy: 12 });
+      reveal(R.node, ramp(t, r0 - 0.7, r0 + 0.05), { dy: 0, dx: 140, scale: 0.97 });
+
+      // sender
+      const sc = typed(CMD, t, T0, RATE);
+      setHTML(sCmd, `<span class="p">you@laptop</span> <span class="f">~ $</span> ${sc}${t < ENTER && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
+      reveal(sInfo, ramp(t, ENTER + 0.1, ENTER + 0.35), { dy: 10 });
+      reveal(box, ramp(t, CODE_IN, CODE_IN + 0.45), { dy: 16, scale: 0.94 });
+      // the code catches the light when it is named
+      const glint = ramp(t, CODE_IN + 0.3, CODE_IN + 1.1);
+      codeSpan.style.textShadow = glint > 0 && glint < 1 ? `0 0 ${(28 * Math.sin(Math.PI * glint)).toFixed(1)}px var(--brand)` : "none";
+      let stat;
+      if (t < X0) stat = `<span class="a">${SPIN[Math.floor(Math.max(0, t) * 12) % 10]}</span> <span class="d">Waiting for receiver…</span>`;
+      else if (t < X1) stat = `${bar(ramp(t, X0, X1), 16)} <span class="d">${Math.round(100 * inOutSine(ramp(t, X0, X1)))}%</span>`;
+      else stat = `<span class="ok">✓ Sent  2.3 GB</span>`;
+      setHTML(sStat, "  " + stat);
+      reveal(sStat, ramp(t, CODE_IN + 0.35, CODE_IN + 0.7), { dy: 10 });
+
+      // receiver
+      // the code lands highlighted, then settles into plain text
+      const hot = t >= FLY1 ? Math.exp(-(t - FLY1) * 2.5) : 0;
+      const rc = typed(RCMD, t, RT0, RATE) + (t >= FLY1 ? `<span style="color:color-mix(in srgb, var(--brand-l) ${Math.round(40 + 60 * hot)}%, var(--ink))">${CODE}</span>` : "");
+      setHTML(rCmd, `<span class="p2">friend@pc</span> <span class="f">~ $</span> ${rc}${t < RENTER && t > r0 - 0.5 && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
+      reveal(rInfo, ramp(t, RENTER + 0.1, RENTER + 0.3), { dy: 10 });
+      reveal(rAsk, ramp(t, RENTER + 0.2, RENTER + 0.4), { dy: 10 });
+      const p = inOutSine(ramp(t, X0, X1));
+      const mbps = Math.round(380 + 60 * Math.sin(t * 9) + 30 * Math.sin(t * 23));
+      setHTML(rBar, `  ${bar(p, 18)} <span class="d">${String(Math.round(p * 100)).padStart(3)}%  ${t < X1 ? mbps + " MB/s" : ""}</span>`);
+      reveal(rBar, ramp(t, X0 - 0.1, X0 + 0.15), { dy: 10 });
+      reveal(rDone, ramp(t, X1, X1 + 0.3), { dy: 10, ease: outBack });
+      okFlash.style.opacity = (t > X1 ? 0.9 * Math.exp(-(t - X1) * 1.6) : 0).toFixed(3);
+
+      // the flying code: lifts off the sender, arcs over, lands in the prompt
+      const u = ramp(t, FLY0, FLY1);
+      const e = inOutCubic(u);
+      if (u <= 0 || u >= 1) fly.style.opacity = 0;
+      else {
+        const [x, y] = arcAt(e);
+        const sc = lerp(1, 0.64, e) * (1 + 0.3 * Math.sin(Math.PI * e));
+        fly.parentElement.style.left = x.toFixed(1) + "px";
+        fly.parentElement.style.top = y.toFixed(1) + "px";
+        fly.style.transform = `scale(${sc.toFixed(3)}) rotate(${(-5 * Math.sin(Math.PI * 2 * e)).toFixed(2)}deg)`;
+        fly.style.opacity = Math.min(1, u * 12, (1 - u) * 14).toFixed(3);
       }
-      if (l.html != null) n.innerHTML = l.html; else n.textContent = l.text;
-      return { node: n, text: l.text, type: false };
-    });
-    return { card: c, rows };
-  }
-  // type `text` into a row, p = 0..1
-  function typeInto(row, p) {
-    const shown = Math.round(clamp(p) * row.text.length);
-    row.tx.textContent = row.text.slice(0, shown);
-    row.cur.style.opacity = shown >= row.text.length ? 0 : 1;
-  }
+      const tail = 260 * Math.sin(Math.PI * u);
+      trail.setAttribute("stroke-dasharray", `${tail.toFixed(1)} 2000`);
+      trail.setAttribute("stroke-dashoffset", (tail - 1000 * e).toFixed(1));
+      trail.setAttribute("opacity", (u > 0 && u < 1 ? 0.7 : 0).toFixed(2));
+      codeSpan.style.opacity = u > 0 && u < 1 ? 0.35 : 1;
 
-  // the accent tick belongs under the *word*, not under the whole lockup
-  // (the chevron hangs to the left and would drag the centre off)
-  function alignUnderline(wm, under) {
-    afterFonts(() => {
-      const name = wm.querySelector(".name");
-      const r = name.getBoundingClientRect();
-      under.parentElement.style.left = (r.left + r.width / 2).toFixed(1) + "px";
-    });
-  }
+      // the file follows the code's arc
+      const on = ramp(t, X0 - 0.2, X0) * (1 - ramp(t, X1, X1 + 0.35));
+      arcPath.setAttribute("opacity", (0.45 * on).toFixed(3));
+      arcPath.setAttribute("stroke-dashoffset", (-(t * 90) % 16).toFixed(2));
+      dots.forEach((d, i) => {
+        const uu = (i / dots.length + (t - X0) * 1.25) % 1;
+        const [x, y] = arcAt(uu);
+        d.setAttribute("cx", x.toFixed(1)); d.setAttribute("cy", y.toFixed(1));
+        d.setAttribute("opacity", (on * Math.sin(Math.PI * uu) * (0.5 + 0.5 * rnd(i))).toFixed(3));
+        d.setAttribute("r", (3 + 4 * Math.sin(Math.PI * uu)).toFixed(2));
+      });
 
-  /* SVG links ------------------------------------------------------------ */
-  function dashLink(parent, d, color, width) {
-    return svg("path", { d, fill: "none", stroke: color, "stroke-width": width,
-      "stroke-dasharray": "14 16", "stroke-linecap": "round" }, parent);
-  }
-  function solidLink(parent, d, color, width) {
-    // a wide, low-opacity stroke reads as a glow without an SVG filter (which
-    // the rasterizer would have to re-run for every captured frame)
-    const glow = svg("path", { d, fill: "none", stroke: color, "stroke-width": width * 3.6,
-      "stroke-linecap": "round" }, parent);
-    const core = svg("path", { d, fill: "none", stroke: color, "stroke-width": width,
-      "stroke-linecap": "round" }, parent);
-    return { glow, core };
-  }
-  // the draw-on reveal: a dash pattern of one full length, pulled open
-  function drawOn(link, p) {
-    const L = link.core.dataset.len;
-    link.core.style.opacity = p;
-    link.glow.style.opacity = 0.30 * p;
-    if (p > 0) {
-      link.core.setAttribute("stroke-dasharray", `${L * p} ${L}`);
-      link.glow.setAttribute("stroke-dasharray", `${L * p} ${L}`);
-    }
-  }
-
-  /* flowing packets — a head with a fading comet trail -------------------- */
-  function makeFlow(parent, smp, opts) {
-    const { n = 3, r = 9, color = "#fff", sealed = false, size = 1 } = opts;
-    const items = [];
-    for (let i = 0; i < n; i++) {
-      const g = svg("g", {}, parent);
-      const trails = [];
-      if (!sealed) {
-        for (let j = 0; j < 3; j++) {
-          trails.push(svg("circle",
-            { r: r * (1 - j * 0.24), fill: color, opacity: (0.30 - j * 0.08).toFixed(2) }, g));
-        }
-        svg("circle", { r: r * 1.95, fill: color, opacity: 0.16 }, g);
-        svg("circle", { r, fill: color }, g);
-      } else {
-        const w = 34 * size, h = 24 * size;
-        svg("circle", { r: r * 2.4, fill: color, opacity: 0.14 }, g);
-        svg("rect", { x: -w / 2, y: -h / 2, width: w, height: h, rx: 4 * size,
-          fill: "#120e0c", stroke: color, "stroke-width": 2.2 }, g);
-        svg("path", { d: `M ${-w / 2} ${-h / 2 + 2} L 0 ${2 * size} L ${w / 2} ${-h / 2 + 2}`,
-          fill: "none", stroke: color, "stroke-width": 2.2 }, g);
-        svg("circle", { cx: 0, cy: 2 * size, r: 3.1 * size, fill: color }, g);
-      }
-      items.push({ node: g, trails });
-      g.style.opacity = 0;   // nothing shows until update() runs
-    }
-    return {
-      update(t, speed, alpha) {
-        if (alpha <= 0.001) { items.forEach((it) => (it.node.style.opacity = 0)); return; }
-        items.forEach((it, i) => {
-          const u = ((t * speed + i / items.length) % 1 + 1) % 1;
-          const [px, py] = smp.at(u);
-          it.node.setAttribute("transform",
-            `translate(${px.toFixed(2)},${py.toFixed(2)})`);
-          // fade in/out at the ends for a clean entry/exit
-          const edge = Math.min(1, Math.min(u, 1 - u) / 0.12);
-          it.node.style.opacity = (alpha * clamp(edge)).toFixed(3);
-          it.trails.forEach((c, j) => {
-            const [tx, ty] = smp.at(u - (j + 1) * 0.026);
-            c.setAttribute("cx", (tx - px).toFixed(2));
-            c.setAttribute("cy", (ty - py).toFixed(2));
-          });
-        });
-      },
-      hide() { items.forEach((it) => (it.node.style.opacity = 0)); },
-    };
-  }
-
-  /* a soft cloud behind the hub (gradient, so no blur filter is needed) --- */
-  function cloud(parent, cx, cy, alpha) {
-    const g = svg("g", { opacity: 0 }, parent);
-    [[0, 6, 300, 168], [-168, 26, 152, 112], [176, 26, 152, 112], [0, 58, 214, 108]]
-      .forEach(([dx, dy, rx, ry]) =>
-        svg("ellipse", { cx: cx + dx, cy: cy + dy, rx, ry, fill: "url(#cloudgrad)" }, g));
-    return { set(a) { g.setAttribute("opacity", (0.85 * clamp(a)).toFixed(3)); } };
-  }
-
-  /* ====================================================================== *
-   *  SCENE: brand
-   * ====================================================================== */
-  function brand(layer, api) {
-    const wm = anchor(layer, 960, 440);
-    const w = A.wordmark(wm, 150);
-    const under = anchor(layer, 960, 534);
-    under.innerHTML = `<div class="underline"></div>`;
-    alignUnderline(wm, under);
-    const tag = anchor(layer, 960, 604);
-    tag.className += " lead";
-    tag.style.textAlign = "center";
-    tag.textContent = "Send any file to any device, straight from your terminal.";
-
-    const pills = ["peer-to-peer", "end-to-end encrypted", "open source"].map((lab) => {
-      const p = anchor(layer, 0, 706, "pill");
-      p.textContent = lab;
-      return p;
-    });
-    rowOf(pills, 706, 24);
-
-    return function (t) {
-      reveal(wm, ramp(t, 0.7, 1.55));
-      if (w.cursor) w.cursor.style.opacity = Math.floor(t * 2) % 2 === 0 ? 1 : 0.05;
-      const up = A.easeOutExpo(ramp(t, 0.92, 1.95));
-      under.querySelector(".underline").style.transform = `scaleX(${up.toFixed(3)})`;
-      reveal(tag, ramp(t, 2.45, 3.35));
-      pills.forEach((p, i) => reveal(p, ramp(t, 3.5 + i * 0.16, 4.15 + i * 0.16),
-        { ease: A.easeOutBack, dy: 16, scale: 0.9, blur: 6 }));
+      // captions
+      kin(caps[0], t, 0.25, 0.07, 0.55, r0 - 0.4);
+      kin(caps[1], t, r0 - 0.05, 0.07, 0.55, that - 0.45);
+      kin(caps[2], t, that - 0.1, 0.09, 0.6);
     };
   }
 
   /* ====================================================================== *
-   *  SCENE: cmd — the two terminals
+   *  TRUST — three promises, slammed in on the words
    * ====================================================================== */
-  function cmd(layer, api) {
-    const CW = 1080;
-    const LEFT = 960 - CW / 2;
-
-    const head = atTop(layer, 960, 0, "h2");
-    head.textContent = "One command to send, one to receive.";
-
-    const sBadge = atTopLeft(layer, LEFT, 0, "badge");
-    sBadge.textContent = "Sender";
-    const sender = makeTerm(layer, 960, CW, "you — zsh", [
-      { text: "$ fsend drone-4k.mov", type: true },
-      { text: "  drone-4k.mov   ·   2.3 GB", cls: "dim" },
-      { html: `  share code:  <span class="code">abc-defg-jkm</span>`, text: "", cls: "acc" },
-    ]);
-
-    const rBadge = atTopLeft(layer, LEFT, 0, "badge ok");
-    rBadge.textContent = "Receiver";
-    const recv = makeTerm(layer, 960, CW, "your friend — zsh", [
-      { text: "$ fsend abc-defg-jkm", type: true },
-      { text: "  from your friend   ·   accept? y", cls: "dim" },
-    ]);
-
-    const bar = atTop(layer, 960, 0);
-    bar.style.width = CW + "px";
-    bar.innerHTML = `<div class="bar-track"><div class="bar-fill"></div></div>`;
-    const fill = bar.querySelector(".bar-fill");
-    const status = atTop(layer, 960, 0, "mono");
-    status.style.fontSize = "28px";
-
+  function trust(cam, api) {
+    // a slow drift of ciphertext behind the type
+    const rows = [...Array(14)].map((_, r) => {
+      const n = el("div", "hexrow", cam);
+      n.style.top = 40 + r * 74 + "px";
+      let s = "";
+      for (let i = 0; i < 90; i++) s += Math.floor(rnd(r * 97 + i) * 65536).toString(16).padStart(4, "0") + " ";
+      n.textContent = s;
+      return n;
+    });
+    const items = [
+      ["e2e", LOCK, "End-to-end encrypted."],
+      ["accounts", NOUSER, "No accounts."],
+      ["ports", NOPORT, "No ports to open."],
+    ].map(([k, icon, txt], i) => {
+      const row = at(cam, 960, 330 + i * 200, "stmt");
+      const ib = el("div", "ic", row, icon);
+      const tx = el("div", "", row);
+      const ws = words(tx, txt);
+      const t0 = api.on("trust1", k) - 0.12;
+      api.cue("thud", t0 + 0.05, i === 0 ? 1 : 0.85);
+      return { row, ib, ws, t0 };
+    });
     afterFonts(() => {
-      // A section label belongs to the card *below* it: 14px under the label
-      // starts the card, 58px above the label separates it from the card above.
-      stack(96, [
-        [head, 46],
-        [sBadge, 14],
-        [sender.card, 58],
-        [rBadge, 14],
-        [recv.card, 46],
-        [bar, 26],
-        [status, 0],
-      ]);
+      const w = Math.max(...items.map((it) => it.row.getBoundingClientRect().width));
+      items.forEach((it) => {
+        it.row.parentElement.style.left = (960 - w / 2).toFixed(1) + "px";
+        it.row.parentElement.style.transform = "translate(0, -50%)";
+      });
     });
 
     return function (t) {
-      reveal(head, ramp(t, -0.6, -0.05));
-      reveal(sBadge, ramp(t, -0.55, -0.05));
-      reveal(sender.card, ramp(t, -0.5, 0.0));
-      // the command types itself, then its output lands
-      const tp = ramp(t, 0.05, 0.95);
-      typeInto(sender.rows[0], tp);
-      reveal(sender.rows[0].node, ramp(t, 0.0, 0.2), { dy: 12, blur: 6 });
-      reveal(sender.rows[1].node, ramp(t, 1.15, 1.65), { dy: 12, blur: 6 });
-      reveal(sender.rows[2].node,
-        ramp(t, api.on("cmd1", "code") - 0.2, api.on("cmd1", "code") + 0.35), { dy: 12, blur: 6 });
-
-      const r0 = api.segStart("cmd2");
-      reveal(rBadge, ramp(t, r0, r0 + 0.55));
-      reveal(recv.card, ramp(t, r0 + 0.08, r0 + 0.85));
-      typeInto(recv.rows[0], ramp(t, r0 + 0.4, r0 + 1.15));
-      reveal(recv.rows[0].node, ramp(t, r0 + 0.3, r0 + 0.6), { dy: 12, blur: 6 });
-      reveal(recv.rows[1].node,
-        ramp(t, api.on("cmd2", "runs") - 0.25, api.on("cmd2", "runs") + 0.2), { dy: 12, blur: 6 });
-
-      const p0 = api.on("cmd2", "runs") + 0.2, p1 = api.on("cmd2", "lands") + 0.35;
-      const p = A.easeInOutCubic(ramp(t, p0, p1));
-      reveal(bar, ramp(t, p0 - 0.15, p0 + 0.25));
-      fill.style.width = (p * 100).toFixed(2) + "%";
-      const done = t >= p1;
-      status.style.color = done ? "var(--green)" : "var(--dim)";
-      setText(status, done ? "✓ saved  drone-4k.mov   ·   112 MB/s"
-                           : `receiving…  ${Math.round(p * 100)}%   ·   112 MB/s`);
-      reveal(status, ramp(t, p0, p0 + 0.3));
-    };
-  }
-
-  /* ====================================================================== *
-   *  SCENE: modes — the three routes, side by side, lit as they are named
-   * ====================================================================== */
-  const MODES = [
-    { kind: "local",  name: "LOCAL",  title: "Same network",
-      note: "both devices on one network — no server in the way",
-      color: "var(--green)",  anchor: "local" },
-    { kind: "direct", name: "DIRECT", title: "Over the internet",
-      note: "a direct link — the server only introduces them",
-      color: "var(--blue)",   anchor: "direct" },
-    { kind: "relay",  name: "RELAY",  title: "Strict networks",
-      note: "the server carries the file when direct is blocked",
-      color: "var(--accent)", anchor: "relay" },
-  ];
-
-  function modes(layer, api) {
-    const head = atTop(layer, 960, 0, "h2");
-    head.textContent = "How fsend works";
-    const sub = atTop(layer, 960, 0, "lead");
-    sub.style.fontSize = "31px";
-    sub.textContent = "fsend picks the best path on its own — nothing to configure.";
-
-    const CW = 500, CGAP = 46;
-    const x0 = 960 - (CW * 3 + CGAP * 2) / 2 + CW / 2;
-    const cards = MODES.map((d, i) => {
-      const card = atTop(layer, x0 + i * (CW + CGAP), 0, "modecard");
-      card.style.width = CW + "px";
-      card.style.setProperty("--mc", d.color);
-      card.innerHTML =
-        `<div class="msweep"></div>
-         <div class="mglyph">${modeGlyph(d.kind)}</div>
-         <div class="mlabel"><span class="mdot"></span>${d.name}</div>
-         <div class="mname">${d.title}</div>
-         <div class="mnote">${d.note}</div>
-         <div class="mbar"></div>`;
-      return { node: card, packet: card.querySelector(".mflow"),
-               halo: card.querySelector(".mflowh"), def: d };
-    });
-
-    afterFonts(() => {
-      moveTo(head, 96);
-      moveTo(sub, 96 + hOf(head) + 30);
-      const top = 96 + hOf(head) + 30 + hOf(sub) + 74;
-      cards.forEach((c) => moveTo(c.node, top));
-    });
-
-    return function (t) {
-      reveal(head, ramp(t, -0.62, -0.06));
-      reveal(sub, ramp(t, -0.56, 0.04));
-      cards.forEach((c, i) => {
-        const appear = -0.50 - i * 0.13;
-        reveal(c.node, ramp(t, appear, appear + 0.62), { dy: 24, scale: 0.98 });
-        // the card the narration is naming owns the glow, the sheen and a
-        // faster packet — everything else stays exactly as readable as before
-        const at = api.on("modes" + (i + 2), c.def.anchor);
-        const on = A.easeOutCubic(ramp(t, at - 0.05, at + 0.45));
-        c.node.style.setProperty("--on", on.toFixed(3));
-        // the packet runs at a constant speed: the highlight changes the glow,
-        // never the phase, or the dot would jump back every time a card lights
-        const u = ((t * 0.30) % 1 + 1) % 1;
-        const [fx, fy] = MODE_FLOW[c.def.kind](u);
-        const edge = clamp(Math.min(u, 1 - u) / 0.10) * (0.58 + 0.42 * on);
-        c.packet.setAttribute("cx", fx.toFixed(1));
-        c.packet.setAttribute("cy", fy.toFixed(1));
-        c.packet.setAttribute("opacity", edge.toFixed(3));
-        c.halo.setAttribute("cx", fx.toFixed(1));
-        c.halo.setAttribute("cy", fy.toFixed(1));
-        c.halo.setAttribute("opacity", (0.19 * edge).toFixed(3));
+      camera(cam, t, [[0, 1.0, 0, 0], [0, 1.06, 0, -10, 5]], 1.2);
+      rows.forEach((r, i) => {
+        const dir = i % 2 ? 1 : -1, sp = 30 + rnd(i) * 40;
+        r.style.transform = `translateX(${(-600 + dir * ((t * sp) % 600)).toFixed(1)}px)`;
+      });
+      items.forEach((it, i) => {
+        kin(it.ws, t, it.t0, 0.05, 0.5);
+        const p = ramp(t, it.t0 - 0.05, it.t0 + 0.6);
+        it.ib.style.transform = `scale(${(p <= 0 ? 0 : spring(p * 1.4, 9, 4.5)).toFixed(4)})`;
+        // the newest promise is the brightest; older ones step back, not away
+        const next = items[i + 1];
+        const back = next ? ramp(t, next.t0, next.t0 + 0.4) : 0;
+        it.row.style.opacity = lerp(1, 0.38, back).toFixed(3);
       });
     };
   }
 
   /* ====================================================================== *
-   *  the transfer diagrams (local / direct / relay share one stage)
-   *
-   *  One stage, three stories: your device on the left, their device on the
-   *  right, one wire between them, and a single slot in the middle that holds
-   *  whatever that route needs — nothing (local), the pairing server (direct)
-   *  or the relay (relay). Same geometry every time, so the three slides read
-   *  as three answers to the same question.
+   *  ROUTES — one stage, three answers: local, direct, relay
    * ====================================================================== */
-  const LXC = 420, RXC = 1500;            // device centres
-  const DYC = 744;                        // the wire runs along their mid-line
-  const LX = 580, RX = 1340;              // where the wire meets each device
-  const NODE_CY = 451;                    // the middle slot
-  const BOX_Y0 = 608, BOX_Y1 = 880;       // network enclosures
-  const STATE_Y = 814;                    // the live caption, under the wire
-  const FACT_Y = 962;                     // the evidence row
+  const GREEN = "#6fdc8c", BLUE = "#7db7ff", ORANGE = "#e0805a";
+  function routes(cam, api) {
+    const layer = api.layer;
+    const AX = 470, BX = 1450, DY = 700, SX = 960, SY = 425;
+    const L = { r2: api.segStart("routes2"), r3: api.segStart("routes3"), r4: api.segStart("routes4") };
+    api.accent(L.r2 - 0.25, GREEN);
+    api.accent(L.r3 - 0.25, BLUE);
+    api.accent(L.r4 - 0.25, ORANGE);
 
-  const MODE_CFG = {
-    local: {
-      title: "Direct over your own network",
-      sub: "both devices are on the same network",
-      state: "direct over the LAN",
-      fact: { icon: BOLT, text: "works offline" },
-    },
-    direct: {
-      title: "Straight across the internet",
-      sub: "the server only introduces them",
-      state: "direct, peer to peer",
-      fact: { icon: STEP_ASIDE, text: "no relay in the middle" },
-    },
-    relay: {
-      title: "Relayed through a server",
-      sub: "it only ever sees sealed, encrypted packets",
-      state: "relayed · packets stay sealed",
-      fact: { icon: SHIELD, text: "works when blocked" },
-    },
-  };
+    // ---- svg: zones, links, packets ----
+    const g = svg("svg", { width: 1920, height: 1080, style: "position:absolute;inset:0;overflow:visible" }, cam);
+    const zoneL = svg("rect", { x: 230, y: 582, width: 1460, height: 300, rx: 44, fill: "rgba(255,255,255,0.02)",
+      stroke: "var(--accent)", "stroke-opacity": 0.5, "stroke-width": 2.5, "stroke-dasharray": "10 12" }, g);
+    const zoneR = svg("rect", { x: 1230, y: 582, width: 460, height: 300, rx: 44, fill: "rgba(255,255,255,0.02)",
+      stroke: "var(--accent)", "stroke-opacity": 0.5, "stroke-width": 2.5, "stroke-dasharray": "10 12" }, g);
+    const zlab = svg("text", { x: 960, y: 918, class: "zone-label", "text-anchor": "middle" }, g);
+    const zlabL = svg("text", { x: 460, y: 918, class: "zone-label", "text-anchor": "middle" }, g);
+    const zlabR = svg("text", { x: 1460, y: 918, class: "zone-label", "text-anchor": "middle" }, g);
+    zlab.textContent = "same network"; zlabL.textContent = "your network"; zlabR.textContent = "their network";
 
-  function transferScene(layer, api, mode) {
-    const cfg = MODE_CFG[mode];
-    const MC = { local: "var(--green)", direct: "var(--blue)", relay: "var(--accent)" }[mode];
-    const isLocal = mode === "local";
-    layer.style.setProperty("--mc", MC);
-
-    const chip = atTop(layer, 960, 0, "chip");
-    chip.innerHTML = `<span class="dot"></span>${mode.toUpperCase()}`;
-    const ttl = atTop(layer, 960, 0, "title");
-    ttl.textContent = cfg.title;
-    const sub = atTop(layer, 960, 0, "lead");
-    sub.style.fontSize = "30px";
-    sub.textContent = cfg.sub;
-    const state = atTop(layer, 960, STATE_Y, "mono state");
-    state.style.fontSize = "28px";
-
-    const dg = el("div", "diagram", layer);
-    const s = svg("svg", { viewBox: "0 0 1920 1080", width: 1920, height: 1080 }, dg);
-
-    const cl = cloud(s, 960, NODE_CY + 10, 0);
-
-    // the network enclosure — one box around both devices (they share a
-    // network), or one around each (they do not)
-    const NET_ATTRS = { rx: 30, fill: "rgba(255,255,255,0.022)", stroke: "rgba(255,255,255,0.13)",
-                        "stroke-width": 2, "stroke-dasharray": "10 12", opacity: 0 };
-    const boxes = isLocal
-      ? [{ x0: 184, x1: 1736 }]
-      : [{ x0: LXC - 200, x1: LXC + 200 }, { x0: RXC - 200, x1: RXC + 200 }];
-    const nets = boxes.map((b) => svg("rect", Object.assign({ x: b.x0, y: BOX_Y0,
-      width: b.x1 - b.x0, height: BOX_Y1 - BOX_Y0 }, NET_ATTRS), s));
-    const netLabels = isLocal
-      ? [text(s, 960, BOX_Y0 - 26, "same network", "net-label", {})]
-      : [text(s, LXC, BOX_Y0 - 26, "your network", "net-label", {}),
-         text(s, RXC, BOX_Y0 - 26, "their network", "net-label", {})];
-    const netSet = (a) => {
-      nets.forEach((n) => n.setAttribute("opacity", a));
-      netLabels.forEach((n) => { n.style.opacity = a; });
-    };
-
-    const devA = deviceCard(layer, LXC, DYC, "your device");
-    const devB = deviceCard(layer, RXC, DYC, "their device");
-    const node = hubCard(layer, 960, NODE_CY, "fsend.alzina.dev");
-    node.classList.add("sm");
-    if (isLocal) node.classList.add("ghost");
-    const nodeTag = node.querySelector(".tag");
-
-    // the evidence row: what this slide just proved
-    const facts = [cfg.fact, { icon: LOCK, text: "end-to-end encrypted" }].map((it) => {
-      const p = anchor(layer, 0, FACT_Y, "fact");
-      p.innerHTML = `<span class="ic">${it.icon}</span>${it.text}`;
-      p.querySelector(".ic").style.color = it.color || MC;
-      return p;
+    const mk = (d, w, color, extra = {}) => svg("path", Object.assign({ d, fill: "none", stroke: color, "stroke-width": w,
+      "stroke-linecap": "round", "stroke-linejoin": "round", pathLength: 1000 }, extra), g);
+    const DIRECT = `M ${AX + 130} ${DY} L ${BX - 130} ${DY}`;
+    const directGlow = mk(DIRECT, 22, "var(--accent)", { opacity: 0 });
+    const direct = mk(DIRECT, 5, "var(--accent)");
+    const ATT = `M ${AX + 130} ${DY} L ${SX - 70} ${DY}`;
+    const attempt = mk(ATT, 5, "var(--red)");
+    const SIGA = `M ${AX + 90} ${DY - 105} L ${SX - 115} ${SY + 30}`;
+    const SIGB = `M ${BX - 90} ${DY - 105} L ${SX + 115} ${SY + 30}`;
+    const sigA = mk(SIGA, 3.5, "var(--accent)", { "stroke-dasharray": "6 12" });
+    const sigB = mk(SIGB, 3.5, "var(--accent)", { "stroke-dasharray": "6 12" });
+    const RELAY = `M ${AX + 95} ${DY - 100} L ${SX - 105} ${SY + 10} L ${SX + 105} ${SY + 10} L ${BX - 95} ${DY - 100}`;
+    const relayGlow = mk(RELAY, 22, "var(--accent)", { opacity: 0 });
+    const relay = mk(RELAY, 5, "var(--accent)");
+    const pkts = [...Array(7)].map(() => svg("rect", { width: 34, height: 10, rx: 5, x: -17, y: -5, fill: "#fff" }, g));
+    const pulses = [...Array(4)].map(() => svg("circle", { r: 9, fill: "var(--accent-l)" }, g));
+    const locks = [...Array(6)].map(() => {
+      const gg = svg("g", {}, g);
+      svg("rect", { x: -22, y: -18, width: 44, height: 36, rx: 9, fill: "var(--accent)" }, gg);
+      svg("path", { d: "M-7 -2v-4a7 7 0 0 1 14 0v4", stroke: "#fff", "stroke-width": 3.2, fill: "none", "stroke-linecap": "round" }, gg);
+      svg("rect", { x: -9.5, y: -2, width: 19, height: 13, rx: 3, fill: "#fff" }, gg);
+      return gg;
     });
-    facts[1].querySelector(".ic").style.color = "var(--green)";
-    rowOf(facts, FACT_Y);
+    const xmark = svg("g", { opacity: 0 }, g);
+    svg("circle", { cx: 0, cy: 0, r: 30, fill: "var(--red)" }, xmark);
+    svg("path", { d: "M-10 -10L10 10M10 -10L-10 10", stroke: "#fff", "stroke-width": 5, "stroke-linecap": "round" }, xmark);
 
-    // the wires, built once the metrics are known
-    let wire, relay, halfA, halfB, xg, dA, dB, fWire, fRelay;
-    let nodeBottom = NODE_CY + 92;
+    // polyline sampler for the packets
+    const pts = (d) => d.match(/-?\d+(\.\d+)?/g).map(Number).reduce((a, v, i, arr) => (i % 2 ? a : [...a, [v, arr[i + 1]]]), []);
+    function along(d) {
+      const P = pts(d), seg = [];
+      let tot = 0;
+      for (let i = 1; i < P.length; i++) { const l = Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]); seg.push([P[i - 1], P[i], l, tot]); tot += l; }
+      return (u) => {
+        let x = clamp(u) * tot;
+        for (const [a, b, l, s] of seg) if (x <= s + l) { const f = (x - s) / l; return [lerp(a[0], b[0], f), lerp(a[1], b[1], f)]; }
+        return P[P.length - 1];
+      };
+    }
+    const atDirect = along(DIRECT), atRelay = along(RELAY), atA = along(SIGA), atB = along(SIGB);
+
+    // ---- devices + server ----
+    const dev = (x, name) => {
+      const d = el("div", "dev", cam); d.style.left = x + "px"; d.style.top = DY + "px";
+      d.innerHTML = `<div class="card">${LAPTOP}</div><div class="nm">${name}</div>`;
+      return d;
+    };
+    const devA = dev(AX, "your laptop"), devB = dev(BX, "their laptop");
+    devA.style.top = devB.style.top = DY + 18 + "px";
+    const hub = el("div", "hub", cam);
+    hub.style.left = SX + "px"; hub.style.top = SY + "px";
+    hub.innerHTML = `<div class="card">${SERVER}</div><div class="nm">fsend server</div>`;
+    const wall = at(cam, SX, DY, "", `<div style="width:118px;height:118px;border-radius:30px;display:grid;place-items:center;color:var(--red);
+      background:color-mix(in srgb, var(--red) 14%, rgba(10,10,10,0.9));border:2px solid color-mix(in srgb, var(--red) 60%, transparent)">${WALL}</div>`);
+    const tagS = at(cam, SX, SY - 107, "tag");
+    const tagW = at(cam, SX, DY + 100, "tag");
+    tagW.style.setProperty("--c", "var(--red)"); tagW.textContent = "blocked";
+
+    // ---- header (outside the camera) ----
+    const intro = at(layer, 960, 170, "headline");
+    const introW = words(intro, "It finds the best path. Automatically.");
+    const heads = [
+      ["01", "Local", "Same network. Straight across.", GREEN],
+      ["02", "Direct", "Introduced, then peer to peer.", BLUE],
+      ["03", "Relay", "Blocked? Relayed, sealed end to end.", ORANGE],
+    ].map(([n, name, sub, c]) => {
+      const eb = at(layer, 960, 104, "eyebrow");
+      eb.style.color = c;
+      const ebw = words(eb, `${n} — ${name}`);
+      const h = at(layer, 960, 178, "headline");
+      const hw = words(h, sub);
+      return { ebw, hw };
+    });
+    const steps = el("div", "steps", layer);
+    const stepEls = [["Local", GREEN], ["Direct", BLUE], ["Relay", ORANGE]].map(([n, c], i) => {
+      const s = el("div", "s", steps, `<b>0${i + 1}</b>${n}`);
+      return { s, c };
+    });
+
+    // ---- moments ----
+    const M = {
+      across: api.on("routes2", "across"), noserver: api.on("routes2", "noserver"),
+      intro: api.on("routes3", "introduces"), steps: api.on("routes3", "steps"),
+      blocks: api.on("routes4", "blocks"), relays: api.on("routes4", "relays"), sealed: api.on("routes4", "sealed"),
+      path: api.on("routes1", "path"),
+    };
+    [0.15, 0.3].forEach((d) => api.cue("pop", d + 0.1, 0.7));
+    api.cue("pop", 0.5, 0.7);
+    api.cue("swish", M.across - 0.3, 0.7);
+    api.cue("blip", M.intro - 0.2, 0.8); api.cue("blip", M.intro + 0.35, 0.7);
+    api.cue("swish", M.steps - 0.1, 0.7);
+    api.cue("deny", M.blocks - 0.05, 1);
+    api.cue("swish", M.relays - 0.15, 0.8);
+    api.cue("pop", M.sealed, 0.8);
+    stepEls.forEach((_, i) => api.cue("tick", M.path + 0.1 + i * 0.12, 0.6));
+
+    const draw = (path, p) => path.setAttribute("stroke-dashoffset", (1000 * (1 - outCubic(p))).toFixed(1));
+    [direct, directGlow, attempt, relay, relayGlow].forEach((p) => p.setAttribute("stroke-dasharray", "1000 1000"));
+
+    return function (t) {
+      camera(cam, t, [[0, 1.04, 0, -10], [L.r2, 1.1, 0, -30, 1.2], [L.r3, 1.08, 0, -24, 1.2], [L.r4, 1.1, 0, -10, 1.2]]);
+      const local = ramp(t, L.r2 - 0.3, L.r2 + 0.3) * (1 - ramp(t, L.r3 - 0.4, L.r3));
+      const dPhase = ramp(t, L.r3 - 0.4, L.r3) * (1 - ramp(t, L.r4 - 0.4, L.r4));
+      const rPhase = ramp(t, L.r4 - 0.4, L.r4);
+
+      // stage pieces arrive
+      reveal(devA, ramp(t, -0.45, 0.2), { dy: 40, scale: 0.9, base: "translate(-50%,-50%)" });
+      reveal(devB, ramp(t, -0.35, 0.3), { dy: 40, scale: 0.9, base: "translate(-50%,-50%)" });
+      const hubIn = ramp(t, -0.25, 0.4);
+      const hubDim = Math.max(local * 0.65, dPhase * 0.55 * ramp(t, M.steps - 0.1, M.steps + 0.5));
+      const hubUp = dPhase * ramp(t, M.steps - 0.1, M.steps + 0.6) * -26;
+      reveal(hub, hubIn, { dy: 40, scale: 0.9, base: `translate(-50%,-50%) translateY(${hubUp.toFixed(1)}px)`, alpha: 1 - hubDim });
+      const hubOn = Math.max(dPhase * ramp(t, M.intro - 0.3, M.intro + 0.2) * (1 - 0.7 * ramp(t, M.steps, M.steps + 0.5)),
+                             rPhase * ramp(t, M.relays - 0.3, M.relays + 0.2));
+      hub.style.setProperty("--on", hubOn.toFixed(3));
+
+      // header
+      kin(introW, t, 0.05, 0.06, 0.55, L.r2 - 0.75);
+      const hw = [[L.r2 - 0.35, L.r3 - 0.7], [L.r3 - 0.35, L.r4 - 0.7], [L.r4 - 0.35, null]];
+      heads.forEach((h, i) => { kin(h.ebw, t, hw[i][0], 0.05, 0.5, hw[i][1]); kin(h.hw, t, hw[i][0] + 0.08, 0.05, 0.55, hw[i][1]); });
+      const active = rPhase > 0.5 ? 2 : dPhase > 0.5 ? 1 : local > 0.5 ? 0 : -1;
+      stepEls.forEach(({ s, c }, i) => {
+        reveal(s, ramp(t, M.path + 0.1 + i * 0.12, M.path + 0.6 + i * 0.12), { dy: 20 });
+        const on = i === active;
+        s.style.color = on ? "var(--ink)" : "";
+        s.style.borderColor = on ? c : "";
+        s.style.background = on ? `color-mix(in srgb, ${c} 16%, transparent)` : "";
+        s.style.boxShadow = on ? `0 0 40px -6px ${c}` : "";
+        s.querySelector("b").style.color = on ? c : "";
+      });
+
+      // zones: one shared network, splitting into two
+      const zIn = ramp(t, L.r2 - 0.1, L.r2 + 0.6);
+      const split = inOutCubic(ramp(t, L.r3 - 0.2, L.r3 + 0.7));
+      zoneL.setAttribute("width", lerp(1460, 460, split).toFixed(1));
+      zoneL.setAttribute("opacity", zIn.toFixed(3));
+      zoneR.setAttribute("opacity", (split * zIn).toFixed(3));
+      zoneR.setAttribute("x", lerp(1430, 1230, split).toFixed(1));
+      zoneR.setAttribute("width", lerp(260, 460, split).toFixed(1));
+      zlab.setAttribute("opacity", (zIn * (1 - split)).toFixed(3));
+      zlabL.setAttribute("opacity", (zIn * split).toFixed(3));
+      zlabR.setAttribute("opacity", (zIn * split).toFixed(3));
+
+      // direct link: local (across) and direct (after the server steps aside)
+      const dl = Math.max(local * ramp(t, M.across - 0.35, M.across + 0.25), dPhase * ramp(t, M.steps - 0.1, M.steps + 0.45));
+      draw(direct, dl); draw(directGlow, dl);
+      directGlow.setAttribute("opacity", (0.16 * dl).toFixed(3));
+      const devOn = Math.max(dl, rPhase * ramp(t, M.relays, M.relays + 0.4));
+      devA.querySelector(".card").style.setProperty("--on", devOn.toFixed(3));
+      devB.querySelector(".card").style.setProperty("--on", devOn.toFixed(3));
+      pkts.forEach((p, i) => {
+        const u = (i / pkts.length + t * 0.55) % 1;
+        const [x, y] = atDirect(u);
+        p.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
+        p.setAttribute("opacity", (ramp(dl, 0.8, 1) * Math.sin(Math.PI * u)).toFixed(3));
+        p.setAttribute("fill", "var(--accent-l)");
+      });
+
+      // pairing: the server introduces the two, then steps aside
+      const sig = dPhase * ramp(t, M.intro - 0.4, M.intro + 0.1) * (1 - ramp(t, M.steps - 0.1, M.steps + 0.4));
+      draw(sigA, 1); draw(sigB, 1);
+      sigA.setAttribute("opacity", (0.8 * sig).toFixed(3)); sigB.setAttribute("opacity", (0.8 * sig).toFixed(3));
+      sigA.setAttribute("stroke-dashoffset", (-t * 40).toFixed(1)); sigB.setAttribute("stroke-dashoffset", (-t * 40).toFixed(1));
+      pulses.forEach((c, i) => {
+        const f = i < 2 ? atA : atB, u = ((t - M.intro) * 0.9 + (i % 2) * 0.5) % 1;
+        const [x, y] = f(u < 0 ? u + 1 : u);
+        c.setAttribute("cx", x.toFixed(1)); c.setAttribute("cy", y.toFixed(1));
+        c.setAttribute("opacity", (sig * Math.sin(Math.PI * (u < 0 ? u + 1 : u))).toFixed(3));
+      });
+
+      // relay: the direct attempt hits a wall, then the server carries it, sealed
+      const att = rPhase * ramp(t, M.blocks - 0.6, M.blocks - 0.05) * (1 - ramp(t, M.relays - 0.2, M.relays + 0.3));
+      draw(attempt, rPhase * ramp(t, M.blocks - 0.6, M.blocks - 0.05));
+      attempt.setAttribute("opacity", att.toFixed(3));
+      const wp = rPhase * ramp(t, M.blocks - 0.12, M.blocks + 0.5);
+      const shake = t > M.blocks && t < M.blocks + 0.4 ? Math.sin((t - M.blocks) * 70) * 9 * (1 - (t - M.blocks) / 0.4) : 0;
+      wall.style.visibility = wp > 0 ? "visible" : "hidden";
+      wall.style.opacity = (Math.min(1, wp * 3) * lerp(1, 0.55, ramp(t, M.relays, M.relays + 0.5))).toFixed(3);
+      wall.style.transform = `translateX(${shake.toFixed(1)}px) scale(${spring(wp * 1.3, 9, 5).toFixed(4)})`;
+      xmark.setAttribute("opacity", (att > 0.9 ? 1 : 0) * ramp(t, M.blocks - 0.05, M.blocks + 0.1) * (1 - ramp(t, M.relays - 0.2, M.relays + 0.2)));
+      xmark.setAttribute("transform", `translate(${SX - 70 - 48 + shake} ${DY - 50})`);
+      reveal(tagW, rPhase * ramp(t, M.blocks + 0.05, M.blocks + 0.4), { dy: 10, base: "translate(-50%,-50%)", alpha: 1 - ramp(t, M.relays, M.relays + 0.5) * 0.5 });
+
+      const rl = rPhase * ramp(t, M.relays - 0.3, M.relays + 0.4);
+      draw(relay, rl); draw(relayGlow, rl);
+      relayGlow.setAttribute("opacity", (0.16 * rl).toFixed(3));
+      locks.forEach((k, i) => {
+        const u = (i / locks.length + (t - M.relays) * 0.32) % 1;
+        const uu = u < 0 ? u + 1 : u;
+        const [x, y] = atRelay(uu);
+        k.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
+        k.setAttribute("opacity", (ramp(rl, 0.85, 1) * Math.min(1, Math.sin(Math.PI * uu) * 3)).toFixed(3));
+      });
+
+      // the server's status tag
+      let tag = "", c = "var(--dim)", ta = 0;
+      if (local > 0.01) { tag = "not used"; c = "#8a8580"; ta = local * ramp(t, M.noserver - 0.2, M.noserver + 0.2); }
+      else if (dPhase > 0.01) {
+        const stepped = t > M.steps;
+        tag = stepped ? "stepped aside" : "pairing"; c = stepped ? "#8a8580" : BLUE;
+        ta = dPhase * ramp(t, M.intro - 0.2, M.intro + 0.2);
+      } else if (rPhase > 0.01) {
+        const sealed = t > M.sealed - 0.1;
+        tag = sealed ? "sees ciphertext only" : "relaying"; c = ORANGE;
+        ta = rPhase * ramp(t, M.relays - 0.1, M.relays + 0.3);
+      }
+      setText(tagS, tag);
+      tagS.style.setProperty("--c", c);
+      reveal(tagS, ta, { dy: 8, base: `translate(-50%,-50%) translateY(${hubUp.toFixed(1)}px)`, ease: outCubic });
+    };
+  }
+
+  /* ====================================================================== *
+   *  SERVER — free to use, or yours to run
+   * ====================================================================== */
+  function server(cam, api) {
+    const halo = bloom(cam, 1380, 540, 1300, "color-mix(in srgb, var(--brand) 22%, transparent)");
+    const eb = el("div", "abs eyebrow", cam); Object.assign(eb.style, { left: "170px", top: "336px" });
+    const ebw = words(eb, "The server");
+    const h1 = el("div", "abs headline", cam); Object.assign(h1.style, { left: "166px", top: "392px", fontSize: "96px" });
+    const h1w = words(h1, "Free to use.");
+    const h2 = el("div", "abs headline grad", cam); Object.assign(h2.style, { left: "166px", top: "512px", fontSize: "96px" });
+    const h2w = words(h2, "Or run your own.");
+    const subl = el("div", "abs sub", cam); Object.assign(subl.style, { left: "170px", top: "650px" });
+    subl.innerHTML = `Docker image · <span style="font-family:var(--mono);color:var(--ink)">poliuscorp/fsend</span>`;
+
+    const T = terminal(cam, 1010, 340, 760, 340, "you@vps — zsh");
+    const cmd = line(T.body);
+    line(T.body);
+    const o1 = line(T.body), o2 = line(T.body), o3 = line(T.body);
+    o1.innerHTML = `  <span class="ok">✓</span> pairing  <span class="d">:8080/tcp</span>`;
+    o2.innerHTML = `  <span class="ok">✓</span> relay    <span class="d">:443/udp</span>`;
+    o3.innerHTML = `  <span class="a">●</span> <span class="d">ready</span>`;
+
+    const C = "fsend server", RATE = 0.06;
+    const c0 = api.on("server2", "command") - 0.55;
+    const enter = c0 + C.length * RATE + 0.1;
+    typeCues(api, c0, C, RATE);
+    api.cue("enter", enter, 0.9);
+    api.cue("chime", enter + 0.45, 0.55);
+
+    return function (t) {
+      camera(cam, t, [[0, 1.04, 0, 0], [0, 1.0, 0, 0, 5]]);
+      kin(ebw, t, -0.1, 0.06, 0.5);
+      kin(h1w, t, 0.1, 0.07, 0.55);
+      kin(h2w, t, api.on("server2", "own") - 0.35, 0.07, 0.55);
+      reveal(subl, ramp(t, api.on("server2", "command"), api.on("server2", "command") + 0.5), { dy: 14 });
+      reveal(T.node, ramp(t, -0.1, 0.6), { dy: 50, scale: 0.96 });
+      halo.style.opacity = (0.6 + 0.4 * ramp(t, enter, enter + 0.4)).toFixed(3);
+      setHTML(cmd, `<span class="p">you@vps</span> <span class="f">~ $</span> ${typed(C, t, c0, RATE)}${t < enter && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
+      [o1, o2, o3].forEach((o, i) => reveal(o, ramp(t, enter + 0.15 + i * 0.14, enter + 0.4 + i * 0.14), { dy: 10 }));
+    };
+  }
+
+  /* ====================================================================== *
+   *  OUTRO — the name, one line to install, everywhere it runs
+   * ====================================================================== */
+  function outro(cam, api) {
+    const halo = bloom(cam, 960, 300, 1500, "color-mix(in srgb, var(--brand) 30%, transparent)");
+    const wmWrap = at(cam, 960, 300, "");
+    const wm = wordmark(wmWrap, 860);
+    const tag = at(cam, 960, 470, "sub");
+    tag.textContent = "Private file transfer, straight between two computers.";
+    const inst = at(cam, 960, 610, "install");
+    const IC = "curl -fsSL https://getfsend.alzina.dev | sh";
+    const plats = at(cam, 960, 760, "plats");
+    const P = [["Linux", "linux"], ["macOS", "macos"], ["Windows", "windows"], ["FreeBSD", "freebsd"]].map(([n, k]) => {
+      const p = el("div", "plat", plats, `<svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="3.2" fill="var(--brand)"/></svg>${n}`);
+      return { p, t0: api.on("outro2", k) - 0.1 };
+    });
+    const url = at(cam, 960, 900, "url");
+    url.innerHTML = `github.com/polius/fsend<b>·</b>open source`;
+    const CUR = (a) => `<span style="display:inline-block;width:0.6em;height:1.05em;vertical-align:-0.16em;background:var(--ink);opacity:${a}"></span>`;
     afterFonts(() => {
-      moveTo(chip, 88);
-      moveTo(ttl, 88 + hOf(chip) + 30);
-      moveTo(sub, 88 + hOf(chip) + 30 + hOf(ttl) + 24);
-      nodeBottom = NODE_CY + hOf(node) / 2;
-
-      const lp = [LX, DYC], rp = [RX, DYC];
-      const nbl = [888, nodeBottom + 46], nbr = [1032, nodeBottom + 46];
-
-      const dWire = `M ${lp[0]} ${lp[1]} L ${rp[0]} ${rp[1]}`;
-      const dRelay = `M ${lp[0]} ${lp[1]} L ${nbl[0]} ${nbl[1]} L ${nbr[0]} ${nbr[1]} L ${rp[0]} ${rp[1]}`;
-
-      wire = solidLink(s, dWire, MC, 6);
-      wire.core.style.opacity = 0; wire.glow.style.opacity = 0;
-      wire.core.dataset.len = sampler(dWire).length;
-      fWire = makeFlow(s, sampler(dWire), { n: 3, r: 8, color: MC });
-
-      relay = svg("path", { d: dRelay, fill: "none", stroke: MC, "stroke-width": 6, opacity: 0 }, s);
-      relay.dataset.len = sampler(dRelay).length;
-      const rGlow = svg("path", { d: dRelay, fill: "none", stroke: MC, "stroke-width": 20,
-        opacity: 0 }, s);
-      relay.dataset.glow = "1";
-      relay.glowNode = rGlow;
-      fRelay = makeFlow(s, sampler(dRelay), { n: 3, sealed: true, color: MC, size: 1.15 });
-
-      // the introducer handshake (direct) / the blocked attempt (relay)
-      const hy = DYC - 80;
-      dA = dashLink(s, `M ${lp[0]} ${hy} L ${nbl[0]} ${nbl[1]}`, MC, 4);
-      dB = dashLink(s, `M ${rp[0]} ${hy} L ${nbr[0]} ${nbr[1]}`, MC, 4);
-      dA.setAttribute("opacity", 0); dB.setAttribute("opacity", 0);
-
-      halfA = svg("path", { d: `M ${lp[0]} ${lp[1]} L 932 ${DYC}`, fill: "none",
-        stroke: "var(--red)", "stroke-width": 5, opacity: 0 }, s);
-      halfB = svg("path", { d: `M ${rp[0]} ${rp[1]} L 988 ${DYC}`, fill: "none",
-        stroke: "var(--red)", "stroke-width": 5, opacity: 0 }, s);
-      halfA.dataset.len = Math.hypot(932 - lp[0], 0);
-      halfB.dataset.len = Math.hypot(988 - rp[0], 0);
-      xg = svg("g", { opacity: 0 }, s);
-      svg("circle", { cx: 960, cy: DYC, r: 34, fill: "#1a1110", stroke: "var(--red)",
-        "stroke-width": 3 }, xg);
-      svg("path", { d: `M 945 ${DYC - 15} L 975 ${DYC + 15} M 975 ${DYC - 15} L 945 ${DYC + 15}`,
-        stroke: "var(--red)", "stroke-width": 5, "stroke-linecap": "round" }, xg);
+      setHTML(inst, `<span class="dl">$</span><span>${IC}${CUR(1)}</span>`);
+      inst.style.width = Math.ceil(inst.getBoundingClientRect().width) + "px";
     });
 
-    const setTag = (txt, alpha) => {
-      setText(nodeTag, txt);
-      nodeTag.style.opacity = alpha;
-    };
+    const HIT = api.segStart("outro1") - 0.12;
+    const I0 = api.on("outro2", "install") + 0.15, RATE = 0.028;
+    api.cue("hit", HIT, 1);
+    typeCues(api, I0, IC, RATE, 0.35);
+    P.forEach((p) => api.cue("tick", p.t0 + 0.05, 0.6));
 
     return function (t) {
-      reveal(chip, ramp(t, -0.66, -0.10));
-      reveal(ttl, ramp(t, -0.62, -0.02), { dy: 20 });
-      reveal(sub, ramp(t, -0.55, 0.05), { dy: 16, blur: 9 });
-      const appear = ramp(t, -0.50, 0.08);
-      netSet(0.9 * appear);
-      reveal(devA, appear, { dy: 22 });
-      reveal(devB, appear, { dy: 22 });
-      cl.set(isLocal ? 0 : appear);
-
-      // the middle slot is part of the stage, not an entrance: it is already
-      // there on every slide, so the viewer reads the three routes as the same
-      // picture with one element changing role
-      reveal(node, appear, { dy: 16, scale: 0.98 });
-
-      // the evidence row lands as soon as the route is live — it is what the
-      // slide just proved, and it has to be on screen long enough to read
-      const factAt = { local: api.on("local1", "connects") + 0.95,
-                       direct: api.on("direct1", "connects") + 0.95,
-                       relay: api.on("relay1", "relays") + 0.55 }[mode];
-      facts.forEach((f, i) => reveal(f, ramp(t, factAt + i * 0.22, factAt + 0.55 + i * 0.22),
-        { dy: 18 }));
-
-      let lit = 0;   // how alive the two endpoints are
-
-      if (isLocal) {
-        /* one link, nothing in between ---------------------------------- */
-        const on = api.on("local1", "connects");
-        const linkP = A.easeOutCubic(ramp(t, on - 0.15, on + 0.6));
-        lit = linkP;
-        drawOn(wire, linkP);
-        fWire.update(t, 0.42, ramp(t, on + 0.62, on + 1.05));
-        setText(state, cfg.state);
-        reveal(state, ramp(t, on + 0.7, on + 1.25));
-        // the server card is already on stage — greyed out, unmistakably not
-        // part of the path
-        setTag("unused", 1);
-      }
-
-      if (mode === "direct") {
-        /* pair, connect, let the server leave --------------------------- */
-        const connects = api.on("direct1", "connects");
-        const steps = api.on("direct2", "steps");
-
-        // 1) the introducer: two dashed lines and a very short handshake.
-        //    The lines retire the moment the direct link is up, so only one
-        //    story is ever on screen at a time — but the server card stays, so
-        //    the viewer can see it is still there, just out of the way.
-        const shake = ramp(t, 0.9, 1.5) * (1 - ramp(t, connects - 0.10, connects + 0.55));
-        setTag(t >= steps - 0.10 ? "steps aside" : "pairing", 1);
-        dA.setAttribute("opacity", shake);
-        dB.setAttribute("opacity", shake);
-        if (shake > 0.01) {
-          dA.setAttribute("stroke-dashoffset", (-t * 55).toFixed(1));
-          dB.setAttribute("stroke-dashoffset", (t * 55).toFixed(1));
-        }
-
-        // 2) the direct link — the whole point of the slide
-        const linkP = A.easeOutCubic(ramp(t, connects - 0.15, connects + 0.6));
-        lit = linkP;
-        drawOn(wire, linkP);
-        fWire.update(t, 0.38, ramp(t, connects + 0.65, connects + 1.1));
-        setText(state, cfg.state);
-        reveal(state, ramp(t, connects + 0.7, connects + 1.2));
-      }
-
-      if (mode === "relay") {
-        /* try direct, fail, relay --------------------------------------- */
-        const blocked = api.on("relay1", "blocked");
-        const relays = api.on("relay1", "relays");
-
-        // 1) the direct attempt, and the wall it hits
-        const att = A.easeOutCubic(ramp(t, 0.85, 1.8));
-        const fade = 1 - ramp(t, relays - 0.45, relays + 0.15);
-        if (att > 0) {
-          const la = Number(halfA.dataset.len), lb = Number(halfB.dataset.len);
-          halfA.setAttribute("opacity", att * fade);
-          halfB.setAttribute("opacity", att * fade);
-          halfA.setAttribute("stroke-dasharray", `${la * att} ${la}`);
-          halfB.setAttribute("stroke-dasharray", `${lb * att} ${lb}`);
-        }
-        const stop = ramp(t, blocked - 0.30, blocked + 0.25) * fade;
-        xg.setAttribute("opacity", (stop * (1 + 0.06 * Math.sin(t * 6))).toFixed(3));
-
-        // 2) the relay takes it. The server was on stage all along (on
-        //    standby while the direct attempt is tried), so the hand-off reads
-        //    as the same card changing job.
-        const rel = A.easeOutCubic(ramp(t, relays - 0.20, relays + 0.70));
-        lit = rel;
-        const sealedAt = api.on("relay2", "sealed");
-        setTag(t >= sealedAt - 0.15 ? "ciphertext only"
-                                   : t >= relays - 0.20 ? "relay" : "on standby", 1);
-        cl.set(isLocal ? 0 : Math.max(appear, rel));
-        relay.style.opacity = rel;
-        relay.glowNode.style.opacity = 0.26 * rel;
-        if (rel > 0) {
-          const L = relay.dataset.len;
-          relay.setAttribute("stroke-dasharray", `${L * rel} ${L}`);
-          relay.glowNode.setAttribute("stroke-dasharray", `${L * rel} ${L}`);
-        }
-        fRelay.update(t, 0.26, ramp(t, relays + 0.75, relays + 1.3));
-
-        // 3) the state line: blocked, then sealed
-        const sealed = t >= relays + 0.30;
-        setText(state, sealed ? cfg.state : "direct path blocked");
-        state.style.color = sealed ? "var(--green)" : "var(--red)";
-        reveal(state, Math.max(ramp(t, blocked - 0.05, blocked + 0.40), rel));
-      }
-
-      devA.style.setProperty("--lit", lit.toFixed(3));
-      devB.style.setProperty("--lit", lit.toFixed(3));
+      camera(cam, t, [[0, 1.0, 0, 0], [HIT, 1.04, 0, 0, 8]]);
+      const pin = ramp(t, HIT - 0.25, HIT + 0.05);
+      wm.set(1, 5, t < HIT ? 0 : blink(t - HIT, 1.06));
+      const punch = t > HIT ? Math.exp(-(t - HIT) * 6) * 0.05 : 0;
+      wmWrap.style.opacity = outQuint(pin).toFixed(3);
+      wmWrap.style.transform = `scale(${(lerp(1.35, 1, outExpo(pin)) + punch).toFixed(4)})`;
+      halo.style.opacity = (pin * (0.45 + 0.55 * Math.exp(-Math.max(0, t - HIT) * 1.8))).toFixed(3);
+      reveal(tag, ramp(t, HIT + 0.35, HIT + 0.95), { dy: 20 });
+      reveal(inst, ramp(t, I0 - 0.35, I0 + 0.15), { dy: 26, scale: 0.97 });
+      const done = t > I0 + IC.length * RATE;
+      setHTML(inst, `<span class="dl">$</span><span>${typed(IC, t, I0, RATE)}${CUR(!done || blink(t, 0.9) ? 0.85 : 0)}</span>`);
+      P.forEach(({ p, t0 }) => {
+        const q = ramp(t, t0, t0 + 0.45);
+        reveal(p, q, { dy: 22, scale: 0.92, ease: outBack });
+        p.style.borderColor = `color-mix(in srgb, var(--brand) ${Math.round(60 * Math.exp(-Math.max(0, t - t0) * 1.2) * (q > 0 ? 1 : 0))}%, rgba(255,255,255,0.10))`;
+      });
+      reveal(url, ramp(t, P[3].t0 + 0.6, P[3].t0 + 1.2), { dy: 14 });
     };
   }
 
-  /* ====================================================================== *
-   *  SCENE: cta — self-hosting
-   * ====================================================================== */
-  function cta(layer, api) {
-    const head = atTop(layer, 960, 96, "h2");
-    head.textContent = "Want full control? Run your own.";
-    const sub = atTop(layer, 960, 0, "lead");
-    sub.style.fontSize = "30px";
-    sub.textContent = "the public server is free — no account, no setup";
-
-    // beat 1+2: the public server and the only two things it does. Both roles
-    // are on the card's own baseline, so the server reads as one object with a
-    // short job description rather than two separate claims.
-    const pub = anchor(layer, 960, 444, "card hub pub");
-    pub.innerHTML = `<div class="glyph">${SERVER}</div><div class="name">fsend.alzina.dev</div>
-      <div class="tag">free · no setup</div>`;
-
-    const roles = [
-      ["Pairs two devices", "then gets out of the way"],
-      ["Relays the file", "only when direct is blocked"],
-    ].map(([title, note], i) => {
-      const r = anchor(layer, 960 + (i === 0 ? -272 : 272), 744, "card role");
-      r.style.width = "500px";
-      r.innerHTML = `<div class="rnum">${i + 1}</div><div><div class="rtitle">${title}</div>
-        <div class="rnote">${note}</div></div>`;
-      return r;
-    });
-
-    // beat 3: your own server, in the same slot — the frame is never empty
-    const term = makeTerm(layer, 960, 900, "your server — zsh", [
-      { text: "$ fsend server" },
-      { text: "→ listening on :443", cls: "ok" },
-    ]);
-    moveTo(term.card, 512 - 108);
-    const l2 = term.rows[1].node;
-
-    const cards = [
-      ["Docker image", "poliuscorp/fsend", CONTAINER],
-      ["Self-hosting guide", "docs/self-hosting.md", DOC],
-    ].map(([label, value, icon], i) => {
-      const c = anchor(layer, 960 + (i === 0 ? -270 : 270), 730, "card inforow");
-      c.style.width = "480px";
-      c.innerHTML = `<div class="ic">${icon}</div><div><div class="ilabel">${label}</div>
-        <div class="ivalue mono">${value}</div></div>`;
-      return c;
-    });
-    const foot = anchor(layer, 960, 862, "mono");
-    foot.style.fontSize = "26px";
-    foot.style.color = "var(--dim)";
-    foot.textContent = "github.com/polius/fsend";
-
-    afterFonts(() => moveTo(sub, 96 + hOf(head) + 30));
-
-    return function (t) {
-      reveal(head, ramp(t, -0.62, -0.06));
-      reveal(sub, ramp(t, 0.35, 1.05));
-
-      const r0 = api.segStart("cta3");           // "run your own"
-      const hand = ramp(t, r0 - 0.55, r0 + 0.35); // server -> terminal hand-off
-      const out = 1 - hand;
-
-      reveal(pub, ramp(t, -0.35, 0.45) * out, { dy: 22, scale: 0.97 });
-      // the two roles land on the words that name them
-      reveal(roles[0], ramp(t, api.on("cta2", "pairing") - 0.25, api.on("cta2", "pairing") + 0.45) * out,
-        { dy: 18 });
-      reveal(roles[1], ramp(t, api.on("cta2", "relaying") - 0.25, api.on("cta2", "relaying") + 0.45) * out,
-        { dy: 18 });
-
-      reveal(term.card, ramp(t, r0 + 0.05, r0 + 0.85), { dy: 22 });
-      reveal(term.rows[0].node, ramp(t, r0 + 0.35, r0 + 0.75), { dy: 10, blur: 5 });
-      reveal(l2, ramp(t, api.on("cta3", "control") + 0.05, api.on("cta3", "control") + 0.5),
-        { dy: 10, blur: 5 });
-      // the practical links follow the terminal immediately — the slide has to
-      // be readable, not a race to the next one
-      reveal(cards[0], ramp(t, r0 + 0.95, r0 + 1.55), { dy: 20 });
-      reveal(cards[1], ramp(t, r0 + 1.30, r0 + 1.90), { dy: 20 });
-      reveal(foot, ramp(t, r0 + 1.70, r0 + 2.30));
-    };
-  }
-
-  /* ====================================================================== *
-   *  SCENE: outro — the end card
-   *
-   *  Practical information first (how to get it), then the film's closing
-   *  promise lands with the voice over the same card. No feature list: the
-   *  last thing on screen is the name, the promise and where to find it.
-   * ====================================================================== */
-  function outro(layer, api) {
-    const wm = anchor(layer, 960, 196);
-    const w = A.wordmark(wm, 128);
-    const under = anchor(layer, 960, 276);
-    under.innerHTML = `<div class="underline"></div>`;
-    alignUnderline(wm, under);
-
-    const pill = anchor(layer, 960, 372, "install-pill");
-    pill.innerHTML = `<span class="dot"></span>Easy to install`;
-
-    const label = anchor(layer, 960, 466, "endlabel");
-    label.textContent = "How to install";
-
-    const rows = [
-      ["Linux · macOS · FreeBSD", "curl -fsSL https://getfsend.alzina.dev | sh"],
-      ["macOS (Homebrew)", "brew install polius/tap/fsend"],
-      ["Windows (PowerShell)", "irm https://getfsend.alzina.dev/windows | iex"],
-    ].map(([os, cmd], i) => {
-      const r = anchor(layer, 960, 538 + i * 88, "install-row");
-      r.style.width = "1320px";
-      r.innerHTML = `<span class="os">${os}</span><span class="sep"></span><span class="cmd">${cmd}</span>`;
-      return r;
-    });
-
-    const foot = anchor(layer, 960, 836, "endurl mono");
-    foot.innerHTML = `getfsend.alzina.dev<span class="dot">·</span>github.com/polius/fsend`;
-
-    return function (t) {
-      const name = api.segStart("outro1");       // the wordmark and the name land together
-      const linux = api.on("outro2", "linux");
-      const windows = api.on("outro2", "windows");
-      reveal(wm, ramp(t, -0.62, -0.06));
-      if (w.cursor) w.cursor.style.opacity = Math.floor(t * 2) % 2 === 0 ? 1 : 0.05;
-      under.querySelector(".underline").style.transform =
-        `scaleX(${A.easeOutExpo(ramp(t, -0.45, 0.35)).toFixed(3)})`;
-      // the card composes at a readable pace: badge, section label, then one
-      // row at a time as the voice names the platforms
-      reveal(pill, ramp(t, name + 0.40, name + 1.05), { dy: 16 });
-      reveal(label, ramp(t, name + 1.00, name + 1.60), { dy: 12, blur: 7 });
-      const runs = api.on("outro2", "runs");
-      reveal(rows[0], ramp(t, runs + 0.05, runs + 0.60), { dy: 18 });
-      reveal(rows[1], ramp(t, linux + 0.50, linux + 1.05), { dy: 18 });
-      reveal(rows[2], ramp(t, windows - 0.15, windows + 0.40), { dy: 18 });
-      reveal(foot, ramp(t, windows + 0.55, windows + 1.15));
-    };
-  }
-
-  window.SCENES.brand = brand;
-  window.SCENES.cmd = cmd;
-  window.SCENES.modes = modes;
-  window.SCENES.local = (l, a) => transferScene(l, a, "local");
-  window.SCENES.direct = (l, a) => transferScene(l, a, "direct");
-  window.SCENES.relay = (l, a) => transferScene(l, a, "relay");
-  window.SCENES.cta = cta;
+  window.SCENES.open = open;
+  window.SCENES.demo = demo;
+  window.SCENES.trust = trust;
+  window.SCENES.routes = routes;
+  window.SCENES.server = server;
   window.SCENES.outro = outro;
 })();

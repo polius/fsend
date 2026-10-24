@@ -4,8 +4,9 @@
  * harness calls window.__render(t) once per frame and screenshots the page; no
  * wall-clock animation is ever used, so every frame is reproducible.
  *
- * Scenes register into window.SCENES (see scenes.js). The engine positions each
- * scene in its own layer and cross-dissolves between them.
+ * Scenes register into window.SCENES (see scenes.js). Each gets its own layer
+ * with an inner camera; the engine owns the cuts between layers, the shared
+ * background, the accent colour and the sound-effect cue list.
  */
 (function () {
   const SCENES = (window.SCENES = {});
@@ -13,36 +14,38 @@
   // ---- math / easing ------------------------------------------------------
   const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
   const lerp = (a, b, t) => a + (b - a) * t;
-  const easeOutQuint = (t) => 1 - Math.pow(1 - clamp(t), 5);
-  const easeOutCubic = (t) => 1 - Math.pow(1 - clamp(t), 3);
-  const easeOutExpo = (t) => (t >= 1 ? 1 : 1 - Math.pow(2, -11 * clamp(t)));
-  const easeInOutCubic = (t) => { t = clamp(t); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
-  const easeOutBack = (t, s = 1.5) => { t = clamp(t); return 1 + (s + 1) * Math.pow(t - 1, 3) + s * Math.pow(t - 1, 2); };
   const ramp = (t, a, b) => (b <= a ? (t >= b ? 1 : 0) : clamp((t - a) / (b - a)));
+  const outQuint = (t) => 1 - Math.pow(1 - clamp(t), 5);
+  const outCubic = (t) => 1 - Math.pow(1 - clamp(t), 3);
+  const outExpo = (t) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * clamp(t)));
+  const inCubic = (t) => Math.pow(clamp(t), 3);
+  const inOutCubic = (t) => { t = clamp(t); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+  const inOutSine = (t) => -(Math.cos(Math.PI * clamp(t)) - 1) / 2;
+  const outBack = (t, s = 1.4) => { t = clamp(t); return 1 + (s + 1) * Math.pow(t - 1, 3) + s * Math.pow(t - 1, 2); };
+  // a damped spring settling on 1 — for things that land with a little weight
+  const spring = (t, k = 7, z = 5) => (t <= 0 ? 0 : 1 - Math.exp(-z * t) * Math.cos(k * t));
 
-  const EASE = { outQuint: easeOutQuint, outCubic: easeOutCubic, outExpo: easeOutExpo,
-                 inOutCubic: easeInOutCubic, outBack: easeOutBack, linear: (t) => clamp(t) };
+  // seeded noise, so "random" things are identical on every render
+  function rnd(i) { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
 
-  /* The signature reveal: fade + rise + de-blur (+ optional scale).
-     p is raw progress; `ease` shapes it. Returns p for chaining/conditionals. */
+  /* fade + rise (+ scale, + a short de-blur) from p = 0..1 */
   function reveal(node, p, o = {}) {
     if (!node) return p;
-    const e = (o.ease || easeOutQuint)(p);
-    if (p <= 0) { node.style.opacity = 0; node.style.visibility = "hidden"; return p; }
+    const e = (o.ease || outQuint)(p);
+    if (p <= 0) { node.style.visibility = "hidden"; return p; }
     node.style.visibility = "visible";
-    node.style.opacity = clamp(e);
-    const dy = (o.dy ?? 27) * (1 - e);
-    const dx = (o.dx ?? 0) * (1 - e);
+    node.style.opacity = clamp(e * (o.alpha ?? 1)).toFixed(4);
+    const dy = (o.dy ?? 30) * (1 - e), dx = (o.dx ?? 0) * (1 - e);
     const sc = lerp(o.scale ?? 1, 1, e);
-    node.style.transform = `translate3d(${dx.toFixed(2)}px, ${dy.toFixed(2)}px, 0) scale(${sc.toFixed(4)})`;
-    const bl = (o.blur ?? 13) * (1 - e);
-    node.style.filter = bl > 0.25 ? `blur(${bl.toFixed(2)}px)` : "none";
+    const base = o.base || "";
+    node.style.transform = `${base} translate3d(${dx.toFixed(2)}px, ${dy.toFixed(2)}px, 0) scale(${sc.toFixed(4)})`;
+    const bl = (o.blur ?? 0) * (1 - e);
+    node.style.filter = bl > 0.3 ? `blur(${bl.toFixed(2)}px)` : "none";
     return p;
   }
+  function hide(node) { node.style.visibility = "hidden"; }
 
-  function set(node, p, o = {}) { return reveal(node, p, o); }   // alias, for reading
-
-  // ---- tiny DOM helpers ---------------------------------------------------
+  // ---- DOM helpers ----------------------------------------------------------
   const NS = "http://www.w3.org/2000/svg";
   function el(tag, cls, parent, html) {
     const n = document.createElement(tag);
@@ -57,185 +60,178 @@
     if (parent) parent.appendChild(n);
     return n;
   }
-  function text(parent, x, y, str, cls, opts = {}) {
-    const t = svg("text", { x, y, class: cls, "text-anchor": opts.anchor || "middle",
-                            "dominant-baseline": opts.baseline || "middle" }, parent);
-    t.textContent = str;
-    return t;
+  /* centre-anchored box at (x, y); its own transform stays free for reveal() */
+  function at(parent, x, y, cls, html) {
+    const wrap = el("div", "ctr", parent);
+    wrap.style.left = x + "px"; wrap.style.top = y + "px";
+    return el("div", cls || "", wrap, html);
   }
-  /* an absolutely-positioned, shrink-wrapped box whose *centre* is (x, y) */
-  function box(parent, x, y, cls) {
-    const n = document.createElement("div");
-    n.className = "pos " + (cls || "");
-    n.style.position = "absolute";
-    n.style.left = x + "px";
-    n.style.top = y + "px";
-    n.style.transform = "translate(-50%, -50%)";
-    parent.appendChild(n);
-    return n;
+  const cache = new WeakMap();
+  function setText(node, s) { if (cache.get(node) !== s) { node.textContent = s; cache.set(node, s); } }
+  function setHTML(node, s) { if (cache.get(node) !== s) { node.innerHTML = s; cache.set(node, s); } }
+
+  /* kinetic words: split `text` into masked words. Returns the inner spans. */
+  function words(parent, text, wordCls) {
+    return text.split(" ").map((w, i, all) => {
+      const k = el("span", "kt", parent);
+      const s = el("span", wordCls || "", k);
+      s.textContent = w;
+      if (i < all.length - 1) parent.appendChild(document.createTextNode(" "));
+      return s;
+    });
   }
-  function wordmark(parent, size, opts = {}) {
-    const n = el("span", "wordmark", parent);
-    n.style.fontSize = size + "px";
-    n.innerHTML =
-      `<span class="chev">&gt;</span><span class="name">fsend</span>` +
-      (opts.cursor === false ? "" : `<span class="cur"></span>`);
-    const cur = n.querySelector(".cur");
-    if (cur) cur.style.cssText = `width:${(size * 0.44).toFixed(1)}px;height:${(size * 0.10).toFixed(1)}px`;
-    return { node: n, cursor: cur };
-  }
-
-  // ---- fonts --------------------------------------------------------------
-  // Text metrics are needed for the measured layouts (see scenes.js), so scenes
-  // register a one-shot layout callback that must not run until the real fonts
-  // are in place. The capture harness awaits window.__ready before frame 0.
-  const AFTER_FONTS = [];
-  function afterFonts(fn) { AFTER_FONTS.push(fn); }
-  let fontsSettled = false;
-  function settleFonts() {
-    if (fontsSettled) return;
-    fontsSettled = true;
-    AFTER_FONTS.forEach((fn) => fn());
-  }
-
-  const A = { clamp, lerp, ramp, reveal, set, el, svg, text, box, wordmark, EASE,
-              easeOutQuint, easeOutCubic, easeOutExpo, easeInOutCubic, easeOutBack,
-              afterFonts };
-  window.Toolkit = A;
-
-  // ---- timeline -----------------------------------------------------------
-  let TL = null;
-  function initTimeline(data) {
-    const byId = {};
-    data.segments.forEach((s) => (byId[s.id] = s));
-    TL = { d: data, byId, scenes: data.scenes };
-  }
-
-  function api(scene, layer) {
-    const t0 = scene.start;
-    return Object.assign({
-      tl: TL.d, scene, layer, t0, W: 1920, H: 1080,
-      dur: scene.end - scene.start,
-      rel: (abs) => abs - t0,
-      on: (id, label) => TL.byId[id].onsets[label] - t0,
-      segStart: (id) => TL.byId[id].start - t0,
-      segEnd: (id) => TL.byId[id].end - t0,
-      seg: (id) => TL.byId[id],
-    }, A);
-  }
-
-  // ---- background ---------------------------------------------------------
-  const ACCENTS = { brand: "#e0805a", cmd: "#e0805a", modes: "#e0805a", local: "#7ccb8b",
-                    direct: "#8fb4de", relay: "#e0805a", cta: "#e0805a", outro: "#e0805a" };
-  function hex2rgb(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
-
-  function paintBackground(t) {
-    const bg = document.getElementById("bg");
-    // slow drifting aurora
-    const a = bg.querySelector(".blob.a"), b = bg.querySelector(".blob.b"), g = bg.querySelector(".blob.c");
-    a.style.transform = `translate(${(-260 + 120 * Math.sin(t * 0.11)).toFixed(1)}px, ${(-300 + 90 * Math.cos(t * 0.09)).toFixed(1)}px)`;
-    b.style.transform = `translate(${(660 + 150 * Math.sin(t * 0.07 + 1.4)).toFixed(1)}px, ${(160 + 110 * Math.cos(t * 0.08)).toFixed(1)}px)`;
-    g.style.transform = `translate(${(720 + 130 * Math.sin(t * 0.06 + 3)).toFixed(1)}px, ${(240 + 100 * Math.sin(t * 0.05 + 2)).toFixed(1)}px)`;
-    bg.querySelector(".blob.a").style.opacity = (0.5 + 0.1 * Math.sin(t * 0.13)).toFixed(3);
-  }
-
-  function accentRGB(t) {
-    const sc = TL.scenes;
-    for (let i = 0; i < sc.length; i++) {
-      const s = sc[i];
-      const c = hex2rgb(ACCENTS[s.name] || "#e0805a");
-      if (t < s.end) {
-        const h = 0.46;   // half transition window — matches the dip in render()
-        if (i > 0 && t < s.start + h) {
-          const p = easeInOutCubic(ramp(t, s.start - h, s.start + h));
-          const a = hex2rgb(ACCENTS[sc[i - 1].name] || "#e0805a");
-          return [lerp(a[0], c[0], p), lerp(a[1], c[1], p), lerp(a[2], c[2], p)];
-        }
-        return c;
+  /* rise each word out of its mask, staggered, starting at t0 */
+  function kin(spans, t, t0, stagger = 0.06, dur = 0.55, out = null) {
+    spans.forEach((s, i) => {
+      const p = outQuint(ramp(t, t0 + i * stagger, t0 + i * stagger + dur));
+      let y = (1 - p) * 140, r = (1 - p) * 4;
+      if (out != null) {  // and leave upward
+        const q = inCubic(ramp(t, out + i * stagger * 0.5, out + i * stagger * 0.5 + 0.35));
+        y -= q * 140;
       }
-    }
-    return hex2rgb("#e0805a");
-  }
-
-  // ---- build + render -----------------------------------------------------
-  let built = null;   // { scenes: [...], layers: {...} }
-
-  function build() {
-    const stage = document.getElementById("stage");
-    built = { order: [], layers: {}, renders: {} };
-    TL.scenes.forEach((scene, idx) => {
-      const layer = el("div", "layer", stage);
-      layer.style.zIndex = 10 + idx;
-      const r = SCENES[scene.name](layer, api(scene, layer));
-      built.order.push(scene);
-      built.layers[scene.name] = layer;
-      built.renders[scene.name] = r;
+      s.style.transform = `translateY(${y.toFixed(2)}%) rotate(${r.toFixed(2)}deg)`;
     });
   }
 
-  // Transition: the outgoing scene fades away first, then the incoming one fades
-  // in — a short dip through the shared background. Scenes pre-compose their
-  // *layout* before the boundary (see scenes.js) so the frame that fades in is
-  // already whole, and only narration-timed content animates afterwards.
-  function render(t) {
-    settleFonts();
-    const scenes = built.order;
-    let active = 0;
-    for (let i = 0; i < scenes.length; i++) if (scenes[i].start <= t) active = i;
+  // ---- fonts ------------------------------------------------------------------
+  // measured layouts must wait for real metrics; the harness awaits __ready
+  const AFTER_FONTS = [];
+  let fontsSettled = false;
+  function afterFonts(fn) { AFTER_FONTS.push(fn); }
+  function settleFonts() { if (!fontsSettled) { fontsSettled = true; AFTER_FONTS.forEach((fn) => fn()); } }
 
-    const setAcc = accentRGB(t);
-    const root = document.documentElement.style;
-    root.setProperty("--accent", `rgb(${setAcc.map(Math.round).join(",")})`);
-    root.setProperty("--accent-l", `rgb(${setAcc.map((v) => Math.round(lerp(v, 255, 0.42))).join(",")})`);
-    paintBackground(t);
+  const A = { clamp, lerp, ramp, rnd, outQuint, outCubic, outExpo, inCubic, inOutCubic, inOutSine,
+              outBack, spring, reveal, hide, el, svg, at, setText, setHTML, words, kin, afterFonts };
+  window.Toolkit = A;
 
-    for (let i = 0; i < scenes.length; i++) {
-      const s = scenes[i], layer = built.layers[s.name];
-      const outP = i < scenes.length - 1 ? ramp(t, s.end - 0.44, s.end - 0.06) : 0;
-      const inP = i > 0 ? ramp(t, s.start - 0.06, s.start + 0.48) : 1;
-      const a = (1 - outP) * inP;
-      if (a <= 0.004) { layer.style.opacity = 0; layer.style.visibility = "hidden"; continue; }
-      layer.style.visibility = "visible";
-      layer.style.opacity = a.toFixed(4);
-      const sc = lerp(1, 1.022, outP) * lerp(0.986, 1, inP);
-      const bl = 4 * outP + 4 * (1 - inP);
-      layer.style.transform = `scale(${sc.toFixed(5)})`;
-      layer.style.filter = bl > 0.2 ? `blur(${bl.toFixed(2)}px)` : "none";
-      built.renders[s.name](t - s.start, { world: t, scene: s, index: i });
-    }
+  // ---- timeline, cues, accent ------------------------------------------------
+  let TL = null;
+  const CUES = [];                 // sound effects: { t, type, gain }
+  const ACCENT_KEYS = [];          // { t, rgb }
+  const hex2rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const BRAND = "#e0805a";
 
-    // global fade from/to black
-    const bo = document.getElementById("blackout");
-    const fadeIn = ramp(t, 0, 0.7);
-    const fadeOut = 1 - ramp(t, TL.d.video_end - 1.0, TL.d.video_end - 0.1);
-    bo.style.opacity = (1 - Math.min(fadeIn, fadeOut)).toFixed(4);
+  function api(scene, layer, cam) {
+    const t0 = scene.start;
+    return Object.assign({
+      tl: TL.d, scene, layer, cam, t0, W: 1920, H: 1080,
+      dur: scene.end - scene.start,
+      on: (id, label) => TL.byId[id].onsets[label] - t0,
+      segStart: (id) => TL.byId[id].start - t0,
+      segEnd: (id) => TL.byId[id].end - t0,
+      cue: (type, t, gain = 1) => CUES.push({ t: +(t0 + t).toFixed(3), type, gain }),
+      accent: (t, hex) => ACCENT_KEYS.push({ t: t0 + t, rgb: hex2rgb(hex) }),
+    }, A);
   }
 
-  // ---- capture API --------------------------------------------------------
-  window.__init = function (timelineData) {
-    initTimeline(timelineData);
+  function accentAt(t) {
+    let c = hex2rgb(BRAND);
+    for (const k of ACCENT_KEYS) {
+      if (t < k.t) break;
+      const p = inOutCubic(ramp(t, k.t, k.t + 0.7));
+      c = c.map((v, i) => lerp(v, k.rgb[i], p));
+    }
+    return c;
+  }
+
+  // ---- background ---------------------------------------------------------------
+  const DUST = 34;
+  function paintBackground(t) {
     const bg = document.getElementById("bg");
-    el("div", "blob a", bg); el("div", "blob b", bg); el("div", "blob c", bg);
-    el("div", "glow-floor", bg); el("div", "vignette", bg);
-    const bo = el("div", "", document.getElementById("stage")); bo.id = "blackout";
-    bo.style.cssText = "position:absolute;inset:0;background:#000;z-index:999;pointer-events:none";
+    const g1 = bg.querySelector(".g1"), g2 = bg.querySelector(".g2");
+    g1.style.transform = `translate(${(-420 + 160 * Math.sin(t * 0.13)).toFixed(1)}px, ${(-860 + 120 * Math.cos(t * 0.11)).toFixed(1)}px)`;
+    g2.style.transform = `translate(${(980 + 140 * Math.sin(t * 0.09 + 2)).toFixed(1)}px, ${(-120 + 110 * Math.sin(t * 0.07 + 1)).toFixed(1)}px)`;
+    const grid = bg.querySelector(".grid");
+    grid.style.transform = `rotateX(76deg) translateY(${(-(t * 46) % 120).toFixed(2)}px)`;
+    const dots = bg.querySelector(".dust").children;
+    for (let i = 0; i < dots.length; i++) {
+      const sp = 8 + rnd(i + 3) * 18;
+      const x = rnd(i) * 1920 + 30 * Math.sin(t * 0.3 + i);
+      const y = (((rnd(i + 11) * 1200 - t * sp) % 1200) + 1200) % 1200 - 60;
+      const tw = 0.25 + 0.55 * (0.5 + 0.5 * Math.sin(t * (0.6 + rnd(i + 7)) + i * 2.1));
+      const s = 0.5 + rnd(i + 5) * 1.3;
+      dots[i].style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${s.toFixed(2)})`;
+      dots[i].style.opacity = (tw * 0.55).toFixed(3);
+    }
+  }
+
+  // ---- build + render -----------------------------------------------------------
+  let built = null;
+  const CUT_OUT = 0.32, CUT_IN = 0.5;     // the push-through at every scene change
+
+  function build() {
+    const root = document.getElementById("scenes");
+    built = [];
+    TL.scenes.forEach((scene, idx) => {
+      const layer = el("div", "layer", root);
+      layer.style.zIndex = 10 + idx;
+      const cam = el("div", "cam", layer);
+      ACCENT_KEYS.push({ t: scene.start, rgb: hex2rgb(BRAND) });
+      const render = SCENES[scene.name](cam, api(scene, layer, cam));
+      built.push({ scene, layer, render });
+      if (idx > 0) CUES.push({ t: +(scene.start - 0.28).toFixed(3), type: "whoosh", gain: 1 });
+    });
+    ACCENT_KEYS.sort((a, b) => a.t - b.t);
+    CUES.sort((a, b) => a.t - b.t);
+  }
+
+  function render(t) {
+    settleFonts();
+    const acc = accentAt(t);
+    const rs = document.documentElement.style;
+    rs.setProperty("--accent", `rgb(${acc.map(Math.round).join(",")})`);
+    rs.setProperty("--accent-l", `rgb(${acc.map((v) => Math.round(lerp(v, 255, 0.4))).join(",")})`);
+    paintBackground(t);
+
+    for (let i = 0; i < built.length; i++) {
+      const { scene: s, layer, render: r } = built[i];
+      const last = i === built.length - 1;
+      const outP = last ? 0 : ramp(t, s.end - CUT_OUT, s.end + 0.04);
+      const inP = i === 0 ? 1 : ramp(t, s.start - 0.04, s.start + CUT_IN);
+      // display, not visibility: a revealed child would show through a hidden parent
+      if (outP >= 1 || inP <= 0) { layer.style.display = "none"; continue; }
+      layer.style.display = "";
+      const eo = inCubic(outP), ei = outQuint(inP);
+      layer.style.opacity = ((1 - eo) * ei).toFixed(4);
+      const sc = lerp(1, 1.14, eo) * lerp(0.9, 1, ei);
+      layer.style.transform = `scale(${sc.toFixed(5)})`;
+      const bl = 10 * eo + 8 * (1 - ei);
+      layer.style.filter = bl > 0.4 ? `blur(${bl.toFixed(2)}px)` : "none";
+      r(t - s.start, t);
+    }
+
+    // a light sweep rides every cut
+    const sw = document.getElementById("sweep");
+    let swp = -1;
+    for (let i = 1; i < built.length; i++) {
+      const s0 = built[i].scene.start;
+      if (t > s0 - 0.35 && t < s0 + 0.45) swp = ramp(t, s0 - 0.35, s0 + 0.45);
+    }
+    if (swp >= 0) {
+      sw.style.opacity = Math.sin(Math.PI * swp).toFixed(3);
+      sw.style.transform = `translateX(${lerp(-700, 2300, inOutSine(swp)).toFixed(1)}px) rotate(14deg)`;
+    } else sw.style.opacity = 0;
+
+    const fadeIn = ramp(t, 0, 0.5);
+    const fadeOut = 1 - ramp(t, TL.d.video_end - 1.2, TL.d.video_end - 0.05);
+    document.getElementById("blackout").style.opacity = (1 - Math.min(fadeIn, fadeOut)).toFixed(4);
+  }
+
+  // ---- capture API --------------------------------------------------------------
+  window.__init = function (data) {
+    const byId = {};
+    data.segments.forEach((s) => (byId[s.id] = s));
+    TL = { d: data, byId, scenes: data.scenes };
+    const dust = document.querySelector("#bg .dust");
+    for (let i = 0; i < DUST; i++) el("i", "", dust);
     build();
-    // Force the two faces to load (nothing on the page has used them yet at this
-    // point) and only then let the capture harness start: the measured layouts in
-    // scenes.js depend on real font metrics.
     window.__ready = Promise.all([
-      document.fonts.load('640 104px "Inter"'),
-      document.fonts.load('800 150px "JBMono"'),
+      document.fonts.load('800 132px "Inter"'),
+      document.fonts.load('700 46px "JBMono"'),
     ]).then(() => document.fonts.ready).then(() => true);
   };
   window.__render = render;
+  window.__cues = () => CUES;
   window.__duration = () => (TL ? TL.d.video_end : 0);
-
-  // Lay the README play affordance over the current still (see `capture.py
-  // --poster`). Not part of the video itself.
-  window.__poster = function () {
-    const stage = document.getElementById("stage");
-    const d = document.createElement("div"); d.id = "poster-play";
-    stage.appendChild(d);
-  };
+  window.__poster = function () { el("div", "", document.getElementById("stage")).id = "poster-play"; };
 })();

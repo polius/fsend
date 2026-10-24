@@ -6,3 +6,9 @@ onnxruntime
 kokoro-onnx
 soundfile
 numpy
+
+# Music + sound design (filters, convolution reverb)
+scipy
+
+# Word timestamps for the narration (and a pronunciation check)
+faster-whisper
