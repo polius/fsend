@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"log/slog"
 	"net"
 	"sync"
@@ -34,12 +35,16 @@ type Server struct {
 	tombstone map[Token]tombstoneEntry // recently evicted tokens + reason; janitor expires by age
 
 	// STUN responses are a small (~2x) amplifier off a spoofable source.
-	// A global fixed-window cap bounds the reflector's aggregate output;
-	// it is deliberately NOT per-source, because the source IP is forgeable
-	// and a per-source map would itself be an unbounded-memory vector.
-	stunMu     sync.Mutex
-	stunWindow time.Time
-	stunCount  int
+	// A global fixed-window cap bounds the reflector's aggregate output, and
+	// a per-prefix cap stops one source network from starving everyone of
+	// srflx candidates. The prefix table is fixed-size and keyed by a seeded
+	// hash, so spoofed sources can't grow memory or aim at a victim's slot.
+	stunMu      sync.Mutex
+	stunWindow  time.Time
+	stunCount   int
+	stunSeed    maphash.Seed
+	stunSeeded  bool
+	stunPerSlot [stunPrefixSlots]uint16
 
 	// healthy is true while the read loop is forwarding; it flips false if
 	// Run exits on a real socket error (not a graceful ctx cancel) so the
@@ -95,8 +100,16 @@ const activeWindow = 3 * time.Second
 // stunResponsesPerSec caps aggregate STUN binding replies. A few dozen
 // small packets per pairing is plenty for ICE gathering, so this leaves
 // real clients ample headroom while keeping the reflector's contribution
-// to any amplification attack negligible (~40 KB/s of responses).
-const stunResponsesPerSec = 1000
+// to any amplification attack negligible (~160 KB/s of responses).
+const stunResponsesPerSec = 4000
+
+// stunPerPrefixPerSec caps replies per source /24 (IPv4) or /48 (IPv6),
+// counted in stunPrefixSlots hashed buckets. Generous for a busy NAT, yet
+// one network alone can't reach the global cap.
+const (
+	stunPerPrefixPerSec = 100
+	stunPrefixSlots     = 4096
+)
 
 // tombstoneEntry records why an allocation was evicted, with the
 // monotonic-ish unix-nanos timestamp the janitor uses to expire it.
@@ -412,8 +425,8 @@ func (s *Server) handleSTUN(datagram []byte, src *net.UDPAddr) {
 	if !stun.IsMessage(datagram) {
 		return
 	}
-	if !s.allowSTUNResponse(time.Now()) {
-		return // aggregate cap hit; drop silently (ICE clients retry/fall back)
+	if !s.allowSTUNResponse(time.Now(), src.IP) {
+		return // cap hit; drop silently (ICE clients retry/fall back)
 	}
 	req := &stun.Message{Raw: datagram}
 	if err := req.Decode(); err != nil || req.Type != stun.BindingRequest {
@@ -430,22 +443,38 @@ func (s *Server) handleSTUN(datagram []byte, src *net.UDPAddr) {
 	}
 }
 
-// allowSTUNResponse reports whether a STUN reply may be sent, enforcing a
-// global fixed-window rate cap. Cheap (one mutex, two fields) and holds no
-// per-source state, so it can't be turned into a memory-exhaustion vector
-// by source spoofing.
-func (s *Server) allowSTUNResponse(now time.Time) bool {
+// allowSTUNResponse reports whether a STUN reply to ip may be sent,
+// enforcing the per-prefix and global one-second windows. Fixed memory.
+func (s *Server) allowSTUNResponse(now time.Time, ip net.IP) bool {
 	s.stunMu.Lock()
 	defer s.stunMu.Unlock()
+	if !s.stunSeeded {
+		s.stunSeed, s.stunSeeded = maphash.MakeSeed(), true
+	}
 	if now.Sub(s.stunWindow) >= time.Second {
 		s.stunWindow = now
 		s.stunCount = 0
+		clear(s.stunPerSlot[:])
 	}
-	if s.stunCount >= stunResponsesPerSec {
+	slot := &s.stunPerSlot[maphash.Bytes(s.stunSeed, stunPrefix(ip))%stunPrefixSlots]
+	if s.stunCount >= stunResponsesPerSec || *slot >= stunPerPrefixPerSec {
 		return false
 	}
 	s.stunCount++
+	*slot++
 	return true
+}
+
+// stunPrefix is the source network a STUN reply is charged to: the /24 for
+// IPv4, the /48 for IPv6.
+func stunPrefix(ip net.IP) []byte {
+	if v4 := ip.To4(); v4 != nil {
+		return v4[:3]
+	}
+	if len(ip) == net.IPv6len {
+		return ip[:6]
+	}
+	return ip
 }
 
 func (s *Server) evict(t Token, reason string) {

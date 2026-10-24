@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -527,19 +528,49 @@ func TestAllowSTUNResponse_RateCap(t *testing.T) {
 	s := &Server{}
 	base := time.Unix(1700000000, 0)
 
-	// The whole per-second budget is allowed.
-	for i := 0; i < stunResponsesPerSec; i++ {
-		if !s.allowSTUNResponse(base) {
-			t.Fatalf("response %d denied within budget", i)
+	// The whole global budget is allowed when spread across networks. Hash
+	// collisions only tighten a slot, so stay well under per-slot capacity.
+	allowed := 0
+	for i := 0; allowed < stunResponsesPerSec && i < 4*stunResponsesPerSec; i++ {
+		if s.allowSTUNResponse(base, net.IPv4(10, byte(i>>8), byte(i), 1)) {
+			allowed++
 		}
 	}
-	// One more in the same window is denied.
-	if s.allowSTUNResponse(base) {
+	if allowed != stunResponsesPerSec {
+		t.Fatalf("allowed %d, want the full global budget %d", allowed, stunResponsesPerSec)
+	}
+	// One more in the same window is denied, even from a fresh network.
+	if s.allowSTUNResponse(base, net.IPv4(192, 0, 2, 1)) {
 		t.Fatal("expected denial after budget exhausted")
 	}
 	// A new one-second window resets the budget.
-	if !s.allowSTUNResponse(base.Add(time.Second)) {
+	if !s.allowSTUNResponse(base.Add(time.Second), net.IPv4(192, 0, 2, 1)) {
 		t.Fatal("expected allow after window rollover")
+	}
+}
+
+// One network can't starve others: its /24 (or /48) hits the per-prefix cap
+// while a different network is still answered.
+func TestAllowSTUNResponse_PerPrefixCap(t *testing.T) {
+	s := &Server{}
+	base := time.Unix(1700000000, 0)
+	for _, attacker := range []func(i int) net.IP{
+		func(i int) net.IP { return net.IPv4(203, 0, 113, byte(i)) },
+		func(i int) net.IP { return net.ParseIP(fmt.Sprintf("2001:db8:1::%x", i+1)) },
+	} {
+		s.stunWindow = time.Time{}
+		allowed := 0
+		for i := range 3 * stunPerPrefixPerSec {
+			if s.allowSTUNResponse(base, attacker(i)) {
+				allowed++
+			}
+		}
+		if allowed != stunPerPrefixPerSec {
+			t.Errorf("one prefix got %d replies, want %d", allowed, stunPerPrefixPerSec)
+		}
+		if !s.allowSTUNResponse(base, net.IPv4(198, 51, 100, 7)) {
+			t.Error("another network must still be answered")
+		}
 	}
 }
 
