@@ -1,19 +1,28 @@
 version: 2
 updates:
+  # cooldown: a new release waits a week before Dependabot proposes it, so a
+  # hijacked publish is usually caught and yanked before it reaches main.
+  # Security updates are not delayed.
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "daily"
+    cooldown:
+      default-days: 7
     groups:
       go-minor-and-patch:
         update-types:
           - "minor"
           - "patch"
 
+  # Never auto-merged (dependabot-automerge.yml): actions run with the
+  # workflow's token.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       actions-minor-and-patch:
         update-types:
