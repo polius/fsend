@@ -125,7 +125,7 @@ fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as ta
 <p align="center">
   <a href="https://getfsend.alzina.dev/video.mp4">
     <img src="docs/assets/video-poster.png"
-      alt="Watch the fsend video — a 90-second walkthrough of how it works">
+      alt="Watch the fsend video — a one-minute walkthrough of how it works">
   </a>
 </p>
 
