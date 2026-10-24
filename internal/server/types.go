@@ -101,13 +101,21 @@ type RelayAllocateRequest struct {
 // BudgetExhausted is set when the relay's daily byte budget is already
 // spent. Like ForwardingDisabled it lets the client fail fast with a
 // specific reason instead of dialing a slot that can't forward.
+//
+// TCPFallback is set when the relay also accepts peers over a WebSocket at
+// GET /v1/relay/ws, for networks that block UDP. Older servers omit it.
 type RelayAllocateResponse struct {
 	RelayAddr          string `json:"relay_addr"`
 	SessionToken       string `json:"session_token"` // Crockford-base32 encoded 16 bytes
 	TTLSeconds         int    `json:"ttl_seconds"`
 	ForwardingDisabled bool   `json:"forwarding_disabled,omitempty"`
 	BudgetExhausted    bool   `json:"budget_exhausted,omitempty"`
+	TCPFallback        bool   `json:"tcp_fallback,omitempty"`
 }
+
+// RelayAddrHeader carries the relay's UDP address on the response to the
+// unauthenticated /v1/relay/ws probe, so `fsend doctor` can test UDP to it.
+const RelayAddrHeader = "X-Fsend-Relay-Addr"
 
 // HealthResponse is the body of GET /health. Deliberately minimal: a
 // pure liveness signal (plus the 200/503 status code) with no version or

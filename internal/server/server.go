@@ -228,6 +228,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("DELETE /v1/session/{id}", s.deleteSession)
 	m.HandleFunc("POST /v1/relay/allocate", s.allocateRelay)
 	m.HandleFunc("GET /v1/relay/status", s.relayStatus)
+	m.HandleFunc("GET /v1/relay/ws", s.relayWebSocket)
 	// /health is the legacy combined probe (kept for existing monitors and
 	// the documented Docker HEALTHCHECK); /healthz is pure liveness (always
 	// 200 — the process is up); /readyz is readiness (503 while a wired
@@ -279,13 +280,15 @@ func (s *Server) accessLog(inner http.Handler) http.Handler {
 }
 
 // statusRecorder captures the status and byte count of a response for the
-// access log. The server's handlers use no optional ResponseWriter interfaces
-// (Flusher/Hijacker), so a plain embed is enough.
+// access log. Unwrap exposes the underlying writer's optional interfaces
+// (the relay's WebSocket upgrade needs Hijacker).
 type statusRecorder struct {
 	http.ResponseWriter
 	status  int
 	written int
 }
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *statusRecorder) WriteHeader(code int) {
 	if r.status == 0 {
@@ -431,6 +434,7 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 		SessionToken:       relayTok.String(),
 		TTLSeconds:         int(s.cfg.PairedTTL.Seconds()),
 		ForwardingDisabled: !s.relayAllocator.Forwarding(),
+		TCPFallback:        s.relayTCPFallback() != nil,
 	})
 }
 
