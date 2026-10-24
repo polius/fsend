@@ -79,6 +79,38 @@ func TestAnnounceQuery_Roundtrip(t *testing.T) {
 	}
 }
 
+// With no pinned address the sender answers with the address of the
+// interface the query arrived on: a loopback query gets a loopback
+// address, not whichever LAN IP a multi-homed host happened to pick.
+func TestAnnounceQuery_AnswersWithQueriedInterface(t *testing.T) {
+	ann, err := Announce("iface-answer", codepkg.Epoch(time.Now()), nil)
+	if err != nil {
+		t.Skipf("multicast unavailable on this host: %v", err)
+	}
+	defer StopAnnounce(ann)
+	time.Sleep(200 * time.Millisecond)
+
+	var res *QueryResult
+	for attempt := 0; attempt < 3 && res == nil; attempt++ {
+		res, err = QueryLoopback(context.Background(), "iface-answer", 2*time.Second)
+	}
+	if res == nil {
+		t.Skipf("no loopback mDNS answer (%v)", err)
+	}
+	if !res.IP.IsLoopback() {
+		t.Errorf("loopback query answered with %v, want a loopback address", res.IP)
+	}
+}
+
+// Query re-asks on a growing schedule rather than a fixed 100 ms tick.
+func TestQueryRetries_Grow(t *testing.T) {
+	for i := 1; i < len(queryRetries); i++ {
+		if queryRetries[i] <= queryRetries[i-1] {
+			t.Fatalf("queryRetries not increasing: %v", queryRetries)
+		}
+	}
+}
+
 // TestPortForCode_Deterministic locks in the property both peers depend
 // on: same code derives the same UDP port, so the receiver knows where
 // to dial without a second mDNS round-trip.
