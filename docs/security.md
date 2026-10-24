@@ -78,12 +78,14 @@ doing that job, it observes very little:
 
 Effectively nothing:
 
-- **No access log, no per-transfer line.** The default log level emits
-  only lifecycle events — startup, shutdown, and errors.
-- **No IPs in the logs** at the default level, and share codes never
-  reach the server at all. (`FSEND_LOG_LEVEL=debug` logs IPs and session
-  slots for troubleshooting — don't run a privacy-sensitive server at
-  debug level.)
+- **No per-transfer line.** The default log level emits lifecycle events
+  (startup, shutdown, errors) and one line per *failed* request, naming
+  only the method, route pattern (e.g. `/v1/session/{slot}/join`), and
+  status.
+- **No IPs or slots in the logs** at the default level, and share codes
+  never reach the server at all. (`FSEND_LOG_LEVEL=debug` adds the client
+  IP and the request path, which carries the slot, for troubleshooting —
+  don't run a privacy-sensitive server at debug level.)
 - **No database, no persistence.** Pairing state lives only in RAM. It
   evicts within an hour at most — ten minutes once a transfer has paired
   — and is gone for good on restart.

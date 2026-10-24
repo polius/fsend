@@ -155,8 +155,9 @@ or with the wrong one — fails with `E028`.
 
 - **Logs.** `docker compose logs -f fsend` for the server,
   `docker compose logs -f caddy` for TLS and the proxy. The default log
-  level (`info`) records only lifecycle events — no per-transfer lines, no
-  IPs, no share codes.
+  level (`info`) records lifecycle events and one route-only line per
+  failed request — no per-transfer lines, no IPs, no slots, no share codes.
+  `FSEND_LOG_LEVEL=debug` adds IPs and request paths.
 - **Update.** `docker compose pull && docker compose up -d`. The image
   tracks the floating `poliuscorp/fsend:latest` tag; pin a version tag if
   you want immutable, reproducible upgrades. On stop the server drains

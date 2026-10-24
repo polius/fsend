@@ -242,7 +242,7 @@ func (s *Server) Handler() http.Handler {
 	if s.cfg.ServerPassword != "" {
 		h = s.withServerAuth(h)
 	}
-	h = s.accessLog(h)
+	h = s.accessLog(m, h)
 	return withSecurityHeaders(h)
 }
 
@@ -262,7 +262,10 @@ func withSecurityHeaders(next http.Handler) http.Handler {
 // accessLog emits one structured line per request. Failures (4xx/5xx) log at
 // info so an operator gets an audit trail out of the box; successes log at
 // debug so a busy public server isn't drowned at the default level.
-func (s *Server) accessLog(inner http.Handler) http.Handler {
+//
+// Privacy: the default level records only the route pattern. The raw path
+// (it carries the slot or session ID) and the client IP are debug-only.
+func (s *Server) accessLog(mux *http.ServeMux, inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w}
@@ -271,10 +274,20 @@ func (s *Server) accessLog(inner http.Handler) http.Handler {
 		if rec.status >= http.StatusBadRequest {
 			level = slog.LevelInfo
 		}
-		s.cfg.Logger.Log(r.Context(), level, "http request",
-			"method", r.Method, "path", r.URL.Path, "status", rec.status,
-			"bytes", rec.written, "duration_ms", time.Since(start).Milliseconds(),
-			"ip", clientIP(r))
+		ctx := r.Context()
+		if !s.cfg.Logger.Enabled(ctx, level) {
+			return
+		}
+		route := r.Pattern
+		if route == "" { // a gate answered before the mux ran
+			_, route = mux.Handler(r)
+		}
+		attrs := []any{"method", r.Method, "route", route, "status", rec.status,
+			"bytes", rec.written, "duration_ms", time.Since(start).Milliseconds()}
+		if s.cfg.Logger.Enabled(ctx, slog.LevelDebug) {
+			attrs = append(attrs, "path", r.URL.Path, "ip", clientIP(r))
+		}
+		s.cfg.Logger.Log(ctx, level, "http request", attrs...)
 	})
 }
 
