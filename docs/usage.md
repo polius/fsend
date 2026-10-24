@@ -318,23 +318,28 @@ never trigger it) or `--quiet` is set, and can be turned off entirely with
 
 ## `fsend doctor`
 
-A read-only diagnostic covering what a transfer depends on. Always exits
-0 — every degraded check has a graceful fallback, and the point is to
-show which one will kick in:
+A read-only diagnostic covering what a transfer depends on. Every
+degraded check has a graceful fallback, and the report shows which one
+will kick in. Exits `0` when every check passes and `43` (`E043`) when
+any is degraded, so scripts can gate on it:
 
 ```text
 $ fsend doctor
-[✓] config   server fsend.alzina.dev:443 (default)
-[✓] server   reachable in 84ms
-[✓] network  LAN address 192.168.1.23
-[✓] mDNS     roundtrip ok in 2ms
-[✓] mDNS     LAN answer from 192.168.1.23 in 3ms — discovering other devices on this network works
+[OK] config   server fsend.alzina.dev:443 (default)
+[OK] server   reachable in 84ms
+[OK] UDP      relay fsend.alzina.dev:443 answered in 31ms
+[OK] TCP      relay fallback over HTTPS works (echo in 90ms)
+[OK] network  LAN address 192.168.1.23
+[OK] mDNS     local roundtrip ok in 2ms
+[OK] mDNS     answered on the LAN in 3ms
 ```
 
 | Check | Meaning |
 |---|---|
 | `config` | Which pairing server is configured (custom vs default; the server password is never printed). |
 | `server` | HTTPS reachability of that server's `/health`. Unreachable → cross-network transfers fail, LAN transfers are unaffected. |
+| `UDP` | The server's relay answers a STUN request over UDP. No reply → the network blocks UDP, and relayed transfers need the TCP fallback. |
+| `TCP` | The relay's TCP fallback (a WebSocket on the server's HTTPS port) echoes a message. Used automatically when UDP is blocked. |
 | `network` | The local LAN address fsend would announce. VPN/container interfaces are skipped. |
 | `mDNS` (roundtrip) | fsend's mDNS machinery tested over loopback — deterministic, the OS cannot filter it. A miss here means LAN discovery is unavailable entirely. |
 | `mDNS` (LAN answer) | Multicast across the physical interface. Blocked → discovering *other* devices falls back to the pairing server (transfers still complete; same-device transfers keep working). |
@@ -415,6 +420,7 @@ failure. For what to *do* about a given error, see
 | `40`  | `E040` — `fsend --update` as root; opt in with `FSEND_ALLOW_ROOT=1` on single-user machines (containers). |
 | `41`  | `E041` — `fsend --update` from a development build; there is no release to compare against. Install a release build. |
 | `42`  | `E042` — the network blocks UDP and the relay's TCP fallback failed too (or the server doesn't offer it). |
+| `43`  | `E043` — `fsend doctor` found at least one degraded check. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 | `141` | The output pipe closed early (e.g. `fsend <code> --out - \| head`). Shell convention (128+SIGPIPE); nothing is printed. |
