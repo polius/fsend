@@ -35,6 +35,10 @@ func TestSignal_SenderSIGINTMidTransfer(t *testing.T) {
 	// Launch the receiver in a goroutine; interrupt the sender mid-flow.
 	rCmd := h.fsendCmd(xdg, "--yes", code)
 	rCmd.Dir = dst
+	// If the sender's cancel close is lost under load, the receiver only
+	// learns from its idle timeout; the 30 s default plus retries and a
+	// re-discovery round can outlast the 60 s bound below.
+	rCmd.Env = append(rCmd.Env, "FSEND_QUIC_IDLE_TIMEOUT=2s")
 	var rOut, rErr bytes.Buffer
 	rCmd.Stdout = &rOut
 	rCmd.Stderr = &rErr
@@ -349,6 +353,18 @@ func waitForSidecarSize(dir string, minBytes int64, budget time.Duration) bool {
 }
 
 // waitForStderr polls a sender's stderr for substr within budget.
+// waitForResumeKey polls for the receiver's saved resume key under xdg.
+func waitForResumeKey(xdg string, budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if matches, _ := filepath.Glob(filepath.Join(xdg, "fsend", "resume", "*")); len(matches) > 0 {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return false
+}
+
 func waitForStderr(s *senderProc, substr string, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
@@ -403,6 +419,11 @@ func TestSignal_ReceiverKilledCodeStaysLive(t *testing.T) {
 	}
 	if !waitForStderr(s, "Receiver connected", 10*time.Second) {
 		t.Fatalf("receiver never paired\n--- sender stderr ---\n%s", s.stderr.String())
+	}
+	// The sender logs the pairing before the receiver saves its resume key;
+	// a kill in between leaves the rerun only the spent code (E003).
+	if !waitForResumeKey(xdg, 5*time.Second) {
+		t.Fatalf("receiver never saved a resume key\n%s", r1Err.String())
 	}
 	if err := r1.Process.Kill(); err != nil {
 		t.Fatalf("kill recv1: %v", err)
