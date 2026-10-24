@@ -145,7 +145,9 @@ func scalarMult(priv *ecdh.PrivateKey, u []byte) ([]byte, error) {
 }
 
 // calculateGenerator hashes the generator string and maps it to a curve
-// point with Elligator2 (RFC 9380, Z = 2).
+// point with Elligator2 (RFC 9380, Z = 2). SHA-512 is the suite's mandated
+// hash-to-curve step, not password storage: a PAKE run leaks nothing to
+// test guesses against offline, so a slow KDF would add no protection.
 func calculateGenerator(prs, ci, sid []byte) []byte {
 	sum := sha512.Sum512(generatorString(prs, ci, sid))
 	return elligator2(sum[:ShareSize])

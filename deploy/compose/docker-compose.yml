@@ -1,7 +1,8 @@
 # Self-hosted fsend pairing + relay server.
 #
 # Open inbound: TCP/80 (ACME), TCP/443 (HTTPS), UDP/443 (relay).
-# Also needs: a domain pointing at the host, and Docker Compose v2.
+# Also needs: a domain pointing at the host, and Docker Compose v2 (or the
+# legacy docker-compose 1.27+).
 #
 # Usage:   export FSEND_DOMAIN=<your-domain-or-subdomain>   # e.g. fsend.alzina.dev
 #          docker compose up -d

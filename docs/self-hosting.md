@@ -38,7 +38,7 @@ deploys it with Docker Compose, behind Caddy for automatic TLS.
 You'll need:
 
 - A publicly reachable host (a public IP) with **Docker** and **Docker
-  Compose v2**.
+  Compose v2** (the legacy `docker-compose` 1.27 or later also works).
 - A domain or subdomain you control, with an `A` record pointing at that
   host — e.g. `fs.example.com`. Add an `AAAA` record only if Docker itself
   has IPv6 enabled (`"ipv6": true` and `"ip6tables": true` in
