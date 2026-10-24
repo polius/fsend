@@ -370,9 +370,11 @@ var catalog = map[error]Entry{
 	ErrWrongPassword: {
 		Code: "E021", Exit: 21,
 		Message: "Wrong password. Transfer aborted.",
-		Action: "Ask the sender for the correct password and run again. Codes are\n" +
-			"  one-shot — the sender may need to restart to issue a fresh code.",
-		SenderMessage: "The receiver entered the wrong password. Transfer aborted.",
+		// The sender keeps the code alive for a few more rounds, so a
+		// rerun with the right password usually still works.
+		Action: "Check the password with the sender, then run the same command\n" +
+			"  again while their fsend is still waiting.",
+		SenderMessage: "The receiver entered the wrong password too many times. Transfer aborted.",
 		SenderAction: "Run fsend again to issue a fresh code, and re-share the\n" +
 			"  password with the receiver.",
 	},

@@ -60,14 +60,17 @@ below is detail.
 fsend [file|dir]... [flags]
 ```
 
-Share the code (`abc-defg-jkm`) with the receiver. Piped stdin is sent
-without a positional argument.
+Share the code (`abc-defg-jkm`) with the receiver. Piped stdin (a pipe or
+a non-empty redirected file) is sent without a positional argument; an
+empty or `/dev/null` stdin shows help instead. When stdout isn't a
+terminal, the bare code is also printed there (`code=$(fsend f)`).
 
 | Flag | Purpose |
 |---|---|
 | `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. To keep it: `fsend <code> > note.txt`. |
-| `--password[=<password>]` | Require the receiver to supply this password. Bare `--password` prompts interactively with a random default; supply it inline as `--password=<password>`. Also `FSEND_PASSWORD`. |
+| `--password[=<password>]` | Require the receiver to supply this password. Bare `--password` prompts interactively with a random four-word default; supply it inline as `--password=<password>`. Also `FSEND_PASSWORD`. |
 | `--exclude <glob,…>` | Skip entries when bundling a directory. |
+| `--as <name>` | File name the receiver saves a piped stream as (`pg_dump db \| fsend --as db.sql`). Default: `fsend-stdin-<random>`. |
 | `--preview` | List what would be sent as CSV (`path,size`) and exit — no code, no transfer. Redirect with `> files.csv` to inspect. |
 
 ```sh
@@ -103,12 +106,17 @@ fsend <code> [flags]
 ```
 
 By default the receiver sees the sender's hostname and what they're
-sending, then confirms. Pass `--yes` to skip.
+sending, then confirms. Pass `--yes` to skip. Codes are forgiving: any
+case, spaces or underscores for hyphens (`abc defg jkm`), no hyphens at
+all (`abcdefgjkm`) and a trailing full stop all work — unless a file by
+that exact name exists, which is sent instead. To keep the code out of the
+process list on a shared machine, use `FSEND_CODE=abc-defg-jkm fsend`, or
+`fsend --receive` to be asked for it.
 
 | Flag | Purpose |
 |---|---|
-| `--yes` | Auto-accept. |
-| `--out <dir>` | Receive into this directory (created if missing, like `mkdir -p`). Default: cwd. |
+| `-y`, `--yes` | Auto-accept. |
+| `-o`, `--out <dir>` | Receive into this directory (created if missing, like `mkdir -p`). Default: cwd. |
 | `--out -` | Stream the payload to stdout instead of saving a file (single file, text, or piped stream — not directories). Retries are disabled: emitted bytes can't be rewound. |
 | `--overwrite` | Replace existing files whose contents **differ**. Without it they're kept and the receiver exits `E013`. (Identical files are skipped either way.) |
 | `--manifest <file>` | After receiving, write a CSV record (`path,size,status,sha256`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `kept` / `resumed`) and the SHA-256 of the content written (empty when no bytes moved this run, e.g. identical or kept files). |
@@ -127,9 +135,11 @@ FSEND_PASSWORD=swordfish fsend --yes abc-defg-jkm
 When the sender required a password and the receiver didn't supply one,
 the receiver is prompted interactively and gets **3 attempts**. A wrong
 password supplied non-interactively (`--password=<password>` or
-`FSEND_PASSWORD`) aborts the transfer **on the first try** and burns the
-code — with no human present to retry, failing fast beats hanging a
-script. The sender has to run again for a fresh code.
+`FSEND_PASSWORD`) aborts the attempt **on the first try** — with no human
+present to retry, failing fast beats hanging a script. The sender keeps
+the code alive with a warning, so the receiver can rerun the same command
+with the right password; after three such rounds the sender gives up and a
+fresh code is needed.
 
 ### When a file already exists
 
@@ -270,7 +280,13 @@ fsend --connect fs.example.com:443           # persisted
 fsend --connect fs.example.com:443,mySecret  # password-gated server
 fsend --connect default                      # back to the public default
 fsend --connect                              # show current
+fsend --connect http://10.0.0.5:8080         # plain HTTP (LAN-only server)
+fsend report.pdf --server fs.example.com     # this run only, not saved
 ```
+
+Without a scheme the server is reached over HTTPS (port 443 by default;
+plain HTTP for `localhost`). `--server` and `FSEND_SERVER` take the same
+forms but never touch the config file — handy in CI.
 
 Config is at `~/.config/fsend/config.json` (Linux),
 `~/Library/Application Support/fsend/config.json` (macOS), or
@@ -282,8 +298,9 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | Flag | Purpose |
 |---|---|
 | `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
-| `--name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming from …` line, the receiver's name in the sender's `Receiver connected` line. |
-| `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
+| `--device-name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming from …` line, the receiver's name in the sender's `… accepted` and summary lines. (`--name` still works.) |
+| `--server <host[:port]>` | Use this pairing server for this run only; the config file is untouched. Also `FSEND_SERVER`. |
+| `-q`, `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
 | `--update --check` | Report whether a newer release exists — printing the same hint as the once-a-day notice, with the release-notes link — and exit without installing. Exits 0 either way. |
@@ -299,6 +316,11 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | `FSEND_PASSWORD_FILE` | `--password` | Read the transfer password from this file (trailing newline trimmed). Used only when `FSEND_PASSWORD` is unset; keeps the secret out of both argv and the environment. |
 | `FSEND_SERVER_PASSWORD` | `--connect <host:port>,<password>` | Shared secret for a self-hosted pairing server. |
 | `FSEND_SERVER_PASSWORD_FILE` | `--connect <host:port>,<password>` | Read the server password from this file instead. Used only when `FSEND_SERVER_PASSWORD` is unset. |
+| `FSEND_CODE` | `fsend <code>` | The code to receive, kept out of `ps` on shared machines. Used when no path or code is given (`FSEND_CODE=… fsend`), and by bare `--receive`. |
+| `FSEND_SERVER` | `--server` | Pairing server for this run, without saving it. |
+| `FSEND_THEME` | — | `light` or `dark`: tune colors to your terminal background. Unset, fsend uses colors that read on both. |
+| `FSEND_PLAIN` | — | Set to `1` for plain output — no colors, animation or Unicode symbols, one line per update — for screen readers and logs. Automatic when the locale isn't UTF-8. |
+| `FSEND_NO_NOTIFY` | — | Set to `1` to silence the bell and desktop notification fsend sends when a transfer that took 10 s or more succeeds. |
 | `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
 | `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
 | `NO_COLOR` | — | Set to any non-empty value to disable ANSI colors ([no-color.org](https://no-color.org)). |
@@ -307,8 +329,9 @@ Config is at `~/.config/fsend/config.json` (Linux),
 
 Flags always win when both are set.
 
-After a successful transfer, fsend checks GitHub at most once a day for a
-newer release and, if one exists, prints a one-line hint with the release
+While a transfer runs, fsend checks GitHub in the background at most once a
+day for a newer release (never delaying the exit) and, if one exists, prints
+a one-line hint after the summary with the release
 link so you can see what changed — and the command that actually works for
 this install (`brew upgrade fsend` on a Homebrew-managed binary, instead of
 an `fsend --update` that would only refuse with [E039](#exit-codes)). The
@@ -380,19 +403,19 @@ failure. For what to *do* about a given error, see
 
 | Code  | When it happens |
 |-------|-----------------|
-| `0`   | Success (or non-fatal warning, e.g. `E016` config corrupted). |
+| `0`   | Success (or non-fatal warning, e.g. `E016` config corrupted) — or your own "no" at a prompt: declining a transfer (`E006` on the receiver), keeping your local copies at the overwrite prompt (`E013`), answering `n` to `--uninstall`. The line still names the code; only the exit is 0. |
 | `1`   | `E001` — server unreachable. |
 | `2`   | `E002` — code not found. |
 | `3`   | `E003` — code already claimed by another receiver. |
 | `4`   | `E004` — invalid code format. |
-| `6`   | `E006` — receiver declined the transfer. |
+| `6`   | `E006` — the receiver declined the transfer (sender side). |
 | `7`   | `E007` — code timed out before anyone received. |
 | `8`   | `E008` — disk full. |
 | `9`   | `E009` — could not write the target file. |
 | `10`  | `E010` — could not read the source file. |
 | `11`  | `E011` — file arrived corrupted; hash didn't match. |
 | `12`  | `E012` — path traversal rejected. |
-| `13`  | `E013` — one or more files differed and were kept (transfer otherwise completed); use `--overwrite` to replace them. |
+| `13`  | `E013` — one or more files differed and were kept without being asked (`--yes`, no terminal; transfer otherwise completed); use `--overwrite` to replace them. |
 | `14`  | `E014` — could not reach the other side, even via the fallback relay. |
 | `15`  | `E015` — the two sides couldn't agree how to transfer (protocol mismatch). |
 | `17`  | `E017` — rate limited. |

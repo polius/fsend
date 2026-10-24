@@ -13,8 +13,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/connpath"
@@ -86,6 +88,7 @@ func runSend(f *flags, paths []string) error {
 		return fmt.Errorf("generating code: %w", err)
 	}
 	cfg := loadConfig(f.quiet)
+	startUpdateCheck(f)
 
 	waitSpin := printSendArtifact(f, c, plan)
 	return runSendParallel(ctx, f, plan, c, cfg, waitSpin)
@@ -95,9 +98,19 @@ func runSend(f *flags, paths []string) error {
 // recursively into per-file entries (no tar); a single dir/file or multiple
 // paths all flow through the one listing-based path.
 func collectPlan(f *flags, paths []string) (*sendPlan, error) {
-	streamMisuse := f.textArg != "" || (len(paths) == 1 && paths[0] == "-")
+	stdinSend := len(paths) == 1 && paths[0] == "-"
+	streamMisuse := f.textArg != "" || stdinSend
 	if len(f.excludes) > 0 && streamMisuse {
 		return nil, errExcludeMisuse()
+	}
+	if f.as != "" {
+		// Files keep their own names; text is printed, not saved.
+		if !stdinSend {
+			return nil, fmt.Errorf("%w: --as names a piped stream (cat db.sql | fsend --as db.sql); files keep their own names", fserrors.ErrUsage)
+		}
+		if b := filepath.Base(f.as); b != f.as || b == "." || b == ".." || strings.ContainsAny(f.as, `/\`) {
+			return nil, fmt.Errorf("%w: --as takes a file name, not a path: %q", fserrors.ErrUsage, f.as)
+		}
 	}
 
 	if f.textArg != "" {
@@ -107,10 +120,14 @@ func collectPlan(f *flags, paths []string) (*sendPlan, error) {
 			displayName: name, label: "text", totalBytes: uint64(len(f.textArg)),
 		}, nil
 	}
-	if len(paths) == 1 && paths[0] == "-" {
+	if stdinSend {
+		name := f.as
+		if name == "" {
+			name = "fsend-stdin-" + shortRand()
+		}
 		return &sendPlan{
 			mode: wire.ModeStream, stream: os.Stdin,
-			displayName: "fsend-stdin-" + shortRand(), label: "stdin stream",
+			displayName: name, label: "stdin stream",
 		}, nil
 	}
 
@@ -236,11 +253,19 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 		}
 		return nil
 	}
+	// Piped or redirected stdout (`fsend f | pbcopy`, `code=$(fsend f)`)
+	// gets the bare code too, so scripts needn't know about --quiet. Not
+	// when stdout and stderr share a sink (2>&1): the code is already there.
+	if !jsonEnabled() && !stdoutIsTTY() && !sameSink(os.Stdout, os.Stderr) {
+		_, _ = fmt.Fprintln(os.Stdout, c)
+	}
 	arrow := sendArrow()
 	fmt.Fprintln(os.Stderr)
 	switch {
 	case plan.mode == wire.ModeStream && plan.isText:
 		fmt.Fprintf(os.Stderr, "  %sSending text  ·  %s\n", arrow, uxlog.HumanBytes(int64(plan.totalBytes)))
+	case plan.mode == wire.ModeStream && f.as != "":
+		fmt.Fprintf(os.Stderr, "  %sSending stdin as %s  ·  size unknown\n", arrow, uxlog.Path(f.as))
 	case plan.mode == wire.ModeStream:
 		fmt.Fprintf(os.Stderr, "  %sSending stdin stream  ·  size unknown\n", arrow)
 	default:
@@ -260,9 +285,9 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 		renderPreview(os.Stderr, senderPreview(plan.sources), 6)
 	}
 	fmt.Fprintln(os.Stderr)
-	renderCodeBlock(os.Stderr, c)
+	renderCodeBlock(os.Stderr, c, f.passArg != "")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  The code works once, and only while this stays open.")
+	fmt.Fprintln(os.Stderr, "  The code works for one receiver, while this stays open.")
 	fmt.Fprintln(os.Stderr)
 	return uxlog.StartSpinner("Waiting for receiver", uxlog.HintCancel)
 }
@@ -298,11 +323,14 @@ const codeBoxMinWidth = 42
 // The frame and the code share the brand orange (with the code bolded):
 // the box is the hero, not structure to dim past. Fallback keeps the
 // historical plain block for pipes, narrow terminals, and NO_COLOR.
-func renderCodeBlock(w io.Writer, c string) {
+func renderCodeBlock(w io.Writer, c string, password bool) {
 	if !uxlog.ColorFor(w) || uxlog.TerminalWidth(0) < codeBoxMinWidth {
 		_, _ = fmt.Fprintln(w, "  On the other machine, run:")
 		_, _ = fmt.Fprintln(w)
 		_, _ = fmt.Fprintf(w, "      fsend %s\n", uxlog.Code(c))
+		if password {
+			_, _ = fmt.Fprintln(w, "      (they'll need the password too)")
+		}
 		return
 	}
 	edge := uxlog.Brand("  │")
@@ -316,6 +344,10 @@ func renderCodeBlock(w io.Writer, c string) {
 	row("  On the other machine, run:", len("  On the other machine, run:"))
 	row("", 0)
 	row("      "+uxlog.Accent("fsend")+" "+uxlog.Code(c), len("      fsend ")+len(c))
+	if password {
+		row("", 0)
+		row("  "+uxlog.PasswordChip()+" too", utf8.RuneCountInString("  ⚠ password required too"))
+	}
 	_, _ = fmt.Fprintln(w, uxlog.Brand("  └"+strings.Repeat("─", codeBoxInner+2)+"┘"))
 }
 
@@ -412,8 +444,17 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 		bar.SetFilePos(ordinal[fi], plan.totalFiles)
 	}
 	ensureBar := func() {
-		if bar == nil && !f.quiet {
+		if bar == nil && !f.quiet && wantsBar(int64(plan.totalBytes), plan.mode == wire.ModeStream && !plan.isText) {
 			bar = uxlog.New(int64(plan.totalBytes), names != nil, pathInfo.BarTag())
+		}
+	}
+	// pos is the bar's position (resumed prefixes included), for the
+	// "stopped at 52%" line a dropped receiver gets.
+	var pos int64
+	advance := func(d int64) {
+		pos += d
+		if plan.totalBytes > 0 {
+			sendState.setPct(int(min(100, pos*100/int64(plan.totalBytes))))
 		}
 	}
 	return func() { bar.Done() },
@@ -429,6 +470,7 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 			}
 			prev[fi] = b
 			bar.Add(int64(d))
+			advance(int64(d))
 			s.moved += int64(d)
 		},
 		func(fi uint32, offset, total uint64) {
@@ -440,6 +482,7 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 				prev[fi] = offset
 				ensureBar()
 				bar.Add(d)
+				advance(d)
 			}
 			if !f.quiet {
 				uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
@@ -501,11 +544,16 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 			verb = "Nothing sent"
 		}
 	}
-	// "Sent <name>" when a single path was named; plain "Sent" for
-	// multi-path and stream sends, which have no one name to show.
+	// "Sent report.pdf to bobs-laptop": the subject says what, the peer
+	// says to whom — the last check that the code reached the right person.
 	headline := verb
-	if subject != "" && verb == "Sent" {
-		headline = "Sent " + uxlog.Path(subject)
+	if verb == "Sent" {
+		if subject != "" {
+			headline += " " + subject
+		}
+		if peer := sendState.peerName(); peer != "" {
+			headline += " to " + peer
+		}
 	}
 	clauses := ""
 	if n := s.skippedFiles - s.keptFiles; n > 0 {
@@ -515,12 +563,117 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver (needs --overwrite there)")
 	}
 	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, s.moved, "sent", elapsed, path), clauses)
-	// Streams report their true size only at EOF — moved is the honest figure.
-	if s.moved > total {
-		total = s.moved
+	if s.keptFiles == 0 && s.moved > 0 {
+		uxlog.Notify("Sent "+uxlog.HumanBytes(max(total, s.moved)), time.Since(runStart))
 	}
-	uxlog.Notify("Sent " + uxlog.HumanBytes(total))
 	printUpdateNotice(f)
+}
+
+// sendSubject names what a send carried, for the summary headline: the
+// single path (green, a file reference), "3 files", "text" or "stdin".
+func sendSubject(plan *sendPlan) string {
+	switch {
+	case plan.mode == wire.ModeStream && plan.isText:
+		return "text"
+	case plan.mode == wire.ModeStream:
+		return "stdin"
+	case plan.label != "":
+		return uxlog.Path(plan.label)
+	}
+	return uxlog.CountNoun(plan.totalFiles, "file")
+}
+
+// wantsBar reports whether a transfer earns a progress bar: anything of a
+// megabyte or more, and streams of unknown size. Smaller transfers finish
+// before a bar says anything; the summary line covers them.
+func wantsBar(total int64, unknownSize bool) bool {
+	return unknownSize || total >= 1000*1000
+}
+
+// sendState is the sender's memory across re-pair rounds: who the
+// receiver is and how far the last round got, for the lines that name
+// them. Package state like errorRole: the transfer stack is long gone by
+// the time some of those lines print.
+var sendState sessionState
+
+type sessionState struct {
+	mu   sync.Mutex
+	peer string // sanitized device name; "" until the first HELLO_ACK
+	pct  int    // bar position of the latest round, 0..100
+}
+
+func (s *sessionState) setPeer(name string) (changed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed = name != s.peer
+	s.peer = name
+	return changed
+}
+
+func (s *sessionState) peerName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peer
+}
+
+func (s *sessionState) setPct(p int) {
+	s.mu.Lock()
+	s.pct = p
+	s.mu.Unlock()
+}
+
+func (s *sessionState) percent() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pct
+}
+
+// onPeer is the sender's transfer.SendOptions.OnPeer: on an accepting
+// receiver it prints "✓ bobs-laptop accepted" (once per receiver, so a
+// retry round doesn't repeat it) — the sender's view of who connected.
+func onPeer(f *flags, hostname string, accepted bool) {
+	name := sanitizeRemote(hostname)
+	if changed := sendState.setPeer(name); changed && accepted && !f.quiet {
+		fmt.Fprintf(os.Stderr, "%s %s accepted\n", uxlog.Check(), name)
+	}
+}
+
+// maxPasswordRounds caps the pairing rounds a password-protected send
+// offers: each round allows transfer.PasswordAttempts tries, so a leaked
+// code buys at most rounds×attempts online guesses.
+const maxPasswordRounds = 3
+
+// passwordMissNotice names a round that ended on the password.
+func passwordMissNotice(err error) string {
+	who := sendState.peerName()
+	if who == "" {
+		who = "the receiver"
+	}
+	if errors.Is(err, fserrors.ErrPasswordRequired) {
+		return "No password from " + who
+	}
+	return "Wrong password from " + who
+}
+
+// dropNotice is the line a sender sees when its receiver goes away
+// mid-transfer, naming who, how far it got and the code that still works.
+func dropNotice(deliberate bool, code string) string {
+	who := sendState.peerName()
+	at := ""
+	if p := sendState.percent(); p > 0 && p < 100 {
+		at = fmt.Sprintf(" at %d%%", p)
+	}
+	again := uxlog.Code("fsend " + code)
+	if deliberate {
+		if who == "" {
+			who = "The receiver"
+		}
+		return fmt.Sprintf("%s stopped%s — to resume, rerun on that device: %s", who, at, again)
+	}
+	if who == "" {
+		who = "the receiver"
+	}
+	return fmt.Sprintf("Lost contact with %s%s — waiting; to resume, rerun on that device: %s", who, at, again)
 }
 
 // summaryLine renders the size/duration/rate/route tail shared by both
@@ -551,8 +704,18 @@ func summaryLine(total, moved int64, verb string, elapsed time.Duration, path co
 	return line + "  ·  " + path.Tag()
 }
 
-// displayPath renders an absolute path with $HOME collapsed to "~".
+// displayPath renders an absolute path as short as it stays unambiguous:
+// relative to the working directory ("." or "./sub/x"), else with $HOME
+// collapsed to "~". Long absolute paths made prompts wrap.
 func displayPath(p string) string {
+	if wd, err := os.Getwd(); err == nil {
+		if p == wd {
+			return "."
+		}
+		if rel, err := filepath.Rel(wd, p); err == nil && filepath.IsLocal(rel) {
+			return "." + string(filepath.Separator) + rel
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return p
@@ -568,22 +731,48 @@ func displayPath(p string) string {
 
 // signalContext wires Ctrl-C / SIGTERM to ctx cancellation; a second signal
 // reverts to the default disposition and terminates outright. Teardown
-// (session delete, QUIC close) can take a few seconds, so the first
-// signal says so — otherwise the pause reads as a hang.
+// (session delete, QUIC close) usually ends within a second; only when it
+// doesn't does the force-quit hint appear — otherwise the pause reads as a
+// hang.
 func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	var mu sync.Mutex
+	var hint *time.Timer
+	done := false
 	go func() {
-		<-ch
-		// Notice before cancel(), and via uxlog.Println: a live progress
-		// bar's next refresh frame would erase a raw stderr write, and
-		// cancel() races the bar's teardown.
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return // run finished without a signal
+		}
+		// Notice before cancel(), and via uxlog.Println: it clears a live
+		// spinner's line first, and a live progress bar's next refresh
+		// would erase a raw stderr write; cancel() races the bar's teardown.
 		if !quiet {
-			uxlog.Println(fmt.Sprintf("%s Cancelling — press Ctrl-C again to force quit.", uxlog.Info()))
+			uxlog.Println(fmt.Sprintf("%s Cancelling…", uxlog.Info()))
+			mu.Lock()
+			if !done {
+				hint = time.AfterFunc(time.Second, func() {
+					uxlog.Println("  Still cleaning up — press Ctrl-C again to force quit.")
+				})
+			}
+			mu.Unlock()
 		}
 		cancel()
 		signal.Stop(ch)
 	}()
-	return ctx, cancel
+	// The caller's cancel marks teardown done: release the signal and make
+	// sure the hint never fires late.
+	return ctx, func() {
+		signal.Stop(ch)
+		cancel()
+		mu.Lock()
+		done = true
+		if hint != nil {
+			hint.Stop()
+		}
+		mu.Unlock()
+	}
 }

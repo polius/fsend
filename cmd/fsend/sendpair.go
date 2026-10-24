@@ -570,8 +570,23 @@ func senderQUICAccept(ctx context.Context, sess *sendSession, pc net.PacketConn,
 func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
 	sess := &sendSession{key: codeKey(code)}
 	transferDropped := false
+	pwMisses := 0
 	for {
 		err := runSendOnce(ctx, f, plan, sess, cfg, waitSpin)
+		// A receiver who ran out of password tries (or had none) can rerun
+		// with the right one: keep the code alive instead of ending the
+		// session. No data was read yet, so even a stdin stream can wait.
+		// Bounded, so a leaked code can't buy unlimited password guesses.
+		if ctx.Err() == nil && pwMisses < maxPasswordRounds-1 &&
+			(errors.Is(err, fserrors.ErrWrongPassword) || errors.Is(err, fserrors.ErrPasswordRequired)) {
+			pwMisses++
+			if !f.quiet {
+				fmt.Fprintf(os.Stderr, "%s %s — still waiting; they can rerun %s with the right password.\n",
+					uxlog.Warn(), passwordMissNotice(err), uxlog.Code("fsend "+code))
+			}
+			waitSpin = startWaitSpinner(f, "Waiting for receiver")
+			continue
+		}
 		if err == nil || ctx.Err() != nil || plan.consumable() ||
 			(!errors.Is(err, fserrors.ErrTransientFailure) && !isReceiverClose(err)) {
 			// A re-pair round failing with "server unreachable" after a
@@ -589,12 +604,9 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 			// A deliberate close (Ctrl-C, clean exit) may genuinely re-run
 			// and reconnect. A death (kill, crash, network gone) surfaces
 			// as exhausted retries; the receiver may still recover on its
-			// own (network change) or be rerun on the same device.
-			msg := "Receiver disconnected — waiting for them to reconnect."
-			if !isReceiverClose(err) {
-				msg = "Lost contact with the receiver — waiting for it to reconnect."
-			}
-			fmt.Fprintf(os.Stderr, "%s %s\n", uxlog.Info(), msg)
+			// own (network change) or be rerun on the same device. The code
+			// box has long scrolled away, so the line repeats the code.
+			fmt.Fprintf(os.Stderr, "%s %s\n", uxlog.Info(), dropNotice(isReceiverClose(err), code))
 		}
 		waitSpin = startWaitSpinner(f, "Waiting for receiver")
 	}
@@ -910,7 +922,14 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// notice, a skip, a retry — stops it so the progress bar (or notice
 	// line) lands on a clean row. Stop is idempotent and nil-safe (--quiet).
 	spin := startWaitSpinner(f, "Waiting for them to accept")
-	defer spin.Stop()
+	defer func() { spin.Stop() }() // spin is swapped once the receiver answers
+	peer := func(host string, accepted bool) {
+		spin.Stop()
+		onPeer(f, host, accepted)
+		if accepted && f.passArg != "" {
+			spin = startWaitSpinner(f, "Waiting for "+sendState.peerName()+" to enter the password")
+		}
+	}
 
 	// Time from the first byte, not from here — the receiver may sit at
 	// its accept prompt for a while, and counting that wait makes the
@@ -991,6 +1010,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 				OnResume:       resume,
 				OnSkip:         skip,
 				OnStreamingEOF: onStreamingEOF,
+				OnPeer:         peer,
 			})
 		})
 	if err != nil {
@@ -1009,15 +1029,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// dropping to the sent bytes. The skipped-file count explains the gap and
 	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
 	s := stats()
-	// The summary names the subject when a single path was sent — the
-	// file-reference green mirrors the receiver's "Saved X to Y" shape.
-	// Stream/text sends have no path to name (their labels, "text" /
-	// "stdin stream", are not paths), so they stay the plain "Sent".
-	subject := ""
-	if plan.mode == wire.ModeFiles {
-		subject = plan.label
-	}
-	printSendSummary(f, subject, int64(plan.totalBytes), s, elapsed, pathInfo)
+	printSendSummary(f, sendSubject(plan), int64(plan.totalBytes), s, elapsed, pathInfo)
 	ev := jsonDoneEvent{Ok: true, Role: "sender",
 		BytesMoved: ptr64(s.moved), DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
 	// A piped stdin stream has no known size; per the JSON contract an omitted

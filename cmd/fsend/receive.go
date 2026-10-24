@@ -135,6 +135,7 @@ func runReceive(f *flags, c string) error {
 	if err := resolvePassword(ctx, f, false); err != nil {
 		return err
 	}
+	startUpdateCheck(f)
 
 	rs := newRecvSession(c)
 

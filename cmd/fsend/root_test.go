@@ -3,10 +3,14 @@ package main
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
 	"github.com/polius/fsend/internal/fserrors"
@@ -42,9 +46,25 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			`invalid --mode "garbage"`,
 		},
 		{
+			// No code, no FSEND_CODE, no terminal to ask on.
 			"force_receive_zero_args",
 			[]string{"--receive"},
-			"--receive requires exactly one positional argument",
+			"--receive needs the code",
+		},
+		{
+			"server_invalid",
+			[]string{"--server=not a host!", "file.txt"},
+			"--server: invalid server hostname",
+		},
+		{
+			"connect_with_server",
+			[]string{"--connect=host:443", "--server=other:443"},
+			"--connect cannot be combined with --server",
+		},
+		{
+			"as_on_file_send",
+			[]string{"--as=x.sql", "--send", "file.txt"},
+			"--as names a piped stream",
 		},
 		{
 			"force_receive_two_args",
@@ -294,29 +314,160 @@ func TestAskCodeOrPath(t *testing.T) {
 	})
 }
 
-// wrappedCode detects a share code surrounded by whitespace (redirected
-// newline, pasted space, CRLF) so it's received rather than mistaken for a
-// filename — while leaving clean codes, malformed codes, and filenames alone.
-func TestWrappedCode(t *testing.T) {
-	for _, tc := range []struct {
-		in, want string
-		ok       bool
-	}{
-		{"abc-defg-hjk", "", false},                // clean → handled by normal path
-		{"abc-defg-hjk\n", "abc-defg-hjk", true},   // redirected newline
-		{"abc-defg-hjk ", "abc-defg-hjk", true},    // trailing space
-		{" abc-defg-hjk", "abc-defg-hjk", true},    // leading space
-		{"abc-defg-hjk\r\n", "abc-defg-hjk", true}, // Windows CRLF
-		{"\nabc-defg-hjk\n", "abc-defg-hjk", true}, // surrounded
-		{"Abc-defg-hjk\n", "abc-defg-hjk", true},   // chat-app: capitalized + newline
-		{"ABC-DEFG-HJK ", "abc-defg-hjk", true},    // uppercase + space
-		{"abc - defg - hjk", "", false},            // internal spaces → still malformed
-		{"report.pdf ", "", false},                 // filename with a space → not a code
-	} {
-		got, ok := wrappedCode(tc.in)
-		if ok != tc.ok || (ok && got != tc.want) {
-			t.Errorf("wrappedCode(%q) = (%q, %v), want (%q, %v)", tc.in, got, ok, tc.want, tc.ok)
+// Dictated and chat-mangled codes receive (they reach the --quiet-without-
+// --yes usage guard, which sits after code validation), unless a file by
+// that exact name exists — real paths always win.
+func TestDispatch_TolerantCodes(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, arg := range []string{"abc defg jkm", "abc_defg_jkm", "abcdefgjkm", "ABC-DEFG-JKM", "abc-defg-jkm.", " abc-defg-jkm\n"} {
+		cmd := rootCmd()
+		cmd.SetArgs([]string{"--quiet", arg})
+		cmd.SetOut(io.Discard)
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "--quiet on receive requires --yes") {
+			t.Errorf("fsend %q: got %v, want it received as a code", arg, err)
 		}
+	}
+	// A real file named like a mangled code is sent, not received.
+	if err := os.WriteFile("abcdefgjkm", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"--quiet", "--out=x", "abcdefgjkm"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--out is a receive-side flag") {
+		t.Errorf("existing file: got %v, want the send path", err)
+	}
+}
+
+// FSEND_CODE receives with no code in argv; bare --receive reads it too.
+func TestDispatch_CodeFromEnv(t *testing.T) {
+	t.Setenv("FSEND_CODE", "ABC DEFG JKM")
+	for _, args := range [][]string{{"--quiet"}, {"--quiet", "--receive"}} {
+		cmd := rootCmd()
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "--quiet on receive requires --yes") {
+			t.Errorf("%v with FSEND_CODE: got %v, want a receive", args, err)
+		}
+	}
+}
+
+// Stdin that isn't a data source (/dev/null in cron/CI, a closed fd)
+// must not start an empty stdin send.
+func TestDispatch_EmptyStdinShowsHelp(t *testing.T) {
+	orig := stdinHasData
+	stdinHasData = func() bool { return false }
+	t.Cleanup(func() { stdinHasData = orig })
+	origTTY := stdoutIsTTY
+	stdoutIsTTY = func() bool { return false }
+	t.Cleanup(func() { stdoutIsTTY = origTTY })
+
+	var out strings.Builder
+	cmd := rootCmd()
+	cmd.SetArgs(nil)
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("bare fsend with empty stdin: %v", err)
+	}
+	if !strings.Contains(out.String(), "USAGE") {
+		t.Errorf("want help, got %q", out.String())
+	}
+}
+
+func TestStdinHasData(t *testing.T) {
+	dir := t.TempDir()
+	check := func(name string, f *os.File, want bool) {
+		t.Helper()
+		orig := os.Stdin
+		os.Stdin = f
+		defer func() { os.Stdin = orig }()
+		if got := stdinHasData(); got != want {
+			t.Errorf("%s: stdinHasData() = %v, want %v", name, got, want)
+		}
+	}
+	empty, _ := os.Create(filepath.Join(dir, "empty"))
+	defer empty.Close()
+	check("empty file", empty, false)
+	full := filepath.Join(dir, "full")
+	_ = os.WriteFile(full, []byte("data"), 0o600)
+	ff, _ := os.Open(full)
+	defer ff.Close()
+	check("non-empty file", ff, true)
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	check("pipe", r, true)
+	if devnull, err := os.Open(os.DevNull); err == nil {
+		defer devnull.Close()
+		check("/dev/null", devnull, false)
+	}
+}
+
+func TestHelpCommand(t *testing.T) {
+	run := func(args ...string) (string, error) {
+		var out strings.Builder
+		cmd := rootCmd()
+		cmd.SetArgs(args)
+		cmd.SetOut(&out)
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	if out, err := run("help", "advanced"); err != nil || !strings.Contains(out, "ENVIRONMENT") {
+		t.Errorf("help advanced = %v, %q", err, out)
+	}
+	if _, err := run("help", "nope"); !errors.Is(err, fserrors.ErrUsage) {
+		t.Errorf("unknown help topic: got %v, want E024", err)
+	}
+	// The everyday page stays short enough to scan.
+	if n := strings.Count(helpTemplate, "\n"); n > 36 {
+		t.Errorf("helpTemplate is %d lines; keep it to ~35 and move the rest to help advanced", n)
+	}
+}
+
+// A typo'd flag names the flag it most likely meant.
+func TestFlagSuggestion(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"--overwirte"})
+	err := cmd.Execute()
+	if !errors.Is(err, fserrors.ErrUsage) || !strings.Contains(err.Error(), "did you mean --overwrite?") {
+		t.Errorf("got %v", err)
+	}
+	// Short flags and the old --name / curl-style --output spellings work.
+	cmd = rootCmd()
+	if err := cmd.ParseFlags([]string{"-y", "-q", "-o", "dir", "--name=box", "--output=d2"}); err != nil {
+		t.Fatalf("short/alias flags: %v", err)
+	}
+	if v, _ := cmd.Flags().GetString("device-name"); v != "box" {
+		t.Errorf("--name should set --device-name, got %q", v)
+	}
+	if v, _ := cmd.Flags().GetString("out"); v != "d2" {
+		t.Errorf("--output should set --out, got %q", v)
+	}
+}
+
+// Tab completion offers files for the positional (the file to send) and
+// directories for --out.
+func TestCompletion_CompletesFiles(t *testing.T) {
+	var out strings.Builder
+	cmd := rootCmd()
+	cmd.SetArgs([]string{cobra.ShellCompRequestCmd, "rep"})
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), fmt.Sprintf(":%d\n", cobra.ShellCompDirectiveDefault)) {
+		t.Errorf("positional completion directive: %q", out.String())
+	}
+	out.Reset()
+	cmd = rootCmd()
+	cmd.SetArgs([]string{cobra.ShellCompRequestCmd, "--out", ""})
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), fmt.Sprintf(":%d\n", cobra.ShellCompDirectiveFilterDirs)) {
+		t.Errorf("--out completion directive: %q", out.String())
 	}
 }
 
@@ -327,8 +478,8 @@ func TestBoldHelpHeaders(t *testing.T) {
 		t.Setenv("NO_COLOR", "")
 		t.Setenv("FORCE_COLOR", "1")
 		got := boldHelpHeaders(helpTemplate)
-		for _, header := range []string{"USAGE", "EXAMPLES", "SENDING",
-			"RECEIVING", "GENERAL", "ADVANCED", "LEARN MORE"} {
+		for _, header := range []string{"USAGE", "SENDING",
+			"RECEIVING", "GENERAL", "LEARN MORE"} {
 			if !strings.Contains(got, "\x1b[1m"+header+"\x1b[0m") {
 				t.Errorf("header %q not bolded", header)
 			}
@@ -359,8 +510,12 @@ func TestHelpTemplate_ListsEveryFlag(t *testing.T) {
 		if f.Hidden {
 			return
 		}
-		if !strings.Contains(helpTemplate, "--"+f.Name) {
-			t.Errorf("flag --%s is registered but missing from helpTemplate", f.Name)
+		if !strings.Contains(helpTemplate+advancedHelpTemplate, "--"+f.Name) {
+			t.Errorf("flag --%s is registered but missing from the help pages", f.Name)
+		}
+		// Listed once on the everyday page, or the entries drift apart.
+		if n := strings.Count(helpTemplate, "  --"+f.Name+" "); n > 1 {
+			t.Errorf("flag --%s has %d entries in helpTemplate", f.Name, n)
 		}
 	})
 }

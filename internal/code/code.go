@@ -70,6 +70,44 @@ func IsCode(s string) bool {
 	return Pattern.MatchString(s)
 }
 
+// Normalize maps the ways a code survives dictation and chat apps back to
+// canonical form: surrounding whitespace, quotes and trailing punctuation
+// ("abc-defg-jkm."), any case, spaces/underscores/dots instead of hyphens,
+// or no separators at all ("abcdefgjkm"). Separators, when present, must
+// sit at the 3-4-3 boundaries, so "abcd-efg-jkm" stays rejected. ok is
+// false when s is not a code under any of these readings.
+//
+// Callers that also accept file paths must check the path first: Normalize
+// knows nothing about the filesystem.
+func Normalize(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "\"'`")
+	s = strings.TrimRight(s, ".,;:!?")
+	s = strings.ToLower(strings.TrimSpace(s))
+	groups := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || r == ' ' || r == '\t'
+	})
+	var letters string
+	switch {
+	case len(groups) == 1 && len(groups[0]) == Length:
+		letters = groups[0]
+	case len(groups) == len(Layout):
+		for i, g := range groups {
+			if len(g) != Layout[i] {
+				return "", false
+			}
+		}
+		letters = strings.Join(groups, "")
+	default:
+		return "", false
+	}
+	c := format([]byte(letters))
+	if !IsCode(c) {
+		return "", false
+	}
+	return c, true
+}
+
 // looksLikeCodePattern is deliberately looser than Pattern: any-case
 // alphanumeric groups joined by hyphens. Digits are included because the
 // alphabet excludes i/l/o precisely for their 1/1/0 lookalikes — typing

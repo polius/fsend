@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
@@ -31,6 +32,10 @@ import (
 // receiver (E009, E013, E021) and stamp the --json done event. Empty until
 // a transfer path is entered — a flag-parse failure has no role.
 var errorRole string
+
+// runStart is when this process started; a transfer's notification fires
+// only after a run long enough that the user may have looked away.
+var runStart = time.Now()
 
 func main() {
 	// Normalise --connect arguments before cobra parses. We use
@@ -133,8 +138,8 @@ func renderError(err error, debug bool) int {
 	// E001 and E018 name the server it tried so a stale --connect entry
 	// is self-diagnosing instead of reading as a network outage.
 	if errors.Is(err, fserrors.ErrServerUnreachable) || errors.Is(err, fserrors.ErrServerRetired) {
-		if cfg, cfgErr := config.Load(); cfgErr == nil {
-			detail = "Server: " + cfg.EffectiveServer()
+		if cfg, cfgErr := config.Load(); cfgErr == nil || serverOverride != "" {
+			detail = "Server: " + withServerOverride(cfg).EffectiveServer()
 		}
 		// Name the failure class ("DNS lookup failed", "connection refused").
 		var ne *signaling.NetError
@@ -165,12 +170,15 @@ func renderError(err error, debug bool) int {
 	// actions (Ctrl-C, the receiver's own decline) aren't failures
 	// either, so they get the neutral info glyph.
 	glyph := uxlog.Cross()
+	exit := entry.Exit
 	switch {
 	case entry.Exit == 0:
 		glyph = uxlog.Warn()
-	case errors.Is(err, fserrors.ErrUserCancelled),
-		errors.Is(err, errKeptByChoice),
-		errorRole != "sender" && errors.Is(err, fserrors.ErrReceiverDeclined):
+	case deliberateChoice(err):
+		// The user's own answer at a prompt is not a failure: exit 0, so
+		// scripts don't treat "no thanks" as an error.
+		glyph, exit = uxlog.Info(), 0
+	case errors.Is(err, fserrors.ErrUserCancelled):
 		glyph = uxlog.Info()
 	}
 
@@ -178,8 +186,12 @@ func renderError(err error, debug bool) int {
 	case errors.Is(err, errKeptByChoice):
 		// The user answered "n" at the overwrite prompt — narrate their
 		// decision, not a failure, and skip the "Use --overwrite" advice
-		// they just declined. Exit stays 13 so scripts see the partial.
+		// they just declined.
 		fmt.Fprintf(os.Stderr, "%s [%s] Kept your local copies — nothing was overwritten.\n", glyph, entry.Code)
+	case detail != "" && errors.Is(err, fserrors.ErrUsage):
+		// The specific reason is the headline; the generic "Invalid
+		// usage" + "see --help" pair would only bury it.
+		fmt.Fprintf(os.Stderr, "%s [%s] %s\n", glyph, entry.Code, withCommandAccent(capitalize(detail)))
 	case detail != "" && errors.Is(err, fserrors.ErrSourceNotFound):
 		// Inline the missing path into the message: the catalog message
 		// ends in "." which we strip so it reads as one sentence —
@@ -199,10 +211,10 @@ func renderError(err error, debug bool) int {
 		// Muscle-memory from other tools: there are no subcommands.
 		case detail == "version":
 			fmt.Fprintf(os.Stderr, "  For the fsend version, run: fsend --version\n")
-		case detail == "send" || detail == "receive":
-			fmt.Fprintf(os.Stderr, "  fsend has no %q subcommand — `fsend <file>` sends, `fsend <code>` receives.\n", detail)
-		case detail == "update" || detail == "uninstall":
-			fmt.Fprintf(os.Stderr, "  To %s fsend, run: fsend --%s\n", detail, detail)
+		default:
+			if hint := subcommandHint(detail); hint != "" {
+				fmt.Fprintf(os.Stderr, "  %s\n", hint)
+			}
 		}
 		if entry.Action != "" {
 			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
@@ -229,6 +241,16 @@ func renderError(err error, debug bool) int {
 	default:
 		fmt.Fprintf(os.Stderr, "%s %s\n", glyph, entry.Render())
 	}
+	// The interrupted receiver's partial resumes with the very same code
+	// while the sender waits; spell it out rather than "<code>".
+	if errorRole == "receiver" && receiveResume != "" {
+		switch {
+		case errors.Is(err, fserrors.ErrTransientFailure):
+			fmt.Fprintf(os.Stderr, "  Resume with: %s\n", uxlog.Code(receiveResume))
+		case errors.Is(err, fserrors.ErrWrongPassword), errors.Is(err, fserrors.ErrPasswordRequired):
+			fmt.Fprintf(os.Stderr, "  Try again with: %s\n", uxlog.Code(receiveResume+" --password"))
+		}
+	}
 
 	// No chain for usage errors: the debug detail for a parse failure is
 	// the parse error itself — and debugRequested scans raw os.Args, so it
@@ -241,8 +263,90 @@ func renderError(err error, debug bool) int {
 		}
 	}
 	// No-op if the summary already emitted the rich done event.
-	jsonEmitDone(jsonDoneFromErr(err, entry.Exit, errorRole))
-	return entry.Exit
+	jsonEmitDone(jsonDoneFromErr(err, exit, errorRole))
+	return exit
+}
+
+// deliberateChoice reports errors that only record the user's own answer
+// at a prompt — declining a transfer, keeping local copies. They exit 0.
+func deliberateChoice(err error) bool {
+	return errors.Is(err, errKeptByChoice) ||
+		errorRole == "receiver" && errors.Is(err, fserrors.ErrReceiverDeclined)
+}
+
+// subcommandHint answers muscle memory from tools with subcommands
+// ("fsend send x", "fsend recieve"): fsend has none besides server,
+// doctor and completion. Close misspellings count, so "did you mean"
+// works without the typo being exact. "" when nothing is close.
+func subcommandHint(word string) string {
+	best := closest(strings.ToLower(word),
+		[]string{"send", "receive", "version", "update", "uninstall", "help", "server", "doctor", "completion"})
+	w := strings.ToLower(word)
+	switch best {
+	case "":
+		return ""
+	case "send", "receive":
+		return fmt.Sprintf("fsend has no %q subcommand — `fsend <file>` sends, `fsend <code>` receives.", best)
+	case "version":
+		return "For the fsend version, run: fsend --version"
+	case "update", "uninstall":
+		return fmt.Sprintf("To %s fsend, run: fsend --%s", best, best)
+	case "help":
+		return "For help, run: fsend --help"
+	}
+	if best == w {
+		return "" // a real subcommand can't reach this path
+	}
+	return fmt.Sprintf("Did you mean: fsend %s", best)
+}
+
+// closest returns the candidate nearest to w by edit distance, or "" when
+// none is close enough to be a plausible typo: one edit for short words,
+// two from eight letters up.
+func closest(w string, cands []string) string {
+	best, bestD := "", 1<<30
+	for _, c := range cands {
+		if d := editDistance(w, c); d < bestD && d <= max(1, len(c)/4) {
+			best, bestD = c, d
+		}
+	}
+	return best
+}
+
+// editDistance is the optimal-string-alignment distance between a and b:
+// Levenshtein plus adjacent transpositions, so "recieve" is one edit from
+// "receive". Bytes — the candidates are ASCII.
+func editDistance(a, b string) int {
+	d := make([][]int, len(a)+1)
+	for i := range d {
+		d[i] = make([]int, len(b)+1)
+		d[i][0] = i
+	}
+	for j := range d[0] {
+		d[0][j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			d[i][j] = min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+cost)
+			if i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1] {
+				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
+			}
+		}
+	}
+	return d[len(a)][len(b)]
+}
+
+// capitalize upper-cases a usage detail's first letter so it reads as a
+// headline ("nothing to send" → "Nothing to send"). Flags stay as typed.
+func capitalize(s string) string {
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		return s
+	}
+	return string(s[0]-'a'+'A') + s[1:]
 }
 
 // withCommandAccent colors a detail line's command tail — the text after

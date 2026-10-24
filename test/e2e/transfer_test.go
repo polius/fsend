@@ -380,12 +380,12 @@ func TestReceive_DeclineWithCollision_PreservesExisting(t *testing.T) {
 	}
 	// Receiver answers "n" to the accept prompt. The collision chip has
 	// already warned that "yes" would overwrite, so "no" is the
-	// "don't clobber" path — and the exit code becomes E006
-	// (UserCancelled) rather than the old E013 (TargetExists), because
-	// nothing reached the per-file overwrite stage.
+	// "don't clobber" path — E006 rather than the old E013 (TargetExists),
+	// because nothing reached the per-file overwrite stage. The decline is
+	// the receiver's own choice, so only the sender exits non-zero.
 	r := h.runPair(t, []string{srcFile}, dst, nil, "n\n")
-	if r.receiverExitCode != 6 || r.senderExitCode != 6 {
-		t.Errorf("exits: sender=%d receiver=%d, want 6/6\nsender stderr:\n%s\nreceiver stderr:\n%s",
+	if r.receiverExitCode != 0 || r.senderExitCode != 6 {
+		t.Errorf("exits: sender=%d receiver=%d, want 6/0\nsender stderr:\n%s\nreceiver stderr:\n%s",
 			r.senderExitCode, r.receiverExitCode, r.senderErr, r.receiverErr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
@@ -437,10 +437,9 @@ func TestReceive_DifferingFileKept_ReceiverSeesE013(t *testing.T) {
 	}
 }
 
-// Answering "n" at the overwrite prompt is a decision, not a failure: the
-// exit stays 13 (scripts must see the partial) but the error line is the
-// neutral ℹ acknowledging the choice — not a red ✗ telling the user to pass
-// the --overwrite they just declined.
+// Answering "n" at the overwrite prompt is a decision, not a failure: exit
+// 0, and the line is the neutral ℹ acknowledging the choice — not a red ✗
+// telling the user to pass the --overwrite they just declined.
 func TestReceive_OverwriteDeclined_NeutralE013(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
@@ -451,8 +450,8 @@ func TestReceive_OverwriteDeclined_NeutralE013(t *testing.T) {
 	}
 	// "y" accepts the transfer, "n" answers the overwrite prompt.
 	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nn\n")
-	if r.receiverExitCode != 13 {
-		t.Errorf("receiver exit = %d, want 13\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
+	if r.receiverExitCode != 0 {
+		t.Errorf("receiver exit = %d, want 0\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
 	}
 	if !strings.Contains(r.receiverErr, "[i] [E013] Kept your local copies") {
 		t.Errorf("declined overwrite should render as the user's choice:\nstderr:\n%s", r.receiverErr)

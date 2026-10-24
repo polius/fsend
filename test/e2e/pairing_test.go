@@ -185,7 +185,7 @@ func TestPairing_DroppedTransferNeedsOriginalReceiver(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-r1Done
-	if !waitForStderr(s, "Receiver disconnected", 30*time.Second) {
+	if !waitForStderr(s, "rerun on that device", 30*time.Second) {
 		t.Fatalf("sender never re-entered pairing\n%s", s.stderr.String())
 	}
 

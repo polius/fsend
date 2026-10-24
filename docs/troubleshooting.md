@@ -112,8 +112,8 @@ rest of the transfer completed.
 - Byte-identical files are always skipped silently — this only fires on
   real differences.
 - If you answered `n` at the overwrite prompt yourself, the line renders as
-  the neutral "Kept your local copies" instead of an error — the exit code
-  stays 13 either way so scripts can detect the partial.
+  the neutral "Kept your local copies" and fsend exits 0 — your choice, not
+  a failure. Unattended runs (`--yes`) that keep files still exit 13.
 - The sender sees the same outcome: "N files kept by receiver", and
   "Nothing sent" with a warning glyph when no bytes moved at all.
 
