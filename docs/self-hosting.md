@@ -46,7 +46,9 @@ You'll need:
   server sees the bridge gateway instead of the client: STUN answers carry
   the wrong address and every IPv6 client shares one rate-limit identity.
   Host networking (`network_mode: host` on the `fsend` service) also
-  avoids it.
+  avoids it; drop the `sysctls` entry then, and since the image runs as
+  uid 65532, either move the relay to a high port (`FSEND_RELAY_ADDR=:8443`)
+  or set `net.ipv4.ip_unprivileged_port_start=443` on the host.
 - Three inbound ports open:
   - `80/tcp` — Let's Encrypt certificate issuance
   - `443/tcp` — HTTPS signaling
@@ -56,7 +58,10 @@ You'll need:
 
 Two containers on one host. Caddy terminates TLS on TCP/443 and proxies
 HTTP signaling to fsend's `:8080`; UDP/443 goes straight to the fsend
-container, so Caddy is never in the data path.
+container, so Caddy is never in the data path. (The Caddyfile turns off
+Caddy's HTTP/3 for that reason: UDP/443 belongs to the relay.) The fsend
+container runs as a non-root user with a read-only filesystem and no
+capabilities; base images are pinned by digest.
 
 ```
                 ┌───────────────── Your VM ──────────────────┐

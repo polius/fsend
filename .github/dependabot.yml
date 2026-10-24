@@ -19,3 +19,14 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # Base images are pinned by digest (Dockerfile, compose); keep them current.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker-compose"
+    directory: "/deploy/compose"
+    schedule:
+      interval: "weekly"
