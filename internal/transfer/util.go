@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // emptySHA256 is the SHA-256 hex digest of a zero-byte file, reported for
@@ -60,4 +62,31 @@ func pathIsUnder(child, parent string) bool {
 		return false
 	}
 	return !filepath.IsAbs(rel)
+}
+
+// progressMeter aggregates byte progress from several goroutines and reports
+// it at most every 100 ms (and once at completion).
+type progressMeter struct {
+	mu    sync.Mutex
+	done  uint64
+	total uint64
+	last  time.Time
+	cb    func(done, total uint64)
+}
+
+func newProgressMeter(total uint64, cb func(done, total uint64)) *progressMeter {
+	return &progressMeter{total: total, cb: cb}
+}
+
+func (m *progressMeter) add(n int64) {
+	if m == nil || m.cb == nil || n <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.done += uint64(n)
+	if now := time.Now(); m.done >= m.total || now.Sub(m.last) >= 100*time.Millisecond {
+		m.last = now
+		m.cb(m.done, m.total)
+	}
 }

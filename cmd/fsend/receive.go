@@ -36,9 +36,12 @@ func runReceive(f *flags, c string) error {
 	if f.quiet && !f.yes {
 		return fmt.Errorf("%w: --quiet on receive requires --yes (no prompt to answer otherwise)", fserrors.ErrUsage)
 	}
-	// Sink mode writes no files, so --overwrite can only be a mistake.
-	if f.outDir == "-" && f.overwrite {
-		return fmt.Errorf("%w: --overwrite has no effect with --out -", fserrors.ErrUsage)
+	// Sink mode writes no files, so --overwrite/--rename can only be a mistake.
+	if f.outDir == "-" && (f.overwrite || f.rename) {
+		return fmt.Errorf("%w: --overwrite and --rename have no effect with --out -", fserrors.ErrUsage)
+	}
+	if f.overwrite && f.rename {
+		return fmt.Errorf("%w: --overwrite and --rename are mutually exclusive (replace, or keep both)", fserrors.ErrUsage)
 	}
 	// --manifest records files written to disk; there are none with --out -.
 	if f.outDir == "-" && f.manifest != "" {
@@ -137,16 +140,11 @@ func runReceive(f *flags, c string) error {
 	}
 
 	ui := newReceiverUI(ctx, f, outDir, sink, connpath.FromLAN())
-	// --checksum hashes the files already on disk before the accept prompt —
-	// a silence that scales with the existing data. Keep the spinner alive
-	// for it (stopped by the prompt); otherwise classification is stat-only
-	// and near-instant.
-	if f.checksum && !f.quiet {
-		spin.SetMessage("Checking existing files")
-		ui.spin = spin
-	} else {
-		spin.Stop()
-	}
+	// --checksum and resume checks hash files already on disk before the
+	// accept prompt — a silence that scales with the data. Keep the spinner
+	// alive for it (stopped by the prompt), as the internet path does.
+	spin.SetMessage("Checking existing files")
+	ui.spin = spin
 	defer ui.close()
 
 	start := time.Now()

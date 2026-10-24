@@ -35,6 +35,7 @@ type flags struct {
 	yes       bool
 	outDir    string
 	overwrite bool
+	rename    bool // keep both: save differing incoming files as "name (1).ext"
 	checksum  bool
 	manifest  string // write a CSV record of the received files to this path
 
@@ -117,9 +118,10 @@ Examples:
 	passFlag := c.Flags().Lookup("password")
 	passFlag.NoOptDefVal = passPromptSentinel
 	passFlag.DefValue = ""
-	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers (differing files still need --overwrite)")
+	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers (differing files are kept unless --overwrite or --rename)")
 	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory, created if missing")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files that differ on receive")
+	c.Flags().BoolVar(&f.rename, "rename", false, "keep both: save incoming files that differ as \"name (1).ext\"")
 	c.Flags().BoolVar(&f.checksum, "checksum", false, "decide identical files by content hash, not size+mtime (like rsync -c)")
 	c.Flags().BoolVar(&f.preview, "preview", false, "list what would be sent (CSV: path,size) and exit; no transfer")
 	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status) of the received files to this path")
@@ -272,16 +274,17 @@ SENDING
 
 RECEIVING
   --yes                  Auto-accept incoming transfers (no prompt).
-                         Differing files are still kept unless --overwrite
+                         Differing files are kept unless --overwrite or --rename
   --out <dir>            Receive into this directory, created if missing
                          (default: current)
-  --out -                Receive to stdout (single file, text, or piped
-                         stream — pipe-friendly: fsend <code> --out - | …)
+  --out -                Receive to stdout: a file's bytes, or a tar archive
+                         for a folder (fsend <code> --out - | tar x)
   --password             Supply the sender's password. Bare --password prompts;
                          inline --password=SECRET; env FSEND_PASSWORD or
                          FSEND_PASSWORD_FILE.
   --overwrite            Replace existing files that differ (identical files
-                         are always skipped)
+                         are always skipped; folders are never deleted)
+  --rename               Keep both: save differing files as "name (1).ext"
   --checksum             Decide identical files by content hash, not
                          size+mtime (like rsync -c)
   --manifest <file>      Write a CSV record (path,size,status) of the
@@ -479,7 +482,7 @@ const connectShowSentinel = ":show:"
 // line would silently not run. allowYes exempts --yes, which --uninstall
 // documents as skipping its confirmation prompt.
 func maintenanceGuard(cmd *cobra.Command, f *flags, name string, allowYes bool) error {
-	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "checksum", "manifest", "preview", "json"} {
+	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "rename", "name", "exclude", "mode", "checksum", "manifest", "preview", "json"} {
 		if conflict == "yes" && allowYes {
 			continue
 		}
@@ -504,7 +507,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "check", "uninstall", "checksum", "manifest", "preview", "json"} {
+		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "rename", "name", "exclude", "mode", "update", "check", "uninstall", "checksum", "manifest", "preview", "json"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}

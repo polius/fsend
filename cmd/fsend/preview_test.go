@@ -263,21 +263,29 @@ func TestRenderPreview_SymlinkRow(t *testing.T) {
 	}
 }
 
-// Under --overwrite the differing files transfer too, so the bar must be
-// sized for them upfront (BytesToRecv + DifferingBytes); without it the bar
-// reads past 100%. The default (no overwrite) keeps them out of the total.
+// Under --overwrite or --rename the differing files transfer too, so the bar
+// must be sized for them (BytesToRecv + DifferingBytes) once the engine asks
+// for the conflict answer; without it the bar reads past 100%. The default
+// (keep) leaves them out of the total.
 func TestAccept_BarSizing(t *testing.T) {
 	sum := transfer.ClassifySummary{
 		Total: 2, NewItems: 1, Differing: 1,
 		BytesToRecv: 100, OfferedBytes: 1000, DifferingBytes: 900,
+		Conflicts: []transfer.Conflict{{RelativePath: "b", Kind: "differs"}},
 	}
-	overwrite := newReceiverUI(context.Background(), &flags{yes: true, overwrite: true}, "/tmp", false, mustLANInfo())
-	_ = overwrite.accept(filesHello(), sum)
-	if overwrite.bytesHint != 1000 {
-		t.Errorf("--overwrite bytesHint = %d, want 1000 (net + differing)", overwrite.bytesHint)
+	for _, fl := range []*flags{{yes: true, overwrite: true}, {yes: true, rename: true}} {
+		ui := newReceiverUI(context.Background(), fl, "/tmp", false, mustLANInfo())
+		_ = ui.accept(filesHello(), sum)
+		_ = ui.resolveConflicts(sum.Conflicts)
+		if ui.bytesHint != 1000 {
+			t.Errorf("%+v bytesHint = %d, want 1000 (net + differing)", fl, ui.bytesHint)
+		}
 	}
 	keep := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
 	_ = keep.accept(filesHello(), sum)
+	if got := keep.resolveConflicts(sum.Conflicts); got != transfer.ConflictKeep {
+		t.Errorf("--yes alone resolved conflicts as %v, want keep", got)
+	}
 	if keep.bytesHint != 100 {
 		t.Errorf("default bytesHint = %d, want 100 (net only; differing kept)", keep.bytesHint)
 	}

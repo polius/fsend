@@ -762,6 +762,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		spin.Stop()
 		onSkip(fi, kept)
 	}
+	unreadable, onUnreadable, onChanged := sourceIssueHooks(f, plan)
 	current := firstRes
 	opts := retry.Options{OnRetry: retryNoticeFor(f)}
 	if notice := opts.OnRetry; notice != nil {
@@ -811,6 +812,9 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 				OnResume:       resume,
 				OnSkip:         skip,
 				OnStreamingEOF: onStreamingEOF,
+
+				OnSourceSkipped: onUnreadable,
+				OnSourceChanged: onChanged,
 			})
 		})
 	if err != nil {
@@ -850,8 +854,17 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		ev.FilesSkipped = ptrInt(s.skippedFiles - s.keptFiles)
 		ev.FilesKept = ptrInt(s.keptFiles)
 	}
+	// Unreadable files were skipped; everything else arrived. Say which, and
+	// exit E050 so scripts notice.
+	var retErr error
+	if n := len(unreadable()); n > 0 {
+		printSkippedList(f, "could not be read and", unreadable())
+		retErr = fmt.Errorf("%w: %d unreadable on the sender", fserrors.ErrFilesSkipped, n)
+		entry, _ := fserrors.Lookup(retErr)
+		ev.Ok, ev.Error, ev.Exit = false, entry.Code, entry.Exit
+	}
 	jsonEmitDone(ev)
-	return nil
+	return retErr
 }
 
 // isServerDown reports whether an error is the "pairing server is

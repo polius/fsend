@@ -20,7 +20,6 @@ import (
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/pake"
-	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -168,9 +167,9 @@ func sha256hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// A source that shrinks between the walk and the read must fail the transfer,
-// not hand the receiver a truncated file that hashes clean and lands as a
-// "success". The sender reports ErrReadFailed and nothing is written.
+// A source that shrinks between the walk and the read must not hand the
+// receiver a truncated file that hashes clean and lands as a "success". The
+// file is skipped on both sides (reported), and nothing is written for it.
 func TestEngine_SourceShrinksMidSend(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	sp := filepath.Join(src, "growing.bin")
@@ -184,15 +183,20 @@ func TestEngine_SourceShrinksMidSend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources}, RecvOptions{TargetDir: dst})
-	if !errors.Is(se, fserrors.ErrReadFailed) {
-		t.Fatalf("send err = %v, want ErrReadFailed", se)
+	var skipped []string
+	se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources},
+		RecvOptions{TargetDir: dst, OnEntrySkipped: func(rel, _ string) { skipped = append(skipped, rel) }})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
 	}
-	if !errors.Is(re, fserrors.ErrReadFailed) {
-		t.Fatalf("recv err = %v, want ErrReadFailed (sender reason relayed)", re)
+	if len(skipped) != 1 {
+		t.Fatalf("receiver skipped %v, want the shrunk file", skipped)
 	}
 	if _, err := os.Stat(filepath.Join(dst, "growing.bin")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a truncated file must not land as success")
+	}
+	if ps := newPartialStore(dst); ps.hasPartials() {
+		t.Error("the dropped file's partial was kept")
 	}
 }
 
@@ -312,14 +316,16 @@ func TestPacker_FlushesOnSegmentCap(t *testing.T) {
 		if err := p.appendBytes(uint32(i), d); err != nil {
 			t.Fatal(err)
 		}
-		if err := p.endFile(uint32(i), blakeHash32(d)); err != nil {
+		if err := p.endFile(uint32(i), bytesRoot(d), false); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := p.flush(); err != nil {
 		t.Fatal(err)
 	}
-	p.Close()
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	chunks := 0
 	finalized := make(map[uint32]bool)
@@ -567,40 +573,46 @@ func TestManifestStatus(t *testing.T) {
 		{dispConflict, wire.DecisionSkip, "kept"},
 		{dispResume, wire.DecisionResume, "resumed"},
 	} {
-		if got := manifestStatus(tc.disp, tc.act); got != tc.want {
+		if got := manifestStatus(&entryPlan{disp: tc.disp}, tc.act); got != tc.want {
 			t.Errorf("manifestStatus(%v, %v) = %q, want %q", tc.disp, tc.act, got, tc.want)
 		}
 	}
 }
 
-// A sender whose source vanishes between walk and send must tell the
-// receiver why. Without the ERROR frame the receiver saw only a bare
-// stream close, classified it transient, and burned retries on a
-// misleading "network" error.
-func TestEngine_SenderReadFailureReachesReceiver(t *testing.T) {
+// A source that vanishes (or becomes unreadable) between walk and send is
+// skipped on both sides with a report, and every other file still lands.
+func TestEngine_UnreadableSourceSkippedRestArrive(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
-	p := filepath.Join(src, "gone.bin")
-	writeFile(t, p, randBytes(1024))
-	sources, err := Walk([]string{p}, nil)
+	gone := filepath.Join(src, "tree", "gone.bin")
+	writeFile(t, gone, randBytes(1024))
+	keep := randBytes(wire.MaxChunkSize + 3)
+	writeFile(t, filepath.Join(src, "tree", "keep.bin"), keep)
+	sources, err := Walk([]string{filepath.Join(src, "tree")}, nil)
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	if err := os.Remove(p); err != nil {
+	if err := os.Remove(gone); err != nil {
 		t.Fatal(err)
 	}
 
+	var sentSkipped []uint32
+	var recvSkipped []string
 	se, re := runTransfer(t,
-		SendOptions{Mode: wire.ModeFiles, Sources: sources},
-		RecvOptions{TargetDir: dst},
+		SendOptions{Mode: wire.ModeFiles, Sources: sources,
+			OnSourceSkipped: func(i uint32, _ error) { sentSkipped = append(sentSkipped, i) }},
+		RecvOptions{TargetDir: dst, OnEntrySkipped: func(rel, _ string) { recvSkipped = append(recvSkipped, rel) }},
 	)
-	if !errors.Is(se, fserrors.ErrReadFailed) {
-		t.Fatalf("send: want ErrReadFailed, got %v", se)
+	if se != nil || re != nil {
+		t.Fatalf("one unreadable file must not abort the tree: send=%v recv=%v", se, re)
 	}
-	if !errors.Is(re, fserrors.ErrReadFailed) {
-		t.Fatalf("recv: want the sender's ErrReadFailed, got %v", re)
+	if len(sentSkipped) != 1 || len(recvSkipped) != 1 || recvSkipped[0] != "tree/gone.bin" {
+		t.Fatalf("skips: sender %v receiver %v", sentSkipped, recvSkipped)
 	}
-	if retry.IsTransient(re) {
-		t.Fatalf("receiver error must be terminal (no retry), got transient: %v", re)
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "tree", "keep.bin")), keep) {
+		t.Fatal("the readable file did not arrive")
+	}
+	if _, err := os.Stat(filepath.Join(dst, "tree", "gone.bin")); err == nil {
+		t.Fatal("a skipped file landed")
 	}
 }
 
@@ -734,9 +746,9 @@ func TestEngine_PasswordFixedWrongSingleAttempt(t *testing.T) {
 	}
 }
 
-// Directory modes are preserved on the receiver — including a restrictive
-// mode, which must be applied after the dir's children land (not before, or
-// writing them would fail).
+// Directory modes are preserved on the receiver, filtered by the umask and
+// always keeping the owner's rwx: a read-only source folder must not make
+// the next re-send into it fail.
 func TestEngine_DirModePreserved(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows has no Unix directory permission bits")
@@ -761,7 +773,7 @@ func TestEngine_DirModePreserved(t *testing.T) {
 		t.Fatalf("send=%v recv=%v", se, re)
 	}
 
-	for rel, want := range map[string]os.FileMode{"tree/priv": 0o750, "tree/ro": 0o555} {
+	for rel, want := range map[string]os.FileMode{"tree/priv": dirMode(0o750), "tree/ro": dirMode(0o555)} {
 		st, err := os.Stat(filepath.Join(dst, rel))
 		if err != nil {
 			t.Fatalf("stat %s: %v", rel, err)
@@ -773,6 +785,67 @@ func TestEngine_DirModePreserved(t *testing.T) {
 	// The child under the read-only dir must still have landed (mode applied last).
 	if got := mustRead(t, filepath.Join(dst, "tree", "ro", "data.bin")); string(got) != "payload" {
 		t.Errorf("file under read-only dir did not land: %q", got)
+	}
+}
+
+// A folder that is read-only on the receiver (an older fsend, or the user)
+// is made writable for the transfer and restored afterwards.
+func TestEngine_ResendIntoReadOnlyFolder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix directory permission bits")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "mod", "a.go"), []byte("a"))
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "mod")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("seed send=%v recv=%v", se, re)
+	}
+	ro := filepath.Join(dst, "mod")
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ro, 0o755) })
+	writeFile(t, filepath.Join(src, "mod", "b.go"), []byte("b"))
+	if err := os.Chmod(filepath.Join(src, "mod"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "mod"), 0o755) })
+	if se, re := fileTransfer(t, []string{filepath.Join(src, "mod")}, dst, nil); se != nil || re != nil {
+		t.Fatalf("re-send into a read-only folder: send=%v recv=%v", se, re)
+	}
+	if got := mustRead(t, filepath.Join(ro, "b.go")); string(got) != "b" {
+		t.Fatalf("b.go = %q", got)
+	}
+}
+
+// Received files take the sender's bits through the local umask and always
+// stay owner-readable and -writable.
+func TestEngine_FileModeHonoursUmask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "t", "open.sh"), []byte("x"))
+	writeFile(t, filepath.Join(src, "t", "none.txt"), []byte("y"))
+	_ = os.Chmod(filepath.Join(src, "t", "open.sh"), 0o777)
+	_ = os.Chmod(filepath.Join(src, "t", "none.txt"), 0o000)
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "t", "none.txt"), 0o644) })
+	sources, err := Walk([]string{filepath.Join(src, "t")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources}, RecvOptions{TargetDir: dst}); se != nil {
+		// none.txt is unreadable to the sender (skipped) unless running as root.
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	st, err := os.Stat(filepath.Join(dst, "t", "open.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := st.Mode().Perm(), os.FileMode(0o777&^processUmask)|0o600; got != want {
+		t.Errorf("open.sh mode = %o, want %o", got, want)
+	}
+	if st.Mode().Perm()&0o002 != 0 && processUmask&0o002 != 0 {
+		t.Error("world-writable bit ignored the umask")
 	}
 }
 

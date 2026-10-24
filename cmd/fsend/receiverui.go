@@ -50,12 +50,18 @@ type receiverUI struct {
 	skipped      int64 // resumed prefixes already on disk
 	skippedSame  int   // files skipped because they were identical
 	kept         int   // differing/conflicting entries left untouched
-	keptByChoice bool  // kept because the user answered the overwrite prompt with "n"
+	keptByChoice bool  // kept because the user chose "skip" at the prompt
 	bar          *uxlog.Progress
 	firstByte    time.Time
 	bytesHint    int64
 	diffBytes    int64 // bytes that move only if overwrite is approved
 	manifestErr  error // a --manifest write failure, surfaced after the transfer
+
+	// choice is the answer to "what about files that already exist",
+	// asked together with the accept prompt and handed to the engine.
+	choice   transfer.ConflictPolicy
+	notSaved []string // entries not saved for other reasons (unreadable, unplaceable)
+	changed  []string // files the sender saw change while reading them
 
 	closeOnce sync.Once
 }
@@ -105,7 +111,6 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 		OS:             runtime.GOOS,
 		ClientVersion:  version.Version,
 		TargetDir:      ui.outDir,
-		Overwrite:      ui.f.overwrite,
 		Checksum:       ui.f.checksum,
 		Accept:         ui.accept,
 		Password:       ui.f.passArg,
@@ -114,6 +119,15 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 		OnSkip:         ui.onSkip,
 		OnFileDone:     ui.onFileDone,
 		OnConflictKept: ui.onConflictKept,
+
+		ResolveConflicts: ui.resolveConflicts,
+		OnEntrySkipped:   ui.onEntrySkipped,
+		OnSourceChanged:  ui.onSourceChanged,
+		OnHashProgress: func(done, total uint64) {
+			if total > 0 {
+				ui.spin.SetMessage(fmt.Sprintf("Checking existing files  %d%%", done*100/total))
+			}
+		},
 	}
 	// The password prompt fires before classification; the spinner must not
 	// animate under the hidden-input line.
@@ -129,12 +143,30 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 	if ui.f.manifest != "" {
 		o.OnManifest = ui.onManifest
 	}
-	// Under --quiet or --yes the confirm stays nil: the engine then keeps
-	// differing files (skip) instead of blocking on a prompt nobody answers.
-	if !ui.f.quiet && !ui.f.yes {
-		o.ConfirmOverwrite = ui.confirmOverwrite
-	}
 	return o
+}
+
+// flagPolicy is the conflict answer given on the command line, if any.
+// Without one, --yes/--quiet keep the local copies (no prompt to ask).
+func (ui *receiverUI) flagPolicy() (transfer.ConflictPolicy, bool) {
+	switch {
+	case ui.f.overwrite:
+		return transfer.ConflictReplace, true
+	case ui.f.rename:
+		return transfer.ConflictRename, true
+	}
+	return transfer.ConflictKeep, false
+}
+
+// resolveConflicts hands the engine the answer the accept prompt collected
+// (or the flag's), and sizes the bar for the files that will now move.
+func (ui *receiverUI) resolveConflicts([]transfer.Conflict) transfer.ConflictPolicy {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	if ui.choice != transfer.ConflictKeep {
+		ui.bytesHint += ui.diffBytes
+	}
+	return ui.choice
 }
 
 // accept records the HELLO, then runs the accept prompt with the breakdown.
@@ -146,11 +178,7 @@ func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummar
 	ui.hello = &cp
 	ui.bytesHint = int64(summary.BytesToRecv)
 	ui.diffBytes = int64(summary.DifferingBytes)
-	// --overwrite pulls the differing files too, so size the bar for them
-	// upfront. The prompt path instead bumps the hint in confirmOverwrite.
-	if ui.f.overwrite {
-		ui.bytesHint += ui.diffBytes
-	}
+	ui.choice, _ = ui.flagPolicy()
 	// Current-file chip data: multi-file only. Names are peer-supplied, so
 	// sanitize here — the only place they enter the UI state.
 	if h.Mode == wire.ModeFiles && len(summary.Files) > 1 {
@@ -196,13 +224,14 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	renderArtifact(os.Stderr, h, summary, ui.sink)
 	fmt.Fprintln(os.Stderr)
 
+	_, flagged := ui.flagPolicy()
 	if f.yes {
 		fmt.Fprintln(os.Stderr, uxlog.Info(), "Accepting (--yes)")
-		// --yes answers the accept prompt, not the overwrite one — differing
-		// files are kept and the exit will be E013. Scripts reading --yes as
-		// "yes to everything" deserve to hear that now, not at the summary.
-		if summary.Differing > 0 && !f.overwrite {
-			fmt.Fprintf(os.Stderr, "%s Keeping %s that would be overwritten — pass --overwrite to replace\n",
+		// --yes answers the accept prompt, not the existing-files question —
+		// differing files are kept and the exit will be E013. Scripts reading
+		// --yes as "yes to everything" deserve to hear that now.
+		if summary.Differing > 0 && !flagged {
+			fmt.Fprintf(os.Stderr, "%s Keeping %s — pass --overwrite to replace, or --rename to keep both\n",
 				uxlog.Warn(), uxlog.CountNoun(summary.Differing, "differing file"))
 		}
 		return true
@@ -219,6 +248,11 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		question = uxlog.Prompt("Accept?")
 	default:
 		question = uxlog.Prompt("Save to ") + boldIfColor(saveTargetLabel(ui.outDir)) + uxlog.Prompt("?")
+	}
+	// Files that already exist: one question covers both the accept and what
+	// to do with them, instead of a second prompt after "yes".
+	if len(summary.Conflicts) > 0 && !flagged && !ui.sink {
+		return ui.askWithConflicts(question, summary.Conflicts)
 	}
 	for {
 		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", question)
@@ -240,74 +274,65 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	}
 }
 
-// confirmOverwrite is the consolidated prompt for differing/conflicting
-// entries. Returns true to overwrite all, false to keep all local copies.
-// Only "n"/"no"/bare-enter take the keep default; a mistyped "yes" must
-// re-prompt, not silently count as "no" — mirroring promptAccept. EOF
-// keeps the local copies but says so.
-func (ui *receiverUI) confirmOverwrite(conflicts []transfer.Conflict) bool {
+// askWithConflicts is the accept prompt when some incoming files already
+// exist and differ. It lists them and asks once: keep both (the default —
+// nothing is lost), replace, skip them, or decline the whole transfer.
+func (ui *receiverUI) askWithConflicts(question string, conflicts []transfer.Conflict) bool {
 	const preview = 5
 	names := ui.conflictNames(conflicts)
-	copyNoun, local, aux := "copies", "versions", "are"
-	if len(conflicts) == 1 {
-		copyNoun, local, aux = "copy", "version", "is"
-	}
-	// Name the consequence, not just the mechanical difference: this is the
-	// one prompt in fsend that can destroy user data.
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  %s  %s\n",
-		uxlog.Prompt(fmt.Sprintf("Replace %s with the incoming %s?",
-			uxlog.CountNoun(len(conflicts), "file"), copyNoun)),
-		uxlog.Alert(fmt.Sprintf("⚠ your local %s %s deleted", local, aux)))
+	fmt.Fprintf(os.Stderr, "  %s\n", uxlog.Prompt(fmt.Sprintf("%s here already %s and %s:",
+		uxlog.CountNoun(len(conflicts), "file"), pick(len(conflicts) == 1, "exists", "exist"), differVerb(len(conflicts)))))
 	shown := min(len(conflicts), preview)
 	for i, c := range conflicts[:shown] {
 		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c, names[i]))
 	}
-	// Offer "l" only when the preview was truncated — with the full list
-	// already on screen, listing again adds nothing.
-	truncated := len(conflicts) > shown
-	question := "  Replace your local " + copyNoun + "?"
-	prompt, hint := question+" [y/N] ", "  Please answer y or n."
-	if truncated {
-		fmt.Fprintf(os.Stderr, "    %s\n",
-			fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts)))
-		prompt, hint = question+" [y/N/l] ", "  Please answer y or n (or l to list all)."
+	if len(conflicts) > shown {
+		fmt.Fprintf(os.Stderr, "    … and %d more — l lists all %d\n", len(conflicts)-shown, len(conflicts))
 	}
+	options := "[K]eep both · [r]eplace " + uxlog.Alert("(deletes yours)") + " · [s]kip them · [n]o"
 	for {
-		fmt.Fprint(os.Stderr, uxlog.Prompt(question)+prompt[len(question):])
+		fmt.Fprintf(os.Stderr, "  %s  %s ", question, options)
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
 		}
 		if eof {
-			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — keeping your local copies.\n", uxlog.Info())
+			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — declining. Pass --yes to accept automatically.\n", uxlog.Info())
 			return false
 		}
+		choice := transfer.ConflictKeep
 		switch line {
-		case "y", "yes":
-			// These files weren't in the bar's initial total (they only move
-			// on consent); add them now, before the bar is created on first
-			// byte, so it doesn't read past 100%.
-			ui.mu.Lock()
-			ui.bytesHint += ui.diffBytes
-			ui.mu.Unlock()
-			return true
-		case "", "n", "no":
-			// An answered prompt is a choice, not a failure — finishReceive
-			// reports it with errKeptByChoice instead of a bare E013.
-			ui.mu.Lock()
-			ui.keptByChoice = true
-			ui.mu.Unlock()
+		case "", "k", "keep", "b", "both", "y", "yes":
+			choice = transfer.ConflictRename
+		case "r", "replace":
+			choice = transfer.ConflictReplace
+		case "s", "skip":
+		case "n", "no":
 			return false
 		case "l", "list":
-			// Still honored when not advertised (harmless reprint).
 			for i, c := range conflicts {
 				fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c, names[i]))
 			}
 			continue
+		default:
+			fmt.Fprintln(os.Stderr, "  Please answer k (keep both), r (replace), s (skip) or n (cancel).")
+			continue
 		}
-		fmt.Fprintln(os.Stderr, hint)
+		ui.mu.Lock()
+		ui.choice = choice
+		// Skipping is a decision, not a failure: the summary says so with ℹ
+		// and the exit stays 0.
+		ui.keptByChoice = choice == transfer.ConflictKeep
+		ui.mu.Unlock()
+		return true
 	}
+}
+
+func pick(c bool, a, b string) string {
+	if c {
+		return a
+	}
+	return b
 }
 
 // conflictNames returns the display names for the conflict rows, trimmed of
@@ -413,6 +438,20 @@ func (ui *receiverUI) onConflictKept(string) {
 	ui.mu.Unlock()
 }
 
+// onEntrySkipped records an entry that wasn't saved for a reason other than
+// the user's choice; finishReceive lists them and exits E050.
+func (ui *receiverUI) onEntrySkipped(rel, reason string) {
+	ui.mu.Lock()
+	ui.notSaved = append(ui.notSaved, sanitizeForDisplay(rel, 128)+" — "+reason)
+	ui.mu.Unlock()
+}
+
+func (ui *receiverUI) onSourceChanged(rel string) {
+	ui.mu.Lock()
+	ui.changed = append(ui.changed, sanitizeForDisplay(rel, 128))
+	ui.mu.Unlock()
+}
+
 // onManifest writes the post-transfer record (path,size,status) as CSV to the
 // --manifest path. Fired only after a successful receive, so the file isn't
 // left describing a transfer that failed.
@@ -497,6 +536,8 @@ func (ui *receiverUI) resetAttemptCounts() {
 	ui.files = ui.files[:0]
 	ui.skippedSame = 0
 	ui.kept = 0
+	ui.notSaved = nil
+	ui.changed = nil
 	ui.mu.Unlock()
 }
 
@@ -519,7 +560,8 @@ func printCancelKeptHint(f *flags, ui *receiverUI) {
 		// Via uxlog.Println: the aborted bar is still live here (ui.close
 		// runs on a defer), and its next refresh frame would erase a raw
 		// stderr write.
-		uxlog.Println(fmt.Sprintf("%s Partial data kept — run the same fsend <code> again to resume while the sender is still waiting.", uxlog.Info()))
+		uxlog.Println(fmt.Sprintf("%s Partial data kept in %s — run the same fsend <code> again to resume while the sender is still waiting.",
+			uxlog.Info(), displayPath(transfer.PartialDir(ui.outDir))))
 	}
 }
 
@@ -570,6 +612,8 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	kept := ui.kept
 	keptByChoice := ui.keptByChoice
 	skippedSame := ui.skippedSame
+	skipped := append([]string(nil), ui.notSaved...)
+	changed := append([]string(nil), ui.changed...)
 	ui.mu.Unlock()
 
 	if !firstByte.IsZero() {
@@ -595,13 +639,19 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		printRecvSummary(f, "Received text", total, moved, kept, 0, keptByChoice, elapsed, ui.pathInfo)
 	} else {
 		headline := ui.headline(h, files)
-		// With kept-back files the peer-supplied display name ("2 files") would
-		// overcount what actually landed — say how many of the offer were written.
-		if kept > 0 && !ui.sink {
+		// With kept-back or skipped files the peer-supplied display name ("2
+		// files") would overcount what landed — say how many were written.
+		if (kept > 0 || len(skipped) > 0) && !ui.sink {
 			headline = fmt.Sprintf("Saved %d of %s to %s",
-				len(files), uxlog.CountNoun(len(files)+skippedSame+kept, "file"), uxlog.Path(displayPath(ui.outDir)))
+				len(files), uxlog.CountNoun(len(files)+skippedSame+kept+len(skipped), "file"), uxlog.Path(displayPath(ui.outDir)))
 		}
 		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
+		printSkippedList(f, "were", skipped)
+		if !f.quiet {
+			for _, c := range changed {
+				fmt.Fprintf(os.Stderr, "%s %s changed on the sender while it was being sent — the copy may be inconsistent\n", uxlog.Warn(), c)
+			}
+		}
 	}
 	// manifestErr is set by onManifest, which runs on this goroutine before we
 	// return, so no lock is needed. The transfer succeeded; the failure is only
@@ -610,8 +660,10 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	switch {
 	case ui.manifestErr != nil:
 		retErr = ui.manifestErr
+	case len(skipped) > 0:
+		retErr = fmt.Errorf("%w: %d not saved", fserrors.ErrFilesSkipped, len(skipped))
 	case kept > 0 && keptByChoice:
-		retErr = errKeptByChoice
+		// The user chose to skip them: a decision, not a failure.
 	case kept > 0:
 		retErr = fserrors.ErrTargetExists
 	}
@@ -632,9 +684,9 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	return retErr
 }
 
-// errKeptByChoice is ErrTargetExists after the user answered "n" at the
-// overwrite prompt: same E013 exit so scripts see the partial, but rendered
-// as their decision (ℹ, no "use --overwrite" advice they just declined).
+// errKeptByChoice is ErrTargetExists rendered as the user's decision (ℹ, no
+// "use --overwrite" advice). finishReceive no longer returns it — choosing
+// "skip" exits 0 — but renderError still recognises it.
 var errKeptByChoice = fmt.Errorf("%w: kept by choice", fserrors.ErrTargetExists)
 
 // readTextPayload lifts the text payload off disk (it was staged as a file)

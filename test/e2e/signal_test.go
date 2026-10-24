@@ -4,6 +4,8 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/zeebo/blake3"
 )
 
 // Sender SIGINT mid-transfer must leave the receiver in a clean
@@ -49,7 +53,7 @@ func TestSignal_SenderSIGINTMidTransfer(t *testing.T) {
 		_ = s.cmd.Process.Kill()
 		_ = rCmd.Process.Kill()
 		<-rDone
-		t.Fatal("no .fsend-partial sidecar appeared within 5s — receiver never started writing")
+		t.Fatal("no partial (.fsend/*.partial) appeared within 5s — receiver never started writing")
 	}
 	s.signal(t, syscall.SIGINT)
 	s.wait(t, 5*time.Second)
@@ -120,7 +124,7 @@ func TestSignal_NonexistentSource(t *testing.T) {
 	}
 }
 
-// After a successful transfer the .fsend-partial sidecar must not be
+// After a successful transfer the partial (.fsend/*.partial) must not be
 // left behind.
 func TestSignal_NoPartialAfterSuccess(t *testing.T) {
 	requireE2E(t)
@@ -130,7 +134,7 @@ func TestSignal_NoPartialAfterSuccess(t *testing.T) {
 	r := h.runPair(t, []string{srcFile}, dst, []string{"--yes"}, "")
 	r.requireSuccess(t)
 
-	matches, _ := filepath.Glob(filepath.Join(dst, "*.fsend-partial"))
+	matches, _ := filepath.Glob(filepath.Join(dst, ".fsend", "*.partial"))
 	if len(matches) > 0 {
 		t.Fatalf("sidecar(s) left behind: %v", matches)
 	}
@@ -172,7 +176,7 @@ func TestSignal_ResumeAfterSIGINT(t *testing.T) {
 		_ = s.cmd.Process.Kill()
 		_ = r1.Process.Kill()
 		_ = r1.Wait()
-		t.Fatal("no .fsend-partial sidecar appeared within 5s — receiver never started writing")
+		t.Fatal("no partial (.fsend/*.partial) appeared within 5s — receiver never started writing")
 	}
 
 	s.signal(t, syscall.SIGINT)
@@ -189,14 +193,14 @@ func TestSignal_ResumeAfterSIGINT(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "big.bin"))
 }
 
-// waitForSidecar polls for any *.fsend-partial under dir, returning
+// waitForSidecar polls for any partial under dir/.fsend, returning
 // true once one appears or false on timeout. 25 ms cadence is short
 // enough to catch a transfer that bursts past in <100 ms without
 // busy-spinning.
 func waitForSidecar(dir string, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		matches, _ := filepath.Glob(filepath.Join(dir, "*.fsend-partial"))
+		matches, _ := filepath.Glob(filepath.Join(dir, ".fsend", "*.partial"))
 		if len(matches) > 0 {
 			return true
 		}
@@ -219,10 +223,7 @@ func TestSignal_ResumeReusesPartialInodePreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	partial := filepath.Join(dst, "big.bin.fsend-partial")
-	if err := os.WriteFile(partial, body[:2*1024*1024], 0o644); err != nil {
-		t.Fatal(err)
-	}
+	partial := plantPartial(t, dst, "big.bin", srcFile, body[:2*1024*1024])
 
 	inoBefore, err := inodeOf(partial)
 	if err != nil {
@@ -263,7 +264,7 @@ func inodeOf(path string) (uint64, error) {
 // The flagship recovery path: the receiver dies mid-transfer (Ctrl-C)
 // and is re-run with the same code. The sender must re-enter pairing —
 // fresh mDNS announce, fresh server session — and the rerun must resume
-// from the .fsend-partial rather than restart.
+// from its partial rather than restart.
 func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
@@ -329,12 +330,12 @@ func TestSignal_ReceiverSIGINTRerunSameCode(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "big.bin"))
 }
 
-// waitForSidecarSize polls until a *.fsend-partial under dir reaches
+// waitForSidecarSize polls until a partial under dir/.fsend reaches
 // minBytes, or the budget elapses.
 func waitForSidecarSize(dir string, minBytes int64, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		matches, _ := filepath.Glob(filepath.Join(dir, "*.fsend-partial"))
+		matches, _ := filepath.Glob(filepath.Join(dir, ".fsend", "*.partial"))
 		for _, m := range matches {
 			if st, err := os.Stat(m); err == nil && st.Size() >= minBytes {
 				return true
@@ -429,3 +430,29 @@ func TestSignal_ReceiverKilledCodeStaysLive(t *testing.T) {
 // rawDuration matches Go's un-rounded Duration rendering (5+ decimals),
 // e.g. "618.167744ms" — what the retry notice must never show.
 var rawDuration = regexp.MustCompile(`[0-9]+\.[0-9]{5,}m?s`)
+
+// plantPartial writes a partial for rel the way the receiver stores one:
+// <dst>/.fsend/<id>.partial plus a sidecar naming the source version (its
+// size and mtime). Mirrors transfer/partials.go.
+func plantPartial(t *testing.T, dst, rel, srcFile string, data []byte) string {
+	t.Helper()
+	st, err := os.Stat(srcFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(dst, ".fsend")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sum := blake3.Sum256([]byte(rel))
+	id := hex.EncodeToString(sum[:16])
+	meta, _ := json.Marshal(map[string]any{"path": rel, "size": st.Size(), "mtime": st.ModTime().Unix()})
+	if err := os.WriteFile(filepath.Join(dir, id+".meta"), meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	partial := filepath.Join(dir, id+".partial")
+	if err := os.WriteFile(partial, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return partial
+}

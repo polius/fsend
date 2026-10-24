@@ -13,9 +13,13 @@ func TestWindowsPathHazard(t *testing.T) {
 		"CON", "con",     // reserved, any case
 		"NUL.txt",      // reserved + extension still resolves to the device
 		"COM1", "LPT9", // reserved serial/printer devices
-		"aux.c",   // reserved stem with a legit-looking extension
-		"report.", // trailing dot (stripped by Windows → collision)
-		"report ", // trailing space (stripped by Windows)
+		"aux.c",                                  // reserved stem with a legit-looking extension
+		"report.",                                // trailing dot (stripped by Windows → collision)
+		"report ",                                // trailing space (stripped by Windows)
+		"a<b", "a>b", `a"b`, "a|b", "a?b", "a*b", // Win32-invalid characters
+		`a\b`,                                       // would split into a/b
+		"tab\there",                                 // control character
+		"CONIN$", "conout$.txt", "COM¹", "LPT³.log", // console + superscript devices
 	}
 	for _, c := range unsafe {
 		if windowsPathHazard(c) == "" {
@@ -40,7 +44,7 @@ func TestWindowsPathHazard(t *testing.T) {
 // the same names are legitimate on Unix and must pass there. Driven with the
 // OS injected so both branches run on any host.
 func TestSanitizeRelativePath_WindowsGate(t *testing.T) {
-	windowsUnsafe := []string{"notes:secret", "CON", "nul.txt", "COM1", "a/aux.c/b", "report.", "report "}
+	windowsUnsafe := []string{"notes:secret", "CON", "nul.txt", "COM1", "a/aux.c/b", "report.", "report ", `dir/a\b`, "q?.txt"}
 	for _, p := range windowsUnsafe {
 		if _, err := sanitizeRelativePath(p, "windows"); err == nil {
 			t.Errorf("sanitizeRelativePath(%q, windows) accepted, want rejected", p)

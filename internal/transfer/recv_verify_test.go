@@ -96,7 +96,7 @@ func TestResolveVerify_BatchesLargeCandidateSet(t *testing.T) {
 	}
 
 	s := &Streams{Control: recvCtrl}
-	if err := resolveVerify(s, plans); err != nil {
+	if err := resolveVerify(s, plans, fsSemantics{}, nil); err != nil {
 		t.Fatalf("resolveVerify: %v", err)
 	}
 	_ = recvCtrl.Close()

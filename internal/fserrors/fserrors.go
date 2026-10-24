@@ -148,6 +148,14 @@ var (
 	// gets its own entry rather than E033's "check your internet
 	// connection", which would send a developer chasing the wrong thing.
 	ErrUpdateDevBuild = errors.New("development build")
+	// E050 — the transfer finished, but some files were skipped: the sender
+	// could not read them, or they could not be placed safely on the
+	// receiver (a name collision on a case-insensitive filesystem, a folder
+	// in the way). The rest landed; the list is printed above.
+	ErrFilesSkipped = errors.New("some files were skipped")
+	// E051 — the listing has more entries than one transfer allows. Not a
+	// version problem, so it doesn't borrow E015's wording.
+	ErrTooManyEntries = errors.New("too many files in one transfer")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -252,8 +260,10 @@ var catalog = map[error]Entry{
 	},
 	ErrDiskFull: {
 		Code: "E008", Exit: 8,
-		Message: "Not enough disk space.",
-		Action:  "Free up space or use --out <dir> to save somewhere else.",
+		Message:       "Not enough disk space.",
+		Action:        "Free up space or use --out <dir> to save somewhere else.",
+		SenderMessage: "The receiver does not have enough disk space.",
+		SenderAction:  "They can free up space, or save somewhere else with --out <dir>.",
 	},
 	ErrWriteFailed: {
 		Code: "E009", Exit: 9,
@@ -475,6 +485,17 @@ var catalog = map[error]Entry{
 		Message: "Refusing to update as root — fsend installs per-user.",
 		// The opt-in command renders as a block (see renderError), so the
 		// Action is left empty rather than competing with it.
+	},
+	ErrFilesSkipped: {
+		Code: "E050", Exit: 50,
+		Message: "Some files were skipped — everything else arrived.",
+		Action: "The skipped files and the reason are listed above. Fix the cause and\n" +
+			"  run fsend again; files that already arrived are not sent twice.",
+	},
+	ErrTooManyEntries: {
+		Code: "E051", Exit: 51,
+		Message: "This transfer has too many files and folders.",
+		Action:  "Send it in parts, for example one subfolder at a time.",
 	},
 	ErrUpdateDevBuild: {
 		Code: "E041", Exit: 41,

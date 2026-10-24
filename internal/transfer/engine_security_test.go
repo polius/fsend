@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -70,9 +71,34 @@ func hostileSetup(t *testing.T, dstDir string, entries []wire.ListingEntry, opts
 func mkChunk(index uint32, payload []byte, eof bool) *wire.Chunk {
 	seg := wire.Segment{FileIndex: index, Length: uint32(len(payload)), EOF: eof}
 	if eof {
-		seg.RootHash = blakeHash32(payload)
+		seg.RootHash = bytesRoot(payload)
 	}
-	return &wire.Chunk{ChunkHash: blakeHash32(payload), Segments: []wire.Segment{seg}, Payload: payload}
+	return &wire.Chunk{Segments: []wire.Segment{seg}, Payload: payload}
+}
+
+// recvDecisions reads the receiver's decision batches until CLASSIFY_END.
+func recvDecisions(r io.Reader) (map[uint32]wire.Decision, error) {
+	out := make(map[uint32]wire.Decision)
+	for {
+		ft, body, err := wire.ReadControlRaw(r)
+		if err != nil {
+			return nil, err
+		}
+		switch ft {
+		case wire.TypeClassifyBatch:
+			var batch []wire.Decision
+			if err := wire.Decode(body, &batch); err != nil {
+				return nil, err
+			}
+			for _, d := range batch {
+				out[d.Index] = d
+			}
+		case wire.TypeClassifyEnd:
+			return out, nil
+		default:
+			return nil, fmt.Errorf("unexpected frame %v", ft)
+		}
+	}
 }
 
 // A malicious sender must not escape the receive dir via symlink indirection:
@@ -243,18 +269,21 @@ func TestHostile_DuplicateEOF(t *testing.T) {
 	sender.Close()
 }
 
-// A chunk whose ChunkHash doesn't match its payload must be rejected.
-func TestHostile_CorruptChunkHash(t *testing.T) {
+// A file whose root doesn't match its bytes must be rejected and never land.
+func TestHostile_CorruptRootHash(t *testing.T) {
 	dst := t.TempDir()
 	entries := []wire.ListingEntry{{Index: 0, RelativePath: "f.bin", Size: 4, Type: wire.EntryFile}}
 	sender, _, recvErr := hostileSetup(t, dst, entries, RecvOptions{})
 
 	c := mkChunk(0, []byte("GOOD"), true)
-	c.ChunkHash[0] ^= 0xFF // corrupt the transport hash
+	c.Segments[0].RootHash[0] ^= 0xFF
 	go func() { _ = wire.WriteChunk(sender.Data, c) }()
 
-	if err := awaitReject(sender, recvErr); err == nil {
-		t.Fatal("receiver accepted a chunk with a bad transport hash")
+	if err := awaitReject(sender, recvErr); !errors.Is(err, fserrors.ErrHashMismatch) {
+		t.Fatalf("receiver err = %v, want ErrHashMismatch", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "f.bin")); err == nil {
+		t.Error("a file with a bad root landed")
 	}
 	sender.Close()
 }

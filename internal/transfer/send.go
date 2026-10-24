@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
-
-	"github.com/zeebo/blake3"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
@@ -38,6 +37,12 @@ type SendOptions struct {
 	// "unknown" (old receivers don't send the flag).
 	OnSkip         func(index uint32, kept bool)
 	OnStreamingEOF func(index uint32, finalBytes uint64)
+	// OnSourceSkipped fires for a file that could not be read; the receiver
+	// is told to drop it and the transfer carries on with the rest.
+	OnSourceSkipped func(index uint32, err error)
+	// OnSourceChanged fires for a file whose size or mtime changed while it
+	// was being read; the copy that arrives may be inconsistent.
+	OnSourceChanged func(index uint32)
 }
 
 // Send executes the full sender-side protocol over the supplied streams.
@@ -47,10 +52,10 @@ func Send(ctx context.Context, s *Streams, opts SendOptions) error {
 	case errors.Is(err, context.Canceled):
 		notifyPeer(s, wire.ErrCodeCancelled, "sender cancelled")
 	case errors.Is(err, fserrors.ErrReadFailed):
-		// A local source failure (unreadable, vanished, shrunk) otherwise
-		// surfaces on the receiver as a bare stream close — a "network"
-		// error it would burn retries on. Post the real reason instead.
-		notifyPeer(s, wire.ErrCodeReadFailed, err.Error())
+		// A local source failure otherwise surfaces on the receiver as a bare
+		// stream close — a "network" error it would burn retries on. Post the
+		// reason, without the sender's local paths.
+		notifyPeer(s, wire.ErrCodeReadFailed, "the sender could not read its source")
 	}
 	return err
 }
@@ -110,6 +115,9 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 
 // sendFiles runs the listing → classify → data flow.
 func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
+	if len(opts.Sources) > maxListingEntries {
+		return fmt.Errorf("%w: %d entries, the limit is %d", fserrors.ErrTooManyEntries, len(opts.Sources), maxListingEntries)
+	}
 	if err := sendListing(s.Control, opts.Sources); err != nil {
 		return fmt.Errorf("send: listing: %w", err)
 	}
@@ -118,11 +126,15 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 		return err
 	}
 
+	// Verify every resume prefix in the background while earlier files
+	// stream, so a big resume doesn't stall the pipe when its turn comes.
+	prefixes := startPrefixHashing(ctx, opts.Sources, decisions)
+
 	packer, err := newChunkPacker(s.Data)
 	if err != nil {
 		return err
 	}
-	defer packer.Close()
+	defer func() { _ = packer.Close() }()
 
 	for i := range opts.Sources {
 		if err := ctx.Err(); err != nil {
@@ -143,12 +155,15 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 		if src.Entry.Type != wire.EntryFile || src.Entry.Size == 0 {
 			continue
 		}
-		if err := sendOneFile(ctx, s, packer, src, d, opts); err != nil {
+		if err := sendOneFile(ctx, s, packer, src, d, prefixes[src.Entry.Index], opts); err != nil {
 			return err
 		}
 	}
 	if err := packer.flush(); err != nil {
-		return err
+		return sendChunkErr(s, err)
+	}
+	if err := packer.Close(); err != nil {
+		return sendChunkErr(s, err)
 	}
 
 	if err := wire.WriteControl(s.Control, wire.TypeTransferComplete, nil); err != nil {
@@ -169,10 +184,9 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 }
 
 // maxVerifyRounds caps how many VERIFY_REQUESTs the sender will answer in one
-// negotiation. The honest maximum is ceil(maxListingEntries/maxVerifyIDsPerFrame)
-// (~25), so this only stops a hostile receiver replaying the request to make
-// the sender re-hash forever.
-const maxVerifyRounds = 1024
+// negotiation: one per maxVerifyIDsPerFrame entries, so a hostile receiver
+// can't replay the request to make the sender re-hash forever.
+const maxVerifyRounds = maxListingEntries/maxVerifyIDsPerFrame + 1
 
 // senderNegotiate reads the receiver's classification, answering any
 // TypeVerifyRequest (--checksum) by hashing just the requested files before
@@ -200,24 +214,7 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 			if err := wire.Decode(body, &idx); err != nil {
 				return nil, fmt.Errorf("send: verify request: %w", err)
 			}
-			resp := make([]wire.FileHash, 0, len(idx))
-			for _, i := range idx {
-				p, ok := byIndex[i]
-				if !ok || p == "" {
-					continue
-				}
-				// Cache so a replayed VERIFY_REQUEST can't make a hostile peer
-				// re-hash the same files indefinitely. Bounded by len(sources).
-				h, done := hashed[i]
-				if !done {
-					if h, err = hashFileRoot(p); err != nil {
-						return nil, fmt.Errorf("%w: hash %s: %v", fserrors.ErrReadFailed, p, err)
-					}
-					hashed[i] = h
-				}
-				resp = append(resp, wire.FileHash{Index: i, Hash: h})
-			}
-			if err := wire.WriteControl(s.Control, wire.TypeVerifyResponse, resp); err != nil {
+			if err := wire.WriteControl(s.Control, wire.TypeVerifyResponse, verifyHashes(idx, byIndex, hashed)); err != nil {
 				return nil, fmt.Errorf("send: verify response: %w", err)
 			}
 		case wire.TypeClassifyBatch:
@@ -246,84 +243,171 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 	}
 }
 
+// verifyHashes hashes the requested files a few at a time. A file that
+// can't be read is left out, so the receiver treats it as differing and the
+// data phase reports it per file. hashed caches roots so a replayed request
+// can't make a hostile peer re-hash the same files indefinitely.
+func verifyHashes(idx []uint32, byIndex map[uint32]string, hashed map[uint32][32]byte) []wire.FileHash {
+	var todo []uint32
+	for _, i := range idx {
+		if _, done := hashed[i]; !done && byIndex[i] != "" {
+			hashed[i] = [32]byte{} // reserve: a duplicate index hashes once
+			todo = append(todo, i)
+		}
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, verifyWorkers)
+	for _, i := range todo {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i uint32, path string) {
+			defer func() { <-sem; wg.Done() }()
+			if h, err := hashFileRoot(path, nil); err == nil {
+				mu.Lock()
+				hashed[i] = h
+				mu.Unlock()
+			}
+		}(i, byIndex[i])
+	}
+	wg.Wait()
+	resp := make([]wire.FileHash, 0, len(idx))
+	for _, i := range idx {
+		if h, ok := hashed[i]; ok && h != ([32]byte{}) {
+			resp = append(resp, wire.FileHash{Index: i, Hash: h})
+		}
+	}
+	return resp
+}
+
+// prefixResult is the sender's block hashes for a resume prefix.
+type prefixResult struct {
+	blocks [][32]byte
+	err    error
+}
+
+// startPrefixHashing hashes each resume prefix of the source in the
+// background, in send order. Each result arrives on its own channel.
+func startPrefixHashing(ctx context.Context, sources []Source, decisions map[uint32]wire.Decision) map[uint32]chan prefixResult {
+	out := make(map[uint32]chan prefixResult)
+	var jobs []*Source
+	for i := range sources {
+		src := &sources[i]
+		if d, ok := decisions[src.Entry.Index]; ok && d.Action == wire.DecisionResume && d.ResumeOffset > 0 &&
+			d.ResumeOffset < src.Entry.Size && d.ResumeOffset%hashBlockSize == 0 && src.Entry.Type == wire.EntryFile {
+			out[src.Entry.Index] = make(chan prefixResult, 1)
+			jobs = append(jobs, src)
+		}
+	}
+	go func() {
+		for _, src := range jobs {
+			ch := out[src.Entry.Index]
+			if ctx.Err() != nil {
+				ch <- prefixResult{err: ctx.Err()}
+				continue
+			}
+			f, err := os.Open(src.AbsPath)
+			if err != nil {
+				ch <- prefixResult{err: err}
+				continue
+			}
+			blocks, err := hashBlocks(f, int64(decisions[src.Entry.Index].ResumeOffset), nil)
+			_ = f.Close()
+			ch <- prefixResult{blocks: blocks, err: err}
+		}
+	}()
+	return out
+}
+
 // sendOneFile streams one regular file (resume-aware) through the packer,
-// computing its BLAKE3 root inline and emitting it on the EOF segment.
-func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Source, d wire.Decision, opts SendOptions) error {
+// hashing it once, in parallel blocks, for the root on its EOF segment. A
+// file that can't be read is skipped (the receiver is told) rather than
+// aborting the whole transfer.
+func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Source, d wire.Decision, prefix chan prefixResult, opts SendOptions) error {
+	idx := src.Entry.Index
+	skip := func(cause error) error {
+		if opts.OnSourceSkipped != nil {
+			opts.OnSourceSkipped(idx, cause)
+		}
+		if err := packer.skipFile(idx); err != nil {
+			return sendChunkErr(s, err)
+		}
+		return nil
+	}
+
 	f, err := os.Open(src.AbsPath)
 	if err != nil {
-		return fmt.Errorf("%w: %v", fserrors.ErrReadFailed, err)
+		return skip(err)
 	}
 	defer func() { _ = f.Close() }()
 
-	root := blake3.New()
+	h := newFileHasher()
+	defer h.discard()
 	offset := uint64(0)
-	if d.Action == wire.DecisionResume && d.ResumeOffset > 0 {
-		// Verify the receiver's partial matches our source before skipping
-		// those bytes — a mismatch means the source changed.
-		got, err := PrefixImohash(src.AbsPath, int64(d.ResumeOffset))
-		if err != nil {
-			return fmt.Errorf("%w: imohash source prefix: %v", fserrors.ErrReadFailed, err)
+	if prefix != nil {
+		pr := <-prefix
+		if pr.err != nil {
+			if errors.Is(pr.err, context.Canceled) {
+				return pr.err
+			}
+			return skip(pr.err)
 		}
-		if got != d.PartialImohash {
-			_ = s.Data.Close()
-			declineTransfer(s, wire.ErrCodePartialMismatch, "receiver's partial does not match source")
-			return fserrors.ErrPartialMismatch
-		}
-		// Hash the prefix into the root (not sent) so the trailer covers the
-		// whole file, then seek to the resume point.
-		if err := hashPrefixInto(root, f, int64(d.ResumeOffset)); err != nil {
-			return fmt.Errorf("%w: hash prefix: %v", fserrors.ErrReadFailed, err)
-		}
-		if _, err := f.Seek(int64(d.ResumeOffset), io.SeekStart); err != nil {
-			return fmt.Errorf("%w: seek: %v", fserrors.ErrReadFailed, err)
-		}
-		offset = d.ResumeOffset
-		if opts.OnResume != nil {
-			opts.OnResume(src.Entry.Index, offset, src.Entry.Size)
+		// Resume only when the receiver's prefix is byte-for-byte ours (by
+		// its tree root). Otherwise the source changed or the partial is
+		// stale: send the file from 0 and tell the receiver to start over.
+		if root := foldRoot(pr.blocks, d.ResumeOffset); string(d.PrefixRoot) == string(root[:]) {
+			h.seed(pr.blocks)
+			offset = d.ResumeOffset
+			if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
+				return skip(err)
+			}
+			if opts.OnResume != nil {
+				opts.OnResume(idx, offset, src.Entry.Size)
+			}
+		} else {
+			packer.markRestart(idx)
 		}
 	}
 
 	sent := offset
-	rbuf := make([]byte, 256*1024)
 	for sent < src.Entry.Size {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// Cap the read to the bytes we declared in the listing. Without this,
-		// a file that grew since the walk would overshoot its declared size
-		// and the receiver would reject the whole transfer. We send a clean
-		// snapshot of the first Size bytes instead.
-		toRead := uint64(len(rbuf))
-		if remaining := src.Entry.Size - sent; remaining < toRead {
-			toRead = remaining
-		}
-		n, rerr := f.Read(rbuf[:toRead])
-		if n > 0 {
-			_, _ = root.Write(rbuf[:n])
-			if err := packer.appendBytes(src.Entry.Index, rbuf[:n]); err != nil {
-				return sendChunkErr(s, err)
-			}
-			sent += uint64(n)
-			if opts.ProgressFn != nil {
-				opts.ProgressFn(src.Entry.Index, sent)
-			}
-		}
-		if rerr == io.EOF {
-			// EOF before the declared size means the source shrank since the
-			// walk. Finishing here would hand the receiver a truncated file
-			// that hashes clean and lands as a "success"; fail instead.
-			if sent < src.Entry.Size {
-				return fmt.Errorf("%w: %s shrank during send (%d of %d bytes)", fserrors.ErrReadFailed, src.AbsPath, sent, src.Entry.Size)
-			}
-			break
-		}
+		// Read whole blocks, capped at the size declared in the listing: a
+		// file that grew since the walk sends a clean snapshot of that size.
+		b := getBlock()[:min(uint64(hashBlockSize), src.Entry.Size-sent)]
+		n, rerr := io.ReadFull(f, b)
 		if rerr != nil {
-			return fmt.Errorf("%w: read %s: %v", fserrors.ErrReadFailed, src.AbsPath, rerr)
+			putBlock(b)
+			if errors.Is(rerr, io.ErrUnexpectedEOF) || errors.Is(rerr, io.EOF) {
+				// Shrank since the walk: what we'd send would be a truncated
+				// file that hashes clean. Drop it instead.
+				rerr = fmt.Errorf("shrank during send (%d of %d bytes)", sent+uint64(n), src.Entry.Size)
+			}
+			return skip(rerr)
+		}
+		if err := packer.appendBytes(idx, b); err != nil {
+			putBlock(b)
+			return sendChunkErr(s, err)
+		}
+		h.addBlock(b) // hashed in parallel; the buffer returns to the pool
+		sent += uint64(n)
+		if opts.ProgressFn != nil {
+			opts.ProgressFn(idx, sent)
 		}
 	}
-	var r [32]byte
-	copy(r[:], root.Sum(nil))
-	return packer.endFile(src.Entry.Index, r)
+	changed := false
+	if st, err := f.Stat(); err == nil && (st.Size() != int64(src.Entry.Size) || st.ModTime().Unix() != src.Entry.ModTimeSec) {
+		changed = true
+		if opts.OnSourceChanged != nil {
+			opts.OnSourceChanged(idx)
+		}
+	}
+	if err := packer.endFile(idx, h.Sum(), changed); err != nil {
+		return sendChunkErr(s, err)
+	}
+	return nil
 }
 
 // sendChunkErr surfaces a receiver-posted reason (e.g. write failure) instead
@@ -335,16 +419,17 @@ func sendChunkErr(s *Streams, err error) error {
 	return err
 }
 
-// sendStream streams a single unknown-length reader (stdin/--text). Per-chunk
-// hashes verify integrity; a BLAKE3 root is emitted on the final segment.
+// sendStream streams a single unknown-length reader (stdin/--text). A tree
+// root is emitted on the final segment.
 func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 	packer, err := newChunkPacker(s.Data)
 	if err != nil {
 		return err
 	}
-	defer packer.Close()
+	defer func() { _ = packer.Close() }()
 
-	root := blake3.New()
+	root := newFileHasher()
+	defer root.discard()
 	var sent uint64
 	rbuf := make([]byte, 256*1024)
 	for {
@@ -369,15 +454,16 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 			return fmt.Errorf("%w: read stream: %v", fserrors.ErrReadFailed, rerr)
 		}
 	}
-	var r [32]byte
-	copy(r[:], root.Sum(nil))
 	// endFile/flush are where a short stream's write actually hits the wire,
 	// so a receiver decline (e.g. target exists) surfaces here — check for
 	// its posted reason like appendBytes does.
-	if err := packer.endFile(0, r); err != nil {
+	if err := packer.endFile(0, root.Sum(), false); err != nil {
 		return sendChunkErr(s, err)
 	}
 	if err := packer.flush(); err != nil {
+		return sendChunkErr(s, err)
+	}
+	if err := packer.Close(); err != nil {
 		return sendChunkErr(s, err)
 	}
 	if opts.OnStreamingEOF != nil {
