@@ -54,6 +54,18 @@ pcts = sorted(float(p) for p in
 if not pcts or pcts[0] > 0:
     pcts.insert(0, 0.0)
 stop_ms = [p / 100.0 * LOOP * 1000 for p in pcts]
+# The loop's fade (svg-postprocess.py add_motion) changes every tick while it
+# runs, so those spans are shot frame by frame instead of per stop.
+fade_m = re.search(r'@keyframes fade\{(.*?\})\}', svg)
+fade_ms = []
+if fade_m:
+    ops = [(float(p), float(o)) for p, o in
+           re.findall(r'([0-9.]+)%\{opacity:([0-9.]+)\}', fade_m.group(1))]
+    fade_ms = [(a * LOOP * 10, b * LOOP * 10)
+               for (a, oa), (b, ob) in zip(ops, ops[1:]) if oa != ob]
+# Window background, for the rounded corners outside the coral frame.
+bg_m = re.search(r'\.a\{fill:(#[0-9a-fA-F]{6})\}', svg)
+BG = bg_m.group(1) if bg_m else "#1a1b26"
 print(f"{W}x{H} @ {SCALE}x, {LOOP}s loop, {len(stop_ms)} stops", file=sys.stderr)
 
 tmp = tempfile.mkdtemp(prefix="fsend-demo-")
@@ -62,7 +74,7 @@ try:
     html = os.path.join(tmp, "demo.html")
     open(html, "w").write(
         "<!doctype html><meta charset=utf-8>"
-        "<style>html,body{margin:0;background:#1e1e2e}"
+        f"<style>html,body{{margin:0;background:{BG}}}"
         f"svg{{display:block;width:{W}px;height:{H}px}}</style>" + svg)
 
     profile = os.path.join(tmp, "profile")
@@ -112,10 +124,12 @@ try:
         if js("document.readyState") == "complete":
             break
         time.sleep(0.1)
-    # Grab the SVG's CSS animation and pause it so we can scrub frame-exactly.
+    # Grab the SVG's CSS animations (the filmstrip, plus the loop fade) and
+    # pause them so we can scrub frame-exactly.
     ok = js(f'(()=>{{const el=document.querySelector(\'g[style*="animation-name:{ANIM}"]\');'
-            'if(!el)return "noel";const a=el.getAnimations()[0];'
-            'if(!a)return "noanim";a.pause();window.__a=a;return "ok";})()')
+            'if(!el)return "noel";if(!el.getAnimations()[0])return "noanim";'
+            'const as=document.getAnimations();as.forEach(a=>a.pause());'
+            'window.__as=as;return "ok";})()')
     if ok != "ok":
         sys.exit(f"could not hook the SVG animation: {ok}")
 
@@ -125,11 +139,13 @@ try:
     for n in range(total):
         t_ms = n * 1000.0 / FPS
         idx = max(bisect.bisect_right(stop_ms, t_ms) - 1, 0)
+        if any(a <= t_ms <= b for a, b in fade_ms):
+            idx = ("tick", n)
         if idx not in shot:
-            js(f"window.__a.currentTime={t_ms}")
+            js(f"window.__as.forEach(a=>a.currentTime={t_ms})")
             data = call("Page.captureScreenshot", format="png",
                         captureBeyondViewport=False)["data"]
-            fp = os.path.join(tmp, f"s{idx:05d}.png")
+            fp = os.path.join(tmp, f"s{len(shot):05d}.png")
             open(fp, "wb").write(base64.b64decode(data))
             shot[idx] = fp
         frame_files.append(shot[idx])
