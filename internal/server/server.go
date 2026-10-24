@@ -580,7 +580,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sid := ulid.Make().String()
+	// crypto/rand entropy: session IDs must be unguessable, not just unique.
+	sid := ulid.MustNew(ulid.Now(), rand.Reader).String()
 	senderTok, err := newRoleToken()
 	if err != nil {
 		s.mu.Unlock()
