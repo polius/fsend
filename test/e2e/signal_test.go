@@ -17,6 +17,7 @@ import (
 // non-zero state with no full-size destination file.
 func TestSignal_SenderSIGINTMidTransfer(t *testing.T) {
 	requireE2E(t)
+	t.Parallel() // mostly waits out timeouts; overlap it with the rest
 	src, dst := t.TempDir(), t.TempDir()
 	srcFile := filepath.Join(src, "big.bin")
 	const size = 64 * 1024 * 1024
@@ -366,6 +367,7 @@ func waitForStderr(s *senderProc, substr string, budget time.Duration) bool {
 // window so the test doesn't wait a minute per run.
 func TestSignal_ReceiverKilledCodeStaysLive(t *testing.T) {
 	requireE2E(t)
+	t.Parallel() // mostly waits out timeouts; overlap it with the rest
 	src, dst := t.TempDir(), t.TempDir()
 	srcFile := filepath.Join(src, "p.bin")
 	writeRandom(t, srcFile, 256*1024)
