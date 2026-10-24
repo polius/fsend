@@ -235,11 +235,18 @@ html, body {
 
 /* ---- poster affordance (README thumbnail only, never in the video) ------- */
 #poster-play {
-  position: absolute; left: 50%; top: 501px; width: 110px; height: 110px; margin: -55px 0 0 -55px; z-index: 1000;
+  --d: 170px; --y: 501px;
+  position: absolute; inset: 0; z-index: 1000; background: rgba(6, 4, 3, 0.35);
+}
+#poster-play::before {
+  content: ""; position: absolute; left: 50%; top: var(--y); width: var(--d); height: var(--d);
+  margin: calc(var(--d) / -2) 0 0 calc(var(--d) / -2);
   border-radius: 50%; background: rgba(224, 128, 90, 0.96);
-  box-shadow: 0 22px 60px -8px rgba(0,0,0,0.7), 0 0 0 7px rgba(224,128,90,0.22);
+  box-shadow: 0 calc(var(--d) * 0.2) calc(var(--d) * 0.53) calc(var(--d) * -0.07) rgba(0,0,0,0.7),
+              0 0 0 calc(var(--d) * 0.067) rgba(224,128,90,0.22);
 }
 #poster-play::after {
-  content: ""; position: absolute; left: 43px; top: 33px;
-  border-left: 37px solid #fff; border-top: 22px solid transparent; border-bottom: 22px solid transparent;
+  content: ""; position: absolute; left: calc(50% - var(--d) * 0.113); top: calc(var(--y) - var(--d) * 0.2);
+  border-left: calc(var(--d) * 0.333) solid #fff;
+  border-top: calc(var(--d) * 0.2) solid transparent; border-bottom: calc(var(--d) * 0.2) solid transparent;
 }
