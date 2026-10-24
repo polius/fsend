@@ -142,9 +142,9 @@ fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as ta
 
 ## Comparison
 
-**[fsend vs croc vs magic-wormhole vs sendme](docs/comparison.md)** — a
-side-by-side table on data path, cryptography, codes, and features,
-including where fsend falls short.
+**[fsend vs croc vs magic-wormhole vs sendme vs LocalSend](docs/comparison.md)**
+— a side-by-side table on security, network, and tooling, plus the
+trade-offs.
 
 ## Contributing
 
