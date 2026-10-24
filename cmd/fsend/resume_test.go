@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -53,7 +54,8 @@ func TestResumeKey_SaveLoadForget(t *testing.T) {
 		t.Fatalf("loadResumeKey = %v, %v; want %v", got, ok, k)
 	}
 	p, _ := resumePath(c)
-	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX mode bits; the file sits in the user's profile.
+	if fi, err := os.Stat(p); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("resume file mode: %v, %v", fi, err)
 	}
 	if rs := newRecvSession(c); !rs.resumed || rs.key != k {

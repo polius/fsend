@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -85,7 +85,7 @@ func streamTar(ctx context.Context, s *Streams, entries []wire.ListingEntry, nam
 	sinkErr := func(err error) error {
 		_ = s.Data.Close()
 		code := wire.ErrCodeWriteFailed
-		if errors.Is(err, syscall.ENOSPC) {
+		if syserr.IsNoSpace(err) {
 			code = wire.ErrCodeDiskFull
 		}
 		declineTransfer(s, code, peerSafe("write", "", err))

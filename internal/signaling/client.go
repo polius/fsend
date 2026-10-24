@@ -25,12 +25,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -433,9 +433,9 @@ func netReason(err error) string {
 	switch {
 	case errors.As(err, &dnsErr):
 		return "DNS lookup failed"
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case syserr.IsConnRefused(err):
 		return "connection refused"
-	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETDOWN):
+	case syserr.IsNoRoute(err):
 		return "no network route"
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
 		return "timed out"

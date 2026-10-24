@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestState_PendingSessionSurvivesRestart(t *testing.T) {
 	if strings.Contains(string(raw), "127.0.0.1") {
 		t.Errorf("snapshot must not hold IPs:\n%s", raw)
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Errorf("snapshot mode = %v, %v; want 0600", fi.Mode().Perm(), err)
 	}
 

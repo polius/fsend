@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/pion/stun/v4"
+
+	"github.com/polius/fsend/internal/syserr"
 )
 
 // Server is the relay half of `fsend server`.
@@ -392,6 +394,10 @@ func (s *Server) readLoop(ctx context.Context) error {
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if syserr.IsMsgTooLong(err) { // Windows fails oversized reads
+				s.oversize.Add(1)
+				continue
 			}
 			// Transient errors (e.g. ENOBUFS) are retried; a closed socket or
 			// a persistent failure means the relay is dead. Flag it so /health

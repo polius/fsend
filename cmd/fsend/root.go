@@ -789,7 +789,9 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// path by that exact name always wins, so no real file is shadowed;
 	// --send forces send for one that doesn't exist yet.
 	if c, ok := code.Normalize(arg); ok {
-		if _, err := os.Lstat(arg); os.IsNotExist(err) {
+		// Any Lstat error counts as absent: Windows rejects names with
+		// spaces or newlines as invalid rather than not-found.
+		if _, err := os.Lstat(arg); err != nil {
 			return startReceive(f, c)
 		}
 	}

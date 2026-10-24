@@ -17,12 +17,12 @@ import (
 	"math/rand/v2"
 	"net"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/quic-go/quic-go"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/syserr"
 )
 
 // Options configures one WithBackoff invocation. Zero values pick the
@@ -174,10 +174,8 @@ func IsTransient(err error) bool {
 	// A network change (Wi-Fi roam, sleep, VPN reconnect) briefly leaves no
 	// route or no usable source address; the next attempt runs on fresh
 	// sockets once the interface is back.
-	for _, errno := range networkChangeErrnos {
-		if errors.Is(err, errno) {
-			return true
-		}
+	if syserr.IsNoRoute(err) || syserr.IsAddrNotAvail(err) {
+		return true
 	}
 
 	var netErr net.Error
@@ -257,14 +255,6 @@ func IsTransient(err error) bool {
 
 // closeCancelled mirrors quicconn.CloseCancelled.
 const closeCancelled quic.ApplicationErrorCode = 0x10
-
-// networkChangeErrnos are socket errors a network change produces.
-var networkChangeErrnos = []error{
-	syscall.ENETUNREACH,
-	syscall.EHOSTUNREACH,
-	syscall.ENETDOWN,
-	syscall.EADDRNOTAVAIL,
-}
 
 // terminalSentinels are errors that must never be retried. Listed
 // explicitly so a stray retry-wrapping doesn't turn a real user-visible

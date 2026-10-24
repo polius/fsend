@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,6 +19,7 @@ import (
 	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 )
@@ -281,11 +281,11 @@ func plainNetErr(err error) string {
 		s = "could not resolve the name"
 	case errors.As(err, &certErr):
 		s = "its TLS certificate is not trusted"
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case syserr.IsConnRefused(err):
 		s = "connection refused"
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
 		s = "timed out"
-	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH):
+	case syserr.IsNoRoute(err):
 		s = "no route to it"
 	default:
 		s = "connection failed"

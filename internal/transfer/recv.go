@@ -13,12 +13,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -733,7 +733,7 @@ func (rf *recvFile) write(data []byte) error {
 	}
 	if err := rf.writeSparse(data); err != nil {
 		code := wire.ErrCodeWriteFailed
-		if errors.Is(err, syscall.ENOSPC) {
+		if syserr.IsNoSpace(err) {
 			// Free the space we took: a full disk breaks other apps too.
 			code = wire.ErrCodeDiskFull
 			rf.abandon(false)
@@ -1296,7 +1296,7 @@ func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(u
 				if _, err := w.Write(data); err != nil {
 					_ = s.Data.Close()
 					code := wire.ErrCodeWriteFailed
-					if errors.Is(err, syscall.ENOSPC) {
+					if syserr.IsNoSpace(err) {
 						code = wire.ErrCodeDiskFull
 					}
 					declineTransfer(s, code, peerSafe("write", "", err))
@@ -1381,7 +1381,7 @@ func drainControl(s *Streams) {
 // and error class only) and returns the matching catalog error.
 func (r *receiver) writeFail(op, rel string, err error) error {
 	code := wire.ErrCodeWriteFailed
-	if errors.Is(err, syscall.ENOSPC) {
+	if syserr.IsNoSpace(err) {
 		code = wire.ErrCodeDiskFull
 	}
 	if r.s.Data != nil {
@@ -1394,7 +1394,7 @@ func (r *receiver) writeFail(op, rel string, err error) error {
 // classifyWriteErr maps a filesystem write failure to the right catalog error.
 func classifyWriteErr(op string, err error) error {
 	base := fserrors.ErrWriteFailed
-	if errors.Is(err, syscall.ENOSPC) {
+	if syserr.IsNoSpace(err) {
 		base = fserrors.ErrDiskFull
 	}
 	// err stays wrapped so the CLI can spot EPIPE on the stdout sink

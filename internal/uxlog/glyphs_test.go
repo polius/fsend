@@ -3,6 +3,7 @@ package uxlog
 import (
 	"bytes"
 	"math"
+	"runtime"
 	"strconv"
 	"testing"
 )
@@ -198,6 +199,10 @@ func TestPlain(t *testing.T) {
 		{"", "", "en_US.utf8", false},
 		{"", "", "C.UTF-8", false},
 	} {
+		// Windows consoles ignore the POSIX locale variables.
+		if runtime.GOOS == "windows" && c.plain == "" {
+			c.want = false
+		}
 		t.Setenv("FSEND_PLAIN", c.plain)
 		t.Setenv("LC_ALL", c.lcAll)
 		t.Setenv("LC_CTYPE", "")
