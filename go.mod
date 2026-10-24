@@ -5,6 +5,7 @@ go 1.26.10
 require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/adrg/xdg v0.5.3
+	github.com/coder/websocket v1.8.15
 	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.20.3
 	github.com/oklog/ulid/v2 v2.1.2

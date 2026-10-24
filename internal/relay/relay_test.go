@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,112 +53,255 @@ func TestToken_StringRoundtrip(t *testing.T) {
 	}
 }
 
-// TestRelay_EndToEnd starts a relay server on a real UDP socket, then
-// has two clients with matching tokens exchange payloads through it.
-func TestRelay_EndToEnd(t *testing.T) {
-	// Server-side UDP socket
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+func TestControl_RoundtripParse(t *testing.T) {
+	tok, id := Token{1, 2, 3}, PeerID{9, 8, 7}
+	c := [cookieSize]byte{0xAA, 0xBB}
+	gotTok, typ, gotID, gotCookie, ok := parseControl(frameControl(tok, msgRegister, id, &c))
+	if !ok || gotTok != tok || typ != msgRegister || gotID != id || gotCookie != c {
+		t.Fatalf("control roundtrip mismatch: ok=%v tok=%v typ=%d id=%v", ok, gotTok, typ, gotID)
+	}
+	if _, _, _, _, ok := parseControl(make([]byte, ControlSize-1)); ok {
+		t.Error("parseControl should reject a short frame")
+	}
+}
+
+func TestPeerIDFor_StableAndDistinct(t *testing.T) {
+	if PeerIDFor("a") != PeerIDFor("a") {
+		t.Error("PeerIDFor must be deterministic")
+	}
+	if PeerIDFor("a") == PeerIDFor("b") {
+		t.Error("PeerIDFor must separate secrets")
+	}
+}
+
+// startRelay runs a relay on a loopback UDP socket for the test's lifetime.
+func startRelay(t *testing.T, cfg ServerConfig) (*Server, *net.UDPAddr) {
+	t.Helper()
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
-
-	srv := NewServer(serverConn, ServerConfig{
-		MaxBytesPerSession: 10 * 1024 * 1024,
+	srv := NewServer(conn, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = conn.Close()
+		<-done
 	})
+	return srv, conn.LocalAddr().(*net.UDPAddr)
+}
+
+func listenLoopback(t *testing.T) *net.UDPConn {
+	t.Helper()
+	c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// registered returns a UDP client that completed the registration handshake.
+func registered(t *testing.T, relayAddr *net.UDPAddr, tok Token) *Conn {
+	t.Helper()
+	c := NewClient(listenLoopback(t), relayAddr, tok)
+	t.Cleanup(func() { _ = c.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.Register(ctx); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return c
+}
+
+// expectPayload reads from c until want arrives or the deadline passes.
+func expectPayload(t *testing.T, c net.PacketConn, want []byte) {
+	t.Helper()
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	buf := make([]byte, MaxDatagram)
+	for {
+		n, _, err := c.ReadFrom(buf)
+		if err != nil {
+			t.Fatalf("did not receive %d-byte payload: %v", len(want), err)
+		}
+		if bytes.Equal(buf[:n], want) {
+			return
+		}
+	}
+}
+
+// TestRelay_EndToEnd has two registered clients exchange payloads.
+func TestRelay_EndToEnd(t *testing.T) {
+	srv, relayAddr := startRelay(t, ServerConfig{MaxBytesPerSession: 10 * 1024 * 1024})
 	tok, err := srv.Allocate()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	a, b := registered(t, relayAddr, tok), registered(t, relayAddr, tok)
+	if _, err := a.WriteTo([]byte("a→b"), nil); err != nil {
+		t.Fatal(err)
+	}
+	expectPayload(t, b, []byte("a→b"))
+	if _, err := b.WriteTo([]byte("b→a"), nil); err != nil {
+		t.Fatal(err)
+	}
+	expectPayload(t, a, []byte("b→a"))
+}
+
+// TestRegister_SpoofedSourceCannotRegister locks in the return-routability
+// check: neither a bare data frame nor a cookie lifted from another address
+// registers a source, so a spoofed packet can't aim the relay at a victim.
+func TestRegister_SpoofedSourceCannotRegister(t *testing.T) {
+	srv, relayAddr := startRelay(t, ServerConfig{})
+	tok, _ := srv.Allocate()
+	victim, attacker := listenLoopback(t), listenLoopback(t)
+
+	// The pre-cookie attack: a first data frame used to register its source.
+	frame := make([]byte, HeaderSize+64)
+	Frame(frame, tok, make([]byte, 64))
+	_, _ = victim.WriteTo(frame, relayAddr)
+
+	// The victim's HELLO yields a cookie bound to the victim's address...
+	id := PeerID{1}
+	_, _ = victim.WriteTo(frameControl(tok, msgHello, id, nil), relayAddr)
+	cookie := readControl(t, victim, msgChallenge)
+
+	// ...which is worthless from any other address.
+	_, _ = attacker.WriteTo(frameControl(tok, msgRegister, id, &cookie), relayAddr)
+	_ = attacker.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if n, _, err := attacker.ReadFrom(make([]byte, MaxDatagram)); err == nil {
+		t.Fatalf("attacker got a %d-byte reply to a stolen cookie", n)
+	}
+	a := srv.lookup(tok)
+	if a.peers[0].Load() != nil || a.peers[1].Load() != nil {
+		t.Fatal("a source registered without echoing its own cookie")
+	}
+
+	// The real owner of the cookie registers.
+	_, _ = victim.WriteTo(frameControl(tok, msgRegister, id, &cookie), relayAddr)
+	readControl(t, victim, msgRegistered)
+	if p := a.peers[0].Load(); p == nil || !udpEqual(p.ep.udp, victim.LocalAddr().(*net.UDPAddr)) {
+		t.Fatal("cookie owner not registered")
+	}
+}
+
+// readControl reads until a control frame of typ arrives and returns its cookie.
+func readControl(t *testing.T, c *net.UDPConn, typ byte) [cookieSize]byte {
+	t.Helper()
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	buf := make([]byte, MaxDatagram)
+	for {
+		n, _, err := c.ReadFrom(buf)
+		if err != nil {
+			t.Fatalf("no control frame %d: %v", typ, err)
+		}
+		if _, got, _, cookie, ok := parseControl(buf[:n]); ok && got == typ {
+			return cookie
+		}
+	}
+}
+
+// TestRebinding_RelearnsAddress: a peer whose address changes mid-session
+// (NAT rebinding, network switch) is challenged on its first datagram from
+// the new address and re-registers there, keeping its slot.
+func TestRebinding_RelearnsAddress(t *testing.T) {
+	srv, relayAddr := startRelay(t, ServerConfig{})
+	tok, _ := srv.Allocate()
+	idA := PeerID{0xA}
+	a := NewClient(listenLoopback(t), relayAddr, tok).WithPeerID(idA)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.Run(ctx) }()
+	if err := a.Register(ctx); err != nil {
+		t.Fatal(err)
+	}
+	b := registered(t, relayAddr, tok)
 
-	// Two client sockets.
-	clientA, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clientA.Close()
-	clientB, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clientB.Close()
-
-	connA := NewClient(clientA, relayAddr, tok)
-	connB := NewClient(clientB, relayAddr, tok)
-
-	// A sends; receiver may take a moment because B hasn't registered yet.
-	// The protocol handles this: A's first datagram registers A as peerA,
-	// then A sends another after B has registered as peerB.
-	if _, err := connA.WriteTo([]byte("hello"), nil); err != nil {
-		t.Fatal(err)
-	}
-	// B sends a "register" packet so the server knows B's address.
-	if _, err := connB.WriteTo([]byte("register"), nil); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(50 * time.Millisecond) // give server time to register both
-	// Now A sends a real message; B should receive it.
-	if _, err := connA.WriteTo([]byte("real message"), nil); err != nil {
-		t.Fatal(err)
-	}
-
-	// B reads.
-	deadline := time.Now().Add(2 * time.Second)
-	_ = connB.SetReadDeadline(deadline)
-	var wg sync.WaitGroup
-	var bGot string
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 1500)
+	// A "moves": same peer id, new socket, no explicit Register.
+	_ = a.Close()
+	moved := NewClient(listenLoopback(t), relayAddr, tok).WithPeerID(idA)
+	defer moved.Close()
+	got := make(chan []byte, 8)
+	go func() { // ReadFrom answers the relay's challenge
+		buf := make([]byte, MaxDatagram)
 		for {
-			n, _, err := connB.ReadFrom(buf)
+			n, _, err := moved.ReadFrom(buf)
 			if err != nil {
 				return
 			}
-			payload := string(buf[:n])
-			if payload == "real message" {
-				bGot = payload
-				return
-			}
-			// Skip the earlier "hello" that might be in flight.
+			got <- append([]byte(nil), buf[:n]...)
 		}
 	}()
-	wg.Wait()
-	if bGot != "real message" {
-		t.Errorf("B did not receive expected payload, got %q", bGot)
+
+	payload := bytes.Repeat([]byte{'m'}, 64) // ≥ ControlSize, so it earns a challenge
+	buf := make([]byte, MaxDatagram)
+	for i := 0; ; i++ {
+		if i > 20 {
+			t.Fatal("relay never re-learned the moved peer")
+		}
+		_, _ = moved.WriteTo(payload, nil)
+		_ = b.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+		if n, _, err := b.ReadFrom(buf); err == nil && bytes.Equal(buf[:n], payload) {
+			break
+		}
+	}
+	_ = b.SetReadDeadline(time.Time{})
+	_, _ = b.WriteTo([]byte("back"), nil)
+	select {
+	case m := <-got:
+		if string(m) != "back" {
+			t.Fatalf("moved peer got %q", m)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reply never reached the moved peer")
 	}
 
-	cancel()
-	_ = serverConn.Close()
-	<-srvErr
+	// A third peer can't take a slot: the allocation is 1↔1.
+	third := NewClient(listenLoopback(t), relayAddr, tok)
+	defer third.Close()
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel3()
+	if err := third.Register(ctx3); !errors.Is(err, ErrNoReply) {
+		t.Fatalf("third peer Register = %v, want ErrNoReply", err)
+	}
+}
+
+// TestOversizeDatagrams: a datagram over 1500 bytes is forwarded whole; one
+// over MaxDatagram is dropped and counted, never truncated.
+func TestOversizeDatagrams(t *testing.T) {
+	srv, relayAddr := startRelay(t, ServerConfig{})
+	tok, _ := srv.Allocate()
+	a, b := registered(t, relayAddr, tok), registered(t, relayAddr, tok)
+
+	big := bytes.Repeat([]byte{'x'}, 1700)
+	if _, err := a.WriteTo(big, nil); err != nil {
+		t.Fatal(err)
+	}
+	expectPayload(t, b, big)
+
+	huge := make([]byte, 3000)
+	Frame(huge, tok, huge[HeaderSize:])
+	if _, err := a.underlying.WriteTo(huge, relayAddr); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.Metrics().DatagramsOversizeTotal == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := srv.Metrics().DatagramsOversizeTotal; got != 1 {
+		t.Fatalf("datagrams_oversize_total = %d, want 1", got)
+	}
 }
 
 // TestServer_STUNBinding verifies the relay socket answers STUN binding
 // requests with the querier's reflexive address, and that non-STUN
 // datagrams starting with a non-relay version byte are silently dropped.
 func TestServer_STUNBinding(t *testing.T) {
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
-
-	srv := NewServer(serverConn, ServerConfig{})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.Run(ctx) }()
-
-	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
+	_, relayAddr := startRelay(t, ServerConfig{})
+	client := listenLoopback(t)
 	localAddr := client.LocalAddr().(*net.UDPAddr)
 
 	// Garbage that is neither relay frame nor STUN must not get a reply.
@@ -199,22 +340,33 @@ func TestServer_STUNBinding(t *testing.T) {
 	if !mapped.IP.Equal(localAddr.IP) || mapped.Port != localAddr.Port {
 		t.Errorf("mapped address: got %v:%d, want %v", mapped.IP, mapped.Port, localAddr)
 	}
+}
 
-	cancel()
-	_ = serverConn.Close()
-	<-srvErr
+func TestProbeSTUN(t *testing.T) {
+	_, relayAddr := startRelay(t, ServerConfig{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	got, err := ProbeSTUN(ctx, relayAddr.String())
+	if err != nil {
+		t.Fatalf("ProbeSTUN: %v", err)
+	}
+	if !got.IP.IsLoopback() {
+		t.Errorf("mapped = %v, want a loopback address", got)
+	}
+
+	// A silent UDP port is how a blocked network looks.
+	silent := listenLoopback(t)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	if _, err := ProbeSTUN(ctx2, silent.LocalAddr().String()); !errors.Is(err, ErrNoReply) {
+		t.Fatalf("ProbeSTUN on a silent port = %v, want ErrNoReply", err)
+	}
 }
 
 // TestForwardingDisabled verifies stun-only mode: the relay still answers
-// STUN binding requests but never forwards data datagrams.
+// STUN binding requests but never registers peers or forwards data.
 func TestForwardingDisabled(t *testing.T) {
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
-
-	srv := NewServer(serverConn, ServerConfig{DisableForwarding: true})
+	srv, relayAddr := startRelay(t, ServerConfig{DisableForwarding: true})
 	if srv.Forwarding() {
 		t.Fatal("Forwarding() should be false when DisableForwarding is set")
 	}
@@ -222,70 +374,18 @@ func TestForwardingDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	c := NewClient(listenLoopback(t), relayAddr, tok)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.Run(ctx) }()
-
-	clientA, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clientA.Close()
-	clientB, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clientB.Close()
-	connA := NewClient(clientA, relayAddr, tok)
-	connB := NewClient(clientB, relayAddr, tok)
-
-	// Both peers register, then A sends a payload that must NOT reach B.
-	if _, err := connA.WriteTo([]byte("hello"), nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := connB.WriteTo([]byte("register"), nil); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(50 * time.Millisecond)
-	if _, err := connA.WriteTo([]byte("real message"), nil); err != nil {
-		t.Fatal(err)
-	}
-	buf := make([]byte, 1500)
-	_ = connB.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-	if n, _, err := connB.ReadFrom(buf); err == nil {
-		t.Fatalf("relay forwarded %q with forwarding disabled", buf[:n])
+	if err := c.Register(ctx); !errors.Is(err, ErrNoReply) {
+		t.Fatalf("Register with forwarding disabled = %v, want ErrNoReply", err)
 	}
 
-	// STUN must still answer in stun-only mode.
-	stunClient, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stunClient.Close()
-	req, err := stun.Build(stun.TransactionID, stun.BindingRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stunClient.WriteTo(req.Raw, relayAddr); err != nil {
-		t.Fatal(err)
-	}
-	_ = stunClient.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, _, err := stunClient.ReadFrom(buf)
-	if err != nil {
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	if _, err := ProbeSTUN(ctx2, relayAddr.String()); err != nil {
 		t.Fatalf("no STUN response in stun-only mode: %v", err)
 	}
-	resp := &stun.Message{Raw: buf[:n]}
-	if err := resp.Decode(); err != nil {
-		t.Fatalf("decode STUN response: %v", err)
-	}
-	if resp.Type != stun.BindingSuccess {
-		t.Fatalf("STUN type: got %v, want BindingSuccess", resp.Type)
-	}
-
-	cancel()
-	_ = serverConn.Close()
-	<-srvErr
 }
 
 func TestForwardingEnabledByDefault(t *testing.T) {
@@ -297,37 +397,11 @@ func TestForwardingEnabledByDefault(t *testing.T) {
 // TestMetricsCounters checks that a forwarded datagram bumps bytes_forwarded
 // and peak_transfer_bytes, and that exceeding the cap bumps transfers_capped.
 func TestMetricsCounters(t *testing.T) {
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
-	srv := NewServer(serverConn, ServerConfig{MaxBytesPerSession: 10 * 1024 * 1024})
-	tok, err := srv.Allocate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.Run(ctx) }()
-
-	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientA.Close()
-	clientB, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientB.Close()
-	connA := NewClient(clientA, relayAddr, tok)
-	connB := NewClient(clientB, relayAddr, tok)
-
-	_, _ = connA.WriteTo([]byte("hello"), nil)
-	_, _ = connB.WriteTo([]byte("register"), nil)
-	time.Sleep(50 * time.Millisecond)
-	_, _ = connA.WriteTo([]byte("a real payload"), nil)
-	buf := make([]byte, 1500)
-	_ = connB.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, _, err := connB.ReadFrom(buf); err != nil {
-		t.Fatalf("B did not receive the forwarded payload: %v", err)
-	}
+	srv, relayAddr := startRelay(t, ServerConfig{MaxBytesPerSession: 10 * 1024 * 1024})
+	tok, _ := srv.Allocate()
+	a, b := registered(t, relayAddr, tok), registered(t, relayAddr, tok)
+	_, _ = a.WriteTo([]byte("a real payload"), nil)
+	expectPayload(t, b, []byte("a real payload"))
 
 	m := srv.Metrics()
 	if m.BytesForwardedTotal == 0 {
@@ -345,129 +419,57 @@ func TestMetricsCounters(t *testing.T) {
 	if !m.Forwarding {
 		t.Error("forwarding should be true")
 	}
-
-	cancel()
-	_ = serverConn.Close()
-	<-srvErr
 }
 
 // TestMetricsTransfersTotal_OnlyCountsForwarded locks in the metric's
 // meaning: a slot allocated for STUN but that never forwards a byte (direct
 // path won, or only one peer showed up) must not inflate transfers_total.
 func TestMetricsTransfersTotal_OnlyCountsForwarded(t *testing.T) {
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
-	srv := NewServer(serverConn, ServerConfig{})
-	tok, err := srv.Allocate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	srv, relayAddr := startRelay(t, ServerConfig{})
+	tok, _ := srv.Allocate()
 	if got := srv.Metrics().TransfersTotal; got != 0 {
 		t.Fatalf("transfers_total = %d after allocate alone, want 0", got)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.Run(ctx) }()
-
-	// Only peerA ever sends: it registers but nothing is forwarded.
-	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientA.Close()
-	connA := NewClient(clientA, relayAddr, tok)
-	_, _ = connA.WriteTo([]byte("hello"), nil)
+	// Only one peer registers and sends: nothing is forwarded.
+	a := registered(t, relayAddr, tok)
+	_, _ = a.WriteTo([]byte("hello"), nil)
 	time.Sleep(100 * time.Millisecond)
-
 	if got := srv.Metrics().TransfersTotal; got != 0 {
 		t.Errorf("transfers_total = %d with no data forwarded, want 0", got)
 	}
+}
 
-	cancel()
-	_ = serverConn.Close()
-	<-srvErr
+// waitFor polls cond for up to 2 s.
+func waitFor(cond func() bool) {
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func TestMetricsCapHit(t *testing.T) {
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
-	srv := NewServer(serverConn, ServerConfig{MaxBytesPerSession: 1}) // any forwarded datagram exceeds it
+	srv, relayAddr := startRelay(t, ServerConfig{MaxBytesPerSession: 1}) // any forwarded datagram exceeds it
 	tok, _ := srv.Allocate()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.Run(ctx) }()
-
-	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientA.Close()
-	clientB, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientB.Close()
-	connA := NewClient(clientA, relayAddr, tok)
-	connB := NewClient(clientB, relayAddr, tok)
-
-	_, _ = connA.WriteTo([]byte("x"), nil) // registers A as peerA
-	_, _ = connB.WriteTo([]byte("y"), nil) // registers B; first forwarded datagram trips the 1-byte cap
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if srv.Metrics().TransfersCappedTotal > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	a, _ := registered(t, relayAddr, tok), registered(t, relayAddr, tok)
+	_, _ = a.WriteTo([]byte("x"), nil)
+	waitFor(func() bool { return srv.Metrics().TransfersCappedTotal > 0 })
 	if got := srv.Metrics().TransfersCappedTotal; got != 1 {
 		t.Errorf("transfers_capped_total = %d, want 1", got)
 	}
-
-	cancel()
-	_ = serverConn.Close()
-	<-srvErr
 }
 
 // TestBudgetHitEvicts checks the daily budget trips the circuit breaker:
 // once the day's bytes are spent the transfer is evicted with the
 // daily_budget reason.
 func TestBudgetHitEvicts(t *testing.T) {
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
-	srv := NewServer(serverConn, ServerConfig{MaxBytesPerDay: 1}) // any forwarded datagram exceeds it
+	srv, relayAddr := startRelay(t, ServerConfig{MaxBytesPerDay: 1}) // any forwarded datagram exceeds it
 	tok, _ := srv.Allocate()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.Run(ctx) }()
-
-	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientA.Close()
-	clientB, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientB.Close()
-	connA := NewClient(clientA, relayAddr, tok)
-	connB := NewClient(clientB, relayAddr, tok)
-
-	_, _ = connA.WriteTo([]byte("x"), nil) // registers A as peerA
-	_, _ = connB.WriteTo([]byte("y"), nil) // first forwarded datagram trips the 1-byte budget
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if srv.Status(tok) == ReasonBudgetHit {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	a, _ := registered(t, relayAddr, tok), registered(t, relayAddr, tok)
+	_, _ = a.WriteTo([]byte("x"), nil)
+	waitFor(func() bool { return srv.Status(tok) == ReasonBudgetHit })
 	if got := srv.Status(tok); got != ReasonBudgetHit {
 		t.Errorf("Status = %q, want %q", got, ReasonBudgetHit)
 	}
-
-	cancel()
-	_ = serverConn.Close()
-	<-srvErr
 }
 
 // TestAllocate_BudgetExhausted checks a new allocation is refused with the
@@ -486,60 +488,53 @@ func TestAllocate_BudgetExhausted(t *testing.T) {
 // with `MaxBytesPerSession > 0`, so this guards against Default() (or a
 // future refactor) re-mapping 0 back to a finite limit.
 func TestMaxBytes_ZeroMeansUnlimited(t *testing.T) {
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayAddr := serverConn.LocalAddr().(*net.UDPAddr)
-	srv := NewServer(serverConn, ServerConfig{MaxBytesPerSession: 0}) // unlimited
+	srv, relayAddr := startRelay(t, ServerConfig{MaxBytesPerSession: 0}) // unlimited
 	tok, _ := srv.Allocate()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.Run(ctx) }()
-
-	clientA, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientA.Close()
-	clientB, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	defer clientB.Close()
-	connA := NewClient(clientA, relayAddr, tok)
-	connB := NewClient(clientB, relayAddr, tok)
-
-	_, _ = connA.WriteTo([]byte("hello"), nil)
-	_, _ = connB.WriteTo([]byte("register"), nil)
-	time.Sleep(50 * time.Millisecond)
-	_, _ = connA.WriteTo([]byte("a real payload"), nil)
-	buf := make([]byte, 1500)
-	_ = connB.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, _, err := connB.ReadFrom(buf); err != nil {
-		t.Fatalf("B did not receive the forwarded payload: %v", err)
-	}
+	a, b := registered(t, relayAddr, tok), registered(t, relayAddr, tok)
+	_, _ = a.WriteTo([]byte("a real payload"), nil)
+	expectPayload(t, b, []byte("a real payload"))
 	if got := srv.Metrics().TransfersCappedTotal; got != 0 {
 		t.Errorf("transfers_capped_total = %d, want 0 (cap disabled)", got)
 	}
-
-	cancel()
-	_ = serverConn.Close()
-	<-srvErr
 }
 
-func TestAllowSTUNResponse_RateCap(t *testing.T) {
+func TestAllowReply_RateCap(t *testing.T) {
 	s := &Server{}
 	base := time.Unix(1700000000, 0)
 
 	// The whole per-second budget is allowed.
 	for i := 0; i < stunResponsesPerSec; i++ {
-		if !s.allowSTUNResponse(base) {
+		if !s.allowReply(base) {
 			t.Fatalf("response %d denied within budget", i)
 		}
 	}
 	// One more in the same window is denied.
-	if s.allowSTUNResponse(base) {
+	if s.allowReply(base) {
 		t.Fatal("expected denial after budget exhausted")
 	}
 	// A new one-second window resets the budget.
-	if !s.allowSTUNResponse(base.Add(time.Second)) {
+	if !s.allowReply(base.Add(time.Second)) {
 		t.Fatal("expected allow after window rollover")
+	}
+}
+
+func TestCookie_BoundToSourceAndExpires(t *testing.T) {
+	s := NewServer(nil, ServerConfig{})
+	tok := Token{7}
+	src := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 4000}
+	now := time.Unix(1700000000, 0)
+	c := s.cookie(tok, src, cookieEpoch(now))
+	if !s.cookieValid(c, tok, src, now.Add(cookieLifetime)) {
+		t.Error("cookie should survive into the next epoch")
+	}
+	if s.cookieValid(c, tok, src, now.Add(3*cookieLifetime)) {
+		t.Error("cookie should expire after two epochs")
+	}
+	if s.cookieValid(c, tok, &net.UDPAddr{IP: src.IP, Port: 4001}, now) {
+		t.Error("cookie must not validate for another port")
+	}
+	if s.cookieValid(c, Token{8}, src, now) {
+		t.Error("cookie must not validate for another token")
 	}
 }
 
@@ -572,67 +567,5 @@ func TestServer_ActiveAllocationsCountsLiveSessions(t *testing.T) {
 	// in-flight for drain purposes.
 	if n := srv.ActiveAllocations(); n != 1 {
 		t.Fatalf("active = %d, want 1", n)
-	}
-}
-
-// countingConn is a minimal net.PacketConn that counts WriteTo calls and
-// blocks ReadFrom until closed. It lets the bootstrap-resend loop run
-// without a real relay.
-type countingConn struct {
-	writes atomic.Int64
-	done   chan struct{}
-	once   sync.Once
-}
-
-func newCountingConn() *countingConn { return &countingConn{done: make(chan struct{})} }
-func (c *countingConn) WriteTo(p []byte, _ net.Addr) (int, error) {
-	c.writes.Add(1)
-	return len(p), nil
-}
-func (c *countingConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	<-c.done
-	return 0, nil, net.ErrClosed
-}
-func (c *countingConn) Close() error                     { c.once.Do(func() { close(c.done) }); return nil }
-func (c *countingConn) LocalAddr() net.Addr              { return &net.UDPAddr{} }
-func (c *countingConn) SetDeadline(time.Time) error      { return nil }
-func (c *countingConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *countingConn) SetWriteDeadline(time.Time) error { return nil }
-
-// The bootstrap resender keeps sending until an inbound datagram arrives,
-// then stops — so a passive sender recovers from a lost bootstrap.
-func TestKeepBootstrapping_StopsOnInbound(t *testing.T) {
-	u := newCountingConn()
-	c := NewClient(u, &net.UDPAddr{}, Token{})
-	c.KeepBootstrapping(10*time.Millisecond, 5*time.Second)
-
-	time.Sleep(60 * time.Millisecond) // several resends
-	if got := u.writes.Load(); got < 2 {
-		t.Fatalf("expected repeated bootstraps, got %d writes", got)
-	}
-	// Simulate the relay forwarding us a datagram (what ReadFrom sets).
-	c.gotInbound.Store(true)
-	time.Sleep(40 * time.Millisecond)
-	settled := u.writes.Load()
-	time.Sleep(60 * time.Millisecond)
-	if u.writes.Load() != settled {
-		t.Errorf("resends did not stop after inbound: %d → %d", settled, u.writes.Load())
-	}
-}
-
-// Close stops the resender: after it, the write count settles (one tick may
-// already be in flight when Close lands) and then stops growing.
-func TestKeepBootstrapping_StopsOnClose(t *testing.T) {
-	u := newCountingConn()
-	c := NewClient(u, &net.UDPAddr{}, Token{})
-	c.KeepBootstrapping(10*time.Millisecond, 5*time.Second)
-	time.Sleep(30 * time.Millisecond)
-	_ = c.Close()
-	// Let any in-flight tick land and the goroutine observe the close.
-	time.Sleep(50 * time.Millisecond)
-	settled := u.writes.Load()
-	time.Sleep(80 * time.Millisecond)
-	if u.writes.Load() != settled {
-		t.Errorf("resends continued after Close settled: %d → %d", settled, u.writes.Load())
 	}
 }

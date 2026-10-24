@@ -2,11 +2,15 @@ package relay
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,12 +18,15 @@ import (
 	"github.com/pion/stun/v4"
 )
 
-// Server is the UDP-relay half of `fsend server`.
+// Server is the relay half of `fsend server`.
 //
 // It owns a single net.PacketConn (the UDP/443 listener). For each
-// allocation, it tracks the two peers' addresses (set on first datagram
-// from each) and forwards traffic between them. The wire format is
-// documented in framing.go.
+// allocation, it tracks the two peers' addresses and forwards traffic
+// between them. A peer's address is recorded only after it echoes a
+// cookie sent to that address (see handleControl), so a spoofed source
+// can't register. Peers whose network blocks UDP attach over a WebSocket
+// instead (ws.go); both kinds pair freely. The wire format is documented
+// in framing.go.
 //
 // The same socket also answers STUN binding requests so ICE clients can
 // gather server-reflexive candidates without a second server or port;
@@ -33,10 +40,17 @@ type Server struct {
 	allocs    map[Token]*allocation
 	tombstone map[Token]tombstoneEntry // recently evicted tokens + reason; janitor expires by age
 
-	// STUN responses are a small (~2x) amplifier off a spoofable source.
-	// A global fixed-window cap bounds the reflector's aggregate output;
-	// it is deliberately NOT per-source, because the source IP is forgeable
-	// and a per-source map would itself be an unbounded-memory vector.
+	// cookieKey keys the registration cookies (see cookie).
+	cookieKey [32]byte
+
+	// life ends WebSocket links when Run returns.
+	life     context.Context
+	stopLife context.CancelFunc
+
+	// STUN responses and registration challenges are sent to a spoofable
+	// source. A global fixed-window cap bounds the aggregate output; it is
+	// deliberately NOT per-source, because the source IP is forgeable and a
+	// per-source map would itself be an unbounded-memory vector.
 	stunMu     sync.Mutex
 	stunWindow time.Time
 	stunCount  int
@@ -58,6 +72,8 @@ type Server struct {
 	peakTransferBytes atomic.Uint64 // most any single transfer has forwarded
 	transfersCapped   atomic.Uint64 // transfers cut off for exceeding the per-session byte cap
 	transfersTotal    atomic.Uint64 // transfers that forwarded ≥1 byte; vs paired sessions = relay-fallback rate
+	oversize          atomic.Uint64 // datagrams dropped for exceeding MaxDatagram
+	tcpFallbacks      atomic.Uint64 // WebSocket (TCP fallback) links accepted
 }
 
 // Metrics is an aggregate snapshot of relay activity for /metrics.
@@ -70,20 +86,24 @@ type Metrics struct {
 	BytesForwardedTotal  uint64 `json:"bytes_forwarded_total"`
 	PeakTransferBytes    uint64 `json:"peak_transfer_bytes"`
 	// Live usage only; the configured limit is not exposed on purpose.
-	BudgetBytesToday uint64 `json:"budget_bytes_today"`
+	BudgetBytesToday       uint64 `json:"budget_bytes_today"`
+	DatagramsOversizeTotal uint64 `json:"datagrams_oversize_total"`
+	TCPFallbackTotal       uint64 `json:"tcp_fallback_total"`
 }
 
 // Metrics returns the current aggregate snapshot.
 func (s *Server) Metrics() Metrics {
 	return Metrics{
-		Forwarding:           !s.cfg.DisableForwarding,
-		Healthy:              s.healthy.Load(),
-		TransfersActive:      s.ActiveAllocations(),
-		TransfersTotal:       s.transfersTotal.Load(),
-		TransfersCappedTotal: s.transfersCapped.Load(),
-		BytesForwardedTotal:  s.bytesForwarded.Load(),
-		PeakTransferBytes:    s.peakTransferBytes.Load(),
-		BudgetBytesToday:     s.budget.usedToday(time.Now()),
+		Forwarding:             !s.cfg.DisableForwarding,
+		Healthy:                s.healthy.Load(),
+		TransfersActive:        s.ActiveAllocations(),
+		TransfersTotal:         s.transfersTotal.Load(),
+		TransfersCappedTotal:   s.transfersCapped.Load(),
+		BytesForwardedTotal:    s.bytesForwarded.Load(),
+		PeakTransferBytes:      s.peakTransferBytes.Load(),
+		BudgetBytesToday:       s.budget.usedToday(time.Now()),
+		DatagramsOversizeTotal: s.oversize.Load(),
+		TCPFallbackTotal:       s.tcpFallbacks.Load(),
 	}
 }
 
@@ -152,14 +172,60 @@ func (c *ServerConfig) Default() {
 // allocation's own mutex so the hot path can run lock-free on the
 // table-level RWMutex (only re-locked when adding/removing entries).
 type allocation struct {
-	token        Token
-	peerA, peerB atomic.Pointer[net.UDPAddr]
+	token Token
+	// peers are the two registered sides. Read lock-free on the hot path;
+	// regMu serializes the rare writes in register.
+	peers        [2]atomic.Pointer[peer]
+	regMu        sync.Mutex
 	bytes        atomic.Uint64
 	lastActivity atomic.Int64 // unix nanos
+	lastNudge    atomic.Int64 // unix nanos of the last unsolicited challenge
 	createdAt    time.Time
 	// dataCounted: true once this allocation forwards its first byte, so
 	// transfersTotal counts it exactly once.
 	dataCounted atomic.Bool
+}
+
+// peer is one registered side of an allocation.
+type peer struct {
+	id PeerID
+	ep endpoint
+}
+
+// endpoint is where a peer receives: a verified UDP address, or a
+// WebSocket link (TCP fallback). Exactly one field is set.
+type endpoint struct {
+	udp *net.UDPAddr
+	ws  *wsLink
+}
+
+func (e endpoint) is(o endpoint) bool {
+	if e.ws != nil || o.ws != nil {
+		return e.ws == o.ws
+	}
+	return udpEqual(e.udp, o.udp)
+}
+
+// register records ep as the address of peer id: it replaces that peer's
+// previous address (rebinding) or takes a free slot. It reports false
+// when both slots belong to other peers — the allocation is 1↔1.
+func (a *allocation) register(id PeerID, ep endpoint) bool {
+	a.regMu.Lock()
+	defer a.regMu.Unlock()
+	np := &peer{id: id, ep: ep}
+	for i := range a.peers {
+		if p := a.peers[i].Load(); p != nil && p.id == id {
+			a.peers[i].Store(np)
+			return true
+		}
+	}
+	for i := range a.peers {
+		if a.peers[i].Load() == nil {
+			a.peers[i].Store(np)
+			return true
+		}
+	}
+	return false
 }
 
 // NewServer constructs a Server bound to the given net.PacketConn.
@@ -174,6 +240,10 @@ func NewServer(conn net.PacketConn, cfg ServerConfig) *Server {
 		allocs:    make(map[Token]*allocation),
 		tombstone: make(map[Token]tombstoneEntry),
 	}
+	if _, err := rand.Read(s.cookieKey[:]); err != nil {
+		panic("relay: cookie key: " + err.Error()) // crypto/rand never fails on supported platforms
+	}
+	s.life, s.stopLife = context.WithCancel(context.Background())
 	s.budget.limit = cfg.MaxBytesPerDay
 	s.healthy.Store(true) // assume up until Run proves otherwise
 	return s
@@ -265,13 +335,14 @@ func (s *Server) Allocate() (Token, error) {
 	return t, nil
 }
 
-// Run drives the UDP read loop until ctx cancels or conn closes.
+// Run drives the UDP read loops until ctx cancels or conn closes, then
+// ends any WebSocket links.
 //
 // This is the hot path: one syscall per datagram, one hashmap read, one
-// syscall to forward. Buffers are reused via sync.Pool to avoid GC churn.
+// syscall to forward. Several readers share the socket so one reader's
+// forwarding write overlaps another's read.
 func (s *Server) Run(ctx context.Context) error {
-	bufPool := &sync.Pool{New: func() any { b := make([]byte, 1500); return &b }}
-
+	defer s.stopLife()
 	go s.janitor(ctx)
 
 	go func() {
@@ -279,12 +350,32 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = s.conn.SetReadDeadline(time.Now())
 	}()
 
+	n := min(runtime.GOMAXPROCS(0), maxReaders)
+	errs := make(chan error, n)
+	for range n {
+		go func() { errs <- s.readLoop(ctx) }()
+	}
+	var first error
+	for range n {
+		if err := <-errs; err != nil && first == nil {
+			first = err
+			_ = s.conn.SetReadDeadline(time.Now()) // stop the siblings too
+		}
+	}
+	return first
+}
+
+// maxReaders caps the read loops in Run. Reads on one socket serialize in
+// the kernel, so more readers than this buy nothing.
+const maxReaders = 4
+
+func (s *Server) readLoop(ctx context.Context) error {
+	// One byte over MaxDatagram, so a datagram the buffer would truncate
+	// is detected and dropped instead of forwarded cut short.
+	buf := make([]byte, MaxDatagram+1)
 	for {
-		bufPtr := bufPool.Get().(*[]byte)
-		buf := *bufPtr
 		n, addr, err := s.conn.ReadFrom(buf)
 		if err != nil {
-			bufPool.Put(bufPtr)
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -293,23 +384,23 @@ func (s *Server) Run(ctx context.Context) error {
 			s.healthy.Store(false)
 			return fmt.Errorf("relay: read: %w", err)
 		}
-		// Process inline — no goroutine per datagram (would be massive
-		// overhead). Forward is one syscall. Recover per datagram so a
-		// crafted packet that trips a panic in handle can't take the whole
-		// server down with it.
-		ua, ok := addr.(*net.UDPAddr)
-		if !ok {
-			bufPool.Put(bufPtr)
+		if n > MaxDatagram {
+			s.oversize.Add(1)
 			continue
 		}
-		s.handleSafe(buf[:n], ua)
-		bufPool.Put(bufPtr)
+		ua, ok := addr.(*net.UDPAddr)
+		if !ok {
+			continue
+		}
+		// Process inline — no goroutine per datagram. The buffer is reused,
+		// so anything handle keeps (a WebSocket send) must copy.
+		s.handleSafe(buf[:n], endpoint{udp: ua})
 	}
 }
 
 // handleSafe runs handle with panic recovery so one malformed datagram can
 // never crash the whole server (and every other live session with it).
-func (s *Server) handleSafe(datagram []byte, src *net.UDPAddr) {
+func (s *Server) handleSafe(datagram []byte, src endpoint) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("relay: recovered panic handling datagram", "panic", r)
@@ -318,56 +409,59 @@ func (s *Server) handleSafe(datagram []byte, src *net.UDPAddr) {
 	s.handle(datagram, src)
 }
 
-func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
-	// The socket carries two wire formats: relay frames start with
-	// ProtocolVersion (0x01), STUN requests with 0x00 (RFC 5389 §6) —
-	// the first byte demuxes them exactly.
-	if len(datagram) > 0 && datagram[0] != ProtocolVersion {
-		s.handleSTUN(datagram, src)
+func (s *Server) handle(datagram []byte, src endpoint) {
+	if len(datagram) == 0 {
+		return
+	}
+	// The socket carries three wire formats, demuxed by the first byte:
+	// relay data (0x01), relay control (0x02), and STUN, whose first byte
+	// has its top two bits clear (RFC 5389 §6).
+	switch datagram[0] {
+	case ProtocolVersion:
+	case ControlVersion:
+		if !s.cfg.DisableForwarding {
+			s.handleControl(datagram, src)
+		}
+		return
+	default:
+		if src.udp != nil {
+			s.handleSTUN(datagram, src.udp)
+		}
 		return
 	}
 	if s.cfg.DisableForwarding {
 		return // stun-only mode: STUN answered above, data never carried
 	}
-	ver, token, _, ok := Parse(datagram)
-	if !ok || ver != ProtocolVersion {
+	_, token, _, ok := Parse(datagram)
+	if !ok {
 		return // silently drop malformed
 	}
-
-	s.mu.RLock()
-	a, found := s.allocs[token]
-	s.mu.RUnlock()
-	if !found {
+	a := s.lookup(token)
+	if a == nil {
 		return // unknown token = silently drop (likely stale)
 	}
-
 	now := time.Now()
-	a.lastActivity.Store(now.UnixNano())
 
-	// Determine forward direction.
-	var dst *net.UDPAddr
-	peerA := a.peerA.Load()
-	peerB := a.peerB.Load()
+	// Determine forward direction. Only registered sources forward.
+	var dst *peer
+	p0, p1 := a.peers[0].Load(), a.peers[1].Load()
 	switch {
-	case peerA == nil:
-		// First datagram on this allocation; register sender as peerA.
-		a.peerA.Store(src)
-		// peerB still unknown; nothing to forward to yet.
-		return
-	case udpEqual(src, peerA):
-		if peerB == nil {
-			return // still waiting for second peer
-		}
-		dst = peerB
-	case peerB == nil:
-		// Second peer registers themselves.
-		a.peerB.Store(src)
-		dst = peerA
-	case udpEqual(src, peerB):
-		dst = peerA
+	case p0 != nil && p0.ep.is(src):
+		dst = p1
+	case p1 != nil && p1.ep.is(src):
+		dst = p0
 	default:
-		// Third-party trying to inject; silently drop.
+		// Unknown source with a live token: most likely a registered peer
+		// whose NAT rebound. Challenge it so it can re-register from here.
+		// The reply is no larger than this datagram, so it can't amplify.
+		if src.udp != nil && len(datagram) >= ControlSize && a.nudgeDue(now) {
+			s.challenge(token, PeerID{}, src.udp, now)
+		}
 		return
+	}
+	a.lastActivity.Store(now.UnixNano())
+	if dst == nil {
+		return // still waiting for the second peer
 	}
 
 	// Byte cap check (counts header + payload — wire bytes, what we pay for).
@@ -396,9 +490,112 @@ func (s *Server) handle(datagram []byte, src *net.UDPAddr) {
 			break
 		}
 	}
-	if _, err := s.conn.WriteTo(datagram, dst); err != nil {
+	s.send(dst.ep, datagram)
+}
+
+// send delivers b to ep. A full WebSocket queue drops b, like a full
+// socket buffer would; QUIC recovers.
+func (s *Server) send(ep endpoint, b []byte) {
+	if ep.ws != nil {
+		ep.ws.send(b)
+		return
+	}
+	if _, err := s.conn.WriteTo(b, ep.udp); err != nil {
 		s.logger.Debug("relay: write failed", "err", err)
 	}
+}
+
+func (s *Server) lookup(t Token) *allocation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.allocs[t]
+}
+
+// handleControl runs the registration handshake. Over UDP, HELLO gets a
+// CHALLENGE carrying a cookie bound to the source address, and only a
+// REGISTER echoing a valid cookie records that address — so a spoofed
+// source never sees the cookie and can't aim the relay at a third party.
+// A WebSocket source is already return-routable (TCP), so its HELLO
+// registers directly.
+func (s *Server) handleControl(b []byte, src endpoint) {
+	tok, typ, id, cookie, ok := parseControl(b)
+	if !ok {
+		return
+	}
+	a := s.lookup(tok)
+	if a == nil {
+		return
+	}
+	now := time.Now()
+	switch {
+	case typ == msgHello && src.udp != nil:
+		s.challenge(tok, id, src.udp, now)
+		return
+	case typ == msgHello: // WebSocket
+	case typ == msgRegister:
+		if src.udp != nil && !s.cookieValid(cookie, tok, src.udp, now) {
+			return
+		}
+	default:
+		return
+	}
+	if !a.register(id, src) {
+		return // both slots taken by other peers
+	}
+	a.lastActivity.Store(now.UnixNano())
+	s.send(src, frameControl(tok, msgRegistered, id, nil))
+}
+
+// challenge sends a CHALLENGE to src, within the global reply cap.
+func (s *Server) challenge(tok Token, id PeerID, src *net.UDPAddr, now time.Time) {
+	if !s.allowReply(now) {
+		return
+	}
+	c := s.cookie(tok, src, cookieEpoch(now))
+	s.send(endpoint{udp: src}, frameControl(tok, msgChallenge, id, &c))
+}
+
+// cookieLifetime is the cookie epoch; a cookie stays valid for one to two
+// epochs, plenty for one round trip and short enough to go stale fast.
+const cookieLifetime = 30 * time.Second
+
+func cookieEpoch(now time.Time) uint64 { return uint64(now.UnixNano() / int64(cookieLifetime)) }
+
+// cookie is HMAC(key, epoch‖token‖src)[:16], stateless like a TURN nonce
+// or a QUIC retry token.
+func (s *Server) cookie(tok Token, src *net.UDPAddr, epoch uint64) [cookieSize]byte {
+	m := hmac.New(sha256.New, s.cookieKey[:])
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], epoch)
+	m.Write(b[:])
+	m.Write(tok[:])
+	m.Write(src.IP.To16())
+	binary.BigEndian.PutUint16(b[:2], uint16(src.Port))
+	m.Write(b[:2])
+	var out [cookieSize]byte
+	copy(out[:], m.Sum(nil))
+	return out
+}
+
+func (s *Server) cookieValid(c [cookieSize]byte, tok Token, src *net.UDPAddr, now time.Time) bool {
+	e := cookieEpoch(now)
+	for _, epoch := range []uint64{e, e - 1} {
+		want := s.cookie(tok, src, epoch)
+		if hmac.Equal(c[:], want[:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// nudgeInterval rate-limits unsolicited challenges per allocation: a
+// rebinding peer keeps sending, and one challenge per burst is enough.
+const nudgeInterval = 100 * time.Millisecond
+
+func (a *allocation) nudgeDue(now time.Time) bool {
+	last := a.lastNudge.Load()
+	return now.UnixNano()-last >= int64(nudgeInterval) &&
+		a.lastNudge.CompareAndSwap(last, now.UnixNano())
 }
 
 // handleSTUN answers a STUN binding request with the source's reflexive
@@ -412,7 +609,7 @@ func (s *Server) handleSTUN(datagram []byte, src *net.UDPAddr) {
 	if !stun.IsMessage(datagram) {
 		return
 	}
-	if !s.allowSTUNResponse(time.Now()) {
+	if !s.allowReply(time.Now()) {
 		return // aggregate cap hit; drop silently (ICE clients retry/fall back)
 	}
 	req := &stun.Message{Raw: datagram}
@@ -430,11 +627,11 @@ func (s *Server) handleSTUN(datagram []byte, src *net.UDPAddr) {
 	}
 }
 
-// allowSTUNResponse reports whether a STUN reply may be sent, enforcing a
-// global fixed-window rate cap. Cheap (one mutex, two fields) and holds no
+// allowReply reports whether a STUN reply or registration challenge may be
+// sent, enforcing a global fixed-window rate cap. Cheap (one mutex, two fields) and holds no
 // per-source state, so it can't be turned into a memory-exhaustion vector
 // by source spoofing.
-func (s *Server) allowSTUNResponse(now time.Time) bool {
+func (s *Server) allowReply(now time.Time) bool {
 	s.stunMu.Lock()
 	defer s.stunMu.Unlock()
 	if now.Sub(s.stunWindow) >= time.Second {
