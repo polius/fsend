@@ -147,6 +147,37 @@ try {
     Check "FSEND_UPDATE=1 trims the sign-off" ($null -eq ($out | Where-Object { $_ -like '*all options*' }))
     Check "FSEND_UPDATE=1 keeps the confirmation" ($null -ne ($out | Where-Object { $_ -like "*fsend v$ver installed*" }))
 
+    # 7. with cosign on PATH the signature gates the install (stub cosign:
+    # the real one needs a Sigstore-signed fixture).
+    $bundle = "$work/fixture/download/v$ver/checksums.txt.sigstore.json"
+    Set-Content -Path $bundle -Value '{}'
+    foreach ($stubCase in @(@{ dir = 'cosign-ok'; exit = 0 }, @{ dir = 'cosign-bad'; exit = 1 })) {
+        $d = Join-Path $work $stubCase.dir
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+        if ($onWindows) {
+            Set-Content -Path (Join-Path $d 'cosign.cmd') -Value "@exit /b $($stubCase.exit)"
+        } else {
+            Set-Content -Path (Join-Path $d 'cosign') -Value "#!/bin/sh`nexit $($stubCase.exit)"
+            chmod 755 (Join-Path $d 'cosign')
+        }
+    }
+    $savedPath = $env:PATH
+    $sep = [System.IO.Path]::PathSeparator
+    $env:PATH = (Join-Path $work 'cosign-ok') + $sep + $savedPath
+    $out = Invoke-Installer @('-Version', $ver, '-Prefix', (Join-Path $work 'bin-signed'), '-NoModifyPath')
+    Check "good signature installs" (($LASTEXITCODE -eq 0) -and
+        ($null -ne ($out | Where-Object { $_ -like '*checksum and signature verified*' })))
+    $env:PATH = (Join-Path $work 'cosign-bad') + $sep + $savedPath
+    $out = Invoke-Installer @('-Version', $ver, '-Prefix', (Join-Path $work 'bin-badsig'), '-NoModifyPath')
+    Check "bad signature refused" (($LASTEXITCODE -ne 0) -and
+        -not (Test-Path (Join-Path $work 'bin-badsig/fsend.exe')))
+    Remove-Item $bundle
+    $env:PATH = (Join-Path $work 'cosign-ok') + $sep + $savedPath
+    $out = Invoke-Installer @('-Version', $ver, '-Prefix', (Join-Path $work 'bin-unsigned'), '-NoModifyPath')
+    Check "unsigned release flagged" (($LASTEXITCODE -eq 0) -and
+        ($null -ne ($out | Where-Object { $_ -like '*publishes no signature*' })))
+    $env:PATH = $savedPath
+
     # 6. a corrupted archive is rejected by the checksum. Runs last: it
     # poisons the shared fixture archive.
     $bytes = [System.IO.File]::ReadAllBytes("$work/fixture/download/v$ver/$archive")
