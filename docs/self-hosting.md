@@ -283,7 +283,7 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 
 | Variable | Default | Notes |
 |---|---|---|
-| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable. Only `debug` logs client IPs and request paths (which carry slots). |
+| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable (an unknown `FSEND_*` name is logged as a warning). Only `debug` logs client IPs and request paths (which carry slots). |
 | `FSEND_LOG_FORMAT` | `text` | `json` emits one JSON object per line, for log shippers. |
 | `FSEND_METRICS_ADDR` | _(off)_ | Extra listener for `/metrics` (Prometheus) and `/metrics.json` — see [Metrics](#metrics). Never publish it. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/`, `/health`, `/healthz`, and `/readyz` — see [Require a password](#require-a-password-optional). |

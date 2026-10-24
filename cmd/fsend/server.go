@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -93,6 +95,9 @@ func runServer() error {
 	// Print the effective config before the structured logs so an operator
 	// can confirm their FSEND_* overrides took effect.
 	_, _ = fmt.Fprint(os.Stdout, formatServerConfig(cfg))
+	for _, name := range unknownServerEnv(os.Environ()) {
+		logger.Warn("ignoring unknown variable (typo?)", "name", name)
+	}
 
 	s := server.New(server.Config{
 		ServerVersion:        version.Version,
@@ -260,6 +265,28 @@ const (
 	defaultMaxBytesPerDay       = 0
 	defaultRelayEnabled         = true
 )
+
+// knownServerEnv lists every FSEND_* variable `fsend server` reads, so a
+// typo'd name is reported instead of silently ignored.
+var knownServerEnv = []string{
+	envServerAddr, envRelayAddr, envMaxSessionsPerIP, envMaxNewSessionsPerMin,
+	envMaxBytesPerSession, envMaxBytesPerDay, envRelayEnabled, envLogLevel,
+	envMinClientVersion, envRelayPublicAddr, envMetricsAddr, envLogFormat,
+	"FSEND_SERVER_PASSWORD", "FSEND_SERVER_PASSWORD_FILE",
+}
+
+// unknownServerEnv returns the FSEND_* names in environ the server doesn't
+// read. Names only: values may be secrets.
+func unknownServerEnv(environ []string) []string {
+	var out []string
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "FSEND_") && !slices.Contains(knownServerEnv, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 // serverRuntimeConfig is the parsed environment for `fsend server`.
 type serverRuntimeConfig struct {
@@ -526,6 +553,10 @@ func envBytes(name string, def uint64) (uint64, error) {
 	n, err := strconv.ParseFloat(num, 64)
 	if err != nil || n < 0 {
 		return 0, fmt.Errorf("%s=%q: not a byte count (use B, KB, MB, GB, TB, or a plain byte count)", name, v)
+	}
+	// uint64(f) is implementation-defined past 2^64; refuse rather than wrap.
+	if n*mul >= math.Exp2(64) {
+		return 0, fmt.Errorf("%s=%q: too large", name, v)
 	}
 	return uint64(n * mul), nil
 }

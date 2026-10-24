@@ -121,6 +121,8 @@ func TestServerEnvBytes(t *testing.T) {
 		{in: "100ZZ", wantErr: true},
 		{in: "M", wantErr: true},
 		{in: "MB", wantErr: true},
+		{in: "20000000TB", wantErr: true}, // 2e19 > MaxUint64: refuse, don't wrap
+		{in: "18446744073709551616", wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -155,8 +157,25 @@ func clearServerEnv(t *testing.T) {
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE",
 		"FSEND_RELAY_MAX_BYTES_PER_SESSION",
 		"FSEND_RELAY_MAX_BYTES_PER_DAY",
+		"FSEND_MIN_CLIENT_VERSION",
+		"FSEND_RELAY_PUBLIC_ADDR",
+		"FSEND_METRICS_ADDR",
+		"FSEND_LOG_FORMAT",
 	} {
 		os.Unsetenv(k)
+	}
+}
+
+// A typo'd FSEND_* name is reported by name (never value).
+func TestUnknownServerEnv(t *testing.T) {
+	got := unknownServerEnv([]string{
+		"FSEND_SERVER_MAX_SESSION_PER_IP=10", // typo: SESSION
+		"FSEND_LOG_LEVEL=debug",
+		"FSEND_SERVER_PASSWORD_FILE=/run/secrets/pw",
+		"PATH=/bin",
+	})
+	if len(got) != 1 || got[0] != "FSEND_SERVER_MAX_SESSION_PER_IP" {
+		t.Errorf("unknownServerEnv = %v, want only the typo", got)
 	}
 }
 
@@ -229,6 +248,9 @@ func TestServerLoadConfigRejectsBadValues(t *testing.T) {
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP":            "many",
 		"FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE": "-1",
 		"FSEND_LOG_LEVEL":                             "verbose",
+		"FSEND_LOG_FORMAT":                            "yaml",
+		"FSEND_MIN_CLIENT_VERSION":                    "1.2",
+		"FSEND_RELAY_PUBLIC_ADDR":                     "relay.example.com",
 	}
 	for k, v := range cases {
 		t.Run(k+"="+v, func(t *testing.T) {
