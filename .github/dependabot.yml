@@ -24,6 +24,10 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # init and analyze must move together, majors included.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
       actions-minor-and-patch:
         update-types:
           - "minor"
