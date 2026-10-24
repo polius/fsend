@@ -585,6 +585,39 @@ func TestServer_DrainRejectsNewAllocations(t *testing.T) {
 	}
 }
 
+// flakyConn fails ReadFrom with errs in order, then reports a closed socket.
+type flakyConn struct {
+	*countingConn
+	errs []error
+}
+
+func (c *flakyConn) ReadFrom([]byte) (int, net.Addr, error) {
+	if len(c.errs) == 0 {
+		return 0, nil, net.ErrClosed
+	}
+	err := c.errs[0]
+	c.errs = c.errs[1:]
+	return 0, nil, err
+}
+
+// A transient read error is retried; only a closed socket (or a persistent
+// failure) ends Run with an error and marks the relay unhealthy.
+func TestServer_RunRetriesTransientReadErrors(t *testing.T) {
+	transient := errors.New("sendmsg: no buffer space available")
+	conn := &flakyConn{countingConn: newCountingConn(), errs: []error{transient, transient}}
+	srv := NewServer(conn, ServerConfig{})
+	err := srv.Run(context.Background())
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Run = %v, want the closed-socket error after retrying", err)
+	}
+	if len(conn.errs) != 0 {
+		t.Fatalf("Run gave up with %d transient errors unconsumed", len(conn.errs))
+	}
+	if srv.Healthy() {
+		t.Error("relay must report unhealthy after a fatal read error")
+	}
+}
+
 func TestServer_HealthyByDefault(t *testing.T) {
 	if !NewServer(nil, ServerConfig{}).Healthy() {
 		t.Fatal("a fresh relay should report healthy")

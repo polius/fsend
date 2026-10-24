@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -109,6 +108,15 @@ func runServer() error {
 		RelayPublicAddr:      cfg.relayPublicAddr,
 	})
 
+	if cfg.stateFile != "" {
+		n, err := s.LoadState(cfg.stateFile)
+		if err != nil {
+			logger.Warn("discarding saved sessions", "err", err)
+		} else if n > 0 {
+			logger.Info("restored pending sessions", "count", n)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go s.StartJanitor(ctx)
@@ -131,9 +139,10 @@ func runServer() error {
 	s.WithRelay(relaySrv, udpPort)
 	relayCtx, relayCancel := context.WithCancel(ctx)
 	defer relayCancel()
+	relayErr := make(chan error, 1)
 	go func() {
 		if err := relaySrv.Run(relayCtx); err != nil {
-			logger.Error("relay loop ended", "err", err)
+			relayErr <- err
 		}
 	}()
 	logger.Info("relay UDP listener up", "addr", cfg.udpAddr, "udp_port", udpPort)
@@ -181,6 +190,7 @@ func runServer() error {
 		}()
 	}
 
+	var exitErr error
 	select {
 	case <-sigCh:
 		logger.Info("shutdown requested")
@@ -188,33 +198,64 @@ func runServer() error {
 		if !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("%w: listen: %v", fserrors.ErrServerStartup, err)
 		}
+	case err := <-relayErr:
+		// A dead relay socket: exit non-zero so the restart policy applies,
+		// rather than serving pairings for a relay that forwards nothing.
+		logger.Error("relay loop ended; shutting down", "err", err)
+		exitErr = fmt.Errorf("%w: %v", fserrors.ErrRelayFailed, err)
 	}
 
-	// Graceful shutdown: stop new relay allocations, then let in-flight HTTP
-	// (including 25s /wait long-polls) and in-flight relay transfers finish
-	// before tearing down. Both are bounded by shutdownGrace so a wedged
-	// session can't block shutdown forever. For the drain to complete under a
-	// container runtime, set stop_grace_period above shutdownGrace; otherwise
-	// the default (Docker: 10s) cuts it short.
+	// A second signal skips whatever drain is left.
+	force, forceNow := context.WithCancel(context.Background())
+	defer forceNow()
+	go func() {
+		select {
+		case <-sigCh:
+			logger.Warn("second signal: skipping the drain")
+			forceNow()
+		case <-force.Done():
+		}
+	}()
+
+	// Graceful shutdown, in order:
+	//  1. Refuse new relay allocations and let in-flight relay transfers
+	//     finish (≤ relayDrainGrace). Signaling keeps serving meanwhile, so
+	//     pending codes stay reachable and long-polls stay parked.
+	//  2. Stop signaling (≤ httpDrainGrace): parked /wait polls are released
+	//     at once and their senders re-poll the next process.
+	//  3. Save pending sessions for the next process (FSEND_STATE_FILE).
+	// The deployment's stop_grace_period must exceed both graces.
 	relaySrv.Drain()
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownGrace)
-	defer shutdownCancel()
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); _ = httpSrv.Shutdown(shutdownCtx) }()
-	go func() { defer wg.Done(); drainRelay(shutdownCtx, relaySrv, logger) }()
-	wg.Wait()
+	drainCtx, cancelRelayDrain := context.WithTimeout(force, relayDrainGrace)
+	drainRelay(drainCtx, relaySrv, logger)
+	cancelRelayDrain()
+
+	httpSrv.RegisterOnShutdown(s.ReleaseWaiters)
+	httpCtx, cancelHTTP := context.WithTimeout(force, httpDrainGrace)
+	_ = httpSrv.Shutdown(httpCtx)
+	cancelHTTP()
 	cancel()
+
+	if cfg.stateFile != "" {
+		if n, err := s.SaveState(cfg.stateFile); err != nil {
+			logger.Error("saving pending sessions", "err", err)
+		} else {
+			logger.Info("saved pending sessions", "count", n)
+		}
+	}
 	// Marks a clean drain: absent from the logs when SIGKILL (e.g. a too-low
 	// stop_grace_period) cut the shutdown short.
 	logger.Info("shutdown complete")
-	return nil
+	return exitErr
 }
 
-// shutdownGrace bounds graceful shutdown. Set above the 25s /wait long-poll so
-// in-flight polls return naturally rather than being severed; the deployment's
-// stop_grace_period must exceed it.
-const shutdownGrace = 30 * time.Second
+// Shutdown bounds: relayDrainGrace for in-flight relay transfers, then
+// httpDrainGrace for signaling requests. The deployment's stop_grace_period
+// must exceed their sum (compose sets 40s).
+const (
+	relayDrainGrace = 30 * time.Second
+	httpDrainGrace  = 5 * time.Second
+)
 
 // drainRelay blocks until no relay transfer has moved bytes recently (so the
 // socket can close without cutting an in-flight transfer) or ctx expires. It
@@ -253,6 +294,7 @@ const (
 	envRelayPublicAddr      = "FSEND_RELAY_PUBLIC_ADDR"
 	envMetricsAddr          = "FSEND_METRICS_ADDR"
 	envLogFormat            = "FSEND_LOG_FORMAT"
+	envStateFile            = "FSEND_STATE_FILE"
 
 	defaultServerAddr = ":8080"
 	defaultRelayAddr  = ":443"
@@ -271,7 +313,7 @@ const (
 var knownServerEnv = []string{
 	envServerAddr, envRelayAddr, envMaxSessionsPerIP, envMaxNewSessionsPerMin,
 	envMaxBytesPerSession, envMaxBytesPerDay, envRelayEnabled, envLogLevel,
-	envMinClientVersion, envRelayPublicAddr, envMetricsAddr, envLogFormat,
+	envMinClientVersion, envRelayPublicAddr, envMetricsAddr, envLogFormat, envStateFile,
 	"FSEND_SERVER_PASSWORD", "FSEND_SERVER_PASSWORD_FILE",
 }
 
@@ -303,6 +345,7 @@ type serverRuntimeConfig struct {
 	relayPublicAddr      string
 	metricsAddr          string
 	logJSON              bool
+	stateFile            string
 }
 
 func loadServerConfig() (serverRuntimeConfig, error) {
@@ -347,6 +390,7 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		cfg.relayPublicAddr = v
 	}
 	cfg.metricsAddr = strings.TrimSpace(os.Getenv(envMetricsAddr))
+	cfg.stateFile = strings.TrimSpace(os.Getenv(envStateFile))
 	switch v := strings.TrimSpace(os.Getenv(envLogFormat)); strings.ToLower(v) {
 	case "", "text":
 	case "json":
@@ -393,6 +437,7 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		{envLogLevel, logLevelName(cfg.logLevel), cfg.logLevel != slog.LevelInfo},
 		{envLogFormat, map[bool]string{false: "text", true: "json"}[cfg.logJSON], cfg.logJSON},
 		{envMetricsAddr, orNone(cfg.metricsAddr), cfg.metricsAddr != ""},
+		{envStateFile, orNone(cfg.stateFile), cfg.stateFile != ""},
 		// Env-var name inlined (not a shared const) so gosec G101 doesn't
 		// mistake a password-named identifier for a hardcoded credential.
 		{"FSEND_SERVER_PASSWORD", password, cfg.serverPassword != ""},
@@ -611,6 +656,11 @@ CONFIGURATION (environment variables — all optional)
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
                                       Only debug logs client IPs and slots.
     FSEND_LOG_FORMAT                  Default text; json for log shippers.
+    FSEND_STATE_FILE                  Save pending (unpaired) codes here on
+                                      shutdown and restore them on start, so
+                                      a redeploy doesn't kill them. No IPs
+                                      are saved; the file is deleted once
+                                      read. Default off.
     FSEND_METRICS_ADDR                Serve /metrics (Prometheus) and
                                       /metrics.json on this extra listener,
                                       e.g. 127.0.0.1:9090. Default off. Keep

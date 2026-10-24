@@ -161,6 +161,7 @@ func clearServerEnv(t *testing.T) {
 		"FSEND_RELAY_PUBLIC_ADDR",
 		"FSEND_METRICS_ADDR",
 		"FSEND_LOG_FORMAT",
+		"FSEND_STATE_FILE",
 	} {
 		os.Unsetenv(k)
 	}

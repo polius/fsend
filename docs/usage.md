@@ -415,6 +415,7 @@ failure. For what to *do* about a given error, see
 | `40`  | `E040` — `fsend --update` as root; opt in with `FSEND_ALLOW_ROOT=1` on single-user machines (containers). |
 | `41`  | `E041` — `fsend --update` from a development build; there is no release to compare against. Install a release build. |
 | `60`  | `E060` — the pairing server refused this fsend as too old (HTTP 426). Run `fsend --update`. |
+| `61`  | `E061` — `fsend server` stopped because its relay UDP socket failed; the restart policy should bring it back. |
 | `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
 | `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
 | `141` | The output pipe closed early (e.g. `fsend <code> --out - \| head`). Shell convention (128+SIGPIPE); nothing is printed. |

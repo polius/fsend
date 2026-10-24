@@ -86,9 +86,12 @@ Effectively nothing:
   never reach the server at all. (`FSEND_LOG_LEVEL=debug` adds the client
   IP and the request path, which carries the slot, for troubleshooting —
   don't run a privacy-sensitive server at debug level.)
-- **No database, no persistence.** Pairing state lives only in RAM. It
-  evicts within an hour at most — ten minutes once a transfer has paired
-  — and is gone for good on restart.
+- **No database.** Pairing state lives in RAM. It evicts within an hour
+  at most — ten minutes once a transfer has paired. The one exception is
+  a restart with `FSEND_STATE_FILE` set (the bundled compose file sets
+  it): pending, unpaired sessions are saved at shutdown so their codes
+  survive a redeploy. That file holds slots and random session tokens —
+  no IPs, no codes — and is deleted as soon as the next process reads it.
 
 If you'd still rather not trust the public server,
 [self-host one](self-hosting.md): it's a single binary with nothing to

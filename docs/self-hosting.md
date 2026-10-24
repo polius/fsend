@@ -166,11 +166,24 @@ or with the wrong one — fails with `E028`.
   failed request — no per-transfer lines, no IPs, no slots, no share codes.
   `FSEND_LOG_LEVEL=debug` adds IPs and request paths.
 - **Update.** `docker compose pull && docker compose up -d`. The image
-  tracks the floating `poliuscorp/fsend:latest` tag; pin a version tag if
-  you want immutable, reproducible upgrades. On stop the server drains
-  in-flight transfers and long-polls for up to 30s; the compose file sets
-  `stop_grace_period: 35s` so an upgrade doesn't cut them short (keep it if
-  you edit the file — Docker's 10s default would SIGKILL mid-drain).
+  tracks `poliuscorp/fsend:latest` unless you pin a release with
+  `FSEND_VERSION=1.15.0` for immutable, reproducible upgrades. On stop the
+  server first lets in-flight relay transfers finish (up to 30s) while
+  pairing keeps working, then stops signaling (up to 5s); a second
+  `SIGTERM`/Ctrl-C skips the wait. The compose file sets
+  `stop_grace_period: 40s` to cover both (keep it if you edit the file —
+  Docker's 10s default would SIGKILL mid-drain).
+- **Codes survive a redeploy.** With `FSEND_STATE_FILE` set (the compose
+  file sets it, on the `fsend_state` volume), the server saves every
+  pending, not-yet-received code on shutdown and restores it on start, so
+  a sender waiting on a code just keeps waiting. The file holds slots and
+  random session tokens, never IPs or codes; it is written `0600` and
+  deleted as soon as it is read. Codes a receiver already joined are not
+  kept: those transfers were already drained in step one.
+- **Single instance only.** Pairing state lives in one process's memory,
+  so run exactly one `fsend` server per hostname: two replicas behind a
+  load balancer would split senders and receivers across processes that
+  can't see each other's codes. Scale up the VM instead of out.
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
   within an hour; certificates live in the `caddy_data` volume, and Caddy
   reissues them automatically if you lose it. That reissue is the recovery
@@ -292,6 +305,7 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 |---|---|---|
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable (an unknown `FSEND_*` name is logged as a warning). Only `debug` logs client IPs and request paths (which carry slots). |
 | `FSEND_LOG_FORMAT` | `text` | `json` emits one JSON object per line, for log shippers. |
+| `FSEND_STATE_FILE` | _(off; compose: `/state/sessions.json`)_ | Where to save pending codes on shutdown and restore them on start — see [Operations](#operations). The directory must be writable by the server (uid 65532 in the image). |
 | `FSEND_METRICS_ADDR` | _(off)_ | Extra listener for `/metrics` (Prometheus) and `/metrics.json` — see [Metrics](#metrics). Never publish it. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/`, `/health`, `/healthz`, and `/readyz` — see [Require a password](#require-a-password-optional). |
 | `FSEND_SERVER_PASSWORD_FILE` | _(unset)_ | Read the password from this file (trailing newline trimmed) instead of `FSEND_SERVER_PASSWORD` — for Docker secrets / systemd credentials. Used only when `FSEND_SERVER_PASSWORD` is unset. |

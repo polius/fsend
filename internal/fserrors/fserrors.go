@@ -152,6 +152,9 @@ var (
 	// its wire protocol, or the operator's minimum release. Distinct from
 	// E018, which means the server itself is gone.
 	ErrClientTooOld = errors.New("client too old for server")
+	// E061 — `fsend server` stopped because its relay UDP socket failed at
+	// runtime. Exits non-zero so the container's restart policy applies.
+	ErrRelayFailed = errors.New("relay failed")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -491,6 +494,12 @@ var catalog = map[error]Entry{
 		Message: "This version of fsend is too old for the pairing server.",
 		Action: "Update fsend, then try again:\n" +
 			"    fsend --update",
+	},
+	ErrRelayFailed: {
+		Code: "E061", Exit: 61,
+		Message: "The server stopped: its relay UDP socket failed.",
+		Action: "A restart policy (Docker: restart: unless-stopped) brings it back.\n" +
+			"  The socket error is logged above.",
 	},
 }
 

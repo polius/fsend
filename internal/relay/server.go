@@ -251,7 +251,7 @@ func (s *Server) Status(t Token) string {
 // POST /v1/relay/allocate handler.
 func (s *Server) Allocate() (Token, error) {
 	if s.draining.Load() {
-		return Token{}, errors.New("relay: server is draining")
+		return Token{}, ErrDraining
 	}
 	// Refuse up front when the day's budget is already spent, so both peers
 	// fail fast with a clear reason. (A budget that trips mid-transfer is
@@ -292,6 +292,7 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = s.conn.SetReadDeadline(time.Now())
 	}()
 
+	readErrs := 0
 	for {
 		bufPtr := bufPool.Get().(*[]byte)
 		buf := *bufPtr
@@ -301,11 +302,19 @@ func (s *Server) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			// Other read errors (e.g. socket closed): the relay is dead.
-			// Flag it so /health stops reporting a healthy zombie.
-			s.healthy.Store(false)
-			return fmt.Errorf("relay: read: %w", err)
+			// Transient errors (e.g. ENOBUFS) are retried; a closed socket or
+			// a persistent failure means the relay is dead. Flag it so /health
+			// stops reporting a healthy zombie, and let the caller exit.
+			readErrs++
+			if errors.Is(err, net.ErrClosed) || readErrs > maxReadErrors {
+				s.healthy.Store(false)
+				return fmt.Errorf("relay: read: %w", err)
+			}
+			s.logger.Debug("relay: transient read error", "err", err)
+			time.Sleep(readErrBackoff)
+			continue
 		}
+		readErrs = 0
 		// Process inline — no goroutine per datagram (would be massive
 		// overhead). Forward is one syscall. Recover per datagram so a
 		// crafted packet that trips a panic in handle can't take the whole
@@ -537,6 +546,16 @@ const (
 	ReasonCapHit    = "cap_hit"
 	ReasonBudgetHit = "daily_budget"
 	ReasonIdle      = "idle"
+)
+
+// ErrDraining is returned by Allocate during graceful shutdown.
+var ErrDraining = errors.New("relay: server is draining")
+
+// maxReadErrors consecutive read errors, readErrBackoff apart (~5s), make
+// Run give up so the process can exit and be restarted.
+const (
+	maxReadErrors  = 100
+	readErrBackoff = 50 * time.Millisecond
 )
 
 // ErrBudgetExhausted is returned by Allocate when the daily byte budget is

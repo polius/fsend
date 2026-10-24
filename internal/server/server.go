@@ -127,6 +127,9 @@ type Server struct {
 	relayUDPPort   int
 
 	met serverMetrics
+
+	stopping chan struct{} // closed by ReleaseWaiters
+	stopOnce sync.Once
 }
 
 // serverMetrics holds aggregate counters for /metrics (cumulative
@@ -198,6 +201,7 @@ func New(cfg Config) *Server {
 		byID:     make(map[string]*session),
 		ipCounts: make(map[string]int),
 		ipBucket: make(map[string]*rateBucket),
+		stopping: make(chan struct{}),
 	}
 }
 
@@ -467,6 +471,11 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 			// treating an opaque 5xx as a generic connectivity failure.
 			if errors.Is(err, relay.ErrBudgetExhausted) {
 				writeJSON(w, http.StatusOK, RelayAllocateResponse{BudgetExhausted: true})
+				return
+			}
+			if errors.Is(err, relay.ErrDraining) { // restarting: retry shortly
+				w.Header().Set("Retry-After", "5")
+				writeJSONError(w, http.StatusServiceUnavailable, "server restarting")
 				return
 			}
 			writeJSONError(w, http.StatusInternalServerError, "alloc failed")
@@ -785,6 +794,11 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Each /wait poll doubles as the sender's liveness heartbeat.
 	sess.LastSeen = time.Now()
+	if sess.SenderRateKey == "" { // restored from a snapshot, which holds no IPs
+		sess.SenderAddr = clientIP(r)
+		sess.SenderRateKey = rateLimitKey(sess.SenderAddr)
+		s.ipCounts[sess.SenderRateKey]++
+	}
 	// Snapshot what we need under the lock so concurrent joinSession
 	// writes don't race the reads below.
 	state := sess.State
@@ -805,6 +819,8 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	select {
 	case <-ctx.Done():
+		w.WriteHeader(http.StatusNoContent)
+	case <-s.stopping: // shutting down: let the sender re-poll the next process
 		w.WriteHeader(http.StatusNoContent)
 	case <-waiters:
 		// Re-fetch in case janitor evicted between wakeup and now. Compare the
