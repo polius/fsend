@@ -188,6 +188,17 @@ func TestClient_Create_CallerCodeConflictSurfaces(t *testing.T) {
 	}
 }
 
+// A server that refuses this client as too old (426) surfaces E060, not E099.
+func TestClient_TooOldMapsToFserror(t *testing.T) {
+	s := server.New(server.Config{MinClientVersion: "999.0.0"})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	_, err := New(ts.URL, "1.0.0").Create(context.Background(), "")
+	if !errors.Is(err, fserrors.ErrClientTooOld) {
+		t.Errorf("expected ErrClientTooOld, got %v", err)
+	}
+}
+
 func TestClient_JoinNonexistent_MapsToFserror(t *testing.T) {
 	url, _ := setupServer(t)
 	c := New(url, "test")

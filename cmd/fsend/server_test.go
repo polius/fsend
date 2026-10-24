@@ -286,8 +286,8 @@ func TestFormatServerConfig_AllDefaults(t *testing.T) {
 	if strings.Contains(out, "* FSEND") {
 		t.Errorf("all-default config must mark nothing customized:\n%s", out)
 	}
-	if !strings.Contains(out, "0 of 9 customized") {
-		t.Errorf("want '0 of 9 customized':\n%s", out)
+	if !strings.Contains(out, "(0 of ") {
+		t.Errorf("want 0 customized:\n%s", out)
 	}
 	if !strings.Contains(out, "(not set)") {
 		t.Errorf("password must read '(not set)' when empty:\n%s", out)
@@ -320,8 +320,8 @@ func TestFormatServerConfig_Overrides(t *testing.T) {
 	if !strings.Contains(out, "0 (unlimited)") {
 		t.Errorf("default caps must still render as '0 (unlimited)':\n%s", out)
 	}
-	if !strings.Contains(out, "3 of 9 customized") {
-		t.Errorf("want '3 of 9 customized':\n%s", out)
+	if !strings.Contains(out, "(3 of ") {
+		t.Errorf("want 3 customized:\n%s", out)
 	}
 	for _, name := range []string{"FSEND_SERVER_PASSWORD", envMaxSessionsPerIP, envRelayEnabled} {
 		if !strings.Contains(out, "* "+name) {

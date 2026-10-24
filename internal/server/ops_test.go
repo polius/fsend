@@ -2,7 +2,10 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -33,5 +36,83 @@ func TestAccessLog_PrivateByDefault(t *testing.T) {
 		if leaks == tc.private {
 			t.Errorf("level %v: leaks IP/slot = %v, want %v:\n%s", tc.level, leaks, !tc.private, out)
 		}
+	}
+}
+
+// Create/join answer 426 to clients without a supported protocol header,
+// or below the operator's minimum release; dev builds pass the latter.
+func TestClientGate(t *testing.T) {
+	s := New(Config{MinClientVersion: "1.5.0"})
+	h := s.Handler()
+	for i, tc := range []struct {
+		proto, ua string
+		want      int
+	}{
+		{"", "fsend/1.6.0", 426},
+		{"2", "fsend/1.6.0", 426},
+		{"x", "fsend/1.6.0", 426},
+		{"3", "fsend/1.4.9", 426},
+		{"3", "fsend/1.5.0", 200},
+		{"3", "fsend/dev", 200},
+		{"4", "fsend/2.0.0", 200},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/session",
+			strings.NewReader(fmt.Sprintf(`{"slot":"%032x"}`, i+1)))
+		if tc.proto != "" {
+			req.Header.Set(ProtocolHeader, tc.proto)
+		}
+		req.Header.Set("User-Agent", tc.ua)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("proto=%q ua=%q: status %d, want %d", tc.proto, tc.ua, rec.Code, tc.want)
+		}
+	}
+}
+
+// /wait hands out the receiver's address: only the sender's token may ask.
+func TestWait_RequiresSenderToken(t *testing.T) {
+	srv := newTestServer(t)
+	created := createSession(t, srv.URL, testSlot)
+	jr := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
+	var joined JoinSessionResponse
+	_ = json.NewDecoder(jr.Body).Decode(&joined)
+	jr.Body.Close()
+
+	for _, tc := range []struct {
+		name, tok string
+		want      int
+	}{
+		{"none", "", 404},
+		{"receiver", joined.RoleToken, 404},
+		{"bogus", "AAAA", 404},
+		{"sender", created.RoleToken, 200},
+	} {
+		resp := postJSONAuth(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{}, tc.tok)
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s token: status %d, want %d", tc.name, resp.StatusCode, tc.want)
+		}
+	}
+}
+
+// A session reaped while the sender is parked answers 404 (code gone),
+// never 410, which clients read as "server retired".
+func TestWait_ExpiryIs404(t *testing.T) {
+	s := New(Config{LongPollTimeout: 5 * time.Second, UnpairedTTL: time.Millisecond})
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	created := createSession(t, srv.URL, testSlot)
+
+	done := make(chan int, 1)
+	go func() {
+		resp := postJSONAuth(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{}, created.RoleToken)
+		resp.Body.Close()
+		done <- resp.StatusCode
+	}()
+	time.Sleep(50 * time.Millisecond)
+	s.evict(time.Now())
+	if got := <-done; got != http.StatusNotFound {
+		t.Errorf("status %d, want 404", got)
 	}
 }

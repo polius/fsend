@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/wire"
 )
 
 // DefaultRequestTimeout is the http.Client ceiling applied to every
@@ -42,9 +44,11 @@ type Client struct {
 	password string // optional: self-hosted server's shared secret
 
 	// pinned maps a created code to its slot, so a sender's /wait polls
-	// keep hitting the same slot across a UTC day boundary.
-	pinMu  sync.Mutex
-	pinned map[string]string
+	// keep hitting the same slot across a UTC day boundary. senderTok holds
+	// the role token /wait must present.
+	pinMu     sync.Mutex
+	pinned    map[string]string
+	senderTok map[string]string
 }
 
 // slotFor returns the slot pinned at Create, or the current one.
@@ -132,8 +136,10 @@ func (c *Client) Create(ctx context.Context, codeStr string) (*CreateResult, err
 			c.pinMu.Lock()
 			if c.pinned == nil {
 				c.pinned = map[string]string{}
+				c.senderTok = map[string]string{}
 			}
 			c.pinned[codeStr] = slot
+			c.senderTok[codeStr] = out.RoleToken
 			c.pinMu.Unlock()
 			return &CreateResult{CreateSessionResponse: out, Code: codeStr}, nil
 		}
@@ -171,8 +177,11 @@ func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionR
 // the session TTL expires.
 func (c *Client) Wait(ctx context.Context, codeStr string) (*server.WaitResponse, error) {
 	var out server.WaitResponse
+	c.pinMu.Lock()
+	tok := c.senderTok[codeStr]
+	c.pinMu.Unlock()
 	err := c.do(ctx, http.MethodPost, "/v1/session/"+c.slotFor(codeStr)+"/wait",
-		server.WaitRequest{}, &out, allowNoContent())
+		server.WaitRequest{}, &out, withAuth(tok).withNoContent())
 	if errors.Is(err, errNoContent) {
 		return nil, nil
 	}
@@ -276,6 +285,7 @@ func (o *doOption) withNoContent() *doOption {
 //   - 404           → fserrors.ErrCodeNotFound
 //   - 409           → fserrors.ErrCodeAlreadyClaimed
 //   - 410           → fserrors.ErrServerRetired
+//   - 426           → fserrors.ErrClientTooOld
 //   - 429           → fserrors.ErrRateLimited
 //   - other 4xx/5xx → opaque error with body excerpt
 func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *doOption) error {
@@ -295,6 +305,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("User-Agent", "fsend/"+c.version)
+	req.Header.Set(server.ProtocolHeader, strconv.Itoa(wire.ProtocolVersion))
 	if opt != nil && opt.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+opt.bearerToken)
 	}
@@ -340,6 +351,8 @@ func statusToFsendErr(resp *http.Response) error {
 		return fserrors.ErrCodeAlreadyClaimed
 	case http.StatusGone:
 		return fserrors.ErrServerRetired
+	case http.StatusUpgradeRequired:
+		return fserrors.ErrClientTooOld
 	case http.StatusTooManyRequests:
 		return fserrors.ErrRateLimited
 	case http.StatusUnauthorized:

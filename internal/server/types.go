@@ -65,8 +65,9 @@ type JoinSessionResponse struct {
 }
 
 // WaitRequest is the body of POST /v1/session/<slot>/wait. It carries no
-// fields today — the slot in the path is the only input — but is kept as
-// a named type so the wire shape has somewhere to grow.
+// fields today — the slot in the path and the sender's role token (bearer)
+// are the only inputs — but is kept as a named type so the wire shape has
+// somewhere to grow.
 type WaitRequest struct{}
 
 // WaitResponse is the body the sender sees once a receiver pairs.

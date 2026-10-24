@@ -148,6 +148,10 @@ var (
 	// gets its own entry rather than E033's "check your internet
 	// connection", which would send a developer chasing the wrong thing.
 	ErrUpdateDevBuild = errors.New("development build")
+	// E060 — the pairing server refused this client as too old (HTTP 426):
+	// its wire protocol, or the operator's minimum release. Distinct from
+	// E018, which means the server itself is gone.
+	ErrClientTooOld = errors.New("client too old for server")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -481,6 +485,12 @@ var catalog = map[error]Entry{
 		Message: "This is a development build — there is no release to update to.",
 		Action: "Install a release build instead:\n" +
 			"    https://github.com/polius/fsend#install",
+	},
+	ErrClientTooOld: {
+		Code: "E060", Exit: 60,
+		Message: "This version of fsend is too old for the pairing server.",
+		Action: "Update fsend, then try again:\n" +
+			"    fsend --update",
 	},
 }
 

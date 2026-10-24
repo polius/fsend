@@ -22,6 +22,8 @@ import (
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/relay"
+	"github.com/polius/fsend/internal/update"
+	"github.com/polius/fsend/internal/wire"
 )
 
 // Config holds runtime tuning for the signaling server.
@@ -40,6 +42,10 @@ type Config struct {
 	// header. Empty leaves the server open (the default for the public
 	// fsend.alzina.dev pairing server and for the canonical Docker stack).
 	ServerPassword string
+
+	// MinClientVersion, when set, makes create/join answer 426 to fsend
+	// releases below it (by the User-Agent semver). Dev builds pass.
+	MinClientVersion string
 }
 
 // Default fills in zero values with sensible defaults.
@@ -213,6 +219,31 @@ func (b *rateBucket) allow(now time.Time, limit int, window time.Duration) bool 
 // scheme, which carries the per-session role token issued by Create /
 // Join — the two auth surfaces are independent.
 const AuthHeader = "X-Fsend-Auth"
+
+// ProtocolHeader carries the client's newest wire protocol version
+// (wire.ProtocolVersion, decimal) on every pairing request.
+const ProtocolHeader = "X-Fsend-Protocol"
+
+// clientUpgradeMsg is the 426 body. Old clients without E060 print it raw.
+const clientUpgradeMsg = "fsend client too old for this server; run `fsend --update` " +
+	"or reinstall: https://github.com/polius/fsend#install"
+
+// clientAllowed answers 426 Upgrade Required for a client that cannot pair
+// through this server: one speaking a wire protocol older than this build
+// supports (its peer would fail the HELLO anyway), or a release below
+// Config.MinClientVersion. Checked at create/join, where every flow starts.
+func (s *Server) clientAllowed(w http.ResponseWriter, r *http.Request) bool {
+	p, err := strconv.Atoi(r.Header.Get(ProtocolHeader))
+	ok := err == nil && p >= wire.MinProtocolVersion
+	if ok && s.cfg.MinClientVersion != "" {
+		v, _ := strings.CutPrefix(r.UserAgent(), "fsend/")
+		ok = !update.Newer(s.cfg.MinClientVersion, v)
+	}
+	if !ok {
+		writeJSONError(w, http.StatusUpgradeRequired, clientUpgradeMsg)
+	}
+	return ok
+}
 
 // Handler returns the HTTP handler the server should expose. When
 // Config.ServerPassword is set, every endpoint except /health is
@@ -550,6 +581,9 @@ func (s *Server) readiness(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
+	if !s.clientAllowed(w, r) {
+		return
+	}
 	clientIP := clientIP(r)
 	rateKey := rateLimitKey(clientIP)
 
@@ -641,6 +675,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
+	if !s.clientAllowed(w, r) {
+		return
+	}
 	slot := strings.ToLower(r.PathValue("slot"))
 	clientIP := clientIP(r)
 	rateKey := rateLimitKey(clientIP)
@@ -727,6 +764,13 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess, ok := s.bySlot[slot]
+	// Only the sender may wait: the answer carries the receiver's address
+	// and ICE credentials. A bad token is a 404 too, so the slot leaks no
+	// existence oracle beyond what join already exposes.
+	if ok {
+		side, authed := sess.sideForToken(bearerToken(r))
+		ok = authed && side == "sender"
+	}
 	if !ok {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusNotFound, "code not found")
@@ -772,7 +816,8 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 		if !ok {
-			writeJSONError(w, http.StatusGone, "session expired")
+			// 404, not 410: clients read 410 as "server retired" (E018).
+			writeJSONError(w, http.StatusNotFound, "session expired")
 			return
 		}
 		writeJSON(w, http.StatusOK, WaitResponse{

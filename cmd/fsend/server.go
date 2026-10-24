@@ -20,6 +20,7 @@ import (
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/update"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 )
@@ -94,6 +95,7 @@ func runServer() error {
 		MaxNewSessionsPerMin: cfg.maxNewSessionsPerMin,
 		Logger:               logger,
 		ServerPassword:       cfg.serverPassword,
+		MinClientVersion:     cfg.minClientVersion,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -221,6 +223,7 @@ const (
 	envMaxBytesPerDay       = "FSEND_RELAY_MAX_BYTES_PER_DAY"
 	envRelayEnabled         = "FSEND_RELAY_ENABLED"
 	envLogLevel             = "FSEND_LOG_LEVEL"
+	envMinClientVersion     = "FSEND_MIN_CLIENT_VERSION"
 
 	defaultServerAddr = ":8080"
 	defaultRelayAddr  = ":443"
@@ -245,6 +248,7 @@ type serverRuntimeConfig struct {
 	maxBytesPerDay       uint64
 	serverPassword       string
 	enableRelay          bool
+	minClientVersion     string
 }
 
 func loadServerConfig() (serverRuntimeConfig, error) {
@@ -274,6 +278,12 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 	}
 	if cfg.enableRelay, err = envBool(envRelayEnabled, defaultRelayEnabled); err != nil {
 		return cfg, err
+	}
+	if v := strings.TrimPrefix(strings.TrimSpace(os.Getenv(envMinClientVersion)), "v"); v != "" {
+		if !update.Newer(v, "0.0.0") {
+			return cfg, fmt.Errorf("%s=%q: not a release version (use MAJOR.MINOR.PATCH)", envMinClientVersion, v)
+		}
+		cfg.minClientVersion = v
 	}
 	// A typo'd level fails loudly like every other FSEND_* var — silently
 	// running at info would hide the debug logs the operator asked for.
@@ -318,6 +328,7 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		{envServerAddr, cfg.httpAddr, cfg.httpAddr != defaultServerAddr},
 		{envMaxSessionsPerIP, capCount(cfg.maxSessionsPerIP), cfg.maxSessionsPerIP != defaultMaxSessionsPerIP},
 		{envMaxNewSessionsPerMin, capCount(cfg.maxNewSessionsPerMin), cfg.maxNewSessionsPerMin != defaultMaxNewSessionsPerMin},
+		{envMinClientVersion, orNone(cfg.minClientVersion), cfg.minClientVersion != ""},
 		{envRelayEnabled, strconv.FormatBool(cfg.enableRelay), !cfg.enableRelay},
 		{envRelayAddr, cfg.udpAddr, cfg.udpAddr != defaultRelayAddr},
 		{envMaxBytesPerSession, capBytes(cfg.maxBytesPerSession), cfg.maxBytesPerSession != defaultMaxBytesPerSession},
@@ -345,6 +356,14 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		fmt.Fprintf(&b, "  %s %-*s  %s\n", mark, width, s.name, s.value)
 	}
 	return b.String()
+}
+
+// orNone renders an optional setting, showing "" as "(none)".
+func orNone(v string) string {
+	if v == "" {
+		return "(none)"
+	}
+	return v
 }
 
 // capCount renders a session cap, showing 0 as "0 (unlimited)".
@@ -535,6 +554,10 @@ CONFIGURATION (environment variables — all optional)
                                       How many new sessions one IP may create
                                       per minute (rate cap). Default 0 =
                                       unlimited; set a positive value to cap.
+    FSEND_MIN_CLIENT_VERSION          Refuse fsend releases below this
+                                      version (e.g. 1.15.0) with E060.
+                                      Clients on an older wire protocol are
+                                      always refused.
 
   Relay (UDP data plane — also answers STUN):
     FSEND_RELAY_ENABLED               Default true. false = pairing + STUN
