@@ -12,7 +12,7 @@ func FuzzReadControlRaw(f *testing.F) {
 	f.Add([]byte(nil))
 	f.Add([]byte{0x02})
 	var buf bytes.Buffer
-	if err := WriteControl(&buf, TypeHello, &SenderHello{ProtocolVersion: ProtocolVersion}); err == nil {
+	if err := WriteControl(&buf, TypeHello, &SenderHello{MinVersion: MinProtocolVersion, MaxVersion: ProtocolVersion}); err == nil {
 		f.Add(buf.Bytes())
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {

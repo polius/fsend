@@ -4,7 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  # go-patch.yml dispatches this for its own PRs: events from GITHUB_TOKEN
+  # don't start pull_request runs, workflow_dispatch is the exception.
+  workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Every gating `go test` runs with -count=1: setup-go restores GOCACHE,
+# and test/e2e builds the binary in a subprocess the cache key can't see,
+# so a cached e2e pass would skip the suite entirely.
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -14,31 +23,41 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
       - run: go build ./...
       - run: go vet ./...
-      - run: go test -timeout 120s ./...
+      - run: go test -count=1 -timeout 600s ./...
 
   # The LAN/direct/relay paths race concurrently in production; data
-  # races only surface under the race detector. Slower than the plain
-  # test job, so it runs on one OS with a wider timeout.
+  # races only surface under the race detector. Linux on both CPU
+  # families: arm64's weaker memory model shakes out different races.
   race:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -race -timeout 300s ./...
+      - run: go test -race -count=1 -timeout 600s ./...
 
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -51,19 +70,19 @@ jobs:
           version: v2.13.2
           args: --timeout=5m
 
-  # Catch known CVEs in the standard library and dependencies. "1.26"
-  # floats to the latest patch, so this also fails if go.mod pins a
-  # toolchain that has fallen behind a security release.
+  # Catch known CVEs in the standard library and dependencies, at the
+  # toolchain go.mod pins.
   govulncheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-      - run: govulncheck ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   # Bounded fuzzing of the parsers most exposed to a malicious peer (the wire
   # codec and the path sanitizer). Seed corpora also run in the normal test
@@ -77,6 +96,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -91,6 +112,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -104,32 +127,122 @@ jobs:
             exit 1
           fi
 
-  cross-compile:
+  # Builds every release target with the release config itself (archives,
+  # checksums, cask), so a broken target or config fails here, not on
+  # release day. Signing and SBOMs need the release job's identity/tools.
+  snapshot:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { goos: linux,   goarch: amd64 }
-          - { goos: linux,   goarch: arm64 }
-          - { goos: linux,   goarch: arm,    goarm: "7" }
-          - { goos: linux,   goarch: "386" }
-          - { goos: darwin,  goarch: amd64 }
-          - { goos: darwin,  goarch: arm64 }
-          - { goos: windows, goarch: amd64 }
-          - { goos: windows, goarch: arm64 }
-          - { goos: windows, goarch: "386" }
-          - { goos: freebsd, goarch: amd64 }
-          - { goos: freebsd, goarch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
+      # Snapshot output is never published, so the cache is fine here.
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7 # zizmor: ignore[cache-poisoning]
+        with:
+          distribution: goreleaser
+          version: v2.18.3
+          install-only: true
+      - run: goreleaser release --snapshot --clean --skip=sign,sbom
+      # Reproducible builds: rebuilding the same commit must give the same
+      # bytes (no wall-clock dates, paths or build IDs in the output).
+      - run: |
+          cp dist/checksums.txt "$RUNNER_TEMP/first.txt"
+          goreleaser release --snapshot --clean --skip=sign,sbom
+          diff "$RUNNER_TEMP/first.txt" dist/checksums.txt
+
+  install-sh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # The installer's pre-checked os/arch list must match what the
+      # release actually builds (see .goreleaser.yml).
+      - run: python3 scripts/check-release-targets.py
+      - run: shellcheck scripts/install.sh scripts/smoke-install.sh scripts/coverage.sh
+      # Full download -> verify -> install cycle against a local fixture
+      # server. --with-root-test asserts the root refusal; --with-busybox-test
+      # exercises the wget fallback + ash semantics in an Alpine container.
+      - run: sh scripts/smoke-install.sh --with-root-test --with-busybox-test
+
+  install-ps1:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Force -Scope CurrentUser
+          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Error
+          if ($findings) {
+            $findings | Format-Table -AutoSize
+            exit 1
+          }
+      - name: Smoke test
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/smoke-install.ps1
+
+  # Lint the workflows themselves: actionlint for correctness, zizmor for
+  # security (injection, permissions, unpinned actions, credential leaks).
+  workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: pipx run zizmor==1.30.1 --offline .github/workflows
+
+  # Coverage per package, published to the run summary; the transfer, wire,
+  # quicconn and pake packages are gated on floors (scripts/coverage.sh).
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: |
+          set +e
+          bash scripts/coverage.sh --gate > "$RUNNER_TEMP/coverage.txt" 2>&1
+          rc=$?
+          cat "$RUNNER_TEMP/coverage.txt"
+          { echo '### Coverage'; echo '```'; cat "$RUNNER_TEMP/coverage.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: |
+            merged_coverage.out
+            coverage_by_package.out
+          if-no-files-found: ignore
+
+  # The one check to mark required in the ruleset: it fails unless every
+  # job above passed, so new jobs are gated without touching repo settings.
+  ci-ok:
+    if: always()
+    needs: [test, race, lint, govulncheck, fuzz, deadcode, snapshot, install-sh, install-ps1, workflows, coverage]
+    runs-on: ubuntu-latest
+    steps:
       - env:
-          CGO_ENABLED: "0"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
-        run: go build -o /dev/null ./cmd/fsend
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            [ "$r" = success ] || exit 1
+          done

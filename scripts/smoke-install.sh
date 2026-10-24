@@ -287,6 +287,43 @@ EOF
     fi
 fi
 
+# 11. a Homebrew-managed binary at the destination is never overwritten.
+H11="$WORK/home11"
+mkdir -p "$H11/bin" "$WORK/Cellar/fsend/1.0/bin"
+printf '#!/bin/sh\n' > "$WORK/Cellar/fsend/1.0/bin/fsend"
+ln -s "$WORK/Cellar/fsend/1.0/bin/fsend" "$H11/bin/fsend"
+run_installer "$H11" -p "$H11/bin" -v "$VER" >"$WORK/out11" 2>&1 \
+    && { cat "$WORK/out11" >&2; fail "scenario11: overwrote a brew-managed binary"; }
+grep -q "managed by Homebrew" "$WORK/out11" || { cat "$WORK/out11" >&2; fail "scenario11: no Homebrew refusal"; }
+[ -L "$H11/bin/fsend" ] || fail "scenario11: brew symlink replaced"
+pass "Homebrew-managed binary left alone"
+
+# 12. with cosign on PATH the signature gates the install (stub cosign:
+# the real one needs a Sigstore-signed fixture).
+H12="$WORK/home12"
+mkdir -p "$H12" "$WORK/cosign-ok" "$WORK/cosign-bad"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/cosign-ok/cosign"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/cosign-bad/cosign"
+chmod 755 "$WORK/cosign-ok/cosign" "$WORK/cosign-bad/cosign"
+BUNDLE="$FIX/download/v$VER/checksums.txt.sigstore.json"
+printf '{}' > "$BUNDLE"
+SMOKE_PATH="$WORK/cosign-ok:/usr/bin:/bin"
+run_installer "$H12" -p "$H12/ok" >"$WORK/out12a" 2>&1 \
+    || { cat "$WORK/out12a" >&2; fail "scenario12: signed install failed"; }
+grep -q "checksum and signature verified" "$WORK/out12a" || fail "scenario12: signature not reported"
+SMOKE_PATH="$WORK/cosign-bad:/usr/bin:/bin"
+run_installer "$H12" -p "$H12/bad" -v "$VER" >"$WORK/out12b" 2>&1 \
+    && { cat "$WORK/out12b" >&2; fail "scenario12: bad signature installed"; }
+grep -q "signature verification failed" "$WORK/out12b" || fail "scenario12: no signature error"
+[ ! -e "$H12/bad/fsend" ] || fail "scenario12: binary installed despite bad signature"
+rm -f "$BUNDLE"
+SMOKE_PATH="$WORK/cosign-ok:/usr/bin:/bin"
+run_installer "$H12" -p "$H12/unsigned" -v "$VER" >"$WORK/out12c" 2>&1 \
+    || { cat "$WORK/out12c" >&2; fail "scenario12: unsigned release refused"; }
+grep -q "publishes no signature" "$WORK/out12c" || fail "scenario12: unsigned release not flagged"
+SMOKE_PATH=/usr/bin:/bin
+pass "cosign: good signature reported, bad refused, unsigned flagged"
+
 # 10. a corrupted archive is rejected by the checksum. Runs after every
 # scenario that installs: it poisons the shared fixture archive.
 H10="$WORK/home10"

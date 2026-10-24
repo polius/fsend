@@ -1,7 +1,8 @@
 // Package transfer implements fsend's end-to-end transfer protocol: HELLO
 // negotiation, optional password gating, per-file metadata + acceptance,
-// chunked data streaming with BLAKE3 verification, and resume via imohash
-// on partial sidecars. Directories travel as per-file entries, not a tar.
+// chunked data streaming with BLAKE3 verification, and resume from partials
+// whose received prefix is verified against the source. Directories travel
+// as per-file entries, not a tar.
 //
 // The Send and Recv entry points operate on a Streams pair (one control,
 // one data) — production wires them to QUIC streams, tests wire them to
@@ -19,6 +20,9 @@ import "io"
 type Streams struct {
 	Control io.ReadWriteCloser
 	Data    io.ReadWriteCloser
+	// Binding is a secret only the two authenticated peers share (derived
+	// from the code PAKE). In-session PAKEs such as --password bind to it.
+	Binding []byte
 }
 
 // Close shuts both streams, swallowing individual close errors.

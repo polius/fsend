@@ -4,21 +4,51 @@
 //   - Control frames (gob-encoded payloads) for session metadata, file
 //     info, completion, errors. Used on the control stream.
 //   - Data chunk frames (compact binary header) carry file bytes. Used on
-//     the data stream. Each chunk has a BLAKE3 hash for end-to-end verification.
+//     the data stream. Transport integrity is the QUIC AEAD's job; each file
+//     carries a BLAKE3 tree root for end-to-end verification.
 //
 // Both styles share the same 1-byte version prefix so a peer running an
 // incompatible version can be detected immediately.
 package wire
 
-// ProtocolVersion is the current wire protocol version byte.
-//
-// Bumping this is a major-version change for fsend. New optional frame
-// types can be added without bumping by giving them unused type bytes.
+// ProtocolVersion is the newest wire protocol version this build speaks.
 //
 // v2: listing/classify negotiation replaces the per-file lockstep; the
-// directory tar is gone. No backward compatibility with v1 — peers detect
-// the mismatch at HELLO and report a protocol error.
-const ProtocolVersion = 0x02
+// directory tar is gone.
+// v3: CPace replaces SPAKE2, --password runs its own in-session PAKE, and
+// both HELLOs carry a version range plus a capability bitmap, so later
+// changes can be negotiated instead of forcing a lockstep upgrade. Chunks
+// drop the per-chunk hash; files are verified by a block-tree root (see
+// transfer/filehash.go), and segments can skip or restart a file.
+//
+// Negotiation rule for future versions: HELLO and HELLO_ACK frames carry
+// MinProtocolVersion in their header so any supported peer can parse them;
+// every later frame carries the negotiated version.
+const ProtocolVersion = 0x03
+
+// MinProtocolVersion is the oldest wire protocol version this build speaks.
+const MinProtocolVersion = 0x03
+
+// Capability is a bit in the HELLO capability bitmap. Optional features
+// within one protocol version are gated on both peers advertising the bit.
+type Capability uint64
+
+// Capabilities this build supports. New bits are appended; never reuse one.
+const (
+	// CapsSupported is the bitmap this build advertises.
+	CapsSupported Capability = 0
+)
+
+// Negotiate returns the highest version both ranges share, or false if
+// the ranges don't overlap.
+func Negotiate(peerMin, peerMax uint8) (uint8, bool) {
+	hi := min(peerMax, uint8(ProtocolVersion))
+	lo := max(peerMin, uint8(MinProtocolVersion))
+	if peerMin == 0 || hi < lo {
+		return 0, false
+	}
+	return hi, true
+}
 
 // MaxControlFrameSize bounds gob payload size on control frames. A
 // listing batch (capped by maxListingBatchBytes) is the largest control
@@ -38,13 +68,13 @@ type FrameType uint8
 const (
 	TypeHello             FrameType = 0x01 // sender → receiver
 	TypeHelloAck          FrameType = 0x02 // receiver → sender (carries accept/decline)
-	TypePasswordChallenge FrameType = 0x03 // sender → receiver (only if HELLO.HasPassword)
-	TypePasswordResponse  FrameType = 0x04 // receiver → sender
+	TypePasswordChallenge FrameType = 0x03 // sender → receiver (only if HELLO.HasPassword): CPace share
+	TypePasswordResponse  FrameType = 0x04 // receiver → sender: CPace share + confirmation tag
 	TypeListingBatch      FrameType = 0x05 // sender → receiver: gob []ListingEntry (repeated)
 	TypeListingEnd        FrameType = 0x06 // sender → receiver: ends the listing
 	TypeClassifyBatch     FrameType = 0x07 // receiver → sender: gob []Decision (repeated)
 	TypeClassifyEnd       FrameType = 0x08 // receiver → sender: ends classification
-	TypePasswordVerified  FrameType = 0x09 // sender → receiver (positive ack of password)
+	TypePasswordVerified  FrameType = 0x09 // sender → receiver: sender's confirmation tag (mutual)
 	TypeTransferComplete  FrameType = 0x0A // sender → receiver
 	TypeTransferAck       FrameType = 0x0B // receiver → sender
 	TypeVerifyRequest     FrameType = 0x0C // receiver → sender: gob []uint32 (--checksum)
@@ -86,7 +116,7 @@ type DecisionAction uint8
 const (
 	DecisionSend   DecisionAction = 0 // new, differing-and-overwrite, conflict-and-overwrite
 	DecisionSkip   DecisionAction = 1 // identical, or kept (differ/conflict without consent)
-	DecisionResume DecisionAction = 2 // valid partial; ResumeOffset/PartialImohash set
+	DecisionResume DecisionAction = 2 // valid partial; ResumeOffset/PrefixRoot set
 )
 
 // ErrorCode is the catalog of error codes carried in TypeError frames.
@@ -101,10 +131,9 @@ const (
 	ErrCodeWrongPassword    ErrorCode = 2
 	ErrCodeFileHashMismatch ErrorCode = 8
 	ErrCodeProtocolError    ErrorCode = 10
-	// ErrCodePartialMismatch — receiver offered to resume from a prefix
-	// whose imohash does not match the source's prefix at the same length.
-	// Almost always means the source file changed since the previous
-	// attempt; the receiver should discard its partial and retry.
+	// ErrCodePartialMismatch — the receiver's partial does not match the
+	// source. v3 senders restart the file instead (SegFlagRestart); kept so
+	// the code is never reused.
 	ErrCodePartialMismatch ErrorCode = 11
 	// ErrCodeTargetExists — receiver refused to clobber an existing file
 	// because the user did not pass --overwrite.
@@ -131,6 +160,11 @@ const (
 	// source (open, read, hash). Terminal for the receiver: retrying won't
 	// fix the sender's disk. Mirror of ErrCodeWriteFailed.
 	ErrCodeReadFailed ErrorCode = 18
+	// ErrCodeDiskFull — the receiver lacks the space for the transfer, or
+	// ran out mid-write. Terminal: retrying won't free the receiver's disk.
+	ErrCodeDiskFull ErrorCode = 19
+	// ErrCodeTooManyEntries — the listing exceeds the receiver's entry cap.
+	ErrCodeTooManyEntries ErrorCode = 20
 )
 
 // Chunk-frame flag bits (frame-level).
@@ -141,4 +175,13 @@ const (
 // Segment flag bits (per-file within a chunk).
 const (
 	SegFlagEOF = 1 << 0 // last segment of this file; RootHash is set
+	// SegFlagSkip abandons the file: the sender could not read it. Length
+	// is 0; the receiver drops any partial and moves on.
+	SegFlagSkip = 1 << 1
+	// SegFlagRestart marks the first segment of a resumed file whose
+	// partial did not match the source: the bytes start at offset 0.
+	SegFlagRestart = 1 << 2
+	// SegFlagChanged (with EOF) reports that the source changed while it
+	// was read, so the copy may be torn.
+	SegFlagChanged = 1 << 3
 )

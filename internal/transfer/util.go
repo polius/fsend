@@ -3,30 +3,16 @@ package transfer
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // emptySHA256 is the SHA-256 hex digest of a zero-byte file, reported for
 // empty entries the way finalize reports non-empty ones.
 var emptySHA256 = hex.EncodeToString(sha256.New().Sum(nil))
-
-// hashPrefixInto streams the first n bytes of f through h. Used to
-// hydrate the resume verifier so the final BLAKE3 root check covers
-// the whole assembled file, including the prefix we kept on disk (and,
-// via an io.MultiWriter, the receiver's SHA-256 record in the same pass).
-//
-// Seeks f back to 0 before reading. The caller is responsible for
-// seeking forward again afterwards.
-func hashPrefixInto(h io.Writer, f *os.File, n int64) error {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	_, err := io.CopyN(h, f, n)
-	return err
-}
 
 // fsyncDir flushes a directory's entries to stable storage so a rename
 // into it survives a crash. Best-effort: directory fsync is a POSIX notion
@@ -60,4 +46,31 @@ func pathIsUnder(child, parent string) bool {
 		return false
 	}
 	return !filepath.IsAbs(rel)
+}
+
+// progressMeter aggregates byte progress from several goroutines and reports
+// it at most every 100 ms (and once at completion).
+type progressMeter struct {
+	mu    sync.Mutex
+	done  uint64
+	total uint64
+	last  time.Time
+	cb    func(done, total uint64)
+}
+
+func newProgressMeter(total uint64, cb func(done, total uint64)) *progressMeter {
+	return &progressMeter{total: total, cb: cb}
+}
+
+func (m *progressMeter) add(n int64) {
+	if m == nil || m.cb == nil || n <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.done += uint64(n)
+	if now := time.Now(); m.done >= m.total || now.Sub(m.last) >= 100*time.Millisecond {
+		m.last = now
+		m.cb(m.done, m.total)
+	}
 }

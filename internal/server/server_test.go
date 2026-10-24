@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/polius/fsend/internal/relay"
+	"github.com/polius/fsend/internal/wire"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {
@@ -32,17 +34,38 @@ func newTestServer(t *testing.T) *httptest.Server {
 
 func postJSON(t *testing.T, url string, body any) *http.Response {
 	t.Helper()
+	return postJSONAuth(t, url, body, "")
+}
+
+// postJSONAuth posts like a current client (protocol header set), with an
+// optional bearer role token.
+func postJSONAuth(t *testing.T, url string, body any, token string) *http.Response {
+	t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
 		if err := json.NewEncoder(&buf).Encode(body); err != nil {
 			t.Fatal(err)
 		}
 	}
-	resp, err := http.Post(url, "application/json", &buf)
+	req, err := http.NewRequest(http.MethodPost, url, &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setClientHeaders(req)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return resp
+}
+
+// setClientHeaders marks req as coming from a current fsend client.
+func setClientHeaders(req *http.Request) {
+	req.Header.Set(ProtocolHeader, strconv.Itoa(wire.ProtocolVersion))
 }
 
 // Slots are opaque to the server (any 32 lowercase hex chars), so the
@@ -208,7 +231,7 @@ func TestJoin_AlreadyClaimed(t *testing.T) {
 
 func TestWait_PairedReleases(t *testing.T) {
 	srv := newTestServer(t)
-	_ = createSession(t, srv.URL, testSlot)
+	created := createSession(t, srv.URL, testSlot)
 
 	// Sender starts waiting in a goroutine.
 	var wg sync.WaitGroup
@@ -216,7 +239,7 @@ func TestWait_PairedReleases(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{})
+		resp := postJSONAuth(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{}, created.RoleToken)
 		defer resp.Body.Close()
 		waitStatus = resp.StatusCode
 	}()
@@ -234,9 +257,9 @@ func TestWait_PairedReleases(t *testing.T) {
 
 func TestWait_Timeout(t *testing.T) {
 	srv := newTestServer(t)
-	_ = createSession(t, srv.URL, testSlot)
+	created := createSession(t, srv.URL, testSlot)
 
-	resp := postJSON(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{})
+	resp := postJSONAuth(t, srv.URL+"/v1/session/"+testSlot+"/wait", WaitRequest{}, created.RoleToken)
 	defer resp.Body.Close()
 	// LongPollTimeout in test is 500ms.
 	if resp.StatusCode != 204 {
@@ -518,6 +541,7 @@ func TestServerPassword_Gate(t *testing.T) {
 		body, _ := json.Marshal(CreateSessionRequest{Slot: testSlot})
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		setClientHeaders(req)
 		if header != "" {
 			req.Header.Set(AuthHeader, header)
 		}
@@ -993,6 +1017,7 @@ func postCreateDirect(t *testing.T, h http.Handler, remote, slot string) int {
 	}
 	req.RemoteAddr = remote
 	req.Header.Set("Content-Type", "application/json")
+	setClientHeaders(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Code
@@ -1020,6 +1045,7 @@ func TestRateLimit_ProxyHeadersIgnored(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.RemoteAddr = "203.0.113.7:4444"
+		setClientHeaders(req)
 		req.Header.Set("X-Real-IP", fmt.Sprintf("10.99.0.%d", i+1))
 		req.Header.Set("X-Forwarded-For", fmt.Sprintf("10.99.1.%d, 10.0.0.1", i+1))
 		rec := httptest.NewRecorder()
@@ -1065,6 +1091,7 @@ func TestSessionCaps_ZeroMeansUnlimited(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		setClientHeaders(req)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)

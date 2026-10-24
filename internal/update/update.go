@@ -1,11 +1,11 @@
 // Package update implements a best-effort "a newer fsend exists" check.
 //
-// It is deliberately passive: it never downloads or replaces anything,
-// it only reports whether a new release is out (the actual replacement
-// — `fsend --update` — lives in cmd/fsend and shells out to the
-// platform installer). The result of the GitHub lookup is cached for a
-// day so normal runs do no network I/O, and every failure path of the
-// passive check is silent — it must never disturb a transfer.
+// The passive check never downloads or replaces anything, it only
+// reports whether a new release is out. `fsend --update` (cmd/fsend)
+// uses FetchInstaller to get the pinned release's verified installer and
+// runs it. The result of the GitHub lookup is cached for a day so normal
+// runs do no network I/O, and every failure path of the passive check is
+// silent — it must never disturb a transfer.
 package update
 
 import (

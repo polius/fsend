@@ -44,8 +44,43 @@ func warnIfConfigCorrupted(err error, quiet bool) {
 // configured server but should not fail just because the file is invalid.
 func loadConfig(quiet bool) *config.Config {
 	cfg, err := config.Load()
-	warnIfConfigCorrupted(err, quiet)
-	return cfg
+	if serverOverride == "" {
+		warnIfConfigCorrupted(err, quiet)
+	}
+	return withServerOverride(cfg)
+}
+
+// serverOverride is the normalized --server / FSEND_SERVER address for this
+// run, "" when none. Set by setServerOverride; never written to the config.
+var serverOverride string
+
+// setServerOverride validates the per-run server (the flag beats the env
+// var) so a typo fails before any network work.
+func setServerOverride(flag string) error {
+	v, src := flag, "--server"
+	if v == "" {
+		v, src = os.Getenv("FSEND_SERVER"), "FSEND_SERVER"
+	}
+	if v == "" {
+		serverOverride = ""
+		return nil
+	}
+	s, err := normalizeServer(v)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %v", fserrors.ErrUsage, src, err)
+	}
+	serverOverride = s
+	return nil
+}
+
+// withServerOverride swaps in the per-run server, leaving cfg untouched.
+// The saved server password belongs to the saved server, so it is dropped;
+// FSEND_SERVER_PASSWORD still applies.
+func withServerOverride(cfg *config.Config) *config.Config {
+	if serverOverride == "" {
+		return cfg
+	}
+	return &config.Config{SchemaVersion: cfg.SchemaVersion, Server: serverOverride}
 }
 
 // runConnect implements `fsend --connect ...`:
@@ -132,7 +167,7 @@ func runConnect(f *flags) error {
 // every transfer. The config is saved either way (the user may simply
 // be offline, or the name may exist only on another network).
 func warnIfUnresolvable(server string) {
-	host, _, err := net.SplitHostPort(server)
+	host, _, err := net.SplitHostPort(hostPortOf(server))
 	if err != nil || net.ParseIP(host) != nil || host == "localhost" {
 		return
 	}
@@ -145,30 +180,28 @@ func warnIfUnresolvable(server string) {
 }
 
 // normalizeServer validates a user-supplied server address and returns
-// the canonical "<host>:<port>" form.
+// the form the config stores and serverBaseURL dials.
 //
 // Accepted shapes:
-//   - "host:port"  → returned as-is (after port-range check)
-//   - "host"       → port filled in implicitly: 443 for DNS hostnames,
-//     80 for IP literals and "localhost"
-//   - "http(s)://host[:port][/]" → scheme stripped, then treated as above
+//   - "host[:port]"               → HTTPS (443 by default); plain HTTP
+//     (80) for loopback, so dev loops work without a cert
+//   - "http(s)://host[:port][/]"  → the scheme is kept, with its default
+//     port when none is given
 //
-// The default mirrors web convention — domain names ride HTTPS on 443,
-// while bare IPs / loopback ride HTTP on 80 (IPs rarely carry trusted
-// TLS certs). Users on a non-default port still type it explicitly.
+// The stored form is "host:port" when the scheme is the one serverBaseURL
+// infers, else "scheme://host:port" — so `--connect http://10.0.0.5`
+// really dials plain HTTP instead of HTTPS on port 80.
 func normalizeServer(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "", fmt.Errorf("server address is empty")
 	}
-	// Without scheme stripping, `--connect http://host:8080` (the form
-	// the self-hosting LAN-only docs used to show) lands as the corrupt
-	// `[http://host:8080]:443` and breaks every transfer with E001.
 	s = strings.TrimSuffix(s, "/")
+	scheme := ""
 	if rest, ok := strings.CutPrefix(s, "http://"); ok {
-		s = rest
+		s, scheme = rest, "http"
 	} else if rest, ok := strings.CutPrefix(s, "https://"); ok {
-		s = rest
+		s, scheme = rest, "https"
 	}
 	if s == "" {
 		return "", fmt.Errorf("server address is empty")
@@ -178,7 +211,7 @@ func normalizeServer(s string) (string, error) {
 		// No port supplied — treat the whole input as the host.
 		// Strip optional IPv6 brackets so net.JoinHostPort re-adds them.
 		host = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
-		port = defaultPortForHost(host)
+		port = defaultPortFor(scheme, host)
 	} else {
 		p, err := strconv.Atoi(port)
 		if err != nil || p < 1 || p > 65535 {
@@ -191,7 +224,27 @@ func normalizeServer(s string) (string, error) {
 	if !validHost(host) {
 		return "", fmt.Errorf("invalid server hostname %q", host)
 	}
-	return net.JoinHostPort(host, port), nil
+	addr := net.JoinHostPort(host, port)
+	if scheme != "" && scheme != inferredScheme(addr) {
+		return scheme + "://" + addr, nil
+	}
+	return addr, nil
+}
+
+// inferredScheme is the scheme serverBaseURL dials a bare host:port with.
+func inferredScheme(addr string) string {
+	if isLocalAddr(addr) {
+		return "http"
+	}
+	return "https"
+}
+
+// hostPortOf strips an explicit scheme from a stored server address.
+func hostPortOf(server string) string {
+	if _, rest, ok := strings.Cut(server, "://"); ok {
+		return rest
+	}
+	return server
 }
 
 // validHost reports whether host is an IP literal or a plausible DNS name.
@@ -220,11 +273,15 @@ func validHost(host string) bool {
 	return true
 }
 
-// defaultPortForHost returns the implicit port for an address where the
-// user did not supply one. Loopback and IP literals default to HTTP/80;
-// anything else (treated as a DNS name) defaults to HTTPS/443.
-func defaultPortForHost(host string) string {
-	if host == "localhost" || net.ParseIP(host) != nil {
+// defaultPortFor returns the implicit port for an address where the user
+// did not supply one: the scheme's port when one was given, else the port
+// of the scheme the host will be dialled with (HTTP for loopback, HTTPS
+// for everything else).
+func defaultPortFor(scheme, host string) string {
+	if scheme == "" {
+		scheme = inferredScheme(host)
+	}
+	if scheme == "http" {
 		return "80"
 	}
 	return "443"
@@ -253,6 +310,9 @@ func printCurrentServer(cfg *config.Config) {
 	}
 	if p, err := config.Path(); err == nil {
 		fmt.Fprintln(os.Stderr, "  Config file:", p)
+	}
+	if v := os.Getenv("FSEND_SERVER"); v != "" {
+		fmt.Fprintf(os.Stderr, "  %s FSEND_SERVER=%s overrides this for every run in this shell.\n", uxlog.Info(), v)
 	}
 	fmt.Fprintln(os.Stderr)
 }

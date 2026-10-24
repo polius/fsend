@@ -8,18 +8,23 @@ on:
   schedule:
     # Weekly, so new query packs catch pre-existing code between releases.
     - cron: '17 4 * * 1'
+  # Dispatched by go-patch.yml (its PRs start no pull_request runs).
+  workflow_dispatch:
 
-permissions:
-  contents: read
-  security-events: write
-  packages: read
+permissions: {}
 
 jobs:
   analyze:
     name: analyze
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

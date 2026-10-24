@@ -97,8 +97,8 @@ func ReadControlRaw(r io.Reader) (FrameType, []byte, error) {
 	ft := FrameType(header[1])
 	length := binary.BigEndian.Uint32(header[2:6])
 
-	if ver != ProtocolVersion {
-		return ft, nil, fmt.Errorf("%w: peer sent version %d, we speak %d", ErrUnsupportedVersion, ver, ProtocolVersion)
+	if ver < MinProtocolVersion || ver > ProtocolVersion {
+		return ft, nil, fmt.Errorf("%w: peer sent version %d, we speak %d-%d", ErrUnsupportedVersion, ver, MinProtocolVersion, ProtocolVersion)
 	}
 	if length > MaxControlFrameSize {
 		return ft, nil, fmt.Errorf("%w: declared %d bytes exceeds limit %d", ErrFrameTooLarge, length, MaxControlFrameSize)

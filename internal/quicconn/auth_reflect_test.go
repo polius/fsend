@@ -45,7 +45,8 @@ func TestHandshake_TagReflectionRejected(t *testing.T) {
 			honestErr <- err
 			return
 		}
-		honestErr <- authenticatePeer(c, ctrl, honestCode, roleSender)
+		_, err = authenticatePeer(c, ctrl, honestCode, roleSender)
+		honestErr <- err
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -59,12 +60,21 @@ func TestHandshake_TagReflectionRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Malicious receiver: complete a valid SPAKE2 round with the wrong
+	// Malicious receiver: complete a well-formed CPace round with the wrong
 	// code (so the honest Finish succeeds), then reflect the honest tag.
 	if _, err := readReflectFrame(ctrl); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeReflectFrame(ctrl, pake.New(attackerCode).Start()); err != nil {
+	tlsState := c.ConnectionState().TLS
+	exp, err := tlsState.ExportKeyingMaterial(exporterLabel, nil, exporterLen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := pake.New(pake.Responder, pake.Params{PRS: []byte(attackerCode), CI: []byte("fsend"), SID: exp, AD: adReceiver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeReflectFrame(ctrl, append([]byte{suiteCPace, suiteVersion}, st.Share()...)); err != nil {
 		t.Fatal(err)
 	}
 	var tag [tagLen]byte

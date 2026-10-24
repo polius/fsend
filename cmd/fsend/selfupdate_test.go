@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/polius/fsend/internal/fserrors"
@@ -131,5 +132,31 @@ func TestManagedByHomebrew(t *testing.T) {
 		if managedByHomebrew(own) {
 			t.Errorf("managedByHomebrew(%q) = true, want false", own)
 		}
+	}
+}
+
+// The installer must be pinned to the version fsend verified and to the
+// binary's own directory, whatever the user exported.
+func TestInstallerEnv(t *testing.T) {
+	t.Setenv("FSEND_VERSION", "0.0.1")
+	t.Setenv("FSEND_PREFIX", "/elsewhere")
+	t.Setenv("PREFIX", "/elsewhere")
+	bin := filepath.Join(t.TempDir(), "fsend")
+	got := map[string][]string{}
+	for _, e := range installerEnv(bin, "1.2.3") {
+		k, v, _ := strings.Cut(e, "=")
+		got[k] = append(got[k], v)
+	}
+	for k, want := range map[string]string{
+		"FSEND_VERSION": "v1.2.3",
+		"FSEND_PREFIX":  filepath.Dir(bin),
+		"FSEND_UPDATE":  "1",
+	} {
+		if len(got[k]) != 1 || got[k][0] != want {
+			t.Errorf("%s = %q, want exactly [%q]", k, got[k], want)
+		}
+	}
+	if len(got["PREFIX"]) != 0 {
+		t.Errorf("PREFIX = %q, want it dropped", got["PREFIX"])
 	}
 }

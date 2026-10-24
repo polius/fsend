@@ -3,6 +3,7 @@ package uxlog
 import (
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,8 +36,11 @@ func Marker(kind glyphKind) string {
 	if !renderTTY(os.Stderr) {
 		return ascii
 	}
-	if colorEnabled() && token.dark != "" {
-		return fg(token) + utf8 + colorReset
+	if !colorEnabled() {
+		return utf8
+	}
+	if c := fg(token); c != "" {
+		return c + utf8 + colorReset
 	}
 	return utf8
 }
@@ -127,27 +131,32 @@ func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken) {
 //	error    — failure (✗)
 //	info     — neutral status (ℹ, --help flags, links)
 //
-// dark is the pastel family the roles were tuned for (Tokyo Night): it
-// glows on a near-black terminal but drops to ~2:1 on a light one. light
-// is the same hue family darkened to clear WCAG AA on white, so a light
-// terminal gets the same vocabulary at a readable contrast. The zero
-// token (both fields empty) means "no colour" — the default foreground.
+// Three siblings per role, each at least WCAG AA (4.5:1):
+//
+//	dark  — the pastel family (Tokyo Night), against black.
+//	light — the same hues darkened, against white.
+//	both  — mid-tones that clear 4.5:1 against white AND black. Used when
+//	        the background is unknown, the common case: most terminals
+//	        (macOS Terminal included) export nothing that reveals it.
 //
 // Rendering uses truecolour when the terminal reports it
-// (COLORTERM=truecolor/24bit), else the nearest 256-colour approximation
-// of whichever hex applies.
+// (COLORTERM=truecolor/24bit), else a 256-colour cell. For dark/light
+// that is the nearest cell; for both it is both256, hand-picked because
+// the cube holds no orange, amber or cyan inside the 4.5:1-on-both band —
+// those roles get "" (the terminal's default foreground, readable by
+// definition). The zero token means "no colour".
 type colourToken struct {
-	dark  string // "#rrggbb" for a dark terminal background
-	light string // "#rrggbb" for a light terminal background
+	dark, light, both string // "#rrggbb"
+	both256           string // xterm-256 index for both; "" = default fg
 }
 
 var (
-	tokenAccent  = colourToken{"#ff9e64", "#b15c00"}
-	tokenPrimary = colourToken{"#bb9af7", "#7847bd"}
-	tokenSuccess = colourToken{"#9ece6a", "#587539"}
-	tokenWarning = colourToken{"#e0af68", "#8c6c3e"}
-	tokenError   = colourToken{"#f7768e", "#b3261e"}
-	tokenInfo    = colourToken{"#7dcfff", "#007197"}
+	tokenAccent  = colourToken{"#ff9e64", "#b15c00", "#c85000", ""}
+	tokenPrimary = colourToken{"#bb9af7", "#7847bd", "#8f58dc", "98"}
+	tokenSuccess = colourToken{"#9ece6a", "#587539", "#47851b", "29"}
+	tokenWarning = colourToken{"#e0af68", "#8c6c3e", "#a06b00", ""}
+	tokenError   = colourToken{"#f7768e", "#b3261e", "#da3644", "131"}
+	tokenInfo    = colourToken{"#7dcfff", "#007197", "#007fa9", "63"}
 )
 
 const (
@@ -176,60 +185,84 @@ func truecolorEnabled() bool {
 
 // sgr returns the SGR foreground parameters for the token at the
 // terminal's best fidelity: "38;2;r;g;b" under truecolour, else
-// "38;5;<idx>" using the nearest 256-colour cell.
+// "38;5;<idx>". "" means the default foreground.
 func sgr(t colourToken) string {
-	hex := t.hex()
+	th := currentTheme()
+	hex := t.hexFor(th)
+	if hex == "" {
+		return ""
+	}
 	if truecolorEnabled() {
 		r, g, b := parseHex(hex)
 		return "38;2;" + r + ";" + g + ";" + b
+	}
+	if th == themeUnknown {
+		if t.both256 == "" {
+			return ""
+		}
+		return "38;5;" + t.both256
 	}
 	return "38;5;" + nearest256(hex)
 }
 
 // hex is the token's truecolour for the terminal's background.
-func (t colourToken) hex() string {
-	if darkBackground() {
+func (t colourToken) hex() string { return t.hexFor(currentTheme()) }
+
+func (t colourToken) hexFor(th theme) string {
+	switch th {
+	case themeDark:
 		return t.dark
+	case themeLight:
+		return t.light
 	}
-	return t.light
+	return t.both
 }
 
-// darkBackground reports whether the terminal's background is dark, so
-// the palette picks the sibling tuned to contrast against it. Dark is the
-// default: the roles were designed around the dark form, and an
-// unset/unknown terminal is overwhelmingly a dark theme.
+type theme int
+
+const (
+	themeUnknown theme = iota
+	themeDark
+	themeLight
+)
+
+// currentTheme reports which background the palette targets:
 //
 //  1. FSEND_THEME=light|dark — explicit, documented override.
 //  2. COLORFGBG — the de-facto var iTerm2/Konsole/rxvt export as
 //     "<fg>;<bg>"; the last field is the background's ANSI colour index.
 //     Index 7 (white) and 9..15 (bright) are the light end.
-//  3. dark.
+//  3. unknown → the "both" palette, readable on either.
+//
+// No OSC 11 query: it needs raw mode on the tty and can swallow or leak
+// typed input, a poor trade when the both palette already reads fine.
 var (
-	bgOnce sync.Once
-	bgDark bool
+	bgOnce  sync.Once
+	bgTheme theme
 )
 
-func darkBackground() bool {
+func currentTheme() theme {
 	bgOnce.Do(func() {
 		switch {
 		case strings.EqualFold(os.Getenv("FSEND_THEME"), "light"):
-			bgDark = false
+			bgTheme = themeLight
 		case strings.EqualFold(os.Getenv("FSEND_THEME"), "dark"):
-			bgDark = true
+			bgTheme = themeDark
 		default:
-			bgDark = true // unknown/unset → the designed-for default
+			bgTheme = themeUnknown
 			if c := os.Getenv("COLORFGBG"); c != "" {
 				if i := strings.LastIndexByte(c, ';'); i >= 0 {
 					if bg, err := strconv.Atoi(c[i+1:]); err == nil {
-						// A light background index (the default fg 7, or
-						// 9–15) means the terminal is light-on-dark.
-						bgDark = bg != 7 && bg < 9
+						bgTheme = themeDark
+						if bg == 7 || bg >= 9 {
+							bgTheme = themeLight
+						}
 					}
 				}
 			}
 		}
 	})
-	return bgDark
+	return bgTheme
 }
 
 // nearest256 returns the xterm-256 palette index closest to hex (plain
@@ -271,12 +304,22 @@ func cube256(i int) (r, g, b int) {
 }
 
 // fg renders s in the token's colour; caller wraps with colorReset (or
-// uses the gated colour helpers in format.go).
-func fg(t colourToken) string { return "\x1b[" + sgr(t) + "m" }
+// uses the gated colour helpers in format.go). "" for the default fg.
+func fg(t colourToken) string {
+	if p := sgr(t); p != "" {
+		return "\x1b[" + p + "m"
+	}
+	return ""
+}
 
 // fgBold renders s in the token's colour plus bold — for the share code
 // and other hero moments that need the extra weight.
-func fgBold(t colourToken) string { return "\x1b[" + "1;" + sgr(t) + "m" }
+func fgBold(t colourToken) string {
+	if p := sgr(t); p != "" {
+		return "\x1b[1;" + p + "m"
+	}
+	return colorBold
+}
 
 // parseHex splits "#rrggbb" into decimal channel strings.
 func parseHex(hex string) (r, g, b string) {
@@ -349,11 +392,39 @@ var (
 // TERM=dumb gets the same degradation — those terminals are TTYs but
 // can't interpret escapes.
 func renderTTY(w io.Writer) bool {
-	if os.Getenv("TERM") == "dumb" {
+	if os.Getenv("TERM") == "dumb" || Plain() {
 		return false
 	}
 	ansiOnce.Do(func() { ansiOK = enableANSI() })
 	return ansiOK && IsTTY(w)
+}
+
+// Plain reports plain mode: FSEND_PLAIN set (non-empty, not "0"/"false"),
+// or a locale that isn't UTF-8. Every renderer then takes its pipe form —
+// whole lines, no redraws, ASCII glyphs, no colour — which is what screen
+// readers and legacy consoles need. Read per call so tests can flip it.
+func Plain() bool {
+	if v := os.Getenv("FSEND_PLAIN"); v != "" && v != "0" && v != "false" {
+		return true
+	}
+	return !utf8Locale()
+}
+
+// utf8Locale reports whether the locale's charset is UTF-8, by POSIX
+// precedence (LC_ALL, LC_CTYPE, LANG). Unset everywhere counts as UTF-8:
+// that is how ssh and launchd sessions often arrive at a UTF-8 terminal.
+// Windows consoles don't use these variables.
+func utf8Locale() bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	for _, k := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		if v := os.Getenv(k); v != "" {
+			v = strings.ToLower(strings.ReplaceAll(v, "-", ""))
+			return strings.Contains(v, "utf8")
+		}
+	}
+	return true
 }
 
 // colorEnabled reports whether we should emit ANSI colour escapes.
@@ -421,7 +492,7 @@ func resetColorForTesting() {
 // so tests can flip FSEND_THEME / COLORFGBG / COLORTERM between cases.
 func resetThemeForTesting() {
 	bgOnce = sync.Once{}
-	bgDark = false
+	bgTheme = themeUnknown
 	tcOnce = sync.Once{}
 	tcOK = false
 }

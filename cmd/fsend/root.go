@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
 	"github.com/polius/fsend/internal/code"
@@ -30,11 +31,16 @@ type flags struct {
 	hostname string
 	excludes []string // glob patterns; applied when bundling a directory archive
 	preview  bool     // list what would be sent (CSV), then exit — no transfer
+	as       string   // file name for a piped stream on the receiver's disk
+
+	// Per-run server override (--server; FSEND_SERVER), never persisted.
+	server string
 
 	// Receive-side
 	yes       bool
 	outDir    string
 	overwrite bool
+	rename    bool // keep both: save differing incoming files as "name (1).ext"
 	checksum  bool
 	manifest  string // write a CSV record of the received files to this path
 
@@ -73,10 +79,17 @@ Examples:
   Folder:    fsend ./myproject
   Stdin:     cat file | fsend
   Text:      fsend --text "hello world"`,
-		Args:               cobra.ArbitraryArgs,
-		SilenceUsage:       true,
-		SilenceErrors:      true,
-		DisableSuggestions: true,
+		Args:          cobra.ArbitraryArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		// Typo'd positionals reach dispatch as file paths (Args accepts
+		// anything), so the "did you mean" for those lives in renderError;
+		// this covers cobra's own unknown-subcommand path.
+		SuggestionsMinimumDistance: 2,
+		// Every path and code is a positional: complete files and dirs.
+		ValidArgsFunction: func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			return nil, cobra.ShellCompDirectiveDefault
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			f.posArgs = args
 			return dispatch(cmd, f)
@@ -86,9 +99,9 @@ Examples:
 	// Route cobra's own flag-parse errors ("flag needs an argument",
 	// "unknown flag", ...) through ErrUsage so they render with the
 	// catalog [E024] line instead of dropping into the E099 "please
-	// file an issue" catchall.
-	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
-		return fmt.Errorf("%w: %v", fserrors.ErrUsage, err)
+	// file an issue" catchall — with a "did you mean" for a typo'd flag.
+	c.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%w: %v%s", fserrors.ErrUsage, err, flagSuggestion(cmd, err))
 	})
 
 	c.SetVersionTemplate(version.String() + "\n")
@@ -101,14 +114,27 @@ Examples:
 	// The header carries the build version so users see what they're
 	// running on every `--help` — saves a round-trip to `--version`
 	// when writing a bug report.
-	ht := strings.Replace(helpTemplate, "fsend —", "fsend "+version.Version+" —", 1)
-	ht = boldHelpHeaders(ht)
-	ht = decorateHelpFlags(ht)
+	ht := renderHelp(helpTemplate)
 	c.SetHelpTemplate(ht)
 	c.SetUsageTemplate(ht)
+	c.SetHelpCommand(helpCmd())
+
+	// Old spellings and other tools' habits, resolved to the real flag:
+	// --name was the device-name flag before --device-name; --output is
+	// what curl/wget users type for --out.
+	c.Flags().SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
+		switch name {
+		case "name":
+			name = "device-name"
+		case "output":
+			name = "out"
+		}
+		return pflag.NormalizedName(name)
+	})
 
 	// Transfer behavior
 	c.Flags().StringVar(&f.textArg, "text", "", "send a literal string instead of a file")
+	c.Flags().StringVar(&f.as, "as", "", "file name the receiver saves a piped stream as")
 	c.Flags().StringVar(&f.passArg, "password", "",
 		"password gate. Bare --password prompts (sender: suggests a random default); inline: --password=SECRET. Env: FSEND_PASSWORD (or FSEND_PASSWORD_FILE)")
 	// Bare --password (no value) collapses to this sentinel; the dispatch
@@ -117,15 +143,18 @@ Examples:
 	passFlag := c.Flags().Lookup("password")
 	passFlag.NoOptDefVal = passPromptSentinel
 	passFlag.DefValue = ""
-	c.Flags().BoolVar(&f.yes, "yes", false, "auto-accept incoming transfers (differing files still need --overwrite)")
-	c.Flags().StringVar(&f.outDir, "out", "", "receive into this directory, created if missing")
+	c.Flags().BoolVarP(&f.yes, "yes", "y", false, "auto-accept incoming transfers (differing files are kept unless --overwrite or --rename)")
+	c.Flags().StringVarP(&f.outDir, "out", "o", "", "receive into this directory, created if missing")
+	_ = c.MarkFlagDirname("out")
 	c.Flags().BoolVar(&f.overwrite, "overwrite", false, "overwrite existing files that differ on receive")
+	c.Flags().BoolVar(&f.rename, "rename", false, "keep both: save incoming files that differ as \"name (1).ext\"")
 	c.Flags().BoolVar(&f.checksum, "checksum", false, "decide identical files by content hash, not size+mtime (like rsync -c)")
 	c.Flags().BoolVar(&f.preview, "preview", false, "list what would be sent (CSV: path,size) and exit; no transfer")
-	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status) of the received files to this path")
-	c.Flags().BoolVar(&f.quiet, "quiet", false, "suppress all non-error output (send still prints the bare code to stdout)")
+	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status,sha256) of the received files to this path")
+	c.Flags().BoolVarP(&f.quiet, "quiet", "q", false, "suppress all non-error output (send still prints the bare code to stdout)")
 	c.Flags().BoolVar(&f.json, "json", false, "emit NDJSON events (code, final summary) on stdout")
-	c.Flags().StringVar(&f.hostname, "name", "", "override the device name shown to the peer (default: hostname)")
+	c.Flags().StringVar(&f.hostname, "device-name", "", "override the device name shown to the peer (default: hostname)")
+	c.Flags().StringVar(&f.server, "server", "", "use this server for this run only (not saved)")
 	c.Flags().StringSliceVar(&f.excludes, "exclude", nil,
 		"glob patterns to skip when bundling a directory (repeatable or comma-separated)")
 
@@ -234,91 +263,150 @@ const (
 	modeRelay  = "relay"
 )
 
-// helpTemplate is the single help/usage view. cobra invokes it for both
-// `fsend --help` and `fsend` (the no-args path that prints help). The
-// layout deliberately omits cobra's auto-generated flag wall — every
-// user-facing flag is listed by hand below so we control wording and
-// grouping.
+// helpTemplate is the everyday help page: `fsend --help`, and bare `fsend`
+// off a terminal. It lists the flags most runs need; the rest live in
+// advancedHelpTemplate (`fsend help advanced`). Hand-written rather than
+// cobra's alphabetised flag wall so wording and grouping stay ours.
 const helpTemplate = `fsend — peer-to-peer file transfer
 
 USAGE
-  fsend <file|dir>...              Send (one or more paths)
-  fsend <code>                     Receive (using a code like abc-defg-jkm)
-  cat file.txt | fsend             Send from a pipe (or: fsend < file)
-  fsend --text "hello world"       Send a literal string
-
-EXAMPLES
-  Send a file:
-    fsend report.pdf
-  Receive:
-    fsend abc-defg-jkm
-  Send a whole folder:
-    fsend ./myproject
-  Send with extra password protection:
-    fsend report.pdf --password="shared-secret"
-  Use a different server:
-    fsend --connect relay.mycompany.com:443
+  fsend <file|dir>...          Send (prints a code for the other side)
+  fsend <code>                 Receive (a code like abc-defg-jkm)
+  cat file.txt | fsend         Send from a pipe (or: fsend < file)
+  fsend --text "hello world"   Send a literal string (the receiver prints it)
 
 SENDING
-  --password             Require a password to receive. Bare --password prompts;
-                         inline --password=SECRET; env FSEND_PASSWORD or
-                         FSEND_PASSWORD_FILE.
-  --exclude <glob,…>     Skip entries matching these globs in a directory
-  --text "<string>"      Send a literal string instead of a file
-                         (the receiver prints it — nothing is saved;
-                         keep it with: fsend <code> > note.txt)
-  --preview              List what would be sent (CSV: path,size) and exit —
-                         no code, no transfer (pipe-friendly: --preview > out.csv)
+  --password             Require a password; the receiver passes it too.
+                         Bare --password prompts; or --password=SECRET
+  --exclude <glob,…>     Skip entries matching these globs in a folder
+  --as <name>            File name the receiver saves a piped stream as
+  --preview              List what would be sent (CSV: path,size) and exit
 
 RECEIVING
-  --yes                  Auto-accept incoming transfers (no prompt).
-                         Differing files are still kept unless --overwrite
-  --out <dir>            Receive into this directory, created if missing
-                         (default: current)
-  --out -                Receive to stdout (single file, text, or piped
-                         stream — pipe-friendly: fsend <code> --out - | …)
-  --password             Supply the sender's password. Bare --password prompts;
-                         inline --password=SECRET; env FSEND_PASSWORD or
-                         FSEND_PASSWORD_FILE.
-  --overwrite            Replace existing files that differ (identical files
-                         are always skipped)
-  --checksum             Decide identical files by content hash, not
-                         size+mtime (like rsync -c)
-  --manifest <file>      Write a CSV record (path,size,status) of the
-                         received files to <file>
+  -y, --yes              Accept without asking (differing files are kept
+                         unless --overwrite or --rename)
+  -o, --out <dir>        Save into <dir>, created if missing; - for stdout
+                         (a folder arrives as a tar: fsend <code> -o - | tar x)
+  --overwrite            Replace existing files that differ (folders are
+                         never deleted)
+  --rename               Keep both: save differing files as "name (1).ext"
 
 GENERAL
-  --name <string>        Override the device name shown to the peer
-                         (default: hostname)
-  --quiet                Suppress all non-error output (send still prints
-                         the bare code to stdout)
-  --json                 NDJSON events on stdout: the code when issued, and
-                         a final summary (see docs/usage.md for the schema)
-  --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
-  --help, -h             Show this help
-  --version, -v          Show version
+  -q, --quiet            Errors only (send still prints the code to stdout)
+  --json                 NDJSON events on stdout (schema: docs/usage.md)
+  --server <host>        Use this server for this run only, not saved
+  -h, --help             Show this help
+  -v, --version          Show version
 
-ADVANCED
-  --connect              Show current server
-  --connect <host[:port]>
-                         Set the server (persisted)
-  --connect <host[:port]>,<password>
-                         Set the server + shared password
-                         (or env FSEND_SERVER_PASSWORD / FSEND_SERVER_PASSWORD_FILE)
-  --connect default      Revert to the compiled-in default server
-  --send / --receive     Force mode (skip code/path auto-detect)
-  --update               Update fsend to the latest release
-  --update --check       Report whether a newer release exists, install
-                         nothing, and print its release notes link
-  --uninstall            Remove the fsend binary and its config dir
-  fsend server           Run your own pairing/relay server (--help for env vars)
-  fsend completion <shell>
-                         Print a tab-completion script (bash, zsh, fish,
-                         powershell)
+  More flags, environment variables, exit status:  fsend help advanced
 
 LEARN MORE
   https://github.com/polius/fsend
 `
+
+// advancedHelpTemplate is `fsend help advanced`: everything the everyday
+// page leaves out.
+const advancedHelpTemplate = `fsend — advanced options
+
+MORE FLAGS
+  --checksum             Decide identical files by content hash, not
+                         size+mtime (like rsync -c)
+  --manifest <file>      Write a CSV record (path,size,status,sha256) of the
+                         received files to <file>
+  --device-name <name>   Device name shown to the peer (default: hostname)
+  --send / --receive     Force a mode (skip code/path auto-detect);
+                         bare --receive asks for the code
+  --debug                Verbose logging to stderr (also: FSEND_DEBUG=1)
+
+SERVER
+  --connect              Show the saved server
+  --connect <host[:port]>[,<password>]
+                         Save a server (and its password) for every run.
+                         HTTPS unless you write http://host
+  --connect default      Back to the built-in server
+  --server <host>        Use a server for this run only (or FSEND_SERVER)
+
+MAINTENANCE
+  --update               Update fsend to the latest release
+  --update --check       Report whether a newer release exists
+  --uninstall            Remove the fsend binary and its config dir
+  fsend doctor           Check your setup
+  fsend server           Run your own pairing/relay server (--help for more)
+  fsend completion <shell>
+                         Print a tab-completion script (bash, zsh, fish,
+                         powershell)
+
+ENVIRONMENT
+  FSEND_CODE             The code to receive, kept out of the process list
+  FSEND_PASSWORD         Transfer password (or FSEND_PASSWORD_FILE)
+  FSEND_SERVER           Server for this run, like --server
+  FSEND_SERVER_PASSWORD  Server password (or FSEND_SERVER_PASSWORD_FILE)
+  FSEND_THEME            light or dark: match colours to your background
+  FSEND_PLAIN=1          No colour, animation or Unicode symbols (screen
+                         readers, logs); automatic when the locale isn't UTF-8
+  FSEND_NO_NOTIFY=1      No bell or desktop notification after long runs
+  NO_COLOR=1             No colour
+
+EXIT STATUS
+  0 on success, or when you decline at a prompt; 130 on Ctrl-C; otherwise
+  the error's number (E013 exits 13). The table is in docs/usage.md.
+`
+
+// renderHelp stamps the version into a help template's header and adds
+// the colour decoration (bold headers, accented flags) when stdout takes it.
+// The header carries the version so users see what they're running on
+// every --help — saves a round-trip when writing a bug report.
+func renderHelp(tpl string) string {
+	tpl = strings.Replace(tpl, "fsend —", "fsend "+version.Version+" —", 1)
+	return decorateHelpFlags(boldHelpHeaders(tpl))
+}
+
+// helpCmd replaces cobra's help command, which printed the root page for
+// any unknown topic: `fsend help xyz` now fails with E024 and the topics.
+func helpCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "help [advanced|server|doctor|completion]",
+		Short:         "Help about fsend",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		ValidArgs:     []string{"advanced", "server", "doctor", "completion"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root := cmd.Root()
+			switch {
+			case len(args) == 0:
+				return root.Help()
+			case len(args) == 1 && args[0] == "advanced":
+				_, err := fmt.Fprint(root.OutOrStdout(), renderHelp(advancedHelpTemplate))
+				return err
+			}
+			if sub, rest, err := root.Find(args); err == nil && sub != root && len(rest) == 0 {
+				return sub.Help()
+			}
+			return fmt.Errorf("%w: unknown help topic %q (topics: advanced, server, doctor, completion)",
+				fserrors.ErrUsage, strings.Join(args, " "))
+		},
+	}
+}
+
+// flagSuggestion turns pflag's "unknown flag: --overwirte" into a hint
+// naming the closest real flag. "" when nothing is close.
+func flagSuggestion(cmd *cobra.Command, err error) string {
+	_, name, ok := strings.Cut(err.Error(), "unknown flag: --")
+	if !ok {
+		return ""
+	}
+	name, _, _ = strings.Cut(name, "=")
+	var names []string
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if !f.Hidden {
+			names = append(names, f.Name)
+		}
+	})
+	if best := closest(name, names); best != "" {
+		return " (did you mean --" + best + "?)"
+	}
+	return ""
+}
 
 // boldHelpHeaders wraps the ALL-CAPS section headers (USAGE, EXAMPLES,
 // …) of a help template in ANSI bold so the page scans by section.
@@ -479,7 +567,7 @@ const connectShowSentinel = ":show:"
 // line would silently not run. allowYes exempts --yes, which --uninstall
 // documents as skipping its confirmation prompt.
 func maintenanceGuard(cmd *cobra.Command, f *flags, name string, allowYes bool) error {
-	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "checksum", "manifest", "preview", "json"} {
+	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "rename", "device-name", "exclude", "mode", "checksum", "manifest", "preview", "json", "server", "as"} {
 		if conflict == "yes" && allowYes {
 			continue
 		}
@@ -504,7 +592,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "name", "exclude", "mode", "update", "check", "uninstall", "checksum", "manifest", "preview", "json"} {
+		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "rename", "device-name", "exclude", "mode", "update", "check", "uninstall", "checksum", "manifest", "preview", "json", "server", "as"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}
@@ -581,7 +669,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	if cmd.Flags().Changed("password") && f.passArg == passPromptSentinel &&
 		!cmd.Flags().Changed("text") && !f.forceReceive && !f.forceSend {
 		for _, a := range f.posArgs {
-			if a == "-" || code.IsCode(a) || code.LooksLikeCode(a) {
+			if _, ok := code.Normalize(a); ok || a == "-" || code.LooksLikeCode(a) {
 				continue
 			}
 			if _, err := os.Stat(a); os.IsNotExist(err) {
@@ -602,13 +690,28 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 
 	// Bare --password (no value) is resolved inside runSend / runReceive so
 	// each role can show the right prompt: the sender gets a random
-	// 16-char suggestion, the receiver gets a hidden no-echo prompt.
+	// four-word suggestion, the receiver gets a hidden no-echo prompt.
 
-	// Implicit stdin: no args + non-TTY stdin (pipe or redirected file)
-	// means "send what's coming in". Bare `fsend` in an interactive
-	// shell hits the help path below because stdin is a TTY there.
-	if len(f.posArgs) == 0 && !f.forceReceive && !cmd.Flags().Changed("text") &&
-		!term.IsTerminal(int(os.Stdin.Fd())) {
+	// --server / FSEND_SERVER: validated before any work so a typo fails
+	// before a code is issued.
+	if err := setServerOverride(f.server); err != nil {
+		return err
+	}
+
+	// FSEND_CODE receives without the code ever sitting in argv, where any
+	// local user can read it from `ps`. It beats implicit stdin: a CI job
+	// that sets it means to receive, whatever its stdin happens to be.
+	if len(f.posArgs) == 0 && !f.forceSend && !f.forceReceive && !cmd.Flags().Changed("text") {
+		if c := os.Getenv("FSEND_CODE"); c != "" {
+			return startReceive(f, c)
+		}
+	}
+
+	// Implicit stdin: no args and stdin carries data (a pipe, or a
+	// non-empty redirected file) means "send what's coming in". A terminal,
+	// /dev/null or a closed stdin (cron, CI, `ssh host fsend`) is not a
+	// send — it falls through to help instead of publishing an empty stream.
+	if len(f.posArgs) == 0 && !f.forceReceive && !cmd.Flags().Changed("text") && stdinHasData() {
 		f.posArgs = []string{"-"}
 	}
 
@@ -622,10 +725,17 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		if cmd.Flags().Changed("text") {
 			return fmt.Errorf("%w: --text cannot be combined with --receive", fserrors.ErrUsage)
 		}
-		if len(f.posArgs) != 1 {
-			return fmt.Errorf("%w: --receive requires exactly one positional argument (the code)", fserrors.ErrUsage)
+		switch len(f.posArgs) {
+		case 0:
+			c, err := askForCode()
+			if err != nil {
+				return err
+			}
+			return startReceive(f, c)
+		case 1:
+			return startReceive(f, f.posArgs[0])
 		}
-		return startReceive(f, f.posArgs[0])
+		return fmt.Errorf("%w: --receive requires exactly one positional argument (the code)", fserrors.ErrUsage)
 	}
 
 	// --text is unambiguously send mode. An explicitly empty value
@@ -666,12 +776,6 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 
 	// Single arg: code-vs-path auto-detect.
 	arg := f.posArgs[0]
-	// A code wrapped in whitespace (a redirected newline, a pasted space, a
-	// CRLF) is never a filename, so receive the trimmed form. --send forces
-	// send for a file genuinely named like a code.
-	if c, ok := wrappedCode(arg); ok {
-		return startReceive(f, c)
-	}
 	if code.IsCode(arg) {
 		// Code regex match. If a file with that name exists in CWD, prompt.
 		if _, err := os.Stat(arg); err == nil {
@@ -679,36 +783,66 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		}
 		return startReceive(f, arg)
 	}
-	// Codes copied through iMessage / WhatsApp / Slack often have the
-	// first letter auto-capitalized. If the lowercased form is a valid
-	// code AND there's no file with the original name, accept it as a
-	// receive — anything else (file exists, or lowercased still doesn't
-	// match the regex) falls through to send.
-	if lowered := strings.ToLower(arg); lowered != arg && code.IsCode(lowered) {
-		if _, err := os.Stat(arg); os.IsNotExist(err) {
-			return startReceive(f, lowered)
+	// Codes mangled by dictation or chat apps — a capitalized first letter,
+	// a pasted newline, spaces or underscores for hyphens, no hyphens at
+	// all, a trailing full stop — receive in canonical form. An existing
+	// path by that exact name always wins, so no real file is shadowed;
+	// --send forces send for one that doesn't exist yet.
+	if c, ok := code.Normalize(arg); ok {
+		// Any Lstat error counts as absent: Windows rejects names with
+		// spaces or newlines as invalid rather than not-found.
+		if _, err := os.Lstat(arg); err != nil {
+			return startReceive(f, c)
 		}
 	}
 	return runSend(f, []string{arg})
 }
 
-// wrappedCode reports a share code surrounded by whitespace, returning it
-// trimmed (and lowercased — a chat-app copy that grabs a trailing space often
-// also capitalizes the first letter). A clean code returns false, leaving it to
-// the code-vs-path logic below; internal whitespace is untouched, so a
-// malformed code stays one.
-func wrappedCode(arg string) (string, bool) {
-	t := strings.TrimSpace(arg)
-	if t == arg {
-		return "", false
+// stdinHasData reports whether stdin is a data source worth sending: a
+// pipe or socket, or a non-empty regular file. A terminal, /dev/null (a
+// character device), an empty file or a closed fd is not. A var so tests
+// can swap it.
+var stdinHasData = func() bool {
+	st, err := os.Stdin.Stat()
+	if err != nil {
+		return false
 	}
-	if code.IsCode(t) {
-		return t, true
+	switch m := st.Mode(); {
+	case m&os.ModeCharDevice != 0:
+		return false
+	case m&(os.ModeNamedPipe|os.ModeSocket) != 0:
+		return true
+	case m.IsRegular():
+		return st.Size() > 0
 	}
-	if low := strings.ToLower(t); code.IsCode(low) {
-		return low, true
+	return false
+}
+
+// askForCode is bare `--receive`: the code comes from FSEND_CODE or a
+// prompt, never argv, so other local users can't read it from `ps`.
+func askForCode() (string, error) {
+	if c := os.Getenv("FSEND_CODE"); c != "" {
+		return c, nil
 	}
-	return "", false
+	if !stdinIsTTY() {
+		return "", fmt.Errorf("%w: --receive needs the code: pass it, set FSEND_CODE, or run in a terminal to be asked",
+			fserrors.ErrUsage)
+	}
+	for range 3 {
+		fmt.Fprint(os.Stderr, "  "+uxlog.Prompt("Code from the sender: "))
+		line, eof := readLine(os.Stdin)
+		if eof {
+			fmt.Fprintln(os.Stderr)
+			return "", fmt.Errorf("%w: no code entered", fserrors.ErrUsage)
+		}
+		if c, ok := code.Normalize(line); ok {
+			return c, nil
+		}
+		if line != "" {
+			fmt.Fprintf(os.Stderr, "  That isn't a code — codes look like %s.\n", uxlog.Code("abc-defg-jkm"))
+		}
+	}
+	return "", fserrors.ErrInvalidCodeFormat
 }
 
 // applyEnvFallbacks fills in flags from environment variables when the
@@ -753,14 +887,22 @@ func startReceive(f *flags, c string) error {
 	if f.preview {
 		return fmt.Errorf("%w: --preview is a send-side flag and has no effect when receiving", fserrors.ErrUsage)
 	}
-	// An explicit --receive deserves the same tolerance auto-detect has
-	// for chat-app mangling (auto-capitalized first letter, copied
-	// whitespace) — the more explicit user must not get the worse E004.
-	if t := strings.ToLower(strings.TrimSpace(c)); t != c && code.IsCode(t) {
-		c = t
+	if f.as != "" {
+		return fmt.Errorf("%w: --as is a send-side flag and has no effect when receiving", fserrors.ErrUsage)
 	}
+	// An explicit --receive (or FSEND_CODE) deserves the same tolerance
+	// auto-detect has for dictated and chat-mangled codes — the more
+	// explicit user must not get the worse E004.
+	if n, ok := code.Normalize(c); ok {
+		c = n
+	}
+	receiveResume = resumeCommand(f, c)
 	return runReceive(f, c)
 }
+
+// receiveResume is the command that resumes this receive, for messages
+// that tell the user how ("resume with: fsend abc-defg-jkm").
+var receiveResume string
 
 // promptCodeOrPath handles the rare collision case where a CLI arg both
 // matches the code regex AND names a real file in CWD.

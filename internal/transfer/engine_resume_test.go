@@ -1,7 +1,9 @@
 package transfer
 
 import (
+	"archive/tar"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,21 +13,42 @@ import (
 	"github.com/polius/fsend/internal/wire"
 )
 
+// seedPartial plants a partial for rel in dst's partial store, recorded as
+// written from the source file at srcPath (its size and mtime).
+func seedPartial(t *testing.T, dst, rel, srcPath string, data []byte) string {
+	t.Helper()
+	st, err := os.Stat(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := newPartialStore(dst)
+	f, path, err := ps.create(rel, wire.ListingEntry{Size: uint64(st.Size()), ModTimeSec: st.ModTime().Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	return path
+}
+
 func TestEngine_ResumeLargeFile(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	data := randBytes(2*wire.MaxChunkSize + 4096)
-	writeFile(t, filepath.Join(src, "big.bin"), data)
+	sp := filepath.Join(src, "big.bin")
+	writeFile(t, sp, data)
 
 	// Pre-seed a chunk-aligned partial with the first 2 chunks.
-	prefix := data[:2*wire.MaxChunkSize]
-	writeFile(t, filepath.Join(dst, "big.bin"+partialSuffix), prefix)
+	partial := seedPartial(t, dst, "big.bin", sp, data[:2*wire.MaxChunkSize])
 
 	var resumedAt uint64
 	resumed := false
 	var doneSHA string
-	se, re := fileTransfer(t, []string{filepath.Join(src, "big.bin")}, dst, func(o *RecvOptions) {
+	se, re := fileTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
 		o.OnResume = func(_ uint32, off, _ uint64) { resumed = true; resumedAt = off }
 		o.OnFileDone = func(_, sha string) { doneSHA = sha }
+		o.OnManifest = func([]ManifestEntry) {}
 	})
 	if se != nil || re != nil {
 		t.Fatalf("send=%v recv=%v", se, re)
@@ -41,24 +64,62 @@ func TestEngine_ResumeLargeFile(t *testing.T) {
 	if want := sha256hex(data); doneSHA != want {
 		t.Errorf("resumed file SHA-256 = %q, want %q", doneSHA, want)
 	}
+	if _, err := os.Stat(partial); err == nil {
+		t.Error("partial still present after commit")
+	}
+	if _, err := os.Stat(PartialDir(dst)); err == nil {
+		t.Error("empty partial dir left behind")
+	}
 }
 
-func TestEngine_ResumePartialMismatch(t *testing.T) {
+// A partial whose bytes differ from the source anywhere in the prefix (not
+// just at imohash sample points) restarts the file from 0: the transfer
+// succeeds instead of failing as "corrupted".
+func TestEngine_ResumePartialMismatchRestarts(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	data := randBytes(2*wire.MaxChunkSize + 10)
-	writeFile(t, filepath.Join(src, "big.bin"), data)
+	sp := filepath.Join(src, "big.bin")
+	writeFile(t, sp, data)
 
-	// Partial whose prefix does NOT match the source → sender must reject.
-	bad := bytes.Repeat([]byte{0xEE}, 2*wire.MaxChunkSize)
-	writeFile(t, filepath.Join(dst, "big.bin"+partialSuffix), bad)
+	stale := append([]byte(nil), data[:2*wire.MaxChunkSize]...)
+	stale[200_000] ^= 0x01 // one flipped byte, between imohash's old samples
+	seedPartial(t, dst, "big.bin", sp, stale)
 
-	se, re := fileTransfer(t, []string{filepath.Join(src, "big.bin")}, dst, nil)
-	if se == nil || re == nil {
-		t.Fatalf("expected partial-mismatch errors, got send=%v recv=%v", se, re)
+	resumed := false
+	se, re := fileTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+		o.OnResume = func(uint32, uint64, uint64) { resumed = true }
+	})
+	if se != nil || re != nil {
+		t.Fatalf("mismatched partial must restart, not fail: send=%v recv=%v", se, re)
 	}
-	// The unreconcilable partial is discarded so a re-run starts clean.
-	if _, err := os.Stat(filepath.Join(dst, "big.bin"+partialSuffix)); err == nil {
-		t.Error("mismatched partial should have been discarded")
+	if resumed {
+		t.Error("a mismatched prefix was resumed")
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "big.bin")), data) {
+		t.Fatal("restarted file content mismatch")
+	}
+}
+
+// A leftover partial from a different version of the file (other size or
+// mtime, per its sidecar) is ignored and the file is sent fresh.
+func TestEngine_StalePartialFromOtherSourceIgnored(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	data := randBytes(2*wire.MaxChunkSize + 10)
+	sp := filepath.Join(src, "video.mp4")
+	writeFile(t, sp, data)
+	old := filepath.Join(t.TempDir(), "video.mp4")
+	writeFile(t, old, randBytes(3*wire.MaxChunkSize))
+	seedPartial(t, dst, "video.mp4", old, randBytes(2*wire.MaxChunkSize))
+
+	resumed := false
+	se, re := fileTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+		o.OnResume = func(uint32, uint64, uint64) { resumed = true }
+	})
+	if se != nil || re != nil || resumed {
+		t.Fatalf("send=%v recv=%v resumed=%v", se, re, resumed)
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "video.mp4")), data) {
+		t.Fatal("content mismatch")
 	}
 }
 
@@ -71,7 +132,7 @@ func TestEngine_ResumeDoesNotClobberExistingTarget(t *testing.T) {
 	writeFile(t, filepath.Join(src, "report.pdf"), data)
 
 	// A leftover partial from a crashed transfer...
-	writeFile(t, filepath.Join(dst, "report.pdf"+partialSuffix), data[:2*wire.MaxChunkSize])
+	seedPartial(t, dst, "report.pdf", filepath.Join(src, "report.pdf"), data[:2*wire.MaxChunkSize])
 	// ...and the user's own, unrelated file at the same name.
 	userFile := []byte("MY OWN FILE")
 	writeFile(t, filepath.Join(dst, "report.pdf"), userFile)
@@ -168,29 +229,61 @@ func TestEngine_StreamToFile(t *testing.T) {
 	}
 }
 
-func TestEngine_StreamSinkRejectsMultiFile(t *testing.T) {
+// --out - with a folder streams a tar archive: every file and folder in
+// listing order, with content, mode and mtime.
+func TestEngine_FolderToSinkIsTar(t *testing.T) {
 	src := t.TempDir()
-	writeFile(t, filepath.Join(src, "a.txt"), []byte("a"))
-	writeFile(t, filepath.Join(src, "b.txt"), []byte("b"))
-	sources, _ := Walk([]string{filepath.Join(src, "a.txt"), filepath.Join(src, "b.txt")}, nil)
+	root := filepath.Join(src, "proj")
+	files := map[string][]byte{
+		"proj/a.txt":     []byte("alpha"),
+		"proj/sub/b.bin": randBytes(wire.MaxChunkSize + 77),
+		"proj/sub/e.txt": nil,
+	}
+	for rel, b := range files {
+		writeFile(t, filepath.Join(src, rel), b)
+	}
+	if err := os.Mkdir(filepath.Join(root, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sources, err := Walk([]string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var sink bytes.Buffer
-	_, re := runTransfer(t,
-		SendOptions{Mode: wire.ModeFiles, Sources: sources},
-		RecvOptions{TargetDir: t.TempDir(), Sink: &sink},
-	)
-	if re == nil || !strings.Contains(re.Error(), "stdout") {
-		t.Fatalf("expected sink-rejects-multifile error, got %v", re)
+	se, re := runTransfer(t, SendOptions{Mode: wire.ModeFiles, Sources: sources},
+		RecvOptions{TargetDir: t.TempDir(), Sink: &sink})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	tr := tar.NewReader(&sink)
+	got := map[string][]byte{}
+	var dirs []string
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Typeflag == tar.TypeDir {
+			dirs = append(dirs, h.Name)
+			continue
+		}
+		b, _ := io.ReadAll(tr)
+		got[h.Name] = b
+	}
+	for rel, want := range files {
+		if !bytes.Equal(got[rel], want) {
+			t.Errorf("%s: got %d bytes, want %d", rel, len(got[rel]), len(want))
+		}
+	}
+	if strings.Join(dirs, ",") != "proj/,proj/empty/,proj/sub/" {
+		t.Errorf("dirs = %v", dirs)
 	}
 }
 
-func TestValidateListing_RejectsDuplicateAndOutOfOrder(t *testing.T) {
-	dup := []wire.ListingEntry{
-		{Index: 0, RelativePath: "a.txt", Type: wire.EntryFile},
-		{Index: 1, RelativePath: "A.txt", Type: wire.EntryFile}, // case-collision
-	}
-	if err := validateListing(dup); err == nil {
-		t.Error("expected case-collision rejection")
-	}
+func TestValidateListing_RejectsOutOfOrder(t *testing.T) {
 	ooo := []wire.ListingEntry{{Index: 5, RelativePath: "a", Type: wire.EntryFile}}
 	if err := validateListing(ooo); err == nil {
 		t.Error("expected out-of-order index rejection")
@@ -258,6 +351,16 @@ func TestEngine_SourceGrowsDuringTransfer(t *testing.T) {
 	got := mustRead(t, filepath.Join(dst, "log.txt"))
 	if !bytes.Equal(got, original) {
 		t.Fatalf("receiver got %d bytes, want the %d-byte snapshot", len(got), len(original))
+	}
+}
+
+func TestClassify_RejectsExactDuplicate(t *testing.T) {
+	entries := []wire.ListingEntry{
+		{Index: 0, RelativePath: "a/b.txt", Type: wire.EntryFile},
+		{Index: 1, RelativePath: "a/./b.txt", Type: wire.EntryFile},
+	}
+	if _, err := classify(entries, t.TempDir(), false); err == nil {
+		t.Error("expected duplicate rejection after cleaning")
 	}
 }
 

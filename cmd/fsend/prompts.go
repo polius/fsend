@@ -34,26 +34,41 @@ func readLineFrom(br *bufio.Reader) (line string, eof bool) {
 }
 
 // readLineCtx reads one line from os.Stdin but returns ok=false if ctx is
-// cancelled first — e.g. Ctrl-C while the prompt is waiting for input.
-// The blocked read goroutine is abandoned; that is harmless because a
-// cancelled ctx means the process is on its way down.
+// cancelled first — e.g. Ctrl-C, or the sender's connection dropping
+// while the prompt waits. An abandoned read stays pending and the next
+// prompt picks it up, so two reads never race for the same line.
 func readLineCtx(ctx context.Context) (line string, eof, ok bool) {
-	type res struct {
-		line string
-		eof  bool
+	pendingMu.Lock()
+	if pendingLine == nil {
+		ch := make(chan lineResult, 1)
+		go func() {
+			l, e := readLine(os.Stdin)
+			ch <- lineResult{l, e}
+		}()
+		pendingLine = ch
 	}
-	ch := make(chan res, 1)
-	go func() {
-		l, e := readLine(os.Stdin)
-		ch <- res{l, e}
-	}()
+	ch := pendingLine
+	pendingMu.Unlock()
 	select {
 	case <-ctx.Done():
 		return "", false, false
 	case r := <-ch:
+		pendingMu.Lock()
+		pendingLine = nil
+		pendingMu.Unlock()
 		return r.line, r.eof, true
 	}
 }
+
+type lineResult struct {
+	line string
+	eof  bool
+}
+
+var (
+	pendingMu   sync.Mutex
+	pendingLine chan lineResult
+)
 
 // stdinReader returns the process-wide bufio.Reader over os.Stdin.
 //

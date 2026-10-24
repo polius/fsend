@@ -1,5 +1,13 @@
 # {$FSEND_DOMAIN} comes from docker-compose.yml; Caddy auto-issues a Let's Encrypt cert.
 
+{
+    servers {
+        # UDP/443 is fsend's relay, not HTTP/3: don't advertise h3 via
+        # Alt-Svc, or browsers and `curl --http3` send QUIC to the relay.
+        protocols h1 h2
+    }
+}
+
 {$FSEND_DOMAIN} {
     reverse_proxy fsend:8080 {
         # Must exceed the 25s signaling long-poll window.

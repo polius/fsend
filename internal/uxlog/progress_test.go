@@ -187,6 +187,19 @@ func TestProgress_PlainModeRouteInLine(t *testing.T) {
 	}
 }
 
+// CI logs get the rate and ETA too: nobody watches a bar there.
+func TestProgress_PlainModeRateAndETA(t *testing.T) {
+	var buf bytes.Buffer
+	past := time.Now().Add(-2 * time.Second)
+	p := &plainProgress{w: &buf, total: 100_000_000, start: past, lastLine: past}
+	p.win.observe(past, 0)
+	p.add(50_000_000)
+	out := buf.String()
+	if !strings.Contains(out, "MB/s") || !strings.Contains(out, "ETA ") {
+		t.Errorf("plain line missing rate/ETA: %q", out)
+	}
+}
+
 // etaLabel rounds projections up to whole seconds — never milliseconds —
 // so the bar's tail doesn't flicker "ETA 943ms" at 10 Hz.
 func TestETALabel(t *testing.T) {
@@ -245,11 +258,10 @@ func TestProgress_PlainModePercentClampedLow(t *testing.T) {
 	}
 }
 
-// Priority is bar → file chip → route chip: the bar keeps its width while
-// the columns are there, the chip takes a minimum, the route is dropped
-// first, and only the leftover grows the name. The rate/ETA chips are booked
-// against the bar, so they can't resize it later.
-func TestLayoutBudgets(t *testing.T) {
+// Priority is % > ETA > rate > counter > name > bar > route: a narrow row
+// drops whole elements from the low end instead of letting mpb cut a number
+// mid-digit, and spare columns grow the bar, then the name.
+func TestLayout(t *testing.T) {
 	const big = 100_000_000 // 100 MB: rate/ETA chips ride along
 	cases := []struct {
 		name      string
@@ -257,26 +269,63 @@ func TestLayoutBudgets(t *testing.T) {
 		total     int64
 		showNames bool
 		route     string
-		wantBW    int
-		wantChip  int
-		wantRoute bool
+		want      barLayout
 	}{
-		{"narrow keeps only the bar", 70, big, true, "LAN", 12, 0, false},
-		{"room for the chip, not the route", 90, big, true, "LAN", 10, 20, false},
-		{"chip floor costs the bar its cap", 100, big, true, "LAN", 17, 20, false},
-		{"wide terminal grows the chip", 200, big, true, "LAN", 40, 89, true},
-		{"spare past the bar cap flows to the chip", 140, big, true, "LAN", 40, 29, true},
-		{"shorter route frees columns for the chip", 200, big, true, "relay", 40, 87, true},
-		{"no names means no chip", 200, big, false, "LAN", 40, 0, true},
-		{"no rate/ETA below the threshold", 100, 900_000, true, "LAN", 40, 20, true},
-		{"sub-furniture width shrinks the bar", 60, big, true, "LAN", 10, 0, false},
-		{"very narrow floors the bar at 10", 50, big, true, "LAN", 10, 0, false},
+		{"40 cols keeps %, ETA and rate", 40, big, true, "LAN",
+			barLayout{eta: true, rate: true}},
+		{"60 cols adds the counter, no track", 60, big, true, "LAN",
+			barLayout{eta: true, rate: true, counter: true}},
+		{"80 cols adds the name before the bar", 80, big, true, "LAN",
+			barLayout{eta: true, rate: true, counter: true, nameCap: 16}},
+		{"100 cols: bar and name share the spare", 100, big, true, "LAN",
+			barLayout{bar: 20, eta: true, rate: true, counter: true, nameCap: 14}},
+		{"140 cols books the route", 140, big, true, "LAN",
+			barLayout{bar: 36, eta: true, rate: true, counter: true, nameCap: 30, route: true}},
+		{"200 cols: bar capped, name takes the rest", 200, big, true, "LAN",
+			barLayout{bar: 40, eta: true, rate: true, counter: true, nameCap: 86, route: true}},
+		{"no names means no chip", 200, big, false, "LAN",
+			barLayout{bar: 40, eta: true, rate: true, counter: true, route: true}},
+		{"no rate/ETA below the threshold", 100, 900_000, true, "LAN",
+			barLayout{bar: 28, counter: true, nameCap: 30, route: true}},
+		{"stream: rate and counter, no track", 80, 0, false, "LAN",
+			barLayout{rate: true, counter: true, route: true}},
 	}
 	for _, c := range cases {
-		bw, chip, route := layoutBudgets(c.width, c.total, c.showNames, c.route)
-		if bw != c.wantBW || chip != c.wantChip || route != c.wantRoute {
-			t.Errorf("%s: layoutBudgets(%d, %d, %v, %q) = (%d, %d, %v), want (%d, %d, %v)",
-				c.name, c.width, c.total, c.showNames, c.route, bw, chip, route, c.wantBW, c.wantChip, c.wantRoute)
+		if got := layout(c.width, c.total, c.showNames, c.route); got != c.want {
+			t.Errorf("%s: layout(%d, %d, %v, %q) = %+v, want %+v",
+				c.name, c.width, c.total, c.showNames, c.route, got, c.want)
+		}
+	}
+}
+
+// Whatever the width, the booked elements fit the row: mpb never has to
+// truncate a decorator (and with it a number).
+func TestLayoutNeverOverflows(t *testing.T) {
+	for _, total := range []int64{0, 900_000, 100_000_000, 23_456_789_000} {
+		for w := 20; w <= 220; w++ {
+			l := layout(w, total, true, "local network")
+			used := pctFurniture
+			if l.eta {
+				used += etaFurniture
+			}
+			if l.rate {
+				used += rateFurniture
+			}
+			if l.counter {
+				used += counterFurniture(total)
+			}
+			if l.nameCap > 0 {
+				used += 5 + l.nameCap
+			}
+			if l.bar > 0 {
+				used += barFurniture + l.bar
+			}
+			if l.route {
+				used += len("local network") + 5
+			}
+			if used > max(w, pctFurniture) {
+				t.Fatalf("width %d total %d: layout %+v uses %d columns", w, total, l, used)
+			}
 		}
 	}
 }
@@ -318,8 +367,13 @@ func TestTruncateName(t *testing.T) {
 	if r := []rune(got); len(r) != 20 {
 		t.Errorf("truncated to %d runes, want 20: %q", len(r), got)
 	}
-	if !strings.HasSuffix(got, ".tar.gz") || !strings.Contains(got, "…") {
-		t.Errorf("truncation must keep the tail and show an ellipsis: %q", got)
+	if !strings.HasSuffix(got, "/file.tar.gz") || !strings.HasPrefix(got, "a-very") || !strings.Contains(got, "…") {
+		t.Errorf("truncation must keep the head and the whole basename: %q", got)
+	}
+	// A basename too long for the cap is cut in its middle, keeping its
+	// start and extension.
+	if got := truncateName("assets/video-final-cut.bin", 12); got != "vide…cut.bin" {
+		t.Errorf("long basename = %q, want a middle cut", got)
 	}
 	// Degenerate caps must not panic on the r[:max-tail-1] slice.
 	for _, max := range []int{-1, 0, 1, 2, 3} {

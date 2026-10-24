@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -237,6 +238,12 @@ func TestICE_LoopbackThenQUIC(t *testing.T) {
 // server's UDP socket yields a server-reflexive candidate — the
 // integration contract between iceconn and internal/relay.handleSTUN.
 func TestSTUNAddr_GathersSrflx(t *testing.T) {
+	// With an IP filter set, pion binds srflx sockets per interface address,
+	// and Windows refuses sends from those to a loopback STUN server. Real
+	// STUN servers are public, so only this loopback setup is affected.
+	if runtime.GOOS == "windows" {
+		t.Skip("windows can't reach a loopback STUN server from an interface-bound socket")
+	}
 	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)

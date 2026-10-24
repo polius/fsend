@@ -9,12 +9,14 @@ package wire
 // SenderHello is the first control frame the sender emits, immediately
 // after the TLS handshake completes.
 type SenderHello struct {
-	ProtocolVersion uint8        // must equal ProtocolVersion
-	Hostname        string       // sender's hostname or --name override
-	OS              string       // "linux" | "darwin" | "windows" | ...
-	ClientVersion   string       // fsend semver
-	HasPassword     bool         // true → expect PASSWORD_CHALLENGE after HELLO_ACK
-	Mode            TransferMode // ModeFiles (listing) | ModeStream (stdin/text)
+	MinVersion    uint8        // oldest wire protocol the sender speaks
+	MaxVersion    uint8        // newest wire protocol the sender speaks
+	Caps          Capability   // optional features the sender supports
+	Hostname      string       // sender's hostname or --name override
+	OS            string       // "linux" | "darwin" | "windows" | ...
+	ClientVersion string       // fsend semver
+	HasPassword   bool         // true → expect PASSWORD_CHALLENGE after HELLO_ACK
+	Mode          TransferMode // ModeFiles (listing) | ModeStream (stdin/text)
 
 	// Stream-mode fields (ignored for ModeFiles).
 	IsText      bool   // true → --text payload (receiver prints it)
@@ -24,23 +26,35 @@ type SenderHello struct {
 // ReceiverHello is the receiver's response to SenderHello. Carries the
 // receiver's identity and the user's accept/reject decision.
 type ReceiverHello struct {
+	MinVersion    uint8 // zero only when the receiver couldn't parse HELLO
+	MaxVersion    uint8
+	Caps          Capability
 	Hostname      string
 	OS            string
 	ClientVersion string
 	Accepts       bool // false → user rejected at prompt; sender should ABORT
 }
 
-// PasswordChallenge is sent by the sender right after a positive
-// HELLO_ACK when SenderHello.HasPassword is true. The nonce is fresh per
-// session so a captured response cannot be replayed.
+// PasswordChallenge opens one --password attempt: a fresh nonce (the CPace
+// session id) and the sender's CPace share over the password. The run is
+// bound to the session, so it can't be replayed or relayed elsewhere.
 type PasswordChallenge struct {
 	Nonce [32]byte
+	Share [32]byte
 }
 
-// PasswordResponse carries HMAC(argon2id(password, nonce), nonce) computed
-// by the receiver. The sender verifies it in constant time.
+// PasswordResponse is the receiver's CPace share plus its key-confirmation
+// tag. A wrong password yields a tag the sender can't verify, and neither
+// side learns anything an offline dictionary attack could use.
 type PasswordResponse struct {
-	HMAC [32]byte
+	Share [32]byte
+	Tag   [32]byte
+}
+
+// PasswordVerified carries the sender's confirmation tag, proving to the
+// receiver that the sender knows the password too.
+type PasswordVerified struct {
+	Tag [32]byte
 }
 
 // ListingEntry describes one filesystem entry the sender offers. Emitted in
@@ -61,13 +75,16 @@ type ListingEntry struct {
 }
 
 // Decision is the receiver's per-entry verdict, batched into
-// TypeClassifyBatch frames. ResumeOffset/PartialImohash are meaningful only
+// TypeClassifyBatch frames. ResumeOffset/PrefixRoot are meaningful only
 // when Action == DecisionResume.
 type Decision struct {
-	Index          uint32
-	Action         DecisionAction
-	ResumeOffset   uint64
-	PartialImohash [16]byte
+	Index        uint32
+	Action       DecisionAction
+	ResumeOffset uint64
+	// PrefixRoot is the block-tree root of the receiver's first
+	// ResumeOffset bytes. The sender resumes only if its own prefix
+	// matches, and otherwise restarts the file from 0.
+	PrefixRoot []byte
 	// Kept marks a DecisionSkip of a differing/conflicting entry the
 	// receiver kept, as opposed to an identical one. Gob keeps this
 	// compatible across versions: old peers ignore the field, and a zero

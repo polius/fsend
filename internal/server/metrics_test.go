@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,11 +41,11 @@ func getJSON(t *testing.T, url string, v any) {
 func TestMetrics_Shape(t *testing.T) {
 	s := New(metricsConfig())
 	s.WithRelay(&fakeRelay{}, 443)
-	srv := httptest.NewServer(s.Handler())
+	srv := httptest.NewServer(s.MetricsHandler())
 	t.Cleanup(srv.Close)
 
 	var raw map[string]any
-	getJSON(t, srv.URL+"/metrics", &raw)
+	getJSON(t, srv.URL+"/metrics.json", &raw)
 
 	top := map[string]bool{
 		"version": true, "uptime_seconds": true, "sessions_active": true,
@@ -65,7 +67,7 @@ func TestMetrics_Shape(t *testing.T) {
 	assertKeys(t, raw["relay"], "relay",
 		"forwarding", "healthy", "transfers_active", "transfers_total",
 		"transfers_capped_total", "bytes_forwarded_total", "peak_transfer_bytes",
-		"budget_bytes_today")
+		"budget_bytes_today", "datagrams_oversize_total", "tcp_fallback_total")
 }
 
 func assertKeys(t *testing.T, v any, name string, want ...string) {
@@ -98,8 +100,10 @@ func TestMetrics_Counters(t *testing.T) {
 		t.Fatalf("second create status = %d, want 429", resp.StatusCode)
 	}
 
+	ms := httptest.NewServer(s.MetricsHandler())
+	t.Cleanup(ms.Close)
 	var m MetricsResponse
-	getJSON(t, srv.URL+"/metrics", &m)
+	getJSON(t, ms.URL+"/metrics.json", &m)
 	if m.SessionsCreatedTotal != 1 {
 		t.Errorf("sessions_created_total = %d, want 1", m.SessionsCreatedTotal)
 	}
@@ -111,52 +115,64 @@ func TestMetrics_Counters(t *testing.T) {
 	}
 }
 
-// With a server password set, /metrics is gated like any other endpoint
-// (an open server, tested above, serves it publicly for transparency).
-func TestMetrics_GatedByPassword(t *testing.T) {
+// Metrics live only on the separate metrics listener: the public handler
+// must not serve them, even on an open server.
+func TestMetrics_NotOnPublicHandler(t *testing.T) {
+	srv := httptest.NewServer(New(metricsConfig()).Handler())
+	t.Cleanup(srv.Close)
+	for _, path := range []string{"/metrics", "/metrics.json"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("public %s = %d, want 404", path, resp.StatusCode)
+		}
+	}
+}
+
+// The Prometheus exposition carries every counter, including auth failures.
+func TestMetrics_Prometheus(t *testing.T) {
 	cfg := metricsConfig()
 	cfg.ServerPassword = "secret"
 	s := New(cfg)
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-
-	// No password → 401, and that rejection is counted.
-	resp, err := http.Get(srv.URL + "/metrics")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.WithRelay(&fakeRelay{}, 443)
+	pub := httptest.NewServer(s.Handler())
+	t.Cleanup(pub.Close)
+	resp := postJSON(t, pub.URL+"/v1/session", CreateSessionRequest{Slot: testSlot})
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("metrics without password = %d, want 401", resp.StatusCode)
-	}
 
-	// With the password → 200, and the snapshot reports that one rejection.
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/metrics", nil)
-	req.Header.Set(AuthHeader, "secret")
-	resp2, err := http.DefaultClient.Do(req)
+	ms := httptest.NewServer(s.MetricsHandler())
+	t.Cleanup(ms.Close)
+	resp, err := http.Get(ms.URL + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("metrics with password = %d, want 200", resp2.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain; version=0.0.4") {
+		t.Errorf("content-type = %q", ct)
 	}
-	var m MetricsResponse
-	if err := json.NewDecoder(resp2.Body).Decode(&m); err != nil {
-		t.Fatal(err)
-	}
-	if m.SessionsRejectedTotal.Unauthorized != 1 {
-		t.Errorf("sessions_rejected_total.unauthorized = %d, want 1", m.SessionsRejectedTotal.Unauthorized)
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{
+		"# TYPE fsend_sessions_created_total counter\n",
+		`fsend_build_info{version="0.0.0-test"} 1` + "\n",
+		`fsend_sessions_rejected_total{reason="unauthorized"} 1` + "\n",
+		"fsend_relay_healthy 1\n",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
 	}
 }
 
 func TestMetrics_OmitsRelayWhenAbsent(t *testing.T) {
 	s := New(metricsConfig())
-	srv := httptest.NewServer(s.Handler())
+	srv := httptest.NewServer(s.MetricsHandler())
 	t.Cleanup(srv.Close)
 
 	var raw map[string]any
-	getJSON(t, srv.URL+"/metrics", &raw)
+	getJSON(t, srv.URL+"/metrics.json", &raw)
 	if _, ok := raw["relay"]; ok {
 		t.Error("relay block must be omitted when no relay is wired")
 	}

@@ -72,24 +72,46 @@ func StartSpinner(msg string, hint ...string) *Spinner {
 		s.hint = hint[0]
 	}
 	if !s.tty {
-		// Non-TTY: print one static "[*] msg" line and we're done.
-		// Stop will be a no-op. A stderr write failure is non-actionable
-		// from a UX helper, so the error is intentionally ignored.
-		_, _ = fmt.Fprintln(s.w, Marker(gSpin), s.line())
+		// Non-TTY: print one static "[*] msg" line and we're done. No
+		// hint: nobody at a log file can press Ctrl-C. Stop will be a
+		// no-op. A stderr write failure is non-actionable from a UX
+		// helper, so the error is intentionally ignored.
+		_, _ = fmt.Fprintln(s.w, Marker(gSpin), s.msg)
 		close(s.done)
 		return s
 	}
+	setActiveSpinner(s)
 	go s.run()
 	return s
 }
 
-// line is the plain "msg · hint" text; the TTY path inserts the elapsed
-// chip between the two.
-func (s *Spinner) line() string {
-	if s.hint != "" {
-		return s.msg + "  ·  " + s.hint
+// ttyMu serialises whole-line writes against the live spinner's redraws,
+// so a notice printed mid-wait (Ctrl-C's "Cancelling…") never lands glued
+// to the end of a spinner frame.
+var (
+	ttyMu      sync.Mutex
+	liveSpin   *Spinner
+	liveSpinMu sync.Mutex
+)
+
+func setActiveSpinner(s *Spinner) {
+	liveSpinMu.Lock()
+	liveSpin = s
+	liveSpinMu.Unlock()
+}
+
+func clearActiveSpinner(s *Spinner) {
+	liveSpinMu.Lock()
+	if liveSpin == s {
+		liveSpin = nil
 	}
-	return s.msg
+	liveSpinMu.Unlock()
+}
+
+func activeSpinner() *Spinner {
+	liveSpinMu.Lock()
+	defer liveSpinMu.Unlock()
+	return liveSpin
 }
 
 func (s *Spinner) run() {
@@ -135,8 +157,10 @@ func (s *Spinner) draw(frame string) {
 	}
 	// Stderr write failures inside the UX layer are non-actionable —
 	// the caller has bigger problems than an unrendered spinner.
-	if colorEnabled() {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s%s", fg(tokenAccent), frame, colorReset, msg, elapsed)
+	ttyMu.Lock()
+	defer ttyMu.Unlock()
+	if c := fg(tokenAccent); colorEnabled() && c != "" {
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s%s", c, frame, colorReset, msg, elapsed)
 	} else {
 		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s%s", frame, msg, elapsed)
 	}
@@ -164,13 +188,16 @@ func (s *Spinner) SetMessage(msg string) {
 	s.msg = msg
 	s.mu.Unlock()
 	if !s.tty && changed {
-		_, _ = fmt.Fprintln(s.w, Marker(gSpin), s.line())
+		_, _ = fmt.Fprintln(s.w, Marker(gSpin), msg)
 	}
 }
 
 // clear wipes the spinner line and leaves the cursor at column 0 so the
 // caller's next write starts on a clean line.
 func (s *Spinner) clear() {
+	ttyMu.Lock()
+	defer ttyMu.Unlock()
+	clearActiveSpinner(s)
 	_, _ = fmt.Fprint(s.w, "\r\x1b[2K")
 }
 

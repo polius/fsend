@@ -13,18 +13,25 @@ package signaling
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/syserr"
+	"github.com/polius/fsend/internal/wire"
 )
 
 // DefaultRequestTimeout is the http.Client ceiling applied to every
@@ -33,12 +40,34 @@ import (
 // a client-side transport timeout that wastes the round-trip.
 const DefaultRequestTimeout = 40 * time.Second
 
+// connectTimeout bounds the TCP connect and the TLS handshake separately
+// from the long-poll ceiling above: an unreachable server should fail in
+// seconds, not after DefaultRequestTimeout.
+const connectTimeout = 5 * time.Second
+
 // Client talks to a fsend signaling endpoint.
 type Client struct {
 	baseURL  string
 	hc       *http.Client
 	version  string
 	password string // optional: self-hosted server's shared secret
+
+	// pinned maps a created code to its slot, so a sender's /wait polls
+	// keep hitting the same slot across a UTC day boundary. senderTok holds
+	// the role token /wait must present.
+	pinMu     sync.Mutex
+	pinned    map[string]string
+	senderTok map[string]string
+}
+
+// slotFor returns the slot pinned at Create, or the current one.
+func (c *Client) slotFor(codeStr string) string {
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	if s, ok := c.pinned[codeStr]; ok {
+		return s
+	}
+	return code.Slot(codeStr)
 }
 
 // New builds a client for the given http(s) base URL.
@@ -46,9 +75,12 @@ type Client struct {
 // `https://fsend.alzina.dev` and `http://localhost:8080` are both valid. The
 // scheme is preserved as-is — callers control TLS via the URL.
 func New(baseURL, clientVersion string) *Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = (&net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}).DialContext
+	tr.TLSHandshakeTimeout = connectTimeout
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		hc:      &http.Client{Timeout: DefaultRequestTimeout},
+		hc:      &http.Client{Timeout: DefaultRequestTimeout, Transport: tr},
 		version: clientVersion,
 	}
 }
@@ -109,9 +141,18 @@ func (c *Client) Create(ctx context.Context, codeStr string) (*CreateResult, err
 			}
 		}
 		var out server.CreateSessionResponse
+		slot := c.slotFor(codeStr)
 		err := c.do(ctx, http.MethodPost, "/v1/session",
-			server.CreateSessionRequest{ClientVersion: c.version, Slot: code.Slot(codeStr)}, &out, nil)
+			server.CreateSessionRequest{ClientVersion: c.version, Slot: slot}, &out, nil)
 		if err == nil {
+			c.pinMu.Lock()
+			if c.pinned == nil {
+				c.pinned = map[string]string{}
+				c.senderTok = map[string]string{}
+			}
+			c.pinned[codeStr] = slot
+			c.senderTok[codeStr] = out.RoleToken
+			c.pinMu.Unlock()
 			return &CreateResult{CreateSessionResponse: out, Code: codeStr}, nil
 		}
 		if generated && errors.Is(err, fserrors.ErrCodeAlreadyClaimed) && attempt < createAttempts {
@@ -123,11 +164,20 @@ func (c *Client) Create(ctx context.Context, codeStr string) (*CreateResult, err
 
 // Join attempts to pair as a receiver, returning the sender's reflected
 // address and ICE credentials. The session is addressed by the code's
-// slot; the code itself stays on this machine.
+// slot; the code itself stays on this machine. Near a UTC day boundary
+// the sender may have used the neighbouring epoch, so a not-found there
+// retries with it.
 func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionResponse, error) {
 	var out server.JoinSessionResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session/"+code.Slot(codeStr)+"/join",
-		server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
+	var err error
+	for _, epoch := range code.EpochsFor(time.Now()) {
+		out = server.JoinSessionResponse{}
+		err = c.do(ctx, http.MethodPost, "/v1/session/"+code.SlotAt(codeStr, epoch)+"/join",
+			server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
+		if !errors.Is(err, fserrors.ErrCodeNotFound) {
+			break
+		}
+	}
 	return &out, err
 }
 
@@ -139,8 +189,11 @@ func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionR
 // the session TTL expires.
 func (c *Client) Wait(ctx context.Context, codeStr string) (*server.WaitResponse, error) {
 	var out server.WaitResponse
-	err := c.do(ctx, http.MethodPost, "/v1/session/"+code.Slot(codeStr)+"/wait",
-		server.WaitRequest{}, &out, allowNoContent())
+	c.pinMu.Lock()
+	tok := c.senderTok[codeStr]
+	c.pinMu.Unlock()
+	err := c.do(ctx, http.MethodPost, "/v1/session/"+c.slotFor(codeStr)+"/wait",
+		server.WaitRequest{}, &out, withAuth(tok).withNoContent())
 	if errors.Is(err, errNoContent) {
 		return nil, nil
 	}
@@ -181,6 +234,14 @@ func (c *Client) Delete(ctx context.Context, sessionID, roleToken string) error 
 	return c.do(ctx, http.MethodDelete, "/v1/session/"+sessionID, nil, nil, withAuth(roleToken))
 }
 
+// Consume ends a session whose code was used: the server keeps a short
+// tombstone on the slot, so a late second receiver gets 409 (E003, "already
+// claimed") instead of 404 (E002, "no sender"). Servers without tombstones
+// treat it as a plain Delete.
+func (c *Client) Consume(ctx context.Context, sessionID, roleToken string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/session/"+sessionID+"?consumed=1", nil, nil, withAuth(roleToken))
+}
+
 // AllocateRelay asks the server for a relay token for this session.
 //
 // roleToken is the bearer credential the caller obtained from Create or
@@ -191,6 +252,18 @@ func (c *Client) AllocateRelay(ctx context.Context, sessionID, roleToken string)
 	err := c.do(ctx, http.MethodPost, "/v1/relay/allocate",
 		server.RelayAllocateRequest{SessionID: sessionID}, &out, withAuth(roleToken))
 	return &out, err
+}
+
+// RelayWSEndpoint returns the URL and auth headers for the relay's TCP
+// fallback (GET /v1/relay/ws), which the caller dials as a WebSocket.
+func (c *Client) RelayWSEndpoint(sessionID, roleToken string) (string, http.Header) {
+	h := http.Header{}
+	h.Set("User-Agent", "fsend/"+c.version)
+	h.Set("Authorization", "Bearer "+roleToken)
+	if c.password != "" {
+		h.Set(server.AuthHeader, c.password)
+	}
+	return c.baseURL + "/v1/relay/ws?session_id=" + url.QueryEscape(sessionID), h
 }
 
 // RelayStatus probes the pairing server for the current state of a
@@ -244,6 +317,7 @@ func (o *doOption) withNoContent() *doOption {
 //   - 404           → fserrors.ErrCodeNotFound
 //   - 409           → fserrors.ErrCodeAlreadyClaimed
 //   - 410           → fserrors.ErrServerRetired
+//   - 426           → fserrors.ErrClientTooOld
 //   - 429           → fserrors.ErrRateLimited
 //   - other 4xx/5xx → opaque error with body excerpt
 func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *doOption) error {
@@ -263,6 +337,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("User-Agent", "fsend/"+c.version)
+	req.Header.Set(server.ProtocolHeader, strconv.Itoa(wire.ProtocolVersion))
 	if opt != nil && opt.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+opt.bearerToken)
 	}
@@ -308,6 +383,8 @@ func statusToFsendErr(resp *http.Response) error {
 		return fserrors.ErrCodeAlreadyClaimed
 	case http.StatusGone:
 		return fserrors.ErrServerRetired
+	case http.StatusUpgradeRequired:
+		return fserrors.ErrClientTooOld
 	case http.StatusTooManyRequests:
 		return fserrors.ErrRateLimited
 	case http.StatusUnauthorized:
@@ -316,6 +393,16 @@ func statusToFsendErr(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	return fmt.Errorf("signaling: status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 }
+
+// NetError carries why the server was unreachable, in words a user can act
+// on ("DNS lookup failed"), alongside the raw error.
+type NetError struct {
+	Reason string
+	Err    error
+}
+
+func (e *NetError) Error() string { return e.Reason + ": " + e.Err.Error() }
+func (e *NetError) Unwrap() error { return e.Err }
 
 func mapNetworkErr(err error) error {
 	if err == nil {
@@ -326,10 +413,32 @@ func mapNetworkErr(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
-	// A DeadlineExceeded here means the http.Client's 40s Timeout fired
-	// (no signaling call uses a caller-supplied deadline), which is the
-	// firewall-drops-our-packets flavor of "server unreachable". Map it
-	// to the same sentinel as connection-refused / DNS-failure so the
-	// catalog renders E001 instead of E099.
-	return fmt.Errorf("%w: %v", fserrors.ErrServerUnreachable, err)
+	// A failed certificate check is a captive portal or an intercepting
+	// proxy far more often than an outage; say so instead of "unreachable".
+	var unknownCA x509.UnknownAuthorityError
+	var hostErr x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	var verifyErr *tls.CertificateVerificationError
+	if errors.As(err, &unknownCA) || errors.As(err, &hostErr) ||
+		errors.As(err, &invalid) || errors.As(err, &verifyErr) {
+		return fmt.Errorf("%w: %v", fserrors.ErrServerCertUntrusted, err)
+	}
+	return fmt.Errorf("%w: %w", fserrors.ErrServerUnreachable, &NetError{Reason: netReason(err), Err: err})
+}
+
+// netReason names the failure class of a transport error.
+func netReason(err error) string {
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	switch {
+	case errors.As(err, &dnsErr):
+		return "DNS lookup failed"
+	case syserr.IsConnRefused(err):
+		return "connection refused"
+	case syserr.IsNoRoute(err):
+		return "no network route"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "timed out"
+	}
+	return "connection failed"
 }

@@ -26,46 +26,32 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pion/mdns/v2"
-	"golang.org/x/crypto/argon2"
+
+	"github.com/polius/fsend/internal/code"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
 
-// derive stretches the code with argon2id and returns 18 key bytes:
-// 16 for the service name, 2 for the port. The salt is a fixed domain
-// label — the peers share no prior state, so a per-session salt is
-// impossible; the memory-hardness is what carries the defense (see the
-// package comment). Memoized because announce/query each need the same
-// key for both the name and the port.
-func derive(code string) []byte {
-	deriveMu.Lock()
-	defer deriveMu.Unlock()
-	if code == derivedCode {
-		return derivedKey
-	}
-	key := argon2.IDKey([]byte(code), []byte("fsend-landisc-v2"), 2, 64*1024, 4, 18)
-	derivedCode, derivedKey = code, key
-	return key
+// derive returns 18 key bytes from the code's argon2id stretch: 16 for
+// the service name, 2 for the port. The peers share no prior state, so
+// the salt is a domain label plus the UTC day (code.Epoch): the
+// memory-hardness carries the defense, and a precomputed table expires
+// daily. The stretch is shared with the pairing slot (code.Stretch).
+func derive(c string, epoch int64) []byte {
+	return code.Stretch(c, epoch, "fsend-landisc-v3", 18)
 }
-
-var (
-	deriveMu    sync.Mutex
-	derivedCode string
-	derivedKey  []byte
-)
 
 // serviceName builds the mDNS name we publish/query for a given code.
 //
 // We use `.local` so the name lives in the .local domain that every mDNS
 // stack on the planet honors. Both peers derive identically, so announce
 // and query still line up.
-func serviceName(code string) string {
-	return "fsend-" + hex.EncodeToString(derive(code)[:16]) + ".local"
+func serviceName(code string, epoch int64) string {
+	return "fsend-" + hex.EncodeToString(derive(code, epoch)[:16]) + ".local"
 }
 
 // unusableIfacePrefixes extends virtualIface with Apple-only interfaces
@@ -164,30 +150,36 @@ func closePacketConns(v4 *ipv4.PacketConn, v6 *ipv6.PacketConn) {
 // name. Call Close on the returned *mdns.Conn to stop announcing.
 //
 // The sender calls this just before listening for QUIC connections, so the
-// receiver can discover it. ip is the address we want receivers to dial —
-// usually the first non-loopback IPv4 on this machine.
+// receiver can discover it. ip pins the address receivers dial; nil (the
+// sender's choice) answers each query with the address of the interface it
+// arrived on, which is right on multi-homed hosts where any single pick
+// (a bridge, a VM network) may be unreachable from the asker.
 //
 // The port is not part of the announcement: pion/mdns only carries the
 // IP, and both sides derive the UDP port from the code via PortForCode.
-func Announce(code string, ip net.IP) (*mdns.Conn, error) {
+// epoch must match the one passed to PortForCode (see code.Epoch).
+func Announce(code string, epoch int64, ip net.IP) (*mdns.Conn, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {
 		return nil, fmt.Errorf("landisc: opening multicast: %w", err)
 	}
 
-	name := serviceName(code)
+	name := serviceName(code, epoch)
 
-	conn, err := mdns.NewServer(v4Conn, v6Conn,
+	opts := []mdns.ServerOption{
 		mdns.WithName("fsend-sender"),
 		mdns.WithLocalNames(name),
-		mdns.WithLocalAddress(ip),
 		mdns.WithIncludeLoopback(true),
 		mdns.WithInterfaces(discoveryInterfaces()...),
 		// Legacy parity: answer only A/AAAA (WebRTC/ICE-style naming),
 		// no proactive cache refresh.
 		mdns.WithRecordTypes(dnsmessage.TypeA, dnsmessage.TypeAAAA),
 		mdns.WithCacheRefresh(false),
-	)
+	}
+	if ip != nil {
+		opts = append(opts, mdns.WithLocalAddress(ip))
+	}
+	conn, err := mdns.NewServer(v4Conn, v6Conn, opts...)
 	if err != nil {
 		closePacketConns(v4Conn, v6Conn)
 		return nil, fmt.Errorf("landisc: mdns server: %w", err)
@@ -226,20 +218,23 @@ type QueryResult struct {
 // process poisons every later transfer with that code on the LAN.
 const watchdogGrace = 2 * time.Second
 
-// queryRetry is how often Query re-issues its question within one window
-// (legacy QueryInterval: 100ms). See the retry loop in queryOn.
-const queryRetry = 100 * time.Millisecond
+// queryRetries is the gap before each re-issued question within one
+// window; the last repeats. Wi-Fi power save can hold multicast for
+// 100–300 ms per hop, so one question (or a fixed short window) misses
+// senders a growing re-query catches. See the retry loop in queryOn.
+var queryRetries = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
 
-// Query searches for a sender announcing the given code, up to timeout.
+// Query searches for a sender announcing the given code, up to timeout,
+// returning as soon as one answers.
 //
-// Two sequential attempts on separate sockets:
+// Two concurrent attempts on separate sockets:
 //
-//  1. loopback — finds a sender on THIS machine (tests, scripted pipes).
+//   - loopback — finds a sender on THIS machine (tests, scripted pipes).
 //     Loopback multicast is never filtered by the OS, so this attempt is
 //     deterministic. It must run on its own socket: a sending socket that
 //     also targets a privacy-blocked physical interface loses even its
 //     loopback copies (observed on macOS 15 — 0/5 vs 5/5).
-//  2. LAN — the physical interfaces, for senders on other devices. When
+//   - LAN — the physical interfaces, for senders on other devices. When
 //     the OS blocks multicast there (macOS 15 Local Network Privacy) this
 //     attempt simply misses and the caller falls through to the
 //     pairing-server path.
@@ -249,24 +244,44 @@ const queryRetry = 100 * time.Millisecond
 // pairing-server path).
 //
 // pion/mdns's QueryAddr blocks until it gets a response or the context
-// expires, retrying on QueryInterval. Callers pass a short timeout
-// (300 ms is fsend's default) so a LAN miss doesn't block the
-// pairing-server fallback. The library runs on its own goroutine behind
-// a watchdog: if it blows past the deadline (see watchdogGrace), Query
-// closes the multicast sockets out from under it — which both unblocks
-// its read loop and stops the query spam — and reports a miss.
+// expires. The library runs on its own goroutine behind a watchdog: if it
+// blows past the deadline (see watchdogGrace), Query closes the multicast
+// sockets out from under it — which both unblocks its read loop and stops
+// the query spam — and reports a miss.
 func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("landisc: query: %w", err)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	loop := func(ifc net.Interface, _ []net.Addr) bool {
 		return ifc.Flags&net.FlagLoopback != 0
 	}
 	lan := func(ifc net.Interface, _ []net.Addr) bool {
 		return ifc.Flags&net.FlagLoopback == 0
 	}
-	half := timeout / 2
-	if res, err := queryOn(ctx, code, half, loop); err == nil {
-		return res, nil
+	type outcome struct {
+		res *QueryResult
+		err error
 	}
-	return queryOn(ctx, code, timeout-half, lan)
+	ch := make(chan outcome, 2)
+	for _, filter := range []func(net.Interface, []net.Addr) bool{loop, lan} {
+		go func() {
+			res, err := queryOn(ctx, code, timeout, filter)
+			ch <- outcome{res, err}
+		}()
+	}
+	var firstErr error
+	for range 2 {
+		o := <-ch
+		if o.err == nil {
+			return o.res, nil // the deferred cancel stops the other attempt
+		}
+		if firstErr == nil {
+			firstErr = o.err
+		}
+	}
+	return nil, firstErr
 }
 
 // QueryLoopback is Query restricted to loopback interfaces: it only ever
@@ -297,7 +312,7 @@ func QueryInterface(ctx context.Context, code string, timeout time.Duration, ip 
 	})
 }
 
-func queryOn(ctx context.Context, code string, timeout time.Duration, extra func(net.Interface, []net.Addr) bool) (*QueryResult, error) {
+func queryOn(ctx context.Context, c string, timeout time.Duration, extra func(net.Interface, []net.Addr) bool) (*QueryResult, error) {
 	v4Conn, v6Conn, err := openMulticast()
 	if err != nil {
 		return nil, fmt.Errorf("landisc: opening multicast: %w", err)
@@ -309,9 +324,15 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 	// pion/mdns doesn't expose service-browsing — only name queries. So
 	// the port is not part of the announcement: both sides derive it
 	// from the code via PortForCode, and we just query the well-known
-	// service name to discover the sender's IP.
-	port := PortForCode(code)
-	name := serviceName(code)
+	// service name to discover the sender's IP. Near a UTC day boundary
+	// the sender may have used the neighbouring epoch, so questions
+	// alternate between the candidate names.
+	epochs := code.EpochsFor(time.Now())
+	names := make([]string, len(epochs))
+	for i, e := range epochs {
+		names[i] = serviceName(c, e)
+	}
+	name := names[0]
 
 	ifaces := discoveryInterfaces()
 	if extra != nil {
@@ -335,6 +356,7 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 	type outcome struct {
 		addr netip.Addr
 		err  error
+		port int
 	}
 	ch := make(chan outcome, 1)
 	// connCh hands the mDNS conn to the watchdog as soon as it exists, so
@@ -360,18 +382,18 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 		connCh <- conn
 
 		// pion/mdns v2.2.0 has no functional option for the query retry
-		// interval (the deprecated Server shim read it from Config;
-		// NewServer pins it to 1s). Preserve the 100ms cadence by
-		// re-issuing QueryAddr with fresh sub-contexts — each call sends
-		// one question immediately, so this behaves exactly like the old
-		// 100ms ticker. Loop only while the miss came from the sub-window
-		// itself: any other error, or the caller's window closing, ends
-		// the attempt.
+		// interval (NewServer pins it to 1s). Re-issue QueryAddr with fresh
+		// sub-contexts instead — each call sends one question immediately —
+		// on the queryRetries schedule. Loop only while the miss came from
+		// the sub-window itself: any other error, or the caller's window
+		// closing, ends the attempt.
 		var addr netip.Addr
 		var qerr error
-		for {
-			sub, subCancel := context.WithTimeout(qCtx, queryRetry)
-			_, addr, qerr = conn.QueryAddr(sub, name)
+		var epoch int64
+		for i := 0; ; i++ {
+			epoch = epochs[i%len(epochs)]
+			sub, subCancel := context.WithTimeout(qCtx, queryRetries[min(i, len(queryRetries)-1)])
+			_, addr, qerr = conn.QueryAddr(sub, names[i%len(names)])
 			subCancel()
 			if qerr == nil || qCtx.Err() != nil || sub.Err() == nil {
 				break
@@ -380,7 +402,7 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 
 		// Deliver the result before Close: a wedged Close leaks this
 		// goroutine until process exit but can no longer hang the caller.
-		ch <- outcome{addr: addr, err: qerr}
+		ch <- outcome{addr: addr, err: qerr, port: PortForCode(c, epoch)}
 		_ = conn.Close()
 		closePacketConns(v4Conn, v6Conn)
 	}()
@@ -400,7 +422,7 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 		if !o.addr.IsValid() || !onLinkSubnet(ip) {
 			return nil, fmt.Errorf("landisc: query: answer %v is not on-link", o.addr)
 		}
-		return &QueryResult{IP: ip, Port: port}, nil
+		return &QueryResult{IP: ip, Port: o.port}, nil
 	case <-ctx.Done():
 		// Caller is shutting down (e.g. SIGINT). Don't wait out the
 		// watchdog — kill the sockets so the query goroutine unblocks.
@@ -434,8 +456,8 @@ func queryOn(ctx context.Context, code string, timeout time.Duration, extra func
 // (sendpair.go always races the two) so the transfer still completes,
 // just without the same-LAN shortcut. A proper fix would require mDNS
 // service-browsing, which pion/mdns doesn't expose today.
-func PortForCode(code string) int {
-	return 50000 + int(binary.BigEndian.Uint16(derive(code)[16:18]))%1000
+func PortForCode(code string, epoch int64) int {
+	return 50000 + int(binary.BigEndian.Uint16(derive(code, epoch)[16:18]))%1000
 }
 
 // openMulticast creates the IPv4 and IPv6 multicast packet conns mDNS needs.

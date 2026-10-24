@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/polius/fsend/internal/landisc"
+
+	codepkg "github.com/polius/fsend/internal/code"
 )
 
 // TestReceive_LANBlackholeFallsBackFast reproduces the Windows Defender
@@ -33,7 +35,7 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 	code := s.waitForCode(t, 5*time.Second)
 
 	// Blackhole the code-derived LAN port: bind it, read, drop.
-	port := landisc.PortForCode(code)
+	port := landisc.PortForCode(code, codepkg.Epoch(time.Now()))
 	pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
 	if err != nil {
 		t.Skipf("cannot bind blackhole port %d: %v", port, err)
@@ -47,7 +49,7 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 			}
 		}
 	}()
-	mdnsConn, err := landisc.Announce(code, net.IPv4(127, 0, 0, 1))
+	mdnsConn, err := landisc.Announce(code, codepkg.Epoch(time.Now()), net.IPv4(127, 0, 0, 1))
 	if err != nil {
 		t.Skipf("mDNS announce unavailable: %v", err)
 	}

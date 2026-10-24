@@ -90,7 +90,7 @@ func readPasswordHiddenCtx(ctx context.Context, prompt string, quiet bool) (stri
 // resolvePassword expands the bare --password sentinel into a concrete
 // password. No-op when --password wasn't given bare.
 //
-// Sender side: shows a freshly-generated 16-char suggestion the user can
+// Sender side: shows a freshly-generated four-word suggestion the user can
 // accept with <enter> (or override by typing one). The suggestion is
 // echoed in cleartext — the sender needs to read it back to share with
 // the receiver, and the input it shadows is shown in plaintext anyway.
@@ -163,7 +163,7 @@ func promptPasswordWithSuggestionCtx(ctx context.Context, quiet bool) (string, e
 // see it to share it out-of-band) and a bare <enter> accepts it. Any
 // non-empty typed input replaces the suggestion.
 func promptPasswordWithSuggestion(br *bufio.Reader) (string, error) {
-	suggested, err := generateRandomPassword(16)
+	suggested, err := generatePassphrase(passphraseWords)
 	if err != nil {
 		return "", fmt.Errorf("generating suggested password: %w", err)
 	}
@@ -191,23 +191,65 @@ func promptPasswordWithSuggestion(br *bufio.Reader) (string, error) {
 	return typed, nil
 }
 
-// generateRandomPassword returns an n-character random string using a
-// human-readable alphabet (no ambiguous characters like 0/O/1/l). Uses
-// crypto/rand.Int for unbiased sampling — same pattern as
-// internal/code.Generate.
-func generateRandomPassword(n int) (string, error) {
-	const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
-	b := make([]byte, n)
-	max := big.NewInt(int64(len(alphabet)))
-	for i := range b {
+// passphraseWords is how many words a suggested password has. Four from
+// the 512-word list is 36 bits: far beyond what the bounded online
+// guessing a password gets (CPace leaves nothing to attack offline).
+const passphraseWords = 4
+
+// generatePassphrase returns n random words from passphraseList joined by
+// hyphens ("maple-river-stone-candle"): easy to read aloud and type,
+// unlike a mixed-case string. crypto/rand.Int gives unbiased sampling —
+// same pattern as internal/code.Generate.
+func generatePassphrase(n int) (string, error) {
+	words := strings.Fields(passphraseList)
+	max := big.NewInt(int64(len(words)))
+	out := make([]string, n)
+	for i := range out {
 		idx, err := rand.Int(rand.Reader, max)
 		if err != nil {
 			return "", err
 		}
-		b[i] = alphabet[idx.Int64()]
+		out[i] = words[idx.Int64()]
 	}
-	return string(b), nil
+	return strings.Join(out, "-"), nil
 }
+
+// passphraseList holds short, common, distinct-sounding English words:
+// lowercase, no homophones, nothing easily misheard over a call.
+//
+//nolint:gosec // G101: a public word list, not a credential
+const passphraseList = `
+able acid acorn actor adapt admit adult agent agree ahead aisle alarm album alert alive allow alpha amber ample angle
+ankle apple april apron arena armor arrow atlas attic audio aunt award awake axis bacon badge bagel baker bamboo banjo
+barn basil basin batch beach beard beast beaver begin bench berry bike bingo birch bison blade blank blast blend bliss
+block bloom blues board boat bonus boost booth bound boxer brain brass brave bread brick bride brief brisk broom brush
+bucket buddy budget buffet bugle bunny burst butter cabin cable cactus camel camera canal candle candy canoe canvas
+cargo carpet carrot castle cedar chalk charm chart cheese cherry chess chief chill chimney cider cinema circus civic
+claim clam clay clerk cliff climb clock cloud clover coach coast cobra cocoa comet comic coral cotton couch cougar
+cousin cowboy crab craft crane crater crayon cream creek cricket crisp crown cruise crumb crystal cube cupcake curtain
+cycle daisy dance dawn delta denim desert detail diary dinner disco dock dolphin donkey donut dragon drama dream drift
+drill drum duck dune eagle early earth easel echo elbow elder elk ember empty energy engine enjoy entry epic equal
+erupt essay exact exile extra fabric fairy falcon family fancy farm feast fence ferry fever fiber fiddle field fig
+film final finch fjord flag flame flash fleet flint float flock flute focus foggy forest fossil fox frame fresh frog
+frost fruit fudge galaxy garden garlic gecko gentle giant ginger giraffe glacier glad glass globe glove goat golden
+goose gorilla grain grape gravel green grill grove guitar gulf habit hammer hamster harbor harvest hawk hazel
+heart hedge helmet hero hiking hippo hobby honey hood hotel humble hunter husky igloo index iris island ivory jacket
+jaguar jam jasmine jelly jewel jigsaw jockey joke jolly journal judge juice jungle kayak kettle kidney kitten kiwi
+koala ladder lagoon lake lamp lantern laptop large laser lava lawn lemon level lily limit linen lion lizard llama
+lobster locket lodge lotus lucky lunar lunch magnet mango maple marble market marsh mask meadow melon memory mentor
+metal meteor middle mimic mint mirror mitten mocha model monkey moose mosaic moss motor mountain muffin museum music
+napkin narrow nature nectar needle nest nickel noble noodle north novel nugget oasis ocean olive omega onion opera
+orbit orchid organ otter outfit oven owl oyster paddle palace panda panther paper parade parrot pasta peach peanut
+pebble pencil penguin pepper piano pickle pigeon pillow pilot pine pirate pizza planet plaza plum pocket
+polar pony poppy potato prairie prism pumpkin puppy puzzle quartz quest quilt rabbit radar radio raft rainbow
+raisin ranch raven razor recipe reef relic rhino ribbon ridge river robin rocket rodeo royal ruby rumble
+saddle safari salad salmon sandal satin sauce scarf scout season secret shadow shark shelf shield silver siren skate
+sketch sleigh slogan smile snack snail socket sofa solar sonic spark sphinx spider spinach sponge spruce squid stable
+stamp statue steam stereo stone storm studio sugar summit sunny surf swan sweater symbol syrup table tactic tango
+teapot tennis tiger timber toast tomato topaz torch tower tractor trail tulip tundra turkey turtle tuxedo umbrella
+unicorn urban valley vanilla velvet venture violin visit vivid volcano voyage waffle walnut walrus wander wave
+wheat whale whistle willow window winter wizard wolf wombat yacht yodel yogurt zebra zenith zigzag zipper
+`
 
 // readPasswordOnce performs a single hidden-input read. Returns "" with
 // no error on empty input so the caller can re-prompt without conflating

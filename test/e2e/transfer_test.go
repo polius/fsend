@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"archive/tar"
 	"bytes"
 	"crypto/rand"
 	"io"
@@ -242,10 +243,10 @@ func TestReceive_OutStdout(t *testing.T) {
 	}
 }
 
-// TestReceive_OutStdoutRejectsDirectory: a directory transfer can't be
-// streamed to one byte sink — the receiver must fail with a usage error
-// (E024) instead of dumping the internal tar.
-func TestReceive_OutStdoutRejectsDirectory(t *testing.T) {
+// TestReceive_OutStdoutDirectoryIsTar: a folder sent to `--out -` streams
+// as a tar archive (so `fsend --out - <code> | tar x` works), both sides
+// succeed, and nothing is written to disk.
+func TestReceive_OutStdoutDirectoryIsTar(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
 	sub := filepath.Join(src, "proj")
@@ -257,11 +258,25 @@ func TestReceive_OutStdoutRejectsDirectory(t *testing.T) {
 	}
 
 	r := h.runPair(t, []string{sub}, dst, []string{"--yes", "--out", "-"}, "")
-	if r.receiverExitCode != 24 {
-		t.Fatalf("receiver exit = %d, want 24 (usage)\n%s", r.receiverExitCode, r.receiverErr)
+	r.requireSuccess(t)
+	tr := tar.NewReader(strings.NewReader(r.receiverOut))
+	got := map[string]string{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stdout is not a tar archive: %v", err)
+		}
+		b, _ := io.ReadAll(tr)
+		got[hdr.Name] = string(b)
 	}
-	if r.receiverOut != "" {
-		t.Fatalf("nothing may reach stdout on rejection, got %q", r.receiverOut)
+	if got["proj/f.txt"] != "x" {
+		t.Fatalf("tar entries = %v", got)
+	}
+	if entries, _ := os.ReadDir(dst); len(entries) != 0 {
+		t.Fatalf("--out - must not write files, found %v", entries)
 	}
 }
 
@@ -305,9 +320,8 @@ func TestReceive_Overwrite(t *testing.T) {
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
-// Interactive: a differing file prompts twice — "Save?" then the
-// consolidated "Overwrite all?" — so two y's clobber the local copy and
-// both sides exit 0.
+// Interactive: a differing file is asked about once, in the accept prompt;
+// "r" replaces the local copy and both sides exit 0.
 func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
@@ -316,15 +330,13 @@ func TestReceive_OverwriteConfirmedInteractively(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// First y accepts the transfer; second y confirms overwriting the differ.
-	r := h.runPair(t, []string{srcFile}, dst, nil, "y\ny\n")
+	r := h.runPair(t, []string{srcFile}, dst, nil, "r\n")
 	r.requireSuccess(t)
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
-// A typo at the overwrite prompt must re-prompt, not silently count as
-// "keep" — a mistyped "yes" ("yws") followed by a real "y" still
-// overwrites. Regression for the prompt's old catch-all-means-no default.
+// A typo at the existing-files prompt must re-prompt, not silently pick an
+// option — a mistyped "replace" ("rpl") followed by a real "r" replaces.
 func TestReceive_OverwritePromptRepromptsOnTypo(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
@@ -333,17 +345,18 @@ func TestReceive_OverwritePromptRepromptsOnTypo(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nyws\ny\n")
+	r := h.runPair(t, []string{srcFile}, dst, nil, "rpl\nr\n")
 	r.requireSuccess(t)
-	if !strings.Contains(r.receiverErr, "Please answer y or n") {
+	if !strings.Contains(r.receiverErr, "Please answer k (keep both), r (replace)") {
 		t.Errorf("typo did not re-prompt:\n%s", r.receiverErr)
 	}
 	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
 }
 
-// EOF at the overwrite prompt keeps the local copies and says so — the
-// old code fell into the silent catch-all.
-func TestReceive_OverwritePromptEOFKeepsAndExplains(t *testing.T) {
+// A file that already exists is asked about once, in the accept prompt,
+// and the default ("y" or Enter) keeps both: the local copy stays and the
+// incoming one lands beside it. Exit 0 — nothing was lost or skipped.
+func TestReceive_ExistingFileDefaultKeepsBoth(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
 	srcFile := filepath.Join(src, "p.bin")
@@ -351,18 +364,16 @@ func TestReceive_OverwritePromptEOFKeepsAndExplains(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Stdin carries only the accept answer; it closes before the
-	// overwrite prompt reads.
+	// One answer only: a second prompt would read EOF.
 	r := h.runPair(t, []string{srcFile}, dst, nil, "y\n")
-	if r.receiverExitCode != 13 {
-		t.Errorf("receiver exit = %d, want 13 (kept conflict)\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
-	}
-	if !strings.Contains(r.receiverErr, "keeping your local copies") {
-		t.Errorf("EOF keep was silent:\n%s", r.receiverErr)
+	r.requireSuccess(t)
+	if strings.Count(r.receiverErr, "[Y/n]")+strings.Count(r.receiverErr, "[K]eep both") != 1 {
+		t.Errorf("expected exactly one prompt:\n%s", r.receiverErr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
-		t.Errorf("EOF must keep the local copy, got %q", got)
+		t.Errorf("keep both must keep the local copy, got %q", got)
 	}
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "p (1).bin"))
 }
 
 // Interactive: receiver declines the transfer at the accept prompt. With
@@ -380,12 +391,12 @@ func TestReceive_DeclineWithCollision_PreservesExisting(t *testing.T) {
 	}
 	// Receiver answers "n" to the accept prompt. The collision chip has
 	// already warned that "yes" would overwrite, so "no" is the
-	// "don't clobber" path — and the exit code becomes E006
-	// (UserCancelled) rather than the old E013 (TargetExists), because
-	// nothing reached the per-file overwrite stage.
+	// "don't clobber" path — E006 rather than the old E013 (TargetExists),
+	// because nothing reached the per-file overwrite stage. The decline is
+	// the receiver's own choice, so only the sender exits non-zero.
 	r := h.runPair(t, []string{srcFile}, dst, nil, "n\n")
-	if r.receiverExitCode != 6 || r.senderExitCode != 6 {
-		t.Errorf("exits: sender=%d receiver=%d, want 6/6\nsender stderr:\n%s\nreceiver stderr:\n%s",
+	if r.receiverExitCode != 0 || r.senderExitCode != 6 {
+		t.Errorf("exits: sender=%d receiver=%d, want 6/0\nsender stderr:\n%s\nreceiver stderr:\n%s",
 			r.senderExitCode, r.receiverExitCode, r.senderErr, r.receiverErr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
@@ -437,11 +448,9 @@ func TestReceive_DifferingFileKept_ReceiverSeesE013(t *testing.T) {
 	}
 }
 
-// Answering "n" at the overwrite prompt is a decision, not a failure: the
-// exit stays 13 (scripts must see the partial) but the error line is the
-// neutral ℹ acknowledging the choice — not a red ✗ telling the user to pass
-// the --overwrite they just declined.
-func TestReceive_OverwriteDeclined_NeutralE013(t *testing.T) {
+// Answering "skip" at the existing-files prompt is a decision, not a
+// failure: exit 0, a neutral ℹ summary, and no --overwrite advice.
+func TestReceive_SkipExisting_ExitsZero(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
 	srcFile := filepath.Join(src, "p.bin")
@@ -449,15 +458,14 @@ func TestReceive_OverwriteDeclined_NeutralE013(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "p.bin"), []byte("PREEXISTING"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// "y" accepts the transfer, "n" answers the overwrite prompt.
-	r := h.runPair(t, []string{srcFile}, dst, nil, "y\nn\n")
-	if r.receiverExitCode != 13 {
-		t.Errorf("receiver exit = %d, want 13\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
+	r := h.runPair(t, []string{srcFile}, dst, nil, "s\n")
+	if r.receiverExitCode != 0 {
+		t.Errorf("receiver exit = %d, want 0\nstderr:\n%s", r.receiverExitCode, r.receiverErr)
 	}
-	if !strings.Contains(r.receiverErr, "[i] [E013] Kept your local copies") {
-		t.Errorf("declined overwrite should render as the user's choice:\nstderr:\n%s", r.receiverErr)
+	if !strings.Contains(r.receiverErr, "[i] Saved 0 of 1 file") {
+		t.Errorf("a deliberate skip should render as the user's choice:\nstderr:\n%s", r.receiverErr)
 	}
-	if strings.Contains(r.receiverErr, "[FAIL] [E013]") || strings.Contains(r.receiverErr, "Use --overwrite") {
+	if strings.Contains(r.receiverErr, "[FAIL]") || strings.Contains(r.receiverErr, "Use --overwrite") {
 		t.Errorf("declined overwrite must not scold with the advice the user declined:\nstderr:\n%s", r.receiverErr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {

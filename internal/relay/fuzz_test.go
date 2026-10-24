@@ -3,6 +3,7 @@ package relay
 import (
 	"net"
 	"testing"
+	"time"
 )
 
 // discardConn is a net.PacketConn that accepts writes and never reads. It
@@ -30,9 +31,11 @@ func FuzzHandleDatagram(f *testing.F) {
 	f.Add([]byte{0x00, 0x00})             // truncated STUN header
 	f.Add([]byte{0x01, 0x00, 0x00, 0x01}) // relay version, short frame
 	f.Add([]byte{})
-
 	src := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4242}
+	f.Add(frameControl(tok, msgHello, PeerID{1}, nil))
+	c := s.cookie(tok, src, cookieEpoch(time.Now()))
+	f.Add(frameControl(tok, msgRegister, PeerID{1}, &c)) // registers: later seeds hit the forward branch
 	f.Fuzz(func(t *testing.T, data []byte) {
-		s.handle(data, src)
+		s.handle(data, endpoint{udp: src})
 	})
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/quic-go/quic-go"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/syserr"
 )
 
 // Options configures one WithBackoff invocation. Zero values pick the
@@ -170,6 +171,12 @@ func IsTransient(err error) bool {
 	if errors.Is(err, fserrors.ErrConnectFailed) {
 		return true
 	}
+	// A network change (Wi-Fi roam, sleep, VPN reconnect) briefly leaves no
+	// route or no usable source address; the next attempt runs on fresh
+	// sockets once the interface is back.
+	if syserr.IsNoRoute(err) || syserr.IsAddrNotAvail(err) {
+		return true
+	}
 
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
@@ -187,7 +194,7 @@ func IsTransient(err error) bool {
 	//     CloseWithError. In fsend this fires when a peer is killed
 	//     mid-transfer (Ctrl-C, OOM, network drop) and the surviving side's
 	//     next read/write surfaces the abrupt close. The peer can come back on
-	//     a retry and resume from its .fsend-partial, so this is the canonical
+	//     a retry and resume from its partial in .fsend/, so this is the canonical
 	//     transient case.
 	//   - StreamError{Remote}: the peer's teardown cancels its data-stream
 	//     read (STOP_SENDING) just before the connection close, and an
@@ -204,7 +211,9 @@ func IsTransient(err error) bool {
 	}
 	var appErr *quic.ApplicationError
 	if errors.As(err, &appErr) {
-		return true
+		// Except a deliberate cancel (quicconn.CloseCancelled; not imported
+		// to keep this package free of the transport): it isn't coming back.
+		return !appErr.Remote || appErr.ErrorCode != closeCancelled
 	}
 	var streamErr *quic.StreamError
 	if errors.As(err, &streamErr) && streamErr.Remote {
@@ -224,7 +233,15 @@ func IsTransient(err error) bool {
 	//     real network fault. A retry re-dials with fresh connection IDs/keys
 	//     so the colliding bytes can't recur (and the STUN-safe connID
 	//     generator prevents it outright). See internal/quicconn/connid.go.
+	//   - "no candidate pairs available": pion/ice after its agent failed,
+	//     e.g. across a network change. A fresh agent can recover.
+	//   - the errno texts: errno values lost through a non-%w wrap.
 	if s := err.Error(); strings.Contains(s, "idle timeout") ||
+		strings.Contains(s, "no candidate pairs available") ||
+		strings.Contains(s, "network is unreachable") ||
+		strings.Contains(s, "no route to host") ||
+		strings.Contains(s, "can't assign requested address") ||
+		strings.Contains(s, "cannot assign requested address") ||
 		strings.Contains(s, "connection reset by peer") ||
 		strings.Contains(s, "use of closed network connection") ||
 		strings.Contains(s, "Application error 0x") ||
@@ -235,6 +252,9 @@ func IsTransient(err error) bool {
 
 	return false
 }
+
+// closeCancelled mirrors quicconn.CloseCancelled.
+const closeCancelled quic.ApplicationErrorCode = 0x10
 
 // terminalSentinels are errors that must never be retried. Listed
 // explicitly so a stray retry-wrapping doesn't turn a real user-visible

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/signaling"
 	"github.com/polius/fsend/internal/uxlog"
@@ -265,10 +267,11 @@ func newSignalingTestServer(t *testing.T) (*server.Server, string) {
 	return s, ts.URL
 }
 
-// A claimed code may be a stale session whose receiver died: the sender
-// Deletes and re-Creates it when it re-enters pairing. joinWithRetry
-// must ride out the "already paired" window and join the fresh session.
-func TestJoinWithRetry_RetriesWhenStaleSessionReplaced(t *testing.T) {
+// On a resume key a claimed slot may be a stale session whose connection
+// just dropped: the sender Deletes and re-Creates it when it re-enters
+// pairing. joinRace must ride out the "already paired" window and join
+// the fresh session.
+func TestJoinRace_ResumeRetriesWhenStaleSessionReplaced(t *testing.T) {
 	_, baseURL := newSignalingTestServer(t)
 	senderClient := signaling.New(baseURL, "test")
 	deadReceiver := signaling.New(baseURL, "test")
@@ -292,7 +295,8 @@ func TestJoinWithRetry_RetriesWhenStaleSessionReplaced(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, joinErr = joinWithRetry(ctx, receiverClient, code, &flags{quiet: true}, nil)
+		_, _, joinErr = joinRace(ctx, receiverClient, code, &flags{quiet: true}, nil,
+			joinOpts{budget: 5 * time.Second, retryClaimed: true})
 	}()
 
 	// Sender re-enters pairing: stale session out, fresh one in.
@@ -310,9 +314,9 @@ func TestJoinWithRetry_RetriesWhenStaleSessionReplaced(t *testing.T) {
 	}
 }
 
-// When the stale session is never replaced, the budget must end with
-// the honest E003 — the code really is held by another receiver.
-func TestJoinWithRetry_GivesUpOnClaimedAfterBudget(t *testing.T) {
+// A fresh code that another receiver already holds is final: the late
+// arriver hears E003 at once instead of waiting out a retry budget.
+func TestJoinWithRetry_ClaimedCodeFailsFast(t *testing.T) {
 	_, baseURL := newSignalingTestServer(t)
 	senderClient := signaling.New(baseURL, "test")
 	firstReceiver := signaling.New(baseURL, "test")
@@ -327,13 +331,46 @@ func TestJoinWithRetry_GivesUpOnClaimedAfterBudget(t *testing.T) {
 		t.Fatalf("first Join: %v", err)
 	}
 
-	orig := joinRetryBudget
-	defer func() { joinRetryBudget = orig }()
-	joinRetryBudget = 500 * time.Millisecond
-
+	start := time.Now()
 	_, err := joinWithRetry(ctx, signaling.New(baseURL, "test"), code, &flags{quiet: true}, nil)
 	if !errors.Is(err, fserrors.ErrCodeAlreadyClaimed) {
-		t.Errorf("expected ErrCodeAlreadyClaimed after budget, got %v", err)
+		t.Errorf("expected ErrCodeAlreadyClaimed, got %v", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("claimed code took %v to fail, want immediate", d)
+	}
+}
+
+// An mDNS answer that lands while the join is still waiting for a sender
+// wins: the receiver takes the LAN route instead of timing out on E002.
+func TestJoinRace_LANAnswerWins(t *testing.T) {
+	_, baseURL := newSignalingTestServer(t)
+	lan := make(chan lanResult, 1)
+	hit := &landisc.QueryResult{IP: net.IPv4(127, 0, 0, 1), Port: 50001}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		lan <- lanResult{q: hit}
+	}()
+	joined, q, err := joinRace(context.Background(), signaling.New(baseURL, "test"), "abc-defg-jkm",
+		&flags{quiet: true}, nil, joinOpts{budget: 5 * time.Second, lan: lan})
+	if err != nil || joined != nil || q != hit {
+		t.Fatalf("got joined=%v q=%v err=%v, want the LAN hit", joined, q, err)
+	}
+}
+
+// A server that can't be reached doesn't end discovery while the mDNS
+// query may still answer: offline LAN transfers must not die on E001.
+func TestJoinRace_UnreachableServerWaitsForLAN(t *testing.T) {
+	lan := make(chan lanResult, 1)
+	hit := &landisc.QueryResult{IP: net.IPv4(127, 0, 0, 1), Port: 50001}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		lan <- lanResult{q: hit}
+	}()
+	_, q, err := joinRace(context.Background(), signaling.New("http://127.0.0.1:1", "test"), "abc-defg-jkm",
+		&flags{quiet: true}, nil, joinOpts{budget: 5 * time.Second, lan: lan})
+	if err != nil || q != hit {
+		t.Fatalf("got q=%v err=%v, want the LAN hit", q, err)
 	}
 }
 
@@ -372,7 +409,7 @@ func TestJoinWithRetry_RetitlesCallerSpinner(t *testing.T) {
 	})
 
 	// Non-TTY spinner: each message shows up as its own static line.
-	waitIdx := strings.Index(stderr, "Waiting for the sender to publish this code")
+	waitIdx := strings.Index(stderr, "No sender on this code yet")
 	if waitIdx < 0 {
 		t.Fatalf("spinner never retitled during retry window:\n%s", stderr)
 	}

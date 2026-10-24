@@ -232,8 +232,9 @@ func TestContainsDirectory(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNormalizeServer(t *testing.T) {
-	// Explicit port preserved; bare host gets an implicit port
-	// (443 for DNS names, 80 for IP literals and "localhost").
+	// Explicit port preserved; bare host gets the port of the scheme it
+	// is dialled with (HTTPS/443, HTTP/80 for loopback). An explicit
+	// scheme is kept whenever it differs from that inferred one.
 	for _, tc := range []struct {
 		in, want string
 	}{
@@ -245,18 +246,22 @@ func TestNormalizeServer(t *testing.T) {
 		{"relay.example.com", "relay.example.com:443"},
 		{"localhost", "localhost:80"},
 		{"127.0.0.1", "127.0.0.1:80"},
-		{"10.0.0.1", "10.0.0.1:80"},
+		{"10.0.0.1", "10.0.0.1:443"}, // dialled over HTTPS, so 443
 		{"::1", "[::1]:80"},
 		{"[::1]", "[::1]:80"},
 		{"  fs.example.com  ", "fs.example.com:443"},
-		// URL form: scheme is stripped so the documented LAN-only
-		// self-hosting form (`fsend --connect http://host:8080`) lands
-		// on a usable host:port instead of `[http://host:8080]:443`.
+		// URL form: the scheme matching the inferred one is dropped; a
+		// different one is kept so `--connect http://10.0.0.5` dials plain
+		// HTTP (a LAN-only self-hosted server) instead of HTTPS on :80.
 		{"http://localhost:8080", "localhost:8080"},
 		{"https://fs.example.com:443", "fs.example.com:443"},
 		{"https://fs.example.com", "fs.example.com:443"},
 		{"http://127.0.0.1:8080", "127.0.0.1:8080"},
 		{"http://localhost:8080/", "localhost:8080"},
+		{"http://10.0.0.5", "http://10.0.0.5:80"},
+		{"http://10.0.0.5:8080", "http://10.0.0.5:8080"},
+		{"http://fs.lan", "http://fs.lan:80"},
+		{"https://localhost:8443", "https://localhost:8443"},
 	} {
 		got, err := normalizeServer(tc.in)
 		if err != nil {
@@ -282,6 +287,50 @@ func TestNormalizeServer(t *testing.T) {
 		if _, err := normalizeServer(ok); err != nil {
 			t.Errorf("normalizeServer(%q) rejected valid host: %v", ok, err)
 		}
+	}
+	// What is stored is what is dialled.
+	for in, want := range map[string]string{
+		"10.0.0.5":        "https://10.0.0.5:443",
+		"http://10.0.0.5": "http://10.0.0.5:80",
+		"localhost:8080":  "http://localhost:8080",
+	} {
+		s, _ := normalizeServer(in)
+		if got := serverBaseURL(s); got != want {
+			t.Errorf("serverBaseURL(normalizeServer(%q)) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// --server / FSEND_SERVER apply to one run: the saved config is untouched
+// and its password (which belongs to the saved server) is not sent.
+func TestServerOverride(t *testing.T) {
+	t.Cleanup(func() { serverOverride = "" })
+	saved := &config.Config{Server: "saved.example.com:443", ServerPassword: "pw"}
+
+	t.Setenv("FSEND_SERVER", "env.example.com")
+	if err := setServerOverride(""); err != nil {
+		t.Fatal(err)
+	}
+	got := withServerOverride(saved)
+	if got.EffectiveServer() != "env.example.com:443" || got.ServerPassword != "" {
+		t.Errorf("FSEND_SERVER: got %+v", got)
+	}
+	if saved.Server != "saved.example.com:443" {
+		t.Error("override mutated the saved config")
+	}
+	// The flag beats the env var.
+	if err := setServerOverride("http://flag.lan:8080"); err != nil {
+		t.Fatal(err)
+	}
+	if s := withServerOverride(saved).EffectiveServer(); s != "http://flag.lan:8080" {
+		t.Errorf("--server: got %q", s)
+	}
+	t.Setenv("FSEND_SERVER", "")
+	if err := setServerOverride(""); err != nil || withServerOverride(saved) != saved {
+		t.Errorf("no override must return the saved config (err %v)", err)
+	}
+	if err := setServerOverride("not a host!"); !errors.Is(err, fserrors.ErrUsage) {
+		t.Errorf("bad --server: got %v, want E024", err)
 	}
 }
 
@@ -997,6 +1046,45 @@ func TestFinishReceive_KeptFilesGetHonestSummary(t *testing.T) {
 	}
 }
 
+// Choosing "skip" at the existing-files prompt is a decision: the summary is
+// informational and the exit is 0, not E013.
+func TestFinishReceive_SkipByChoiceExitsZero(t *testing.T) {
+	ui := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "2 files"}
+	ui.hello = &h
+	ui.kept = 1
+	ui.keptByChoice = true
+	ui.onFileDone("/tmp/a.bin", "")
+	got := captureStderr(t, func() {
+		if err := finishReceive(ui.f, ui, time.Second); err != nil {
+			t.Errorf("finishReceive error = %v, want nil after a deliberate skip", err)
+		}
+	})
+	if !strings.Contains(got, uxlog.Info()+" Saved 1 of 2 files") {
+		t.Errorf("deliberate skip should render as info:\n%s", got)
+	}
+}
+
+// Entries the engine couldn't save (unreadable at the sender, unplaceable
+// here) are listed and make the exit E050.
+func TestFinishReceive_NotSavedListedAndE050(t *testing.T) {
+	ui := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "2 files"}
+	ui.hello = &h
+	ui.onFileDone("/tmp/a.bin", "")
+	ui.onEntrySkipped("Readme.md", "same name as \"README.md\" on this filesystem")
+	got := captureStderr(t, func() {
+		if err := finishReceive(ui.f, ui, time.Second); !errors.Is(err, fserrors.ErrFilesSkipped) {
+			t.Errorf("finishReceive error = %v, want ErrFilesSkipped", err)
+		}
+	})
+	for _, want := range []string{"Saved 1 of 2 files", "Readme.md — same name as"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // A transient drop mid-transfer retries with the same receiverUI. The retry
 // reclassifies against disk and re-fires the tally callbacks, so without a
 // reset the counts accumulate across attempts and the headline lies ("Saved 3
@@ -1058,7 +1146,7 @@ func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
 		_ = ui.promptAccept(filesHello(), differ)
 	})
-	if want := "Keeping 1 differing file that would be overwritten — pass --overwrite to replace"; !strings.Contains(got, want) {
+	if want := "Keeping 1 differing file — pass --overwrite to replace, or --rename to keep both"; !strings.Contains(got, want) {
 		t.Errorf("--yes accept missing kept-differs warning %q:\n%s", want, got)
 	}
 

@@ -61,7 +61,7 @@ func TestClient_CreateAndJoin_Roundtrip(t *testing.T) {
 
 // The whole point of the slot scheme: the raw code must never cross the
 // wire to the pairing server — not in a URL, not in a body. A server
-// that learned the code could run the SPAKE2 handshake itself and MITM
+// that learned the code could run the PAKE handshake itself and MITM
 // the transfer. This snoops every request of a full Create/Join/Wait
 // round and asserts the code appears nowhere.
 func TestClient_RawCodeNeverSentToServer(t *testing.T) {
@@ -185,6 +185,17 @@ func TestClient_Create_CallerCodeConflictSurfaces(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Errorf("caller-supplied code must not be retried, got %d attempts", got)
+	}
+}
+
+// A server that refuses this client as too old (426) surfaces E060, not E099.
+func TestClient_TooOldMapsToFserror(t *testing.T) {
+	s := server.New(server.Config{MinClientVersion: "999.0.0"})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	_, err := New(ts.URL, "1.0.0").Create(context.Background(), "")
+	if !errors.Is(err, fserrors.ErrClientTooOld) {
+		t.Errorf("expected ErrClientTooOld, got %v", err)
 	}
 }
 

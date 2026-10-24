@@ -18,9 +18,11 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
@@ -60,6 +62,7 @@ type plainProgress struct {
 	fileI    int    // 1-based current file, 0 when unset
 	fileN    int    // total files, 0 when unset
 	route    string // connection tag chip, "" when unknown
+	win      rateWindow
 }
 
 // plainInterval throttles plain-mode lines. One line per second keeps
@@ -79,6 +82,14 @@ func (p *plainProgress) add(n int64) {
 		// output, whatever the caller's accounting did.
 		line := fmt.Sprintf("%d%%  %s / %s",
 			max(0, min(100, p.current*100/p.total)), HumanBytes(p.current), HumanBytes(p.total))
+		// Rate and ETA matter most in CI logs, where nobody watches a bar.
+		now := time.Now()
+		if r := p.win.observe(now, p.current); p.total >= rateThreshold && r >= 1 && !p.win.stalled(now) {
+			line += "  ·  " + HumanBytes(int64(r)) + "/s"
+			if left := float64(p.total-p.current) / r; left > 0 {
+				line += "  ·  ETA " + etaLabel(left)
+			}
+		}
 		if p.route != "" {
 			line += "  ·  " + p.route
 		}
@@ -151,11 +162,13 @@ const barMin = 10
 // terminals where the chips would have stayed hidden for the first second;
 // a steady bar is worth them.
 const (
-	pctFurniture  = 8      // "  100%  ", or the "  ...  " streaming stand-in
-	rateFurniture = 15     // "  ·  999.9 MB/s"
-	etaFurniture  = 16     // "  ·  ETA 1h02m03s"
-	chipFurniture = 5 + 20 // the file chip's floor: "  ·  " + a 20-rune name
-	chipFit       = 5 + 6  // columns below which the chip isn't worth showing
+	pctFurniture  = 8  // "  100%  ", or the "  ...  " streaming stand-in
+	rateFurniture = 15 // "  ·  999.9 MB/s"
+	etaFurniture  = 17 // "  ·  ETA 10h02m03s"
+	barFurniture  = 2  // the spaces mpb puts around the track
+	nameMin       = 12 // runes below which the file chip isn't worth showing
+	nameGrow      = 30 // the name grows to this before the bar takes the rest
+	barGrow       = 20 // the bar grows to this before the name does
 )
 
 // counterFurniture is the widest the counter decorator can render: its two
@@ -167,43 +180,62 @@ func counterFurniture(total int64) int {
 	return 2 + counterField(total) + 3 + len(HumanBytes(total))
 }
 
-// layoutBudgets splits a terminal of the given width between the bar, the
-// chips it can never reclaim, the current-file chip, and the route chip: bw
-// is the bar's requested width, labelCap the chip's cap in runes (0 = no
-// chip), showRoute whether the route chip fits. Pure; cheap enough for every
-// frame.
-//
-// Priority is bar → file chip → route chip: the chip claims a minimum once
-// the bar has its floor, and the route — the one chip the user has already
-// read on the phase line above the bar — takes only what is left. Spare
-// columns flow back to the name.
-func layoutBudgets(width int, total int64, showNames bool, route string) (bw, labelCap int, showRoute bool) {
-	fixed := pctFurniture + counterFurniture(total)
-	if total >= rateThreshold {
-		fixed += rateFurniture + etaFurniture
-	}
-	chip := 0
-	if showNames && width-fixed-barMin >= chipFit {
-		chip = chipFurniture
-	}
-	bw = min(barWidth, max(barMin, width-fixed-chip))
-	spare := width - fixed - chip - bw
-	if route != "" && spare >= len(route)+5 {
-		showRoute = true
-		spare -= len(route) + 5
-	}
-	if chip > 0 {
-		labelCap = chip - 5 + max(0, spare) // spare columns grow the name
-	}
-	return bw, labelCap, showRoute
+// barLayout is one row's allocation of the terminal's columns.
+type barLayout struct {
+	bar       int // track width; 0 = no track
+	eta, rate bool
+	counter   bool
+	nameCap   int // file chip's name budget in runes; 0 = no chip
+	route     bool
 }
 
-// chipBudget is just layoutBudgets' chip cap, re-derived from the live
-// terminal width (falling back to the construction-time width) for the
-// per-frame chip decorators.
-func chipBudget(width int, total int64, showNames bool, route string) int {
-	_, cap, _ := layoutBudgets(terminalWidth(width), total, showNames, route)
-	return cap
+// layout splits a row by priority — % > ETA > rate > counter > name > bar
+// > route — booking each element's widest form and dropping whole elements
+// that don't fit, so mpb never has to cut a number mid-digit. Spare columns
+// grow the bar to barGrow, the name to nameGrow, then book the route, then
+// the bar to its cap, and the rest goes to the name. Pure and cheap: every
+// decorator re-derives it from the live width each frame, so a resize
+// re-flows by priority.
+func layout(width int, total int64, showNames bool, route string) barLayout {
+	var l barLayout
+	avail := width - pctFurniture
+	take := func(n int) bool {
+		if avail >= n {
+			avail -= n
+			return true
+		}
+		return false
+	}
+	l.eta = total >= rateThreshold && take(etaFurniture)
+	l.rate = (total <= 0 || total >= rateThreshold) && take(rateFurniture)
+	l.counter = take(counterFurniture(total))
+	if showNames && take(5+nameMin) {
+		l.nameCap = nameMin
+	}
+	if total > 0 && take(barFurniture+barMin) {
+		l.bar = barMin
+	}
+	grow := func(cur *int, to int) {
+		if *cur > 0 && *cur < to {
+			g := min(avail, to-*cur)
+			*cur += g
+			avail -= g
+		}
+	}
+	grow(&l.bar, barGrow)
+	grow(&l.nameCap, nameGrow)
+	l.route = route != "" && take(len(route)+5)
+	grow(&l.bar, barWidth)
+	if l.nameCap > 0 {
+		l.nameCap += avail
+	}
+	return l
+}
+
+// liveLayout is layout at the terminal's current width, falling back to
+// the construction-time width when the size query fails.
+func liveLayout(width int, total int64, showNames bool, route string) barLayout {
+	return layout(terminalWidth(width), total, showNames, route)
 }
 
 // terminalWidth returns stderr's current width, or fallback when stderr
@@ -255,7 +287,18 @@ func Println(line string) {
 		}
 		// mpb already shut down (ErrDone) — fall through to plain stderr.
 	}
-	fmt.Fprintln(os.Stderr, line)
+	printlnTo(os.Stderr, line)
+}
+
+// printlnTo writes line, first wiping a live spinner frame so the line
+// starts at column 0; the spinner redraws below it on its next tick.
+func printlnTo(w io.Writer, line string) {
+	ttyMu.Lock()
+	defer ttyMu.Unlock()
+	if activeSpinner() != nil {
+		_, _ = fmt.Fprint(w, "\r\x1b[2K")
+	}
+	_, _ = fmt.Fprintln(w, line)
 }
 
 func setActive(p *Progress) {
@@ -264,16 +307,27 @@ func setActive(p *Progress) {
 	activeMu.Unlock()
 }
 
-// Notify flags a completed transfer to an unattended terminal: an audible
-// bell plus an OSC 9 desktop notification (iTerm2, WezTerm, Windows
-// Terminal, foot). TTY-gated so piped stderr stays byte-clean. msg must
-// be caller-controlled literal text — never peer-supplied strings, which
-// could inject OSC sequences.
-func Notify(msg string) {
-	if !renderTTY(os.Stderr) {
+// NotifyAfter is how long a run must have taken before Notify fires: a
+// transfer the user just watched finish needs no bell.
+const NotifyAfter = 10 * time.Second
+
+// Notify flags a successful transfer to a user who may have looked away:
+// an OSC 9 desktop notification (iTerm2, WezTerm, Windows Terminal, foot)
+// plus one bell. Callers pass the run's wall time; shorter than
+// NotifyAfter is a no-op, as is FSEND_NO_NOTIFY. TTY-gated so piped stderr
+// stays byte-clean. msg must be caller-controlled literal text — never
+// peer-supplied strings, which could inject OSC sequences.
+func Notify(msg string, waited time.Duration) {
+	if waited < NotifyAfter || NotifyDisabled() || !renderTTY(os.Stderr) {
 		return
 	}
-	_, _ = fmt.Fprintf(os.Stderr, "\x1b]9;fsend: %s\x07\x07", msg)
+	_, _ = fmt.Fprintf(os.Stderr, "\x1b]9;fsend: %s\x07\a", msg)
+}
+
+// NotifyDisabled reports the FSEND_NO_NOTIFY opt-out.
+func NotifyDisabled() bool {
+	v := os.Getenv("FSEND_NO_NOTIFY")
+	return v != "" && v != "0" && v != "false"
 }
 
 // New constructs a Progress that writes to stderr (the only sink the spec
@@ -300,9 +354,12 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 			w: os.Stderr, total: totalBytes, lastLine: time.Now(), start: time.Now(), route: route,
 		}}
 	}
-	// Only the bar's budget is fixed here; the chip re-derives from the
-	// live width every refresh frame, so a mid-transfer resize re-flows.
-	bw, _, _ := layoutBudgets(width, totalBytes, showNames, route)
+	// Only the bar's cap is fixed here (so it can't jiggle as chips come
+	// and go); every chip re-derives from the live width each refresh
+	// frame, so a mid-transfer resize re-flows by priority. A bar of 1 is
+	// "no track": the filler draws nothing narrower than its bounds.
+	bw := max(1, layout(width, totalBytes, showNames, route).bar)
+	lay := func() barLayout { return liveLayout(width, totalBytes, showNames, route) }
 
 	p := &Progress{}
 	defer setActive(p)
@@ -356,13 +413,13 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	// Counters: always render via HumanBytes so units stay uppercase
 	// and small whole-byte values don't gain a "%.2f" tail.
 	counters := decor.Any(func(s decor.Statistics) string {
-		return counterLine(s.Current, s.Total)
+		if !lay().counter {
+			return ""
+		}
+		return "  " + counterLine(s.Current, s.Total)
 	})
 
-	appendDecs := []decor.Decorator{
-		decor.Name("  "),
-		counters,
-	}
+	appendDecs := []decor.Decorator{counters}
 	// The plain (un-dimmed) stalled marker; decor.Meta colors it below while
 	// mpb measures the bar width off this ANSI-free form.
 	const stalledChip = "  ·  stalled"
@@ -380,8 +437,8 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 						return ""
 					}
 					now := time.Now()
-					r := win.observe(now, s.Current)
-					if s.Current < rateThreshold {
+					r := win.observe(now, s.Current) // feeds the ETA even when hidden
+					if s.Current < rateThreshold || !lay().rate {
 						return ""
 					}
 					if win.stalled(now) {
@@ -411,7 +468,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 			// time. Hidden on completion and during a stall (a projection
 			// off a decaying rate only inflates).
 			decor.Any(func(s decor.Statistics) string {
-				if s.Completed || s.Aborted || s.Total <= 0 || s.Current == 0 {
+				if s.Completed || s.Aborted || s.Total <= 0 || s.Current == 0 || !lay().eta {
 					return ""
 				}
 				if time.Since(start) < time.Second || win.stalled(time.Now()) {
@@ -436,7 +493,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		// file chip: the route was already stated on the phase line
 		// above, so it is the cheapest thing to lose.
 		appendDecs = append(appendDecs, decor.Any(func(decor.Statistics) string {
-			if _, _, ok := layoutBudgets(terminalWidth(width), totalBytes, showNames, route); !ok {
+			if !lay().route {
 				return ""
 			}
 			return "  ·  " + route
@@ -453,11 +510,11 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		// construction if the size query starts failing.
 		appendDecs = append(appendDecs,
 			decor.Meta(decor.Any(func(decor.Statistics) string {
-				name, _ := p.chipParts(chipBudget(width, totalBytes, showNames, route))
+				name, _ := p.chipParts(lay().nameCap)
 				return name
 			}), func(str string) string { return Path(str) }),
 			decor.Any(func(decor.Statistics) string {
-				_, tail := p.chipParts(chipBudget(width, totalBytes, showNames, route))
+				_, tail := p.chipParts(lay().nameCap)
 				return tail
 			}),
 		)
@@ -588,25 +645,36 @@ func (p *Progress) chipParts(chipCap int) (name, tail string) {
 	return "  ·  " + truncateName(label, chipCap), tail
 }
 
-// truncateName caps s at max runes, cutting from the left so the tail —
-// the basename, where the distinctive part and the extension live —
-// stays visible; "…" marks the cut. A path chip that shrinks should
-// lose its leading directories first (the wrapping folder is already
-// named in the artifact headline), never the middle of the filename —
-// "myproj/asse…deo1.bin" hides the one part that identifies the file.
-// Runes, not display cells: a name heavy in wide glyphs (CJK, emoji)
-// can overflow the chip's budget, but mpb clamps overflowing decorators
-// (shrinking the bar) rather than wrapping, so the failure mode is a
-// shorter name, never a broken line.
+// truncateName caps s at max runes with a middle cut: the whole basename
+// stays when it fits ("assets/…/video1.bin"), else the basename itself is
+// cut in the middle, keeping its start and extension ("vid…o1.bin") — a
+// left cut ("…g.bin") hides the part that identifies the file. Runes, not
+// display cells: a name heavy in wide glyphs can overflow the chip's
+// budget, and mpb then trims the line's end rather than wrapping it.
 func truncateName(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
 		return s
 	}
-	if max <= 0 {
-		return "" // nothing fits; avoids a negative slice bound below
+	switch {
+	case max <= 0:
+		return ""
+	case max == 1:
+		return "…"
 	}
-	return "…" + string(r[len(r)-(max-1):])
+	keep := max - 1
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		base := s[i+1:]
+		switch n := utf8.RuneCountInString(base); {
+		case n+1 <= keep-2: // "head…/basename"
+			return string(r[:keep-n-1]) + "…" + s[i:]
+		case n <= keep: // "…basename"
+			return "…" + base
+		}
+		r = []rune(base) // cut inside the basename itself
+	}
+	tail := keep * 2 / 3
+	return string(r[:keep-tail]) + "…" + string(r[len(r)-tail:])
 }
 
 // SetTotal updates the bar's total. Useful for stdin transfers where the

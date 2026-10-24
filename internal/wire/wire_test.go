@@ -14,12 +14,12 @@ import (
 
 func TestControl_HelloRoundtrip(t *testing.T) {
 	want := SenderHello{
-		ProtocolVersion: ProtocolVersion,
-		Hostname:        "Pol's MacBook",
-		OS:              "darwin",
-		ClientVersion:   "0.1.0",
-		Mode:            ModeFiles,
-		DisplayName:     "my-project/",
+		MinVersion: MinProtocolVersion, MaxVersion: ProtocolVersion,
+		Hostname:      "Pol's MacBook",
+		OS:            "darwin",
+		ClientVersion: "0.1.0",
+		Mode:          ModeFiles,
+		DisplayName:   "my-project/",
 	}
 	var buf bytes.Buffer
 	if err := WriteControl(&buf, TypeHello, &want); err != nil {
@@ -99,14 +99,14 @@ func TestControl_ListingBatchRoundtrip(t *testing.T) {
 }
 
 func TestControl_DecisionBatchRoundtrip(t *testing.T) {
-	var imo [16]byte
-	for i := range imo {
-		imo[i] = byte(i)
+	root := make([]byte, 32)
+	for i := range root {
+		root[i] = byte(i)
 	}
 	want := []Decision{
 		{Index: 0, Action: DecisionSend},
 		{Index: 1, Action: DecisionSkip},
-		{Index: 2, Action: DecisionResume, ResumeOffset: 1 << 20, PartialImohash: imo},
+		{Index: 2, Action: DecisionResume, ResumeOffset: 1 << 20, PrefixRoot: root},
 	}
 	var buf bytes.Buffer
 	if err := WriteControl(&buf, TypeClassifyBatch, want); err != nil {
@@ -133,9 +133,6 @@ func TestChunk_SingleSegmentRoundtrip(t *testing.T) {
 			{FileIndex: 7, Length: 36, EOF: true, RootHash: root},
 		},
 	}
-	for i := range original.ChunkHash {
-		original.ChunkHash[i] = byte(i)
-	}
 	var buf bytes.Buffer
 	if err := WriteChunk(&buf, original); err != nil {
 		t.Fatalf("WriteChunk: %v", err)
@@ -144,7 +141,7 @@ func TestChunk_SingleSegmentRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadChunk: %v", err)
 	}
-	if got.Compressed != original.Compressed || got.ChunkHash != original.ChunkHash {
+	if got.Compressed != original.Compressed {
 		t.Error("chunk header mismatch")
 	}
 	if !reflect.DeepEqual(got.Segments, original.Segments) {
@@ -257,7 +254,7 @@ func TestChunk_RejectWrongTypeOnDataStream(t *testing.T) {
 func TestChunk_HeaderOnlyNoPreallocation(t *testing.T) {
 	hdr := make([]byte, chunkFixedHeader)
 	hdr[0] = byte(TypeChunk)
-	binary.BigEndian.PutUint16(hdr[38:40], 0xFFFF)
+	binary.BigEndian.PutUint16(hdr[6:8], 0xFFFF)
 
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -278,17 +275,14 @@ func TestChunk_PropertyRoundtrip(t *testing.T) {
 		if len(payload) > MaxChunkSize {
 			return true
 		}
-		var hash, root [32]byte
-		for i := range hash {
-			hash[i] = byte(i)
-		}
+		var root [32]byte
 		seg := Segment{FileIndex: fileIdx, Length: uint32(len(payload)), EOF: true, RootHash: root}
 		// Compressed payloads need not match the segment sum, so only assert
 		// the sum invariant for the uncompressed case the codec enforces.
 		if compressed && len(payload) == 0 {
 			return true
 		}
-		c := &Chunk{Compressed: compressed, ChunkHash: hash, Segments: []Segment{seg}, Payload: payload}
+		c := &Chunk{Compressed: compressed, Segments: []Segment{seg}, Payload: payload}
 		var buf bytes.Buffer
 		if err := WriteChunk(&buf, c); err != nil {
 			return false
@@ -297,7 +291,7 @@ func TestChunk_PropertyRoundtrip(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		return got.Compressed == c.Compressed && got.ChunkHash == c.ChunkHash &&
+		return got.Compressed == c.Compressed &&
 			reflect.DeepEqual(got.Segments, c.Segments) && bytes.Equal(got.Payload, c.Payload)
 	}
 	if err := quick.Check(prop, &quick.Config{MaxCount: 500}); err != nil {

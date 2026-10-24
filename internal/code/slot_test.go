@@ -1,8 +1,10 @@
 package code
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSlot_ShapeAndDeterminism(t *testing.T) {
@@ -54,6 +56,30 @@ func TestValidateSlot(t *testing.T) {
 		err := ValidateSlot(c.in)
 		if (err == nil) != c.ok {
 			t.Errorf("ValidateSlot(%q) = %v, want ok=%v", c.in, err, c.ok)
+		}
+	}
+}
+
+func TestSlotAt_EpochChangesSlot(t *testing.T) {
+	if SlotAt("abc-defg-jkm", 20000) == SlotAt("abc-defg-jkm", 20001) {
+		t.Fatal("slot did not change across epochs")
+	}
+}
+
+func TestEpochsFor(t *testing.T) {
+	day := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+	e := Epoch(day)
+	cases := []struct {
+		at   time.Time
+		want []int64
+	}{
+		{day.Add(12 * time.Hour), []int64{e}},
+		{day.Add(10 * time.Minute), []int64{e, e - 1}},
+		{day.Add(24*time.Hour - 10*time.Minute), []int64{e, e + 1}},
+	}
+	for _, c := range cases {
+		if got := EpochsFor(c.at); !slices.Equal(got, c.want) {
+			t.Errorf("EpochsFor(%v) = %v, want %v", c.at, got, c.want)
 		}
 	}
 }

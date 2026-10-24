@@ -31,6 +31,11 @@ func runUninstall(f *flags) error {
 	}
 
 	if err := confirmUninstall(f); err != nil {
+		// "n" is an answer, not a failure: exit 0.
+		if errors.Is(err, errDeclined) {
+			fmt.Fprintf(os.Stderr, "%s Not uninstalled.\n", uxlog.Info())
+			return nil
+		}
 		return err
 	}
 
@@ -94,9 +99,12 @@ func runUninstall(f *flags) error {
 	return nil
 }
 
-// confirmUninstall asks before anything is removed. Decline, EOF, and
-// Ctrl-C all return ErrUserCancelled so scripts see the same E026 / exit
-// 130 as every other cancel path.
+// errDeclined is the user answering "n" at a confirmation prompt.
+var errDeclined = errors.New("declined at the prompt")
+
+// confirmUninstall asks before anything is removed. An explicit "n"
+// returns errDeclined (a choice, exit 0); EOF and Ctrl-C return
+// ErrUserCancelled, the E026 / exit 130 of every other cancel path.
 func confirmUninstall(f *flags) error {
 	if f.yes {
 		return nil
@@ -136,7 +144,7 @@ func confirmUninstall(f *flags) error {
 		case "y", "yes":
 			return nil
 		case "", "n", "no":
-			return fserrors.ErrUserCancelled
+			return errDeclined
 		}
 		fmt.Fprintln(os.Stderr, "  Please answer y or n.")
 	}

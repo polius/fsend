@@ -67,7 +67,7 @@ var (
 	// E021 — receiver did not match the sender's --password challenge.
 	ErrWrongPassword = errors.New("wrong password")
 	// E022 — peers did not agree on the short code (or someone in the
-	// middle tried to MITM): SPAKE2-derived key + TLS exporter mismatch.
+	// middle tried to MITM): PAKE-derived key + TLS exporter mismatch.
 	ErrPeerAuthFailed = errors.New("peer authentication failed")
 	// E023 — relay's per-session byte cap was hit and the allocation
 	// was torn down. Tells the user *why* the transfer stopped, instead
@@ -148,6 +148,35 @@ var (
 	// gets its own entry rather than E033's "check your internet
 	// connection", which would send a developer chasing the wrong thing.
 	ErrUpdateDevBuild = errors.New("development build")
+	// E060 — the pairing server refused this client as too old (HTTP 426):
+	// its wire protocol, or the operator's minimum release. Distinct from
+	// E018, which means the server itself is gone.
+	ErrClientTooOld = errors.New("client too old for server")
+	// E061 — `fsend server` stopped because its relay UDP socket failed at
+	// runtime. Exits non-zero so the container's restart policy applies.
+	ErrRelayFailed = errors.New("relay failed")
+	// E042 — the relay never answered over UDP (the network blocks it) and
+	// the TCP fallback failed or this server doesn't offer it. Distinct from
+	// E014 so the user learns the cause instead of a generic failure.
+	ErrUDPBlocked = errors.New("udp blocked")
+	// E043 — `fsend doctor` found at least one degraded check. The checks
+	// themselves already printed the details; this gives scripts an exit code.
+	ErrDoctorFailed = errors.New("doctor checks failed")
+	// E046 — the sender stopped after too many failed PAKE handshakes on
+	// its code: someone may be guessing it.
+	ErrTooManyPairingFailures = errors.New("too many failed pairing attempts")
+	// E047 — the server's TLS certificate failed verification: a captive
+	// portal, a TLS-intercepting proxy, or a misconfigured server.
+	// Distinct from E001 because retrying the same network won't help.
+	ErrServerCertUntrusted = errors.New("server certificate not trusted")
+	// E050 — the transfer finished, but some files were skipped: the sender
+	// could not read them, or they could not be placed safely on the
+	// receiver (a name collision on a case-insensitive filesystem, a folder
+	// in the way). The rest landed; the list is printed above.
+	ErrFilesSkipped = errors.New("some files were skipped")
+	// E051 — the listing has more entries than one transfer allows. Not a
+	// version problem, so it doesn't borrow E015's wording.
+	ErrTooManyEntries = errors.New("too many files in one transfer")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -218,15 +247,15 @@ const selfHostHint = "\n  Or run your own fsend server, where you set the limits
 var catalog = map[error]Entry{
 	ErrServerUnreachable: {
 		Code: "E001", Exit: 1,
-		Message: "Could not reach the server (timeout).",
+		Message: "Could not reach the server.",
 		Action: "Check your internet connection, or use a different server:\n" +
 			"    fsend --connect <host:port>",
 	},
 	ErrCodeNotFound: {
 		Code: "E002", Exit: 2,
-		Message: "That code was not found.",
+		Message: "No sender is waiting on that code.",
 		Action: "Double-check the code with the sender and make sure their fsend is\n" +
-			"  still running — or another receiver may have already claimed this code.",
+			"  still running.",
 	},
 	ErrCodeAlreadyClaimed: {
 		Code: "E003", Exit: 3,
@@ -252,8 +281,10 @@ var catalog = map[error]Entry{
 	},
 	ErrDiskFull: {
 		Code: "E008", Exit: 8,
-		Message: "Not enough disk space.",
-		Action:  "Free up space or use --out <dir> to save somewhere else.",
+		Message:       "Not enough disk space.",
+		Action:        "Free up space or use --out <dir> to save somewhere else.",
+		SenderMessage: "The receiver does not have enough disk space.",
+		SenderAction:  "They can free up space, or save somewhere else with --out <dir>.",
 	},
 	ErrWriteFailed: {
 		Code: "E009", Exit: 9,
@@ -349,9 +380,11 @@ var catalog = map[error]Entry{
 	ErrWrongPassword: {
 		Code: "E021", Exit: 21,
 		Message: "Wrong password. Transfer aborted.",
-		Action: "Ask the sender for the correct password and run again. Codes are\n" +
-			"  one-shot — the sender may need to restart to issue a fresh code.",
-		SenderMessage: "The receiver entered the wrong password. Transfer aborted.",
+		// The sender keeps the code alive for a few more rounds, so a
+		// rerun with the right password usually still works.
+		Action: "Check the password with the sender, then run the same command\n" +
+			"  again on this device while their fsend is still waiting.",
+		SenderMessage: "The receiver entered the wrong password too many times. Transfer aborted.",
 		SenderAction: "Run fsend again to issue a fresh code, and re-share the\n" +
 			"  password with the receiver.",
 	},
@@ -476,11 +509,58 @@ var catalog = map[error]Entry{
 		// The opt-in command renders as a block (see renderError), so the
 		// Action is left empty rather than competing with it.
 	},
+	ErrTooManyPairingFailures: {
+		Code: "E046", Exit: 46,
+		Message: "Stopped: too many failed attempts to connect with this code.",
+		Action: "Someone may be guessing it. Run fsend again for a fresh code, and\n" +
+			"  share it only with the receiver.",
+	},
+	ErrServerCertUntrusted: {
+		Code: "E047", Exit: 47,
+		Message: "The server's certificate is not trusted.",
+		Action: "A Wi-Fi login page or a filtering proxy may be intercepting the\n" +
+			"  connection. Sign in to the network (open any website), or try\n" +
+			"  another network.",
+	},
+	ErrFilesSkipped: {
+		Code: "E050", Exit: 50,
+		Message: "Some files were skipped — everything else arrived.",
+		Action: "The skipped files and the reason are listed above. Fix the cause and\n" +
+			"  run fsend again; files that already arrived are not sent twice.",
+	},
+	ErrTooManyEntries: {
+		Code: "E051", Exit: 51,
+		Message: "This transfer has too many files and folders.",
+		Action:  "Send it in parts, for example one subfolder at a time.",
+	},
 	ErrUpdateDevBuild: {
 		Code: "E041", Exit: 41,
 		Message: "This is a development build — there is no release to update to.",
 		Action: "Install a release build instead:\n" +
 			"    https://github.com/polius/fsend#install",
+	},
+	ErrClientTooOld: {
+		Code: "E060", Exit: 60,
+		Message: "This version of fsend is too old for the pairing server.",
+		Action: "Update fsend, then try again:\n" +
+			"    fsend --update",
+	},
+	ErrRelayFailed: {
+		Code: "E061", Exit: 61,
+		Message: "The server stopped: its relay UDP socket failed.",
+		Action: "A restart policy (Docker: restart: unless-stopped) brings it back.\n" +
+			"  The socket error is logged above.",
+	},
+	ErrUDPBlocked: {
+		Code: "E042", Exit: 42,
+		Message: "This network seems to block the UDP traffic fsend uses.",
+		Action: "Try another network (a phone hotspot works), or ask the network admin\n" +
+			"  to allow outbound UDP port 443. `fsend doctor` checks both paths.",
+	},
+	ErrDoctorFailed: {
+		Code: "E043", Exit: 43,
+		Message: "Some checks found a problem — see the warnings above.",
+		Action:  "Each one says what it affects and what still works.",
 	},
 }
 
