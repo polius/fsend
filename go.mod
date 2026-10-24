@@ -11,7 +11,7 @@ require (
 	github.com/pion/ice/v4 v4.4.8
 	github.com/pion/mdns/v2 v2.2.2
 	github.com/pion/stun/v4 v4.0.1
-	github.com/pion/transport/v5 v5.0.1
+	github.com/pion/transport/v5 v5.1.1
 	github.com/quic-go/quic-go v0.64.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
