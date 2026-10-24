@@ -342,6 +342,10 @@ type statusRecorder struct {
 	written int
 }
 
+// Unwrap lets http.ResponseController reach the underlying writer
+// (Flush, Hijack) through the recorder.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(code int) {
 	if r.status == 0 {
 		r.status = code
