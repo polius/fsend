@@ -80,18 +80,22 @@ func sanitizeRelativePath(p, goos string) (string, error) {
 	if strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, "//") {
 		return "", fmt.Errorf("UNC-style path rejected: %q", p)
 	}
+	// Windows-only: these characters, reserved names and trailing
+	// dots/spaces are legal in Unix filenames (e.g. aux.c, a\b), so gate on
+	// the receiver OS to avoid breaking Unix→Unix transfers. Checked on the
+	// wire's '/'-separated components, before a '\' could turn into a
+	// separator and merge "a\b" with "a/b".
+	if goos == "windows" {
+		for _, part := range strings.Split(p, "/") {
+			if reason := windowsPathHazard(part); reason != "" {
+				return "", fmt.Errorf("windows-unsafe path (%s) rejected: %q", reason, p)
+			}
+		}
+	}
 	clean := filepath.Clean(filepath.FromSlash(p))
 	for _, part := range strings.Split(clean, string(filepath.Separator)) {
 		if part == ".." {
 			return "", fmt.Errorf("path traversal rejected: %q", p)
-		}
-		// Windows-only: ':' , reserved names, and trailing dots/spaces are
-		// legal in Unix filenames (e.g. aux.c), so gate on the receiver OS to
-		// avoid breaking Unix→Unix transfers.
-		if goos == "windows" {
-			if reason := windowsPathHazard(part); reason != "" {
-				return "", fmt.Errorf("windows-unsafe path (%s) rejected: %q", reason, p)
-			}
 		}
 	}
 	if filepath.VolumeName(clean) != "" {
@@ -104,9 +108,18 @@ func sanitizeRelativePath(p, goos string) (string, error) {
 // Windows, or "" if it's fine. Each hazard makes the file that lands differ
 // from the name the receiver consented to (none is a traversal).
 func windowsPathHazard(component string) string {
+	if component == "." || component == ".." {
+		return "" // handled by Clean and the traversal check
+	}
 	if strings.ContainsRune(component, ':') {
 		// "notes:secret" writes the alternate data stream "secret" on "notes".
 		return "alternate data stream ':'"
+	}
+	for _, r := range component {
+		if r < 0x20 || strings.ContainsRune(`<>"|?*\`, r) {
+			// Win32 refuses these; '\' would also split the name in two.
+			return fmt.Sprintf("character %q not allowed", r)
+		}
 	}
 	if isReservedWindowsName(component) {
 		// CON/NUL/COM1 resolve to devices, not files.
@@ -120,20 +133,24 @@ func windowsPathHazard(component string) string {
 }
 
 // isReservedWindowsName reports whether a component maps to a Windows reserved
-// device (CON, PRN, AUX, NUL, COM1-9, LPT1-9), case-insensitively and ignoring
-// any extension ("NUL.txt" is still the NUL device).
+// device (CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM1-9, LPT1-9 and the
+// superscript-digit forms), case-insensitively and ignoring any extension
+// ("NUL.txt" is still the NUL device).
 func isReservedWindowsName(component string) bool {
 	stem := component
 	if i := strings.IndexByte(stem, '.'); i >= 0 {
 		stem = stem[:i]
 	}
-	up := strings.ToUpper(stem)
+	up := strings.ToUpper(strings.TrimRight(stem, " "))
 	switch up {
-	case "CON", "PRN", "AUX", "NUL":
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
 		return true
 	}
-	if len(up) == 4 && (strings.HasPrefix(up, "COM") || strings.HasPrefix(up, "LPT")) {
-		return up[3] >= '1' && up[3] <= '9'
+	if strings.HasPrefix(up, "COM") || strings.HasPrefix(up, "LPT") {
+		switch up[3:] {
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³":
+			return true
+		}
 	}
 	return false
 }

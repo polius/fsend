@@ -34,8 +34,8 @@ type Source struct {
 // BLAKE3 root is computed inline at send time.
 //
 // RelativePath is rooted at each argument's base name, so `~/proj/foo` lands
-// as `foo/...`. Duplicate roots and case-only collisions (the receiver may be
-// on a case-insensitive filesystem) are rejected up front.
+// as `foo/...`. Duplicate roots are rejected up front; case-only pairs are
+// sent, and the receiver decides by its own filesystem whether they collide.
 func Walk(paths []string, excludes []string) ([]Source, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("walk: no paths provided")
@@ -46,7 +46,7 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 	}
 
 	var out []Source
-	seen := make(map[string]string) // lowercased relpath → original (collision check)
+	seen := make(map[string]string) // relpath → argument (duplicate check)
 	roots := make(map[string]string, len(paths))
 	for _, raw := range paths {
 		abs, err := filepath.Abs(raw)
@@ -102,10 +102,10 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 			_ = f.Close()
 		}
 		root := filepath.Base(abs)
-		if prev, ok := roots[strings.ToLower(root)]; ok {
+		if prev, ok := roots[root]; ok {
 			return nil, fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, raw, root)
 		}
-		roots[strings.ToLower(root)] = raw
+		roots[root] = raw
 		if err := addEntry(&out, seen, nil, "", abs, root, st, m); err != nil {
 			return nil, err
 		}
@@ -128,10 +128,10 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, srcPre
 	if m.match(rel) {
 		return nil
 	}
-	if prev, ok := seen[strings.ToLower(rel)]; ok {
-		return fmt.Errorf("%w: %s and %s collide on a case-insensitive filesystem — rename one", fserrors.ErrUsage, prev, rel)
+	if _, ok := seen[rel]; ok {
+		return fmt.Errorf("%w: %s is named twice in this transfer — rename one", fserrors.ErrUsage, rel)
 	}
-	seen[strings.ToLower(rel)] = rel
+	seen[rel] = rel
 
 	// Follow symlinks to their target. os.Stat resolves the whole chain (and
 	// reports ELOOP for a self-referential one); a missing or unreadable

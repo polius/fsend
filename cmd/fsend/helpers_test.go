@@ -1046,6 +1046,45 @@ func TestFinishReceive_KeptFilesGetHonestSummary(t *testing.T) {
 	}
 }
 
+// Choosing "skip" at the existing-files prompt is a decision: the summary is
+// informational and the exit is 0, not E013.
+func TestFinishReceive_SkipByChoiceExitsZero(t *testing.T) {
+	ui := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "2 files"}
+	ui.hello = &h
+	ui.kept = 1
+	ui.keptByChoice = true
+	ui.onFileDone("/tmp/a.bin", "")
+	got := captureStderr(t, func() {
+		if err := finishReceive(ui.f, ui, time.Second); err != nil {
+			t.Errorf("finishReceive error = %v, want nil after a deliberate skip", err)
+		}
+	})
+	if !strings.Contains(got, uxlog.Info()+" Saved 1 of 2 files") {
+		t.Errorf("deliberate skip should render as info:\n%s", got)
+	}
+}
+
+// Entries the engine couldn't save (unreadable at the sender, unplaceable
+// here) are listed and make the exit E050.
+func TestFinishReceive_NotSavedListedAndE050(t *testing.T) {
+	ui := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
+	h := wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "2 files"}
+	ui.hello = &h
+	ui.onFileDone("/tmp/a.bin", "")
+	ui.onEntrySkipped("Readme.md", "same name as \"README.md\" on this filesystem")
+	got := captureStderr(t, func() {
+		if err := finishReceive(ui.f, ui, time.Second); !errors.Is(err, fserrors.ErrFilesSkipped) {
+			t.Errorf("finishReceive error = %v, want ErrFilesSkipped", err)
+		}
+	})
+	for _, want := range []string{"Saved 1 of 2 files", "Readme.md — same name as"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // A transient drop mid-transfer retries with the same receiverUI. The retry
 // reclassifies against disk and re-fires the tally callbacks, so without a
 // reset the counts accumulate across attempts and the headline lies ("Saved 3
@@ -1107,7 +1146,7 @@ func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
 		_ = ui.promptAccept(filesHello(), differ)
 	})
-	if want := "Keeping 1 differing file that would be overwritten — pass --overwrite to replace"; !strings.Contains(got, want) {
+	if want := "Keeping 1 differing file — pass --overwrite to replace, or --rename to keep both"; !strings.Contains(got, want) {
 		t.Errorf("--yes accept missing kept-differs warning %q:\n%s", want, got)
 	}
 

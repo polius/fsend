@@ -4,7 +4,8 @@
 //   - Control frames (gob-encoded payloads) for session metadata, file
 //     info, completion, errors. Used on the control stream.
 //   - Data chunk frames (compact binary header) carry file bytes. Used on
-//     the data stream. Each chunk has a BLAKE3 hash for end-to-end verification.
+//     the data stream. Transport integrity is the QUIC AEAD's job; each file
+//     carries a BLAKE3 tree root for end-to-end verification.
 //
 // Both styles share the same 1-byte version prefix so a peer running an
 // incompatible version can be detected immediately.
@@ -16,7 +17,9 @@ package wire
 // directory tar is gone.
 // v3: CPace replaces SPAKE2, --password runs its own in-session PAKE, and
 // both HELLOs carry a version range plus a capability bitmap, so later
-// changes can be negotiated instead of forcing a lockstep upgrade.
+// changes can be negotiated instead of forcing a lockstep upgrade. Chunks
+// drop the per-chunk hash; files are verified by a block-tree root (see
+// transfer/filehash.go), and segments can skip or restart a file.
 //
 // Negotiation rule for future versions: HELLO and HELLO_ACK frames carry
 // MinProtocolVersion in their header so any supported peer can parse them;
@@ -113,7 +116,7 @@ type DecisionAction uint8
 const (
 	DecisionSend   DecisionAction = 0 // new, differing-and-overwrite, conflict-and-overwrite
 	DecisionSkip   DecisionAction = 1 // identical, or kept (differ/conflict without consent)
-	DecisionResume DecisionAction = 2 // valid partial; ResumeOffset/PartialImohash set
+	DecisionResume DecisionAction = 2 // valid partial; ResumeOffset/PrefixRoot set
 )
 
 // ErrorCode is the catalog of error codes carried in TypeError frames.
@@ -128,10 +131,9 @@ const (
 	ErrCodeWrongPassword    ErrorCode = 2
 	ErrCodeFileHashMismatch ErrorCode = 8
 	ErrCodeProtocolError    ErrorCode = 10
-	// ErrCodePartialMismatch — receiver offered to resume from a prefix
-	// whose imohash does not match the source's prefix at the same length.
-	// Almost always means the source file changed since the previous
-	// attempt; the receiver should discard its partial and retry.
+	// ErrCodePartialMismatch — the receiver's partial does not match the
+	// source. v3 senders restart the file instead (SegFlagRestart); kept so
+	// the code is never reused.
 	ErrCodePartialMismatch ErrorCode = 11
 	// ErrCodeTargetExists — receiver refused to clobber an existing file
 	// because the user did not pass --overwrite.
@@ -158,6 +160,11 @@ const (
 	// source (open, read, hash). Terminal for the receiver: retrying won't
 	// fix the sender's disk. Mirror of ErrCodeWriteFailed.
 	ErrCodeReadFailed ErrorCode = 18
+	// ErrCodeDiskFull — the receiver lacks the space for the transfer, or
+	// ran out mid-write. Terminal: retrying won't free the receiver's disk.
+	ErrCodeDiskFull ErrorCode = 19
+	// ErrCodeTooManyEntries — the listing exceeds the receiver's entry cap.
+	ErrCodeTooManyEntries ErrorCode = 20
 )
 
 // Chunk-frame flag bits (frame-level).
@@ -168,4 +175,13 @@ const (
 // Segment flag bits (per-file within a chunk).
 const (
 	SegFlagEOF = 1 << 0 // last segment of this file; RootHash is set
+	// SegFlagSkip abandons the file: the sender could not read it. Length
+	// is 0; the receiver drops any partial and moves on.
+	SegFlagSkip = 1 << 1
+	// SegFlagRestart marks the first segment of a resumed file whose
+	// partial did not match the source: the bytes start at offset 0.
+	SegFlagRestart = 1 << 2
+	// SegFlagChanged (with EOF) reports that the source changed while it
+	// was read, so the copy may be torn.
+	SegFlagChanged = 1 << 3
 )

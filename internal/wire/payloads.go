@@ -75,13 +75,16 @@ type ListingEntry struct {
 }
 
 // Decision is the receiver's per-entry verdict, batched into
-// TypeClassifyBatch frames. ResumeOffset/PartialImohash are meaningful only
+// TypeClassifyBatch frames. ResumeOffset/PrefixRoot are meaningful only
 // when Action == DecisionResume.
 type Decision struct {
-	Index          uint32
-	Action         DecisionAction
-	ResumeOffset   uint64
-	PartialImohash [16]byte
+	Index        uint32
+	Action       DecisionAction
+	ResumeOffset uint64
+	// PrefixRoot is the block-tree root of the receiver's first
+	// ResumeOffset bytes. The sender resumes only if its own prefix
+	// matches, and otherwise restarts the file from 0.
+	PrefixRoot []byte
 	// Kept marks a DecisionSkip of a differing/conflicting entry the
 	// receiver kept, as opposed to an identical one. Gob keeps this
 	// compatible across versions: old peers ignore the field, and a zero

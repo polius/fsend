@@ -102,9 +102,12 @@ func runReceive(f *flags, c string) error {
 	if f.quiet && !f.yes {
 		return fmt.Errorf("%w: --quiet on receive requires --yes (no prompt to answer otherwise)", fserrors.ErrUsage)
 	}
-	// Sink mode writes no files, so --overwrite can only be a mistake.
-	if f.outDir == "-" && f.overwrite {
-		return fmt.Errorf("%w: --overwrite has no effect with --out -", fserrors.ErrUsage)
+	// Sink mode writes no files, so --overwrite/--rename can only be a mistake.
+	if f.outDir == "-" && (f.overwrite || f.rename) {
+		return fmt.Errorf("%w: --overwrite and --rename have no effect with --out -", fserrors.ErrUsage)
+	}
+	if f.overwrite && f.rename {
+		return fmt.Errorf("%w: --overwrite and --rename are mutually exclusive (replace, or keep both)", fserrors.ErrUsage)
 	}
 	// --manifest records files written to disk; there are none with --out -.
 	if f.outDir == "-" && f.manifest != "" {

@@ -6,7 +6,6 @@ require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/adrg/xdg v0.5.3
 	github.com/coder/websocket v1.8.15
-	github.com/kalafut/imohash v1.1.1
 	github.com/klauspost/compress v1.20.3
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/pion/ice/v4 v4.4.8
@@ -22,6 +21,7 @@ require (
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
+	golang.org/x/text v0.43.0
 )
 
 require (
@@ -36,7 +36,6 @@ require (
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/turn/v5 v5.1.2 // indirect
-	github.com/twmb/murmur3 v1.2.0 // indirect
 	github.com/vbauerster/cupwriter v0.0.5 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/time v0.16.0 // indirect

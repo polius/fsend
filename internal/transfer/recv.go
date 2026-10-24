@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,14 +11,25 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/zeebo/blake3"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
+)
+
+// ConflictPolicy says what happens to incoming entries that differ from what
+// is already on disk.
+type ConflictPolicy uint8
+
+const (
+	ConflictKeep    ConflictPolicy = iota // keep the local copy; skip the incoming one
+	ConflictReplace                       // replace the local copy (never a non-empty folder)
+	ConflictRename                        // keep both: save the incoming one as "name (1).ext"
 )
 
 // RecvOptions configures one receive invocation.
@@ -26,16 +38,18 @@ type RecvOptions struct {
 	OS            string
 	ClientVersion string
 	TargetDir     string // where files are written
-	Overwrite     bool
-	Checksum      bool // verify same-size files by content hash, not mtime
+	// Conflict applies to differing entries when ResolveConflicts is nil.
+	Conflict ConflictPolicy
+	// Overwrite is shorthand for Conflict: ConflictReplace.
+	Overwrite bool
+	Checksum  bool // verify same-size files by content hash, not mtime
 
-	// Accept is shown the HELLO and (ModeFiles) the classification breakdown.
-	// nil → auto-accept. Returning false declines the whole transfer.
+	// Accept is shown the HELLO and (ModeFiles) the classification breakdown,
+	// including any conflicts. nil → auto-accept. false declines everything.
 	Accept func(hello wire.SenderHello, summary ClassifySummary) bool
-	// ConfirmOverwrite is the consolidated prompt for differing/conflicting
-	// entries. nil or false → keep them (skip). Only consulted when
-	// Overwrite is false and there is a terminal to ask.
-	ConfirmOverwrite func(conflicts []Conflict) bool
+	// ResolveConflicts decides, once, what to do with all differing entries.
+	// It runs right after Accept, so a UI can ask both in one prompt.
+	ResolveConflicts func(conflicts []Conflict) ConflictPolicy
 
 	Password string
 	// PromptPass asks the user for the sender's password. attempt starts at
@@ -46,21 +60,38 @@ type RecvOptions struct {
 	ProgressFn func(index uint32, bytesWritten uint64)
 	OnResume   func(index uint32, offset, total uint64)
 	OnSkip     func(index uint32)
-	// OnFileDone fires once per file committed to disk (including empty
-	// ones) with its absolute path and SHA-256 hex digest — the digest is
-	// what the receiver's summary and --manifest surface for independent
-	// verification. Not called for sink streams.
+	// OnFileDone fires once per file once it is durable on disk (including
+	// empty ones) with its absolute path and, when OnManifest is set, its
+	// SHA-256 hex digest. Not called for sink streams.
 	OnFileDone func(path, sha256Hex string)
 	// OnConflictKept fires once per differing/conflicting entry left
 	// untouched (no consent). The CLI uses it to set a non-zero exit code.
 	OnConflictKept func(rel string)
+	// OnEntrySkipped fires for an entry that was not saved for a reason
+	// other than the user's choice: the sender could not read it, or it
+	// can't be placed safely here (name collision, folder in the way).
+	OnEntrySkipped func(rel, reason string)
+	// OnSourceChanged fires when the sender reports that a file changed
+	// while it was being read, so the copy may be inconsistent.
+	OnSourceChanged func(rel string)
+	// OnHashProgress reports local hashing before the accept prompt
+	// (--checksum comparisons, resume-prefix checks).
+	OnHashProgress func(done, total uint64)
 	// OnManifest, when set, receives one row per file after a successful
 	// receive — its path, size, and what fsend did with it — backing --manifest.
 	OnManifest func(entries []ManifestEntry)
 
-	// Sink, when non-nil, streams a ModeStream payload here instead of
-	// writing under TargetDir.
+	// Sink, when non-nil, streams the payload here instead of writing under
+	// TargetDir: raw bytes for a single file or stream, a tar archive for a
+	// folder or several files.
 	Sink io.Writer
+}
+
+func (o *RecvOptions) policy() ConflictPolicy {
+	if o.Overwrite {
+		return ConflictReplace
+	}
+	return o.Conflict
 }
 
 // ClassifySummary is the breakdown surfaced to the accept prompt.
@@ -69,9 +100,9 @@ type ClassifySummary = classifySummary
 // ManifestEntry is one row of the post-transfer --manifest record: a file and
 // what fsend did with it.
 type ManifestEntry struct {
-	RelativePath string
+	RelativePath string // where it was saved, relative to the target dir
 	Size         uint64
-	Status       string // new | identical | overwritten | kept | resumed
+	Status       string // new | identical | overwritten | kept | resumed | renamed | skipped
 	// SHA256 hex digest of the content fsend wrote, empty when no bytes
 	// moved this run (identical/kept files) — not recomputed from disk.
 	SHA256 string
@@ -125,53 +156,100 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 
 	entries, err := recvListing(s.Control)
 	if err != nil {
+		// Tell the sender why, so it doesn't misread the close as a drop.
+		switch {
+		case errors.Is(err, fserrors.ErrTooManyEntries):
+			declineTransfer(s, wire.ErrCodeTooManyEntries, err.Error())
+		case errors.Is(err, fserrors.ErrProtocolError):
+			declineTransfer(s, wire.ErrCodeListingInvalid, "invalid listing")
+		}
 		return err
 	}
 
 	if opts.Sink != nil {
 		return recvFilesToSink(ctx, s, hello, entries, opts)
 	}
-	plans, err := classify(entries, opts.TargetDir, opts.Checksum)
+	r := newReceiver(s, opts)
+	return r.run(ctx, hello, entries)
+}
+
+// receiver is one ModeFiles receive into TargetDir.
+type receiver struct {
+	s       *Streams
+	opts    RecvOptions
+	cls     *classifier
+	ps      *partialStore
+	dirs    *dirUnlocker
+	commit  *committer
+	wantSHA bool
+	plans   []entryPlan
+}
+
+func newReceiver(s *Streams, opts RecvOptions) *receiver {
+	ps := newPartialStore(opts.TargetDir)
+	r := &receiver{s: s, opts: opts, ps: ps, wantSHA: opts.OnManifest != nil,
+		dirs: newDirUnlocker(opts.TargetDir)}
+	r.cls = &classifier{targetDir: opts.TargetDir, checksum: opts.Checksum, sem: probeFS(opts.TargetDir),
+		ps: ps, progress: opts.OnHashProgress}
+	r.commit = &committer{r: r}
+	return r
+}
+
+func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []wire.ListingEntry) error {
+	s, opts := r.s, r.opts
+	r.ps.sweep()
+	plans, err := r.cls.run(entries)
 	if err != nil {
 		declineTransfer(s, wire.ErrCodeListingInvalid, "invalid listing")
 		return err
 	}
+	r.plans = plans
 
 	// --checksum: resolve same-size candidates by content hash before the
 	// breakdown is shown or any decision is made.
 	if opts.Checksum {
-		if err := resolveVerify(s, plans); err != nil {
+		if err := resolveVerify(s, plans, r.cls.sem, opts.OnHashProgress); err != nil {
 			return err
 		}
 	}
 
 	summary := summarize(plans)
+	if err := r.checkSpace(summary.BytesToRecv); err != nil {
+		return err
+	}
 	if opts.Accept != nil && !opts.Accept(*hello, summary) {
 		declineTransfer(s, wire.ErrCodeDeclined, "receiver declined")
 		return fserrors.ErrReceiverDeclined
 	}
 
-	// Consent for differing/conflicting entries.
-	confs := conflicts(plans)
-	approveOverwrite := false
-	switch {
-	case len(confs) == 0:
-	case opts.Overwrite:
-		approveOverwrite = true
-	case opts.ConfirmOverwrite != nil:
-		approveOverwrite = opts.ConfirmOverwrite(confs)
+	policy := opts.policy()
+	if len(summary.Conflicts) > 0 {
+		if opts.ResolveConflicts != nil {
+			policy = opts.ResolveConflicts(summary.Conflicts)
+		}
+		if policy != ConflictKeep {
+			applyPolicy(plans, policy, r.cls)
+			if err := r.checkSpace(summary.BytesToRecv + summary.DifferingBytes); err != nil {
+				return err
+			}
+		}
 	}
 
 	decisions := make([]wire.Decision, len(plans))
 	for i := range plans {
-		decisions[i] = planToDecision(&plans[i], approveOverwrite, opts)
+		decisions[i] = planToDecision(&plans[i], policy == ConflictReplace, opts)
 	}
 	if err := sendDecisions(s.Control, decisions); err != nil {
 		return fmt.Errorf("recv: decisions: %w", err)
 	}
 
-	// Materialize structural entries (dirs, symlinks, empty files) we're
-	// creating; data files are opened lazily during the data phase.
+	// Verified files are committed even when a later one fails, so a retry
+	// only re-sends what is really missing; then folder modes go back.
+	defer r.dirs.restore()
+	defer func() { _ = r.commit.flush() }()
+
+	// Materialize structural entries (dirs, empty files) we're creating;
+	// data files are opened lazily during the data phase.
 	expected := 0
 	byIndex := make(map[uint32]*entryPlan, len(plans))
 	for i := range plans {
@@ -190,14 +268,18 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 			expected++
 			continue
 		}
-		if err := materialize(s, p, approveOverwrite, opts); err != nil {
+		if err := r.materialize(p); err != nil {
 			return err
 		}
 	}
 
-	if err := receiveData(ctx, s, byIndex, decisions, plans, expected, opts); err != nil {
+	if err := r.receiveData(ctx, byIndex, decisions, expected); err != nil {
 		return err
 	}
+	if err := r.commit.flush(); err != nil {
+		return err
+	}
+	r.dirs.restore()
 	restoreDirModes(plans)
 	if err := finishRecv(s); err != nil {
 		return err
@@ -205,7 +287,20 @@ func recvFiles(ctx context.Context, s *Streams, hello *wire.SenderHello, opts Re
 	if opts.OnManifest != nil {
 		opts.OnManifest(manifestEntries(plans, decisions))
 	}
+	r.ps.tidy()
 	return nil
+}
+
+// checkSpace declines up front when the target filesystem can't hold need
+// bytes, instead of filling the disk and failing halfway.
+func (r *receiver) checkSpace(need uint64) error {
+	free, ok := freeSpace(r.opts.TargetDir)
+	if !ok || need <= free {
+		return nil
+	}
+	msg := fmt.Sprintf("needs %s, %s free", humanSize(need), humanSize(free))
+	declineTransfer(r.s, wire.ErrCodeDiskFull, msg)
+	return fmt.Errorf("%w: %s", fserrors.ErrDiskFull, msg)
 }
 
 // finishRecv reads the sender's TRANSFER_COMPLETE, acks it, and waits for the
@@ -228,101 +323,6 @@ func finishRecv(s *Streams) error {
 	return nil
 }
 
-// recvFilesToSink streams a single-file transfer to opts.Sink. Multi-file and
-// directory transfers can't be concatenated into one byte stream, so they are
-// declined with a usage error.
-func recvFilesToSink(ctx context.Context, s *Streams, hello *wire.SenderHello, entries []wire.ListingEntry, opts RecvOptions) error {
-	if len(entries) != 1 || entries[0].Type != wire.EntryFile {
-		declineTransfer(s, wire.ErrCodeDeclined, "multi-file transfer to stdout")
-		return fmt.Errorf("%w: cannot stream a multi-file transfer to stdout; receive it with --out <dir>", fserrors.ErrUsage)
-	}
-	summary := ClassifySummary{
-		Total: 1, NewItems: 1,
-		BytesToRecv:  entries[0].Size,
-		OfferedBytes: entries[0].Size,
-		Files: []SummaryEntry{{
-			RelativePath: entries[0].RelativePath, Size: entries[0].Size,
-			Status: "new", Type: entries[0].Type,
-		}},
-	}
-	if opts.Accept != nil && !opts.Accept(*hello, summary) {
-		declineTransfer(s, wire.ErrCodeDeclined, "receiver declined")
-		return fserrors.ErrReceiverDeclined
-	}
-	if err := sendDecisions(s.Control, []wire.Decision{{Index: 0, Action: wire.DecisionSend}}); err != nil {
-		return fmt.Errorf("recv: decisions: %w", err)
-	}
-	// A zero-byte file carries no data phase (the sender skips it), so waiting
-	// on streamPayload would hang until the idle timeout. Nothing to write.
-	if entries[0].Size > 0 {
-		if err := streamPayload(ctx, s, opts.Sink, func(n uint64) {
-			if opts.ProgressFn != nil {
-				opts.ProgressFn(0, n)
-			}
-		}); err != nil {
-			return err
-		}
-	}
-	return finishRecv(s)
-}
-
-// streamPayload reads chunks for a single file/stream and writes their bytes
-// to w, verifying both the per-chunk hash and the file's BLAKE3 root (on the
-// EOF segment). Returns once the EOF segment lands. Used for sink and stream
-// receives, where no partial/resume applies.
-func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(uint64)) error {
-	verifier := blake3.New()
-	var written uint64
-	var dec *zstd.Decoder
-	defer func() {
-		if dec != nil {
-			dec.Close()
-		}
-	}()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		c, err := wire.ReadChunk(s.Data)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				if reason := tryReadPeerError(s.Control); reason != nil {
-					return reason
-				}
-				return fmt.Errorf("recv: stream closed mid-file: %w", fserrors.ErrConnectFailed)
-			}
-			return fmt.Errorf("recv: chunk: %w", err)
-		}
-		plain, err := decodeChunkPayload(c, &dec)
-		if err != nil {
-			return err
-		}
-		if len(plain) > 0 {
-			if _, err := w.Write(plain); err != nil {
-				_ = s.Data.Close()
-				declineTransfer(s, wire.ErrCodeWriteFailed, "write failed: "+err.Error())
-				return classifyWriteErr("sink write", err)
-			}
-			_, _ = verifier.Write(plain)
-			written += uint64(len(plain))
-			if progress != nil {
-				progress(written)
-			}
-		}
-		for _, seg := range c.Segments {
-			if seg.EOF {
-				var got [32]byte
-				copy(got[:], verifier.Sum(nil))
-				if got != seg.RootHash {
-					declineTransfer(s, wire.ErrCodeFileHashMismatch, "root hash mismatch")
-					return fserrors.ErrHashMismatch
-				}
-				return nil
-			}
-		}
-	}
-}
-
 // maxVerifyIDsPerFrame bounds one VERIFY_REQUEST batch. Both frames of the
 // round trip must fit MaxControlFrameSize (64 KiB): the gob []uint32 request
 // grows ~2.5 B/idx, but the sender's []FileHash response (senderNegotiate
@@ -339,76 +339,172 @@ func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(u
 //
 // so the response, not the request, sets the ceiling. 800 keeps the response
 // near 57 KB; a larger tree just becomes more round trips, each bounded (the
-// sender caps the count at maxVerifyRounds). Without this, any tree past
-// ~900 equal-size files overflowed the response frame and surfaced honest
-// input as E099.
+// sender caps the count at maxVerifyRounds).
 const maxVerifyIDsPerFrame = 800
 
-// resolveVerify (--checksum) asks the sender for the BLAKE3 root of every
-// same-size candidate, hashes the local copies, and rewrites each dispVerify
-// to dispIdentical (match) or dispDiffers. Hashing failures fall to dispDiffers
-// so an unreadable/changed file is re-sent rather than wrongly skipped.
-//
-// The candidate list is sent one bounded batch per frame (one request, one
-// response per batch) so an arbitrarily large equal-size tree can't overflow
-// the control frame.
-func resolveVerify(s *Streams, plans []entryPlan) error {
+// verifyWorkers bounds how many local files --checksum hashes at once (each
+// file's blocks are hashed in parallel as well).
+const verifyWorkers = 4
+
+// resolveVerify (--checksum) asks the sender for the root of every same-size
+// candidate while hashing the local copies concurrently, then rewrites each
+// dispVerify to dispIdentical (match) or dispDiffers. A match also takes the
+// sender's mtime, so the next plain run sees the file as identical. Hashing
+// failures fall to dispDiffers so an unreadable/changed file is re-sent
+// rather than wrongly skipped.
+func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func(done, total uint64)) error {
 	var idx []uint32
+	var cand []*entryPlan
+	var total uint64
 	for i := range plans {
 		if plans[i].disp == dispVerify {
 			idx = append(idx, plans[i].entry.Index)
+			cand = append(cand, &plans[i])
+			total += plans[i].entry.Size
 		}
 	}
 	if len(idx) == 0 {
 		return nil
 	}
-	hashes := make(map[uint32][32]byte, len(idx))
-	for start := 0; start < len(idx); start += maxVerifyIDsPerFrame {
-		batch := idx[start:min(start+maxVerifyIDsPerFrame, len(idx))]
-		if err := wire.WriteControl(s.Control, wire.TypeVerifyRequest, batch); err != nil {
-			return fmt.Errorf("recv: verify request: %w", err)
-		}
-		ft, body, err := wire.ReadControlRaw(s.Control)
-		if err != nil {
-			return fmt.Errorf("recv: verify response: %w", err)
-		}
-		if ft == wire.TypeError {
-			return peerError(body)
-		}
-		if ft != wire.TypeVerifyResponse {
-			return fmt.Errorf("%w: expected VERIFY_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
-		}
-		var resp []wire.FileHash
-		if err := wire.Decode(body, &resp); err != nil {
-			return fmt.Errorf("recv: verify decode: %w", err)
-		}
-		for _, fh := range resp {
-			hashes[fh.Index] = fh.Hash
-		}
+
+	// Local hashing runs alongside the request/response rounds.
+	local := make(map[uint32][32]byte, len(cand))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	meter := newProgressMeter(total, progress)
+	work := make(chan *entryPlan)
+	for range min(verifyWorkers, len(cand)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range work {
+				var last int64
+				root, err := hashFileRoot(p.target, func(done int64) { meter.add(done - last); last = done })
+				if err != nil {
+					continue
+				}
+				mu.Lock()
+				local[p.entry.Index] = root
+				mu.Unlock()
+			}
+		}()
 	}
-	for i := range plans {
-		p := &plans[i]
-		if p.disp != dispVerify {
-			continue
+	go func() {
+		for _, p := range cand {
+			work <- p
 		}
-		senderHash, ok := hashes[p.entry.Index]
-		if !ok {
+		close(work)
+	}()
+
+	remote := make(map[uint32][32]byte, len(idx))
+	var reqErr error
+	for start := 0; start < len(idx) && reqErr == nil; start += maxVerifyIDsPerFrame {
+		reqErr = verifyRound(s, idx[start:min(start+maxVerifyIDsPerFrame, len(idx))], remote)
+	}
+	wg.Wait()
+	if reqErr != nil {
+		return reqErr
+	}
+	for _, p := range cand {
+		lr, lok := local[p.entry.Index]
+		rr, rok := remote[p.entry.Index]
+		if !lok || !rok || lr != rr {
 			p.disp = dispDiffers
 			continue
 		}
-		local, err := hashFileRoot(p.target)
-		if err == nil && local == senderHash {
-			p.disp = dispIdentical
-			_ = os.Remove(p.target + partialSuffix)
-		} else {
-			p.disp = dispDiffers
+		p.disp = dispIdentical
+		if st, err := os.Lstat(p.target); err == nil && !sem.sameMtime(st.ModTime(), p.entry.ModTimeSec) {
+			t := time.Unix(p.entry.ModTimeSec, 0)
+			_ = os.Chtimes(p.target, t, t)
 		}
 	}
 	return nil
 }
 
-// receiveData consumes chunks until every expected file reaches EOF.
-func receiveData(ctx context.Context, s *Streams, byIndex map[uint32]*entryPlan, decisions []wire.Decision, plans []entryPlan, expected int, opts RecvOptions) error {
+func verifyRound(s *Streams, batch []uint32, into map[uint32][32]byte) error {
+	if err := wire.WriteControl(s.Control, wire.TypeVerifyRequest, batch); err != nil {
+		return fmt.Errorf("recv: verify request: %w", err)
+	}
+	ft, body, err := wire.ReadControlRaw(s.Control)
+	if err != nil {
+		return fmt.Errorf("recv: verify response: %w", err)
+	}
+	if ft == wire.TypeError {
+		return peerError(body)
+	}
+	if ft != wire.TypeVerifyResponse {
+		return fmt.Errorf("%w: expected VERIFY_RESPONSE, got %v", fserrors.ErrProtocolError, ft)
+	}
+	var resp []wire.FileHash
+	if err := wire.Decode(body, &resp); err != nil {
+		return fmt.Errorf("recv: verify decode: %w", err)
+	}
+	for _, fh := range resp {
+		into[fh.Index] = fh.Hash
+	}
+	return nil
+}
+
+// inChunk is one decoded data frame handed from the network reader to the
+// disk writer. buf, when set, goes back to the block pool after use.
+type inChunk struct {
+	segs  []wire.Segment
+	plain []byte
+	bufs  [2][]byte
+	err   error
+}
+
+func (c *inChunk) release() {
+	for _, b := range c.bufs {
+		if b != nil {
+			putBlock(b)
+		}
+	}
+}
+
+// readChunks reads and decompresses frames on its own goroutine, so network
+// reads and decompression overlap the disk writes. It stops on the first
+// error (delivered in order, after any chunks before it) or when stop closes.
+func readChunks(data io.Reader, out chan<- inChunk, stop <-chan struct{}) {
+	var dec *zstd.Decoder
+	defer func() {
+		if dec != nil {
+			dec.Close()
+		}
+	}()
+	for {
+		raw := getBlock()
+		c, err := wire.ReadChunkBuf(data, raw)
+		var ic inChunk
+		if err != nil {
+			putBlock(raw)
+			ic.err = err
+		} else {
+			ic.bufs[0] = raw
+			var plainBuf []byte
+			if c.Compressed {
+				plainBuf = getBlock()
+				ic.bufs[1] = plainBuf
+			}
+			ic.plain, ic.err = decodeChunkPayload(c, &dec, plainBuf)
+			ic.segs = c.Segments
+		}
+		select {
+		case out <- ic:
+		case <-stop:
+			ic.release()
+			return
+		}
+		if ic.err != nil {
+			return
+		}
+	}
+}
+
+// receiveData consumes chunks until every expected file reaches EOF or is
+// skipped by the sender.
+func (r *receiver) receiveData(ctx context.Context, byIndex map[uint32]*entryPlan, decisions []wire.Decision, expected int) error {
+	s, opts := r.s, r.opts
 	// Consent enforcement: data may land only for files the receiver actually
 	// asked for (Send/Resume, regular, non-empty). Without this gate a peer
 	// could stream bytes for a file the user chose to skip or keep and clobber
@@ -424,97 +520,135 @@ func receiveData(ctx context.Context, s *Streams, byIndex map[uint32]*entryPlan,
 		}
 	}
 	done := make(map[uint32]bool, expected)
+	if expected == 0 {
+		return nil
+	}
 
-	open := make(map[uint32]*recvFile)
-	var dec *zstd.Decoder
+	in := make(chan inChunk, 4)
+	stop := make(chan struct{})
+	go readChunks(s.Data, in, stop)
+	var cur *recvFile // an honest sender streams one file at a time
 	defer func() {
-		if dec != nil {
-			dec.Close()
-		}
-		for _, rf := range open {
-			_ = rf.f.Close()
+		close(stop)
+		if cur != nil {
+			cur.abandon(true)
 		}
 	}()
 
 	for expected > 0 {
-		if err := ctx.Err(); err != nil {
-			return err
+		var c inChunk
+		select {
+		case c = <-in:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		c, err := wire.ReadChunk(s.Data)
-		if err != nil {
+		if c.err != nil {
+			err := c.err
 			if errors.Is(err, io.EOF) {
 				if reason := tryReadPeerError(s.Control); reason != nil {
-					// A content-correctness failure means the on-disk prefix is
-					// unreconcilable; discard partials so a re-run starts clean.
-					// The peer never says which file, so drop every resume
-					// partial plus any open one.
-					if errors.Is(reason, fserrors.ErrPartialMismatch) || errors.Is(reason, fserrors.ErrHashMismatch) {
-						discardOpenPartials(open)
-						for i := range plans {
-							if plans[i].disp == dispResume {
-								_ = os.Remove(plans[i].target + partialSuffix)
-							}
-						}
+					// A content-correctness failure means the bytes on disk can't
+					// be trusted; discard the open partial so a re-run starts clean.
+					if errors.Is(reason, fserrors.ErrHashMismatch) && cur != nil {
+						cur.abandon(false)
+						cur = nil
 					}
 					return reason
 				}
 				return fmt.Errorf("recv: stream closed mid-file: %w", fserrors.ErrConnectFailed)
 			}
+			if errors.Is(err, fserrors.ErrProtocolError) || errors.Is(err, wire.ErrMalformedChunk) || errors.Is(err, wire.ErrChunkTooLarge) {
+				declineTransfer(s, wire.ErrCodeProtocolError, "malformed chunk")
+			}
 			return fmt.Errorf("recv: chunk: %w", err)
 		}
-		plain, err := decodeChunkPayload(c, &dec)
+		err := func() error {
+			defer c.release()
+			off := 0
+			for _, seg := range c.segs {
+				data := c.plain[off : off+int(seg.Length)]
+				off += int(seg.Length)
+				idx := seg.FileIndex
+				if !allowed[idx] || done[idx] || (cur != nil && cur.plan.entry.Index != idx) {
+					declineTransfer(s, wire.ErrCodeListingInvalid, "chunk for a file not awaiting data")
+					return fmt.Errorf("%w: chunk for file index %d not awaiting data", fserrors.ErrProtocolError, idx)
+				}
+				p := byIndex[idx]
+				if seg.Skip {
+					if cur != nil {
+						cur.abandon(false)
+						cur = nil
+					}
+					done[idx] = true
+					expected--
+					p.skipReason = "the sender could not read it"
+					if opts.OnEntrySkipped != nil {
+						opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
+					}
+					continue
+				}
+				if cur == nil {
+					rf, err := r.openFile(p, seg.Restart)
+					if err != nil {
+						return err
+					}
+					cur = rf
+				} else if seg.Restart {
+					declineTransfer(s, wire.ErrCodeProtocolError, "restart mid-file")
+					return fmt.Errorf("%w: restart flag mid-file", fserrors.ErrProtocolError)
+				}
+				if err := cur.write(data); err != nil {
+					return err
+				}
+				if seg.EOF {
+					rf := cur
+					cur = nil
+					if err := rf.finalize(seg.RootHash); err != nil {
+						return err
+					}
+					done[idx] = true
+					expected--
+					if seg.Changed && opts.OnSourceChanged != nil {
+						opts.OnSourceChanged(filepath.ToSlash(p.rel))
+					}
+				}
+			}
+			return nil
+		}()
 		if err != nil {
 			return err
-		}
-		off := 0
-		for _, seg := range c.Segments {
-			data := plain[off : off+int(seg.Length)]
-			off += int(seg.Length)
-			rf := open[seg.FileIndex]
-			if rf == nil {
-				if !allowed[seg.FileIndex] || done[seg.FileIndex] {
-					declineTransfer(s, wire.ErrCodeListingInvalid, "chunk for a file not awaiting data")
-					return fmt.Errorf("%w: chunk for file index %d not awaiting data", fserrors.ErrProtocolError, seg.FileIndex)
-				}
-				rf, err = openRecvFile(s, byIndex[seg.FileIndex], opts)
-				if err != nil {
-					return err
-				}
-				open[seg.FileIndex] = rf
-			}
-			if err := rf.write(s, data, &opts); err != nil {
-				return err
-			}
-			if seg.EOF {
-				if err := rf.finalize(s, seg.RootHash, opts); err != nil {
-					return err
-				}
-				delete(open, seg.FileIndex)
-				done[seg.FileIndex] = true
-				expected--
-			}
 		}
 	}
 	return nil
 }
 
+// sparseBlock is the granularity of hole detection: an aligned all-zero run
+// this long is skipped (left as a hole) instead of written.
+const sparseBlock = 64 << 10
+
+var zeroBlock [sparseBlock]byte
+
+// periodicSync bounds how much unsynced data a partial holds, so an
+// interrupted large file resumes from close to where it stopped.
+const periodicSync = 64 << 20
+
 // recvFile is one in-flight file's write state.
 type recvFile struct {
+	r        *receiver
 	plan     *entryPlan
 	f        *os.File
 	partial  string
-	verifier *blake3.Hasher
-	sha      hash.Hash // SHA-256 over the same bytes, for the receiver's record
+	hasher   *fileHasher
+	sha      hash.Hash // only with --manifest
 	written  uint64
-	overwr   bool
+	unsynced uint64
+	tailHole bool
+	closed   bool
 }
 
 // guardRegular fails closed when a non-regular file (a planted symlink or
-// directory) sits where fsend is about to write or rename into. Applied to the
-// .fsend-partial sidecar and the target on every receive path — files, empty
-// files, and the stream sink — so a pre-planted link can't redirect a write
-// out of the receive tree. Needs local write access to the output dir, so it
-// is defense in depth, not a remote-exploitable hole.
+// directory) sits where fsend is about to write or rename into. Needs local
+// write access to the output dir, so it is defense in depth, not a
+// remote-exploitable hole.
 func guardRegular(s *Streams, path, what string) error {
 	if st, err := os.Lstat(path); err == nil && !st.Mode().IsRegular() {
 		declineTransfer(s, wire.ErrCodeProtocolError, what+" not a regular file")
@@ -523,188 +657,415 @@ func guardRegular(s *Streams, path, what string) error {
 	return nil
 }
 
-func openRecvFile(s *Streams, p *entryPlan, opts RecvOptions) (*recvFile, error) {
-	target := p.target
-	partial := target + partialSuffix
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir parent")
-		return nil, fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
+func (r *receiver) openFile(p *entryPlan, restart bool) (*recvFile, error) {
+	s, opts := r.s, r.opts
+	if restart && p.disp != dispResume {
+		declineTransfer(s, wire.ErrCodeProtocolError, "restart for a file not resumed")
+		return nil, fmt.Errorf("%w: restart for a file not resumed", fserrors.ErrProtocolError)
 	}
-	if err := guardRegular(s, partial, "partial sidecar"); err != nil {
-		return nil, err
+	rf := &recvFile{r: r, plan: p, hasher: newFileHasher()}
+	if r.wantSHA {
+		rf.sha = sha256.New()
 	}
-
-	rf := &recvFile{plan: p, partial: partial, verifier: blake3.New(), sha: sha256.New(), overwr: p.needsConsent()}
-	resume := p.disp == dispResume
-
-	flag := os.O_RDWR | os.O_CREATE
-	if !resume {
-		flag |= os.O_TRUNC
-	}
-	f, err := os.OpenFile(partial, flag, 0o600)
-	if errors.Is(err, os.ErrPermission) && !resume {
-		_ = os.Remove(partial)
-		f, err = os.OpenFile(partial, flag, 0o600)
-	}
-	if err != nil {
-		_ = s.Data.Close()
-		declineTransfer(s, wire.ErrCodeWriteFailed, "open failed: "+err.Error())
-		return nil, fmt.Errorf("%w: open partial: %v", fserrors.ErrWriteFailed, err)
-	}
-	rf.f = f
-
-	if resume {
+	if p.disp == dispResume && !restart {
+		if err := guardRegular(s, p.partial, "partial"); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(p.partial, os.O_RDWR, 0)
+		if err != nil {
+			return nil, r.writeFail("open partial", p.rel, err)
+		}
+		rf.f, rf.partial = f, p.partial
 		off := int64(p.resumeOffset)
 		if err := f.Truncate(off); err != nil {
-			return rf, writeFail(s, "truncate", err)
+			rf.abandon(false)
+			return nil, r.writeFail("truncate", p.rel, err)
 		}
-		// One pass over the prefix feeds both hashers: the BLAKE3 root the
-		// sender's continuation must extend, and the SHA-256 the manifest
-		// will report for the finished file.
-		if err := hashPrefixInto(io.MultiWriter(rf.verifier, rf.sha), f, off); err != nil {
-			return rf, fmt.Errorf("%w: verify prefix: %v", fserrors.ErrReadFailed, err)
-		}
-		if _, err := f.Seek(off, io.SeekStart); err != nil {
-			return rf, writeFail(s, "seek", err)
+		rf.hasher.seed(p.prefixBlocks)
+		if rf.sha != nil {
+			// The manifest digest covers the whole file, prefix included.
+			if _, err := io.Copy(rf.sha, io.NewSectionReader(f, 0, off)); err != nil {
+				rf.abandon(false)
+				return nil, r.writeFail("read partial", p.rel, err)
+			}
 		}
 		rf.written = p.resumeOffset
 		if opts.OnResume != nil {
 			opts.OnResume(p.entry.Index, p.resumeOffset, p.entry.Size)
 		}
+		return rf, nil
 	}
+	if restart {
+		// The sender's source no longer matches the partial: start over.
+		p.disp = dispNew
+		p.prefixBlocks = nil
+	}
+	f, path, err := r.ps.create(p.rel, p.entry)
+	if err != nil {
+		return nil, r.writeFail("create partial", p.rel, err)
+	}
+	rf.f, rf.partial = f, path
 	return rf, nil
 }
 
-func (rf *recvFile) write(s *Streams, data []byte, opts *RecvOptions) error {
+// abandon closes the file; drop also deletes the partial.
+func (rf *recvFile) abandon(keep bool) {
+	if rf.closed {
+		return
+	}
+	rf.closed = true
+	rf.hasher.discard()
+	_ = rf.f.Close()
+	if !keep {
+		rf.r.ps.remove(rf.plan.rel)
+	}
+}
+
+func (rf *recvFile) write(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
+	r := rf.r
 	if rf.written+uint64(len(data)) > rf.plan.entry.Size {
-		declineTransfer(s, wire.ErrCodeProtocolError, "received bytes exceed declared size")
+		declineTransfer(r.s, wire.ErrCodeProtocolError, "received bytes exceed declared size")
 		return fmt.Errorf("%w: received bytes exceed size %d", fserrors.ErrProtocolError, rf.plan.entry.Size)
 	}
-	if _, err := rf.f.Write(data); err != nil {
-		_ = s.Data.Close()
-		declineTransfer(s, wire.ErrCodeWriteFailed, "write failed: "+err.Error())
+	if err := rf.writeSparse(data); err != nil {
+		code := wire.ErrCodeWriteFailed
+		if errors.Is(err, syscall.ENOSPC) {
+			// Free the space we took: a full disk breaks other apps too.
+			code = wire.ErrCodeDiskFull
+			rf.abandon(false)
+		}
+		_ = r.s.Data.Close()
+		declineTransfer(r.s, code, peerSafe("write", rf.plan.rel, err))
 		return classifyWriteErr("write", err)
 	}
-	_, _ = rf.verifier.Write(data)
-	_, _ = rf.sha.Write(data)
+	_, _ = rf.hasher.Write(data)
+	if rf.sha != nil {
+		_, _ = rf.sha.Write(data)
+	}
 	rf.written += uint64(len(data))
-	if opts.ProgressFn != nil {
-		opts.ProgressFn(rf.plan.entry.Index, rf.written)
+	if rf.unsynced += uint64(len(data)); rf.unsynced >= periodicSync {
+		_ = fsyncData(rf.f)
+		rf.unsynced = 0
+	}
+	if r.opts.ProgressFn != nil {
+		r.opts.ProgressFn(rf.plan.entry.Index, rf.written)
 	}
 	return nil
 }
 
-func (rf *recvFile) finalize(s *Streams, root [32]byte, opts RecvOptions) error {
-	if rf.written != rf.plan.entry.Size {
-		_ = rf.f.Close()
-		_ = os.Remove(rf.partial)
-		declineTransfer(s, wire.ErrCodeProtocolError, "EOF before declared size reached")
-		return fmt.Errorf("%w: got %d of %d declared bytes", fserrors.ErrProtocolError, rf.written, rf.plan.entry.Size)
+// writeSparse writes data at the current offset, leaving aligned all-zero
+// blocks as holes so sparse images stay sparse.
+func (rf *recvFile) writeSparse(data []byte) error {
+	pos := int64(rf.written)
+	start := 0 // first byte of the pending non-zero run
+	flush := func(end int) error {
+		if end > start {
+			if _, err := rf.f.WriteAt(data[start:end], pos+int64(start)); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	var got [32]byte
-	copy(got[:], rf.verifier.Sum(nil))
-	if got != root {
-		_ = rf.f.Close()
-		_ = os.Remove(rf.partial)
-		declineTransfer(s, wire.ErrCodeFileHashMismatch, "root hash mismatch")
+	i := 0
+	if lead := int((sparseBlock - pos%sparseBlock) % sparseBlock); lead > 0 {
+		i = min(lead, len(data))
+	}
+	for i+sparseBlock <= len(data) {
+		if bytes.Equal(data[i:i+sparseBlock], zeroBlock[:]) {
+			if err := flush(i); err != nil {
+				return err
+			}
+			start = i + sparseBlock
+		}
+		i += sparseBlock
+	}
+	if err := flush(len(data)); err != nil {
+		return err
+	}
+	rf.tailHole = start == len(data)
+	return nil
+}
+
+func (rf *recvFile) finalize(root [32]byte) error {
+	r, p := rf.r, rf.plan
+	if rf.written != p.entry.Size {
+		rf.abandon(false)
+		declineTransfer(r.s, wire.ErrCodeProtocolError, "EOF before declared size reached")
+		return fmt.Errorf("%w: got %d of %d declared bytes", fserrors.ErrProtocolError, rf.written, p.entry.Size)
+	}
+	if rf.hasher.Sum() != root {
+		rf.abandon(false)
+		declineTransfer(r.s, wire.ErrCodeFileHashMismatch, "root hash mismatch")
 		return fserrors.ErrHashMismatch
 	}
-	// Flush data to stable storage before the rename so a crash can't leave a
-	// size-correct, mtime-correct file with unpersisted (garbage) contents —
-	// which a later skip-unchanged run would then trust forever.
-	if err := rf.f.Sync(); err != nil {
-		_ = rf.f.Close()
-		return fmt.Errorf("%w: sync partial: %v", fserrors.ErrWriteFailed, err)
-	}
-	if err := rf.f.Close(); err != nil {
-		return fmt.Errorf("%w: close partial: %v", fserrors.ErrWriteFailed, err)
-	}
-	target := rf.plan.target
-	// Replacing a dir/symlink (an approved conflict) needs the slot cleared
-	// before the rename.
-	if rf.overwr {
-		if st, err := os.Lstat(target); err == nil && (st.IsDir() || st.Mode()&os.ModeSymlink != 0) {
-			_ = os.RemoveAll(target)
+	if rf.tailHole {
+		if err := rf.f.Truncate(int64(p.entry.Size)); err != nil {
+			rf.abandon(true)
+			return r.writeFail("extend", p.rel, err)
 		}
 	}
-	rf.plan.sha256 = hex.EncodeToString(rf.sha.Sum(nil))
-	if err := os.Rename(rf.partial, target); err != nil {
-		return fmt.Errorf("%w: finalize: %v", fserrors.ErrWriteFailed, err)
+	if rf.sha != nil {
+		p.sha256 = hex.EncodeToString(rf.sha.Sum(nil))
 	}
-	fsyncDir(filepath.Dir(target)) // make the rename itself durable
-	_ = os.Chmod(target, os.FileMode(rf.plan.entry.Mode)&os.ModePerm)
-	if rf.plan.entry.ModTimeSec > 0 {
-		t := time.Unix(rf.plan.entry.ModTimeSec, 0)
-		_ = os.Chtimes(target, t, t)
-	}
-	if opts.OnFileDone != nil {
-		opts.OnFileDone(target, rf.plan.sha256)
+	// Mode and mtime go on before the sync, so a crash can't leave a
+	// committed file with today's date (which a later run would distrust).
+	_ = rf.f.Chmod(fileMode(p.entry.Mode))
+	t := time.Unix(p.entry.ModTimeSec, 0)
+	_ = os.Chtimes(rf.partial, t, t)
+	return r.commit.add(pendingFile{f: rf.f, partial: rf.partial, plan: p, size: p.entry.Size})
+}
+
+// pendingFile is a verified partial waiting for its batch commit.
+type pendingFile struct {
+	f       *os.File
+	partial string
+	plan    *entryPlan
+	size    uint64
+}
+
+// committer makes verified files durable in batches: every file in a batch is
+// fsynced (in parallel), then renamed into place, then each parent folder is
+// synced once. A file counts as saved (OnFileDone) only after all of that,
+// so what fsend reports as done survives a crash, without paying a full
+// drive-cache flush per small file.
+type committer struct {
+	r       *receiver
+	pending []pendingFile
+	bytes   uint64
+}
+
+const (
+	commitMaxFiles = 256
+	commitMaxBytes = 64 << 20
+)
+
+func (c *committer) add(pf pendingFile) error {
+	c.pending = append(c.pending, pf)
+	c.bytes += pf.size
+	if len(c.pending) >= commitMaxFiles || c.bytes >= commitMaxBytes {
+		return c.flush()
 	}
 	return nil
 }
 
-// materialize creates a structural entry (dir / symlink / empty file).
-func materialize(s *Streams, p *entryPlan, approveOverwrite bool, opts RecvOptions) error {
-	target := p.target
-	if p.needsConsent() && approveOverwrite {
-		_ = os.RemoveAll(target) // clear the slot (approved)
+func (c *committer) flush() error {
+	batch := c.pending
+	c.pending, c.bytes = nil, 0
+	if len(batch) == 0 {
+		return nil
 	}
+	r := c.r
+	syncErr := parallelSync(batch)
+	if syncErr == nil {
+		syncErr = syncBarrier(batch[len(batch)-1].f)
+	}
+	for _, pf := range batch {
+		_ = pf.f.Close()
+	}
+	if syncErr != nil {
+		return r.writeFail("sync", "", syncErr)
+	}
+	dirs := make(map[string]struct{})
+	var done []pendingFile
+	var firstErr error
+	for _, pf := range batch {
+		placed, err := r.place(pf)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if placed {
+			dirs[filepath.Dir(pf.plan.target)] = struct{}{}
+			done = append(done, pf)
+		}
+	}
+	syncDirs(dirs)
+	for _, pf := range done {
+		if r.opts.OnFileDone != nil {
+			r.opts.OnFileDone(pf.plan.target, pf.plan.sha256)
+		}
+	}
+	if firstErr != nil {
+		return r.writeFail("finalize", "", firstErr)
+	}
+	return nil
+}
+
+// place renames a synced partial onto its target. The slot may hold only
+// what the user agreed to replace: a file, a symlink or an empty folder.
+func (r *receiver) place(pf pendingFile) (bool, error) {
+	p := pf.plan
+	target := p.target
+	if st, err := os.Lstat(target); err == nil && p.needsConsent() {
+		switch {
+		case st.IsDir():
+			// Never RemoveAll: os.Remove only succeeds on an empty folder.
+			if err := os.Remove(target); err != nil {
+				r.ps.remove(p.rel)
+				p.disp, p.skipReason = dispRefused, "a folder with files is in the way"
+				if r.opts.OnEntrySkipped != nil {
+					r.opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
+				}
+				return false, nil
+			}
+		case st.Mode()&os.ModeSymlink != 0:
+			_ = os.Remove(target) // the link itself, never its target
+		}
+	}
+	parent := filepath.Dir(target)
+	r.dirs.unlock(parent)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return false, err
+	}
+	if err := moveFile(pf.partial, target); err != nil {
+		return false, err
+	}
+	r.ps.dropMeta(p.rel)
+	if runtime.GOOS == "windows" {
+		// NTFS may stamp the write time again when the handle closes.
+		t := time.Unix(p.entry.ModTimeSec, 0)
+		_ = os.Chtimes(target, t, t)
+	}
+	return true, nil
+}
+
+// parallelSync flushes every file in batch to the device, a few at a time.
+func parallelSync(batch []pendingFile) error {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var first error
+	sem := make(chan struct{}, 8)
+	for i := range batch {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(f *os.File) {
+			defer func() { <-sem; wg.Done() }()
+			if err := fsyncData(f); err != nil {
+				mu.Lock()
+				if first == nil {
+					first = err
+				}
+				mu.Unlock()
+			}
+		}(batch[i].f)
+	}
+	wg.Wait()
+	return first
+}
+
+// syncDirs makes the renames durable: each folder once, plus one barrier.
+func syncDirs(dirs map[string]struct{}) {
+	var last *os.File
+	for d := range dirs {
+		f, err := os.Open(d)
+		if err != nil {
+			continue
+		}
+		_ = fsyncData(f)
+		if last != nil {
+			_ = last.Close()
+		}
+		last = f
+	}
+	if last != nil {
+		_ = syncBarrier(last)
+		_ = last.Close()
+	}
+}
+
+// dirUnlocker temporarily makes read-only folders writable so a re-send
+// into a tree that arrived read-only works, and restores them afterwards.
+type dirUnlocker struct {
+	root string
+	orig map[string]os.FileMode
+}
+
+func newDirUnlocker(root string) *dirUnlocker {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	return &dirUnlocker{root: abs, orig: make(map[string]os.FileMode)}
+}
+
+func (d *dirUnlocker) unlock(dir string) {
+	abs, err := filepath.Abs(dir)
+	if err != nil || !pathIsUnder(abs, d.root) {
+		return
+	}
+	for cur := abs; ; cur = filepath.Dir(cur) {
+		if _, seen := d.orig[cur]; !seen {
+			// Lstat: never chmod through a symlink.
+			if st, err := os.Lstat(cur); err == nil && st.IsDir() && st.Mode().Perm()&0o300 != 0o300 {
+				if os.Chmod(cur, st.Mode().Perm()|0o700) == nil {
+					d.orig[cur] = st.Mode().Perm()
+				}
+			}
+		}
+		if cur == d.root || filepath.Dir(cur) == cur {
+			return
+		}
+	}
+}
+
+func (d *dirUnlocker) restore() {
+	for dir, m := range d.orig {
+		_ = os.Chmod(dir, m)
+	}
+	clear(d.orig)
+}
+
+// materialize creates a structural entry (dir / empty file).
+func (r *receiver) materialize(p *entryPlan) error {
+	target := p.target
 	switch p.entry.Type {
 	case wire.EntryDir:
-		if err := os.MkdirAll(target, os.FileMode(p.entry.Mode)&os.ModePerm|0o700); err != nil {
-			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir failed")
-			return fmt.Errorf("%w: mkdir %s: %v", fserrors.ErrWriteFailed, target, err)
+		if p.needsConsent() {
+			// Approved replace of a file or symlink in the folder's slot. A
+			// blocked ancestor was cleared by its own (earlier) entry.
+			if st, err := os.Lstat(target); err == nil && !st.IsDir() {
+				_ = os.Remove(target)
+			}
+		}
+		r.dirs.unlock(filepath.Dir(target))
+		if err := os.MkdirAll(target, dirMode(p.entry.Mode)); err != nil {
+			return r.writeFail("mkdir", p.rel, err)
 		}
 		return nil
 	case wire.EntrySymlink:
 		// Defense in depth: classify already rejects peer symlinks. Never
 		// create one from peer input — a planted link lets a later write
 		// traverse out of the receive dir. Fail closed.
-		declineTransfer(s, wire.ErrCodeProtocolError, "symlink entries are not accepted")
+		declineTransfer(r.s, wire.ErrCodeProtocolError, "symlink entries are not accepted")
 		return fmt.Errorf("%w: symlink entry %q", fserrors.ErrPathTraversal, p.entry.RelativePath)
-	default: // empty regular file
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			declineTransfer(s, wire.ErrCodeWriteFailed, "mkdir parent")
-			return fmt.Errorf("%w: mkdir parent: %v", fserrors.ErrWriteFailed, err)
-		}
-		if err := guardRegular(s, target, "target"); err != nil {
-			return err
-		}
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(p.entry.Mode)&os.ModePerm)
+	default:
+		// Empty regular file: same partial → sync → rename path as any other,
+		// so an approved replace never truncates the old inode (or its
+		// hardlinks) in place.
+		f, path, err := r.ps.create(p.rel, p.entry)
 		if err != nil {
-			declineTransfer(s, wire.ErrCodeWriteFailed, "create empty: "+err.Error())
-			return fmt.Errorf("%w: create %s: %v", fserrors.ErrWriteFailed, target, err)
+			return r.writeFail("create", p.rel, err)
 		}
-		_ = f.Close()
-		if p.entry.ModTimeSec > 0 {
-			t := time.Unix(p.entry.ModTimeSec, 0)
-			_ = os.Chtimes(target, t, t)
-		}
-		// An empty file is a saved file too — fire OnFileDone like finalize
-		// does for non-empty ones, so it's counted in the receiver's saved-file
-		// tally (files_saved / the "Saved N of M" headline).
-		if opts.OnFileDone != nil {
-			opts.OnFileDone(target, emptySHA256)
-		}
-		return nil
+		p.sha256 = emptySHA256
+		_ = f.Chmod(fileMode(p.entry.Mode))
+		t := time.Unix(p.entry.ModTimeSec, 0)
+		_ = os.Chtimes(path, t, t)
+		return r.commit.add(pendingFile{f: f, partial: path, plan: p})
 	}
 }
 
 // restoreDirModes sets each received directory to the sender's mode, after
-// its children are written. Dirs are created writable (Mode|0o700) during
-// the transfer and an identical dir is never re-created, so without this a
-// restrictive or changed dir mode would never land. Applied last, deepest
-// first, so a read-only mode can't block writing the dir's own children.
+// its children are written. Applied last, deepest first. dirMode keeps the
+// owner's rwx, so a later run can still write into the folder.
 func restoreDirModes(plans []entryPlan) {
 	for i := len(plans) - 1; i >= 0; i-- {
 		p := &plans[i]
-		if p.entry.Type != wire.EntryDir || p.blockedAncestor {
+		if p.entry.Type != wire.EntryDir || p.blockedAncestor || p.disp == dispRefused {
 			continue
 		}
-		want := os.FileMode(p.entry.Mode) & os.ModePerm
+		want := dirMode(p.entry.Mode)
 		// Lstat, not Stat: if a receiver-side symlink sits in the slot (a kept
 		// dir↔symlink conflict), Stat would follow it and chmod the link's
 		// target anywhere on disk. Lstat reports the link itself, so IsDir is
@@ -723,7 +1084,7 @@ func repairIdenticalMode(p *entryPlan) {
 	if p.entry.Type != wire.EntryFile || p.blockedAncestor {
 		return
 	}
-	want := os.FileMode(p.entry.Mode) & os.ModePerm
+	want := fileMode(p.entry.Mode)
 	// Lstat, not Stat: never chmod through a symlink swapped into the slot.
 	if st, err := os.Lstat(p.target); err == nil && st.Mode().IsRegular() && st.Mode()&os.ModePerm != want {
 		_ = os.Chmod(p.target, want)
@@ -731,7 +1092,7 @@ func repairIdenticalMode(p *entryPlan) {
 }
 
 // planToDecision maps a plan to its wire decision and fires receiver-side
-// notifications (skip / conflict-kept).
+// notifications (skip / conflict-kept / refused).
 func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.Decision {
 	d := wire.Decision{Index: p.entry.Index}
 	// A target reachable only through a receiver-side symlink is kept untouched
@@ -757,9 +1118,16 @@ func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.
 	case dispResume:
 		d.Action = wire.DecisionResume
 		d.ResumeOffset = p.resumeOffset
-		d.PartialImohash = p.imohash
+		root := foldRoot(p.prefixBlocks, p.resumeOffset)
+		d.PrefixRoot = root[:]
 	case dispNew:
 		d.Action = wire.DecisionSend
+	case dispRefused:
+		d.Action = wire.DecisionSkip
+		d.Kept = true
+		if opts.OnEntrySkipped != nil {
+			opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
+		}
 	case dispDiffers, dispConflict:
 		if approveOverwrite {
 			d.Action = wire.DecisionSend
@@ -809,28 +1177,35 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 	}
 
 	w := opts.Sink
-	var target string
+	var target, partial, rel string
 	var f *os.File
 	var sha hash.Hash
+	ps := newPartialStore(opts.TargetDir)
 	if w == nil {
-		base := StreamFileName(hello.DisplayName)
-		target = filepath.Join(opts.TargetDir, base)
+		rel = StreamFileName(hello.DisplayName)
+		target = filepath.Join(opts.TargetDir, rel)
 		// An honest sender names streams with a random suffix, so an existing
 		// target means a crafted DisplayName (or a freak collision) — refuse
-		// to clobber it unless the user opted in with --overwrite.
-		if !opts.Overwrite {
-			if _, lerr := os.Lstat(target); lerr == nil {
-				declineTransfer(s, wire.ErrCodeTargetExists, base)
-				return fmt.Errorf("%w: %s (use --overwrite to replace it)", fserrors.ErrTargetExists, base)
+		// to clobber it unless the user opted in.
+		if _, lerr := os.Lstat(target); lerr == nil {
+			switch opts.policy() {
+			case ConflictReplace:
+				if err := guardRegular(s, target, "target"); err != nil {
+					return err
+				}
+			case ConflictRename:
+				c := &classifier{targetDir: opts.TargetDir, sem: probeFS(opts.TargetDir)}
+				rel = freeName(rel, c, map[string]struct{}{})
+				target = filepath.Join(opts.TargetDir, rel)
+			default:
+				declineTransfer(s, wire.ErrCodeTargetExists, rel)
+				return fmt.Errorf("%w: %s (use --overwrite to replace it)", fserrors.ErrTargetExists, rel)
 			}
 		}
-		if err := guardRegular(s, target+partialSuffix, "partial sidecar"); err != nil {
-			return err
-		}
 		var err error
-		f, err = os.OpenFile(target+partialSuffix, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		f, partial, err = ps.create(rel, wire.ListingEntry{})
 		if err != nil {
-			declineTransfer(s, wire.ErrCodeWriteFailed, "create: "+err.Error())
+			declineTransfer(s, wire.ErrCodeWriteFailed, peerSafe("create", rel, err))
 			return fmt.Errorf("%w: create stream file: %v", fserrors.ErrWriteFailed, err)
 		}
 		sha = sha256.New()
@@ -843,8 +1218,8 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 		}
 	})
 	if f != nil {
-		// Flush data before the rename (see finalize) so a crash can't commit
-		// a correctly-named file with unpersisted contents.
+		// Flush data before the rename so a crash can't commit a
+		// correctly-named file with unpersisted contents.
 		if err == nil {
 			if serr := f.Sync(); serr != nil {
 				err = fmt.Errorf("%w: sync stream file: %v", fserrors.ErrWriteFailed, serr)
@@ -852,22 +1227,95 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 		}
 		_ = f.Close()
 		if err != nil {
-			_ = os.Remove(target + partialSuffix)
+			ps.remove(rel)
 		}
 	}
 	if err != nil {
 		return err
 	}
 	if f != nil {
-		if err := os.Rename(target+partialSuffix, target); err != nil {
+		if err := moveFile(partial, target); err != nil {
+			ps.remove(rel)
+			declineTransfer(s, wire.ErrCodeWriteFailed, peerSafe("finalize", rel, err))
 			return fmt.Errorf("%w: finalize: %v", fserrors.ErrWriteFailed, err)
 		}
+		ps.dropMeta(rel)
+		ps.tidy()
 		fsyncDir(filepath.Dir(target)) // make the rename itself durable
 		if opts.OnFileDone != nil {
 			opts.OnFileDone(target, hex.EncodeToString(sha.Sum(nil)))
 		}
 	}
 	return finishRecv(s)
+}
+
+// streamPayload reads chunks for a single file/stream and writes their bytes
+// to w, verifying the tree root on the EOF segment. Used for sink and stream
+// receives, where no partial/resume applies.
+func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(uint64)) error {
+	verifier := newFileHasher()
+	defer verifier.discard()
+	var written uint64
+	var dec *zstd.Decoder
+	defer func() {
+		if dec != nil {
+			dec.Close()
+		}
+	}()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c, err := wire.ReadChunk(s.Data)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if reason := tryReadPeerError(s.Control); reason != nil {
+					return reason
+				}
+				return fmt.Errorf("recv: stream closed mid-file: %w", fserrors.ErrConnectFailed)
+			}
+			return fmt.Errorf("recv: chunk: %w", err)
+		}
+		plain, err := decodeChunkPayload(c, &dec, nil)
+		if err != nil {
+			return err
+		}
+		off := 0
+		for _, seg := range c.Segments {
+			data := plain[off : off+int(seg.Length)]
+			off += int(seg.Length)
+			if seg.FileIndex != 0 || seg.Restart {
+				declineTransfer(s, wire.ErrCodeProtocolError, "unexpected segment in a single-file stream")
+				return fmt.Errorf("%w: unexpected segment for index %d", fserrors.ErrProtocolError, seg.FileIndex)
+			}
+			if seg.Skip {
+				return fmt.Errorf("%w: the sender could not read the file", fserrors.ErrReadFailed)
+			}
+			if len(data) > 0 {
+				if _, err := w.Write(data); err != nil {
+					_ = s.Data.Close()
+					code := wire.ErrCodeWriteFailed
+					if errors.Is(err, syscall.ENOSPC) {
+						code = wire.ErrCodeDiskFull
+					}
+					declineTransfer(s, code, peerSafe("write", "", err))
+					return classifyWriteErr("sink write", err)
+				}
+				_, _ = verifier.Write(data)
+				written += uint64(len(data))
+				if progress != nil {
+					progress(written)
+				}
+			}
+			if seg.EOF {
+				if verifier.Sum() != seg.RootHash {
+					declineTransfer(s, wire.ErrCodeFileHashMismatch, "root hash mismatch")
+					return fserrors.ErrHashMismatch
+				}
+				return nil
+			}
+		}
+	}
 }
 
 // --- helpers ---
@@ -881,28 +1329,34 @@ func manifestEntries(plans []entryPlan, decisions []wire.Decision) []ManifestEnt
 			continue
 		}
 		out = append(out, ManifestEntry{
-			RelativePath: plans[i].entry.RelativePath,
+			RelativePath: filepath.ToSlash(plans[i].rel),
 			Size:         plans[i].entry.Size,
-			Status:       manifestStatus(plans[i].disp, decisions[i].Action),
+			Status:       manifestStatus(&plans[i], decisions[i].Action),
 			SHA256:       plans[i].sha256,
 		})
 	}
 	return out
 }
 
-// manifestStatus names the outcome from the disposition and the decision the
-// receiver sent (which already folded in the overwrite choice).
-func manifestStatus(d disposition, a wire.DecisionAction) string {
+// manifestStatus names the outcome from the plan and the decision the
+// receiver sent (which already folded in the conflict choice).
+func manifestStatus(p *entryPlan, a wire.DecisionAction) string {
+	switch {
+	case p.skipReason != "":
+		return "skipped"
+	case p.renamed:
+		return "renamed"
+	}
 	switch a {
 	case wire.DecisionResume:
 		return "resumed"
 	case wire.DecisionSkip:
-		if d == dispIdentical {
+		if p.disp == dispIdentical {
 			return "identical"
 		}
 		return "kept" // differs/conflict left untouched (no consent)
 	default: // DecisionSend
-		if d == dispDiffers || d == dispConflict {
+		if p.needsConsent() {
 			return "overwritten"
 		}
 		return "new"
@@ -922,17 +1376,18 @@ func drainControl(s *Streams) {
 	_, _ = io.Copy(io.Discard, s.Control)
 }
 
-func discardOpenPartials(open map[uint32]*recvFile) {
-	for _, rf := range open {
-		_ = rf.f.Close()
-		_ = os.Remove(rf.partial)
+// writeFail reports a local filesystem failure to the sender (relative path
+// and error class only) and returns the matching catalog error.
+func (r *receiver) writeFail(op, rel string, err error) error {
+	code := wire.ErrCodeWriteFailed
+	if errors.Is(err, syscall.ENOSPC) {
+		code = wire.ErrCodeDiskFull
 	}
-}
-
-func writeFail(s *Streams, op string, err error) error {
-	_ = s.Data.Close()
-	declineTransfer(s, wire.ErrCodeWriteFailed, op+" failed: "+err.Error())
-	return fmt.Errorf("%w: %s: %v", fserrors.ErrWriteFailed, op, err)
+	if r.s.Data != nil {
+		_ = r.s.Data.Close()
+	}
+	declineTransfer(r.s, code, peerSafe(op, filepath.ToSlash(rel), err))
+	return classifyWriteErr(op, err)
 }
 
 // classifyWriteErr maps a filesystem write failure to the right catalog error.
@@ -989,9 +1444,27 @@ func mapPeerError(ef wire.ErrorFrame) error {
 		return fmt.Errorf("%w: receiver: %s", fserrors.ErrWriteFailed, ef.Message)
 	case wire.ErrCodeReadFailed:
 		return fmt.Errorf("%w: sender: %s", fserrors.ErrReadFailed, ef.Message)
+	case wire.ErrCodeDiskFull:
+		return fmt.Errorf("%w: receiver: %s", fserrors.ErrDiskFull, ef.Message)
+	case wire.ErrCodeTooManyEntries:
+		return fmt.Errorf("%w: %s", fserrors.ErrTooManyEntries, ef.Message)
 	case wire.ErrCodeCancelled:
 		return fserrors.ErrPeerCancelled
 	default:
 		return fmt.Errorf("%w: peer reported %d: %s", fserrors.ErrProtocolError, ef.Code, ef.Message)
 	}
+}
+
+// humanSize renders a byte count for messages ("1.5 GB").
+func humanSize(n uint64) string {
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := uint64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGTPE"[exp])
 }

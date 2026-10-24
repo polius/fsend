@@ -179,3 +179,19 @@ func TestWalk_ExcludeSkipsBrokenSymlink(t *testing.T) {
 		t.Fatalf("excluding the broken link should allow the send: %v", err)
 	}
 }
+
+// Case-only pairs are sent: whether they collide is the receiver's call, made
+// against its own filesystem. Exact duplicates are still refused.
+func TestWalk_CaseOnlyPairAllowedDuplicateRefused(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(a, "Notes.txt"), []byte("1"))
+	writeFile(t, filepath.Join(b, "notes.txt"), []byte("2"))
+	if _, err := Walk([]string{filepath.Join(a, "Notes.txt"), filepath.Join(b, "notes.txt")}, nil); err != nil {
+		t.Fatalf("case-only pair rejected: %v", err)
+	}
+	c := t.TempDir()
+	writeFile(t, filepath.Join(c, "Notes.txt"), []byte("3"))
+	if _, err := Walk([]string{filepath.Join(a, "Notes.txt"), filepath.Join(c, "Notes.txt")}, nil); err == nil {
+		t.Fatal("two roots arriving under one name must be refused")
+	}
+}

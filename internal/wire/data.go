@@ -9,21 +9,21 @@ import (
 
 // Data-stream chunk frame layout:
 //
-//   type(1)=0x10 | flags(1) | payload_len(u32 BE) | chunk_hash(32) |
-//   segment_count(u16 BE) |
+//   type(1)=0x10 | flags(1) | payload_len(u32 BE) | segment_count(u16 BE) |
 //   per segment: file_index(u32) | length(u32) | seg_flags(u8)
 //                | [root_hash(32) iff seg_flags&SegFlagEOF] |
 //   payload(payload_len bytes, zstd iff flags&FlagCompressed)
 //
 // A chunk carries either a slice of one large file (one segment) or several
 // whole small files (many segments), so tiny files still compress together.
-// chunk_hash is over the *uncompressed* concatenated payload; each segment's
-// root_hash (present on its EOF) is the BLAKE3 of that whole file.
+// There is no per-chunk hash: QUIC's AEAD already authenticates every byte in
+// transit, and each segment's root_hash (on its EOF) verifies the whole file
+// end to end.
 //
 // The version byte is dropped here vs. control frames — the data stream is
 // only opened after the control HELLO/ACK negotiated a version.
 
-const chunkFixedHeader = 1 + 1 + 4 + 32 + 2 // type+flags+payload_len+chunk_hash+segment_count
+const chunkFixedHeader = 1 + 1 + 4 + 2 // type+flags+payload_len+segment_count
 
 // ErrChunkTooLarge is returned when a chunk's declared payload exceeds MaxChunkSize.
 var ErrChunkTooLarge = errors.New("wire: chunk payload too large")
@@ -39,17 +39,33 @@ type Segment struct {
 	FileIndex uint32
 	Length    uint32   // bytes of this segment in the uncompressed payload
 	EOF       bool     // last segment of this file → RootHash valid
-	RootHash  [32]byte // BLAKE3 of the whole file; only when EOF
+	Skip      bool     // file abandoned by the sender (Length 0, no EOF)
+	Restart   bool     // resumed file restarts at offset 0 with these bytes
+	Changed   bool     // with EOF: the source changed while it was read
+	RootHash  [32]byte // tree root of the whole file; only when EOF
+}
+
+func (s *Segment) flags() uint8 {
+	var f uint8
+	if s.EOF {
+		f |= SegFlagEOF
+	}
+	if s.Skip {
+		f |= SegFlagSkip
+	}
+	if s.Restart {
+		f |= SegFlagRestart
+	}
+	if s.Changed {
+		f |= SegFlagChanged
+	}
+	return f
 }
 
 // Chunk is the in-memory representation of one data-stream frame.
-//
-// Payload holds the on-wire bytes (zstd-compressed iff Compressed). ChunkHash
-// is over the *uncompressed* concatenation; the caller computes it and the
-// per-segment RootHashes before writing.
+// Payload holds the on-wire bytes (zstd-compressed iff Compressed).
 type Chunk struct {
 	Compressed bool
-	ChunkHash  [32]byte
 	Segments   []Segment
 	Payload    []byte
 }
@@ -68,33 +84,28 @@ func WriteChunk(w io.Writer, c *Chunk) error {
 		flags = FlagCompressed
 	}
 
-	header := make([]byte, chunkFixedHeader, chunkFixedHeader+len(c.Segments)*(9+32))
+	header := make([]byte, chunkFixedHeader, chunkFixedHeader+len(c.Segments)*(9+32)+len(c.Payload))
 	header[0] = byte(TypeChunk)
 	header[1] = flags
 	binary.BigEndian.PutUint32(header[2:6], uint32(len(c.Payload)))
-	copy(header[6:38], c.ChunkHash[:])
-	binary.BigEndian.PutUint16(header[38:40], uint16(len(c.Segments)))
+	binary.BigEndian.PutUint16(header[6:8], uint16(len(c.Segments)))
 
-	for _, s := range c.Segments {
+	for i := range c.Segments {
+		s := &c.Segments[i]
 		var seg [9]byte
 		binary.BigEndian.PutUint32(seg[0:4], s.FileIndex)
 		binary.BigEndian.PutUint32(seg[4:8], s.Length)
-		if s.EOF {
-			seg[8] = SegFlagEOF
-		}
+		seg[8] = s.flags()
 		header = append(header, seg[:]...)
 		if s.EOF {
 			header = append(header, s.RootHash[:]...)
 		}
 	}
 
-	if _, err := w.Write(header); err != nil {
-		return fmt.Errorf("wire: writing chunk header: %w", err)
-	}
-	if len(c.Payload) > 0 {
-		if _, err := w.Write(c.Payload); err != nil {
-			return fmt.Errorf("wire: writing chunk payload: %w", err)
-		}
+	// One write per frame: the header and payload travel together, so a
+	// stream-backed writer doesn't pay a syscall (or a QUIC frame) per half.
+	if _, err := w.Write(append(header, c.Payload...)); err != nil {
+		return fmt.Errorf("wire: writing chunk: %w", err)
 	}
 	return nil
 }
@@ -102,7 +113,11 @@ func WriteChunk(w io.Writer, c *Chunk) error {
 // ReadChunk reads one chunk frame from r. It validates the frame's internal
 // consistency (segment count, and — when uncompressed — that the segment
 // lengths sum to the payload size); the caller verifies the hashes.
-func ReadChunk(r io.Reader) (*Chunk, error) {
+func ReadChunk(r io.Reader) (*Chunk, error) { return ReadChunkBuf(r, nil) }
+
+// ReadChunkBuf is ReadChunk reading the payload into buf when it fits, so a
+// receiver can recycle payload buffers.
+func ReadChunkBuf(r io.Reader, buf []byte) (*Chunk, error) {
 	var fixed [chunkFixedHeader]byte
 	if _, err := io.ReadFull(r, fixed[:]); err != nil {
 		return nil, err // surface EOF unwrapped
@@ -112,12 +127,11 @@ func ReadChunk(r io.Reader) (*Chunk, error) {
 	}
 
 	c := &Chunk{Compressed: fixed[1]&FlagCompressed != 0}
-	copy(c.ChunkHash[:], fixed[6:38])
 	payloadLen := binary.BigEndian.Uint32(fixed[2:6])
 	if payloadLen > MaxChunkSize {
 		return nil, fmt.Errorf("%w: declared %d > limit %d", ErrChunkTooLarge, payloadLen, MaxChunkSize)
 	}
-	segCount := binary.BigEndian.Uint16(fixed[38:40])
+	segCount := binary.BigEndian.Uint16(fixed[6:8])
 	if segCount == 0 {
 		return nil, fmt.Errorf("%w: zero segments", ErrMalformedChunk)
 	}
@@ -136,6 +150,12 @@ func ReadChunk(r io.Reader) (*Chunk, error) {
 			FileIndex: binary.BigEndian.Uint32(seg[0:4]),
 			Length:    binary.BigEndian.Uint32(seg[4:8]),
 			EOF:       seg[8]&SegFlagEOF != 0,
+			Skip:      seg[8]&SegFlagSkip != 0,
+			Restart:   seg[8]&SegFlagRestart != 0,
+			Changed:   seg[8]&SegFlagChanged != 0,
+		}
+		if err := s.validate(); err != nil {
+			return nil, err
 		}
 		if s.EOF {
 			if _, err := io.ReadFull(r, s.RootHash[:]); err != nil {
@@ -155,12 +175,32 @@ func ReadChunk(r io.Reader) (*Chunk, error) {
 	}
 
 	if payloadLen > 0 {
-		c.Payload = make([]byte, payloadLen)
+		if uint32(cap(buf)) >= payloadLen {
+			c.Payload = buf[:payloadLen]
+		} else {
+			c.Payload = make([]byte, payloadLen)
+		}
 		if _, err := io.ReadFull(r, c.Payload); err != nil {
 			return nil, fmt.Errorf("wire: reading chunk payload: %w", err)
 		}
 	}
 	return c, nil
+}
+
+// validate rejects flag combinations no honest sender emits. Empty data
+// segments are refused so a peer can't open files (or burn CPU) for free.
+func (s *Segment) validate() error {
+	switch {
+	case s.Skip && (s.EOF || s.Restart || s.Changed || s.Length != 0):
+		return fmt.Errorf("%w: skip segment with data or flags", ErrMalformedChunk)
+	case s.Changed && !s.EOF:
+		return fmt.Errorf("%w: changed flag without EOF", ErrMalformedChunk)
+	case s.Restart && s.Length == 0:
+		return fmt.Errorf("%w: empty restart segment", ErrMalformedChunk)
+	case s.Length == 0 && !s.EOF && !s.Skip:
+		return fmt.Errorf("%w: empty segment", ErrMalformedChunk)
+	}
+	return nil
 }
 
 // SegmentsSum returns the total uncompressed byte length of c's segments.

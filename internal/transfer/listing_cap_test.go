@@ -10,9 +10,9 @@ import (
 	"github.com/polius/fsend/internal/wire"
 )
 
-// TestRecvListing_CapEnforced pins the B9 memory bound: a hostile sender
-// streaming a listing past maxListingEntries is cut off with ErrProtocolError
-// instead of the receiver materialising an unbounded entry set.
+// TestRecvListing_CapEnforced pins the memory bound: a listing past
+// maxListingEntries is cut off with ErrTooManyEntries (E051, an honest
+// message) instead of the receiver materialising an unbounded entry set.
 func TestRecvListing_CapEnforced(t *testing.T) {
 	var buf bytes.Buffer
 	const batchSize = 1000 // stays under MaxControlFrameSize
@@ -36,7 +36,7 @@ func TestRecvListing_CapEnforced(t *testing.T) {
 		t.Fatalf("write end: %v", err)
 	}
 
-	if _, err := recvListing(&buf); !errors.Is(err, fserrors.ErrProtocolError) {
-		t.Fatalf("recvListing err = %v, want ErrProtocolError", err)
+	if _, err := recvListing(&buf); !errors.Is(err, fserrors.ErrTooManyEntries) {
+		t.Fatalf("recvListing err = %v, want ErrTooManyEntries", err)
 	}
 }

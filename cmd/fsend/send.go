@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,7 +55,7 @@ func runSend(f *flags, paths []string) error {
 	for _, rf := range []struct {
 		name string
 		set  bool
-	}{{"--out", f.outDir != ""}, {"--yes", f.yes}, {"--overwrite", f.overwrite}, {"--checksum", f.checksum}, {"--manifest", f.manifest != ""}} {
+	}{{"--out", f.outDir != ""}, {"--yes", f.yes}, {"--overwrite", f.overwrite}, {"--rename", f.rename}, {"--checksum", f.checksum}, {"--manifest", f.manifest != ""}} {
 		if rf.set {
 			return fmt.Errorf("%w: %s is a receive-side flag and has no effect when sending", fserrors.ErrUsage, rf.name)
 		}
@@ -142,6 +143,11 @@ func collectPlan(f *flags, paths []string) (*sendPlan, error) {
 	sources, err := transfer.Walk(paths, f.excludes)
 	if err != nil {
 		return nil, mapLocalReadErr(err)
+	}
+	// Check the per-transfer entry cap now, before a code is issued, rather
+	// than after the receiver has accepted.
+	if len(sources) > transfer.MaxEntries {
+		return nil, fmt.Errorf("%w: %d files and folders, the limit is %d", fserrors.ErrTooManyEntries, len(sources), transfer.MaxEntries)
 	}
 	plan := &sendPlan{
 		mode:       wire.ModeFiles,
@@ -560,7 +566,7 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 		clauses += "  ·  " + uxlog.Good(uxlog.CountNoun(n, "file")+" skipped")
 	}
 	if s.keptFiles > 0 {
-		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver (needs --overwrite there)")
+		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver")
 	}
 	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, s.moved, "sent", elapsed, path), clauses)
 	if s.keptFiles == 0 && s.moved > 0 {
@@ -774,5 +780,69 @@ func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 			hint.Stop()
 		}
 		mu.Unlock()
+	}
+}
+
+// sourceIssueHooks returns the engine callbacks for files that could not be
+// read (skipped, reported now and listed at the end) or changed while being
+// read, plus an accessor for the skipped paths. Keyed by index, so a retry
+// that hits the same file doesn't count it twice.
+func sourceIssueHooks(f *flags, plan *sendPlan) (skipped func() []string, onSkipped func(uint32, error), onChanged func(uint32)) {
+	var mu sync.Mutex
+	paths := map[uint32]string{}
+	name := func(i uint32) string {
+		if int(i) < len(plan.sources) {
+			return displayPath(plan.sources[i].AbsPath)
+		}
+		return fmt.Sprintf("#%d", i)
+	}
+	skipped = func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]string, 0, len(paths))
+		for _, p := range paths {
+			out = append(out, p)
+		}
+		sort.Strings(out)
+		return out
+	}
+	onSkipped = func(i uint32, err error) {
+		mu.Lock()
+		paths[i] = name(i) + " — " + sourceErrReason(err)
+		mu.Unlock()
+		if !f.quiet {
+			uxlog.Println(fmt.Sprintf("%s Skipped %s: %s", uxlog.Warn(), name(i), sourceErrReason(err)))
+		}
+	}
+	onChanged = func(i uint32) {
+		if !f.quiet {
+			uxlog.Println(fmt.Sprintf("%s %s changed while it was being sent — the copy may be inconsistent", uxlog.Warn(), name(i)))
+		}
+	}
+	return skipped, onSkipped, onChanged
+}
+
+// sourceErrReason is the cause of a source read failure without the path
+// (which the caller already shows).
+func sourceErrReason(err error) string {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
+}
+
+// printSkippedList lists files a transfer skipped, after the summary.
+func printSkippedList(f *flags, verb string, rows []string) {
+	if f.quiet || len(rows) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s %s %s skipped:\n", uxlog.Warn(), uxlog.CountNoun(len(rows), "file"), verb)
+	const show = 10
+	for _, r := range rows[:min(len(rows), show)] {
+		fmt.Fprintf(os.Stderr, "    %s\n", r)
+	}
+	if len(rows) > show {
+		fmt.Fprintf(os.Stderr, "    … and %d more\n", len(rows)-show)
 	}
 }
