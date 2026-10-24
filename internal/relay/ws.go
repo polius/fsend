@@ -132,11 +132,8 @@ func (s *Server) ProbeWS(w http.ResponseWriter, r *http.Request) {
 	_ = c.Close(websocket.StatusNormalClosure, "")
 }
 
+// acceptWS upgrades r. net/http clears its ReadTimeout deadline on hijack,
+// so a long-lived link isn't cut (TestRelayWS_OutlivesReadTimeout).
 func acceptWS(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
-	// http.Server's ReadTimeout deadline survives the hijack; a long-lived
-	// link must not inherit it.
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Time{})
-	_ = rc.SetWriteDeadline(time.Time{})
 	return websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
 }

@@ -412,8 +412,9 @@ const relayTCPWait = 15 * time.Second
 
 // dialRelay connects to the relay for alloc and registers this side,
 // returning a net.PacketConn ready for QUIC and the path to show the user.
-// UDP first; if the relay never answers over UDP, the same relay frames go
-// over a WebSocket on the server's HTTPS port. Shared by sender and receiver.
+// UDP first; if the relay never answers over UDP (or UDP fails outright),
+// the same relay frames go over a WebSocket on the server's HTTPS port.
+// Shared by sender and receiver.
 func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.RelayAllocateResponse, sessionID, roleToken string) (net.PacketConn, connpath.Info, error) {
 	tok, err := relay.ParseToken(alloc.SessionToken)
 	if err != nil {
@@ -429,12 +430,13 @@ func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.Rela
 			return pc, connpath.FromRelay(alloc.RelayAddr), nil
 		case ctx.Err() != nil:
 			return nil, connpath.Info{}, ctx.Err()
-		case !errors.Is(err, relay.ErrNoReply):
+		case !alloc.TCPFallback && errors.Is(err, relay.ErrNoReply):
+			return nil, connpath.Info{}, fmt.Errorf("%w: No UDP reply from the relay, and this server has no TCP fallback (it may need an update).", fserrors.ErrUDPBlocked)
+		case !alloc.TCPFallback:
 			return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
 		}
-	}
-	if !alloc.TCPFallback {
-		return nil, connpath.Info{}, fmt.Errorf("%w: No UDP reply from the relay, and this server has no TCP fallback (it may need an update).", fserrors.ErrUDPBlocked)
+	} else if !alloc.TCPFallback {
+		return nil, connpath.Info{}, fmt.Errorf("%w: this server has no relay TCP fallback", fserrors.ErrConnectFailed)
 	}
 	wsURL, hdr := client.RelayWSEndpoint(sessionID, roleToken)
 	wctx, cancel := context.WithTimeout(ctx, relayTCPWait)
@@ -444,7 +446,7 @@ func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.Rela
 		if ctx.Err() != nil {
 			return nil, connpath.Info{}, ctx.Err()
 		}
-		return nil, connpath.Info{}, fmt.Errorf("%w: No UDP reply from the relay, and the TCP fallback failed (%v).", fserrors.ErrUDPBlocked, err)
+		return nil, connpath.Info{}, fmt.Errorf("%w: The relay was unreachable over UDP, and the TCP fallback failed (%v).", fserrors.ErrUDPBlocked, err)
 	}
 	return pc, connpath.FromRelay(client.ServerHost() + " over TCP"), nil
 }

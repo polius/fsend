@@ -82,6 +82,50 @@ func TestRelayWS_Auth(t *testing.T) {
 	}
 }
 
+// A relay link outlives http.Server's ReadTimeout (15 s in `fsend server`):
+// the deadline set before the hijack must not cut a long transfer.
+func TestRelayWS_OutlivesReadTimeout(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(Config{Logger: logger})
+	s.WithRelay(relay.NewServer(nil, relay.ServerConfig{Logger: logger}), 4433)
+	ts := httptest.NewUnstartedServer(s.Handler())
+	ts.Config.ReadTimeout = 200 * time.Millisecond
+	ts.Start()
+	defer ts.Close()
+
+	cr := createSession(t, ts.URL, testSlot)
+	jresp := postJSON(t, ts.URL+"/v1/session/"+testSlot+"/join", JoinSessionRequest{})
+	var jr JoinSessionResponse
+	_ = json.NewDecoder(jresp.Body).Decode(&jr)
+	jresp.Body.Close()
+	_, body := postRelayAllocate(t, ts.URL, cr.SessionID, cr.RoleToken)
+	tok, _ := relay.ParseToken(body.SessionToken)
+
+	dial := func(roleToken string) *relay.Conn {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		h := http.Header{}
+		h.Set("Authorization", "Bearer "+roleToken)
+		c, err := relay.DialWS(ctx, ts.URL+"/v1/relay/ws?session_id="+cr.SessionID, h, tok, relay.PeerIDFor(roleToken))
+		if err != nil {
+			t.Fatalf("DialWS: %v", err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+	a, b := dial(cr.RoleToken), dial(jr.RoleToken)
+	time.Sleep(600 * time.Millisecond) // three ReadTimeouts of silence
+	if _, err := a.WriteTo([]byte("still here"), nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 64)
+	n, _, err := b.ReadFrom(buf)
+	if err != nil || string(buf[:n]) != "still here" {
+		t.Fatalf("after idle: %q, %v", buf[:n], err)
+	}
+}
+
 func TestRelayWS_ProbeNamesRelayAddr(t *testing.T) {
 	ts, _, _, _ := newRelayWSServer(t, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
