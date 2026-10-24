@@ -67,7 +67,7 @@ jobs:
           # module targets (go.mod's `go` line) or it refuses to load the
           # packages. "latest" floats to releases built with older Go and
           # breaks on toolchain jumps. Dependabot keeps the pin current.
-          version: v2.13.2
+          version: v2.15.0
           args: --timeout=5m
 
   # Catch known CVEs in the standard library and dependencies, at the
