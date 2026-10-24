@@ -5,10 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"strconv"
-	"sync"
 	"time"
-
-	"golang.org/x/crypto/argon2"
 )
 
 // EpochGrace is how close to a UTC day boundary a receiver also tries the
@@ -60,25 +57,10 @@ func Slot(code string) string { return SlotAt(code, Epoch(time.Now())) }
 // The salt is a domain label plus the UTC day (see Epoch): the
 // memory-hardness makes one day's table cost tens of thousands of
 // CPU-years, and a new day needs a new table. Distinct from the landisc
-// salt so the two derived values can't be cross-correlated. Memoized
-// because the sender re-derives on every /wait long-poll.
+// label so the two derived values can't be cross-correlated (see Stretch).
 func SlotAt(code string, epoch int64) string {
-	slotMu.Lock()
-	defer slotMu.Unlock()
-	if code == slotCode && epoch == slotEpoch {
-		return slotVal
-	}
-	v := hex.EncodeToString(argon2.IDKey([]byte(code), EpochSalt("fsend-slot-v3", epoch), 2, 64*1024, 4, 16))
-	slotCode, slotEpoch, slotVal = code, epoch, v
-	return v
+	return hex.EncodeToString(Stretch(code, epoch, "fsend-slot-v3", 16))
 }
-
-var (
-	slotMu    sync.Mutex
-	slotCode  string
-	slotEpoch int64
-	slotVal   string
-)
 
 // SlotLen is the length of an encoded slot.
 const SlotLen = 32

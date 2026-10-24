@@ -162,6 +162,13 @@ var (
 	// E043 — `fsend doctor` found at least one degraded check. The checks
 	// themselves already printed the details; this gives scripts an exit code.
 	ErrDoctorFailed = errors.New("doctor checks failed")
+	// E046 — the sender stopped after too many failed PAKE handshakes on
+	// its code: someone may be guessing it.
+	ErrTooManyPairingFailures = errors.New("too many failed pairing attempts")
+	// E047 — the server's TLS certificate failed verification: a captive
+	// portal, a TLS-intercepting proxy, or a misconfigured server.
+	// Distinct from E001 because retrying the same network won't help.
+	ErrServerCertUntrusted = errors.New("server certificate not trusted")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -232,15 +239,15 @@ const selfHostHint = "\n  Or run your own fsend server, where you set the limits
 var catalog = map[error]Entry{
 	ErrServerUnreachable: {
 		Code: "E001", Exit: 1,
-		Message: "Could not reach the server (timeout).",
+		Message: "Could not reach the server.",
 		Action: "Check your internet connection, or use a different server:\n" +
 			"    fsend --connect <host:port>",
 	},
 	ErrCodeNotFound: {
 		Code: "E002", Exit: 2,
-		Message: "That code was not found.",
+		Message: "No sender is waiting on that code.",
 		Action: "Double-check the code with the sender and make sure their fsend is\n" +
-			"  still running — or another receiver may have already claimed this code.",
+			"  still running.",
 	},
 	ErrCodeAlreadyClaimed: {
 		Code: "E003", Exit: 3,
@@ -489,6 +496,19 @@ var catalog = map[error]Entry{
 		Message: "Refusing to update as root — fsend installs per-user.",
 		// The opt-in command renders as a block (see renderError), so the
 		// Action is left empty rather than competing with it.
+	},
+	ErrTooManyPairingFailures: {
+		Code: "E046", Exit: 46,
+		Message: "Stopped: too many failed attempts to connect with this code.",
+		Action: "Someone may be guessing it. Run fsend again for a fresh code, and\n" +
+			"  share it only with the receiver.",
+	},
+	ErrServerCertUntrusted: {
+		Code: "E047", Exit: 47,
+		Message: "The server's certificate is not trusted.",
+		Action: "A Wi-Fi login page or a filtering proxy may be intercepting the\n" +
+			"  connection. Sign in to the network (open any website), or try\n" +
+			"  another network.",
 	},
 	ErrUpdateDevBuild: {
 		Code: "E041", Exit: 41,

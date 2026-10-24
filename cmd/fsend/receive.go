@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -23,9 +25,73 @@ import (
 	"github.com/polius/fsend/internal/wire"
 )
 
-// runReceive executes the receive-side flow: a 300 ms mDNS query for a
-// same-LAN sender, and on miss a fall-through to the pairing + relay
-// path in runReceiveOverInternet.
+// lanQueryWindow bounds how long the receiver asks for a same-LAN sender;
+// lanHeadStart is how long it waits on that alone before also trying the
+// pairing server. An mDNS answer that arrives after the server path
+// started still wins until the join succeeds, so an offline LAN transfer
+// survives a slow first answer (Wi-Fi power save).
+const (
+	lanQueryWindow = 1500 * time.Millisecond
+	lanHeadStart   = 300 * time.Millisecond
+)
+
+// lanFirstDialTimeout bounds the QUIC connect to an mDNS-discovered
+// sender. A failure means mDNS responded but the listener is unreachable
+// — a stale announce, or a firewall silently dropping the port (Windows
+// Defender blocks the listener by default while its built-in 5353 rule
+// lets discovery work) — so we fall through to the server. RTT-scale: a
+// real same-LAN connect takes milliseconds. The PAKE that follows gets
+// the full HandshakeTimeout (see quicconn.DialTimeout).
+const lanFirstDialTimeout = 2 * time.Second
+
+// maxRepairRounds caps how often a receiver re-discovers the sender after
+// its in-place retries run out (network change, laptop sleep).
+const maxRepairRounds = 2
+
+// peerCancelGrace is how long a failed attempt waits for the sender's
+// close to say whether it was a deliberate cancel.
+const peerCancelGrace = time.Second
+
+// recvSession is the receiver's pairing state across rounds.
+type recvSession struct {
+	code    string
+	key     pairKey
+	resumed bool // key is a resume key: switched this run, or saved by an earlier one
+}
+
+func newRecvSession(c string) *recvSession {
+	if k, ok := loadResumeKey(c); ok {
+		return &recvSession{code: c, key: k, resumed: true}
+	}
+	return &recvSession{code: c, key: codeKey(c)}
+}
+
+// paired switches to the resume key on the first successful PAKE and
+// saves it, so a rerun of this same command can still find the sender.
+func (rs *recvSession) paired(binding []byte) {
+	if rs.resumed {
+		return
+	}
+	rs.key, rs.resumed = resumeKey(binding), true
+	saveResumeKey(rs.code, rs.key)
+}
+
+// recvLink is one route to the sender: dial opens a fresh authenticated
+// connection on it, close releases its sockets.
+type recvLink struct {
+	path  connpath.Info
+	first *quicconn.AcceptResult // already-open first connection, if any
+	dial  func(ctx context.Context, secret string) (*quicconn.AcceptResult, error)
+	close func()
+	relay *relayProbe // non-nil on the relay path
+	lan   bool        // found by mDNS
+}
+
+// runReceive executes the receive-side flow: find the sender (same-LAN
+// mDNS, else the pairing server with ICE/relay), then transfer with
+// in-place retries. If those run out after a network change or sleep, it
+// finds the sender again on fresh sockets — the sender re-pairs on the
+// same resume key.
 func runReceive(f *flags, c string) error {
 	if err := code.Validate(c); err != nil {
 		return fserrors.ErrInvalidCodeFormat
@@ -51,7 +117,8 @@ func runReceive(f *flags, c string) error {
 	// Validate --out before any network work: a missing directory would
 	// otherwise only fail at write time, after the sender's one-shot code
 	// has been consumed.
-	if _, _, err := resolveOutDir(f); err != nil {
+	outDir, sink, err := resolveOutDir(f)
+	if err != nil {
 		return err
 	}
 
@@ -69,6 +136,8 @@ func runReceive(f *flags, c string) error {
 		return err
 	}
 
+	rs := newRecvSession(c)
+
 	// Name the phase rather than showing a bare "Connecting": the LAN probe
 	// and the server fallback are very different waits, and a named phase
 	// turns the mystery pause into a status. One continuous spinner spans
@@ -77,106 +146,45 @@ func runReceive(f *flags, c string) error {
 	if !f.quiet {
 		spin = uxlog.StartSpinner("Looking for sender on the local network", uxlog.HintCancel)
 	}
-	q, err := landisc.Query(ctx, c, 300*time.Millisecond)
-	if err != nil {
-		// LAN miss → internet path. The spinner carries on through Join +
-		// ICE/relay setup and classification; runReceiveOverInternet owns
-		// its lifetime from here.
-		cfg := loadConfig(f.quiet)
-		if !f.quiet {
-			spin.SetMessage("Connecting via the server")
-		}
-		return runReceiveOverInternet(ctx, f, c, cfg, spin)
-	}
-
-	// JoinHostPort so an IPv6 announce dials as "[addr]:port".
-	addr := net.JoinHostPort(q.IP.String(), strconv.Itoa(q.Port))
-	if f.debug && !f.quiet {
-		fmt.Fprintln(os.Stderr, "    sender address:", addr)
-	}
-
-	outDir, sink, err := resolveOutDir(f)
-	if err != nil {
-		return err
-	}
-
-	// First LAN dial sits outside the retry loop. A failure means mDNS
-	// responded but the listener is unreachable — a stale announce, or a
-	// firewall silently dropping the port (Windows Defender blocks the
-	// listener by default while its built-in 5353 rule lets discovery
-	// work). Fall through to the internet path instead of reporting E003.
-	//
-	// RTT-scale budget, not the 10 s HandshakeTimeout: a real same-LAN
-	// handshake takes milliseconds, and a false timeout just reaches the
-	// same host↔host pair via ICE.
-	const lanFirstDialTimeout = 2 * time.Second
-
-	// The dial is user-visible wait; on miss runReceiveOverInternet
-	// takes ownership of the spinner.
-	if !f.quiet {
-		spin.SetMessage("Connecting to the sender")
-	}
-	dialCtx, cancelDial := context.WithTimeout(ctx, lanFirstDialTimeout)
-	first, err := quicconn.Dial(dialCtx, addr, c)
-	cancelDial()
-	if err != nil {
-		// Debug-only: the transfer may still end up "Direct on local
-		// network" via ICE, so this notice by default reads as the tool
-		// contradicting itself. Spinner restart keeps the line clean.
-		if !f.quiet {
-			if f.debug {
-				spin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server.")
-				spin = uxlog.StartSpinner("Connecting via the server", uxlog.HintCancel)
-			} else {
-				spin.SetMessage("Connecting via the server")
-			}
-		}
-		cfg := loadConfig(f.quiet)
-		return runReceiveOverInternet(ctx, f, c, cfg, spin)
-	}
-
-	ui := newReceiverUI(ctx, f, outDir, sink, connpath.FromLAN())
-	// --checksum hashes the files already on disk before the accept prompt —
-	// a silence that scales with the existing data. Keep the spinner alive
-	// for it (stopped by the prompt); otherwise classification is stat-only
-	// and near-instant.
-	if f.checksum && !f.quiet {
-		spin.SetMessage("Checking existing files")
-		ui.spin = spin
-	} else {
+	var ui *receiverUI
+	defer func() {
 		spin.Stop()
-	}
-	defer ui.close()
+		if ui != nil {
+			ui.close()
+		}
+	}()
 
 	start := time.Now()
+	var dropErr error
+	for round := 0; ; round++ {
+		link, err := discoverSender(ctx, f, rs, spin)
+		if err != nil {
+			// A failed re-discovery is still the transfer drop the user saw.
+			if dropErr != nil && ctx.Err() == nil {
+				return dropErr
+			}
+			return err
+		}
+		if ui == nil {
+			ui = newReceiverUI(ctx, f, outDir, sink, link.path)
+		}
+		ui.pathInfo = link.path
+		// The pre-prompt phase is classification: stat-only and instant on
+		// LAN unless --checksum hashes what's already on disk. Keep the
+		// spinner for the slower cases; the prompt (or ui.close) stops it.
+		if !link.lan || f.checksum {
+			spin.SetMessage("Checking existing files")
+			ui.spin = spin
+		} else {
+			spin.Stop()
+		}
 
-	// LAN succeeded once — keep a normal retry loop around the transfer
-	// itself so a mid-stream drop can re-dial and resume from the
-	// receiver's partial. Sink mode gets one attempt: emitted bytes
-	// can't be reconciled, so a retry would duplicate output.
-	opts := retry.Options{OnRetry: ui.retryNotice()}
-	if sink {
-		opts.Attempts = 1
-	}
-	current := first
-	if err := retry.WithBackoff(ctx, opts, nil,
-		func(attempt int) error {
-			if attempt > 1 {
-				ui.resetAttemptCounts()
-			}
-			if current == nil {
-				res, err := quicconn.Dial(ctx, addr, c)
-				if err != nil {
-					return fmt.Errorf("dialing sender: %w", err)
-				}
-				current = res
-			}
-			res := current
-			current = nil
-			defer res.Close()
-			return transfer.Recv(ctx, &res.Streams, ui.recvOptions(hostnameOrDefault(f.hostname)))
-		}); err != nil {
+		err = receiveOver(ctx, f, rs, ui, sink, link)
+		link.close()
+		if err == nil {
+			forgetResumeKey(c)
+			return finishReceive(f, ui, time.Since(start))
+		}
 		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a
 		// decline/target-exists error from the engine; report it as a
 		// cancellation (E026) rather than that incidental error.
@@ -184,10 +192,178 @@ func runReceive(f *flags, c string) error {
 			printCancelKeptHint(f, ui)
 			return ctx.Err()
 		}
-		return err
+		if sink || round >= maxRepairRounds || !rs.resumed || !errors.Is(err, fserrors.ErrTransientFailure) {
+			return err
+		}
+		dropErr = err
+		spin.Stop()
+		if !f.quiet {
+			uxlog.Println(fmt.Sprintf("  %s Connection lost — looking for the sender again", uxlog.Retry()))
+			spin = uxlog.StartSpinner("Reconnecting to the sender", uxlog.HintCancel)
+		}
+	}
+}
+
+// discoverSender finds the sender for rs's current key: a same-LAN mDNS
+// answer, else the pairing server. The mDNS query gets a head start and
+// keeps running while the server join is tried; whichever lands first
+// wins.
+func discoverSender(ctx context.Context, f *flags, rs *recvSession, spin *uxlog.Spinner) (*recvLink, error) {
+	lanCtx, cancelLAN := context.WithCancel(ctx)
+	defer cancelLAN()
+	lanCh := make(chan lanResult, 1)
+	go func() {
+		q, err := landisc.Query(lanCtx, rs.key.rendezvous, lanQueryWindow)
+		lanCh <- lanResult{q, err}
+	}()
+
+	head := time.NewTimer(lanHeadStart)
+	defer head.Stop()
+	race := (<-chan lanResult)(lanCh)
+	select {
+	case r := <-lanCh:
+		race = nil
+		if r.err == nil {
+			if link := dialLAN(ctx, f, rs, r.q, spin); link != nil {
+				return link, nil
+			}
+		}
+	case <-head.C:
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
-	return finishReceive(f, ui, time.Since(start))
+	if !f.quiet {
+		spin.SetMessage("Connecting via the server")
+	}
+	client, _, err := signalingClient(loadConfig(f.quiet))
+	if err != nil {
+		return nil, err
+	}
+	opts := joinOpts{budget: joinRetryBudget, lan: race}
+	if rs.resumed {
+		opts.budget, opts.retryClaimed = resumeJoinBudget, true
+	}
+	for {
+		joined, hit, err := joinRace(ctx, client, rs.key.rendezvous, f, spin, opts)
+		if hit != nil {
+			if link := dialLAN(ctx, f, rs, hit, spin); link != nil {
+				return link, nil
+			}
+			opts.lan = nil
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		cancelLAN()
+		return linkViaInternet(ctx, f, client, joined)
+	}
+}
+
+// dialLAN connects to an mDNS-discovered sender, or returns nil to fall
+// back to the server path (see lanFirstDialTimeout).
+func dialLAN(ctx context.Context, f *flags, rs *recvSession, q *landisc.QueryResult, spin *uxlog.Spinner) *recvLink {
+	// JoinHostPort so an IPv6 announce dials as "[addr]:port".
+	addr := net.JoinHostPort(q.IP.String(), strconv.Itoa(q.Port))
+	if f.debug && !f.quiet {
+		fmt.Fprintln(os.Stderr, "    sender address:", addr)
+	}
+	if !f.quiet {
+		spin.SetMessage("Connecting to the sender")
+	}
+	first, err := quicconn.DialTimeout(ctx, addr, rs.key.secret, lanFirstDialTimeout)
+	if err != nil {
+		// Debug-only: the transfer may still end up "Direct on local
+		// network" via ICE, so this notice by default reads as the tool
+		// contradicting itself.
+		if f.debug && !f.quiet {
+			fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server:", err)
+		}
+		return nil
+	}
+	return &recvLink{
+		path:  connpath.FromLAN(),
+		lan:   true,
+		first: first,
+		dial: func(ctx context.Context, secret string) (*quicconn.AcceptResult, error) {
+			return quicconn.Dial(ctx, addr, secret)
+		},
+		close: func() {},
+	}
+}
+
+// receiveOver runs the transfer on link with in-place retries: a
+// mid-stream drop re-dials the same route and resumes from the
+// receiver's partial. Sink mode gets one attempt: emitted bytes can't be
+// reconciled, so a retry would duplicate output.
+func receiveOver(ctx context.Context, f *flags, rs *recvSession, ui *receiverUI, sink bool, link *recvLink) error {
+	opts := retry.Options{OnRetry: ui.retryNotice()}
+	if sink {
+		opts.Attempts = 1
+	}
+	err := retry.WithBackoff(ctx, opts, nil, func(attempt int) error {
+		if attempt > 1 {
+			ui.resetAttemptCounts()
+		}
+		res := link.first
+		link.first = nil
+		if res == nil {
+			var err error
+			if res, err = link.dial(ctx, rs.key.secret); err != nil {
+				return fmt.Errorf("dialing sender: %w", err)
+			}
+		}
+		defer res.Close()
+		rs.paired(res.Streams.Binding)
+		return recvOnce(ctx, f, ui, res)
+	})
+	if err != nil && link.relay != nil && ctx.Err() == nil {
+		err = classifyRelayDrop(ctx, link.relay.client, link.relay.sessionID, link.relay.roleToken, err)
+	}
+	return err
+}
+
+// recvOnce runs the receive engine on one authenticated connection.
+//
+// The attempt is bound to the connection: a sender that goes away while
+// the user sits at a prompt ends the prompt instead of hanging it. A
+// sender that closed with the cancel code is reported as E032 at once.
+func recvOnce(ctx context.Context, f *flags, ui *receiverUI, res *quicconn.AcceptResult) error {
+	connCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	defer context.AfterFunc(res.Conn.Context(), stop)()
+	ui.ctx = connCtx
+	defer func() { ui.ctx = ctx }()
+
+	opts := ui.recvOptions(hostnameOrDefault(f.hostname))
+	// A "no" that comes back after the connection died is the prompt being
+	// aborted, not the user's answer.
+	var promptAborted atomic.Bool
+	accept := opts.Accept
+	opts.Accept = func(h wire.SenderHello, s transfer.ClassifySummary) bool {
+		ok := accept(h, s)
+		if !ok && connCtx.Err() != nil {
+			promptAborted.Store(true)
+		}
+		return ok
+	}
+	err := transfer.Recv(connCtx, &res.Streams, opts)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	connLost := promptAborted.Load() || (connCtx.Err() != nil && errors.Is(err, context.Canceled))
+	// Only a drop-shaped error can hide a cancel; terminal answers (a
+	// decline, a hash mismatch) need no wait.
+	if quicconn.IsCancelClose(err) || (connLost || retry.IsTransient(err)) && res.PeerCancelled(peerCancelGrace) {
+		return fserrors.ErrPeerCancelled
+	}
+	if connLost {
+		// The connection died under us (a decline or cancel here is the
+		// aborted prompt, not the user's answer): retry it like any drop.
+		return fmt.Errorf("%w: connection lost: %v", fserrors.ErrConnectFailed, context.Cause(res.Conn.Context()))
+	}
+	return err
 }
 
 // receiverPasswordPrompt returns a callback that reads a password from

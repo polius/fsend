@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -31,16 +32,94 @@ import (
 
 // This file implements the parallel-pair sender. The high-level shape:
 //
-//   runSendParallel
-//     ├── goroutine: pairOverLAN(pairCtx)        → lanSenderPairing
-//     └── goroutine: pairOverInternet(pairCtx)   → internetSenderPairing
+//   runSendParallel                              (one sendSession)
+//     └── runSendOnce, per round                 (one sendRound)
+//           ├── goroutine: pairOverLAN(pairCtx)      → lanSenderPairing
+//           └── goroutine: pairOverInternet(pairCtx) → internetSenderPairing
 //
 // The first goroutine to return a pairing wins; pairCtx is cancelled so
-// the loser tears down cleanly. The transfer phase then runs on the
-// winner. There is no LAN-only "budget" — same-LAN receivers always win
-// because the receiver only contacts the pairing server after its
-// 300 ms mDNS query misses (see receive.go). The internet path is
-// always-on so cross-network receivers don't have to wait for any timer.
+// the loser tears down in the background. The transfer phase then runs
+// on the winner. Same-LAN receivers normally win because the receiver
+// gives its mDNS query a head start before contacting the server (see
+// receive.go). The internet path is always-on so cross-network receivers
+// don't have to wait for any timer.
+//
+// The first round pairs on the code. Once a receiver authenticates, the
+// session switches to a resume key derived from the PAKE binding (see
+// pairKey): later rounds rendezvous and authenticate on it, and the
+// code's server slot is tombstoned, so the code itself is spent.
+
+// sendSession is state that spans re-pair rounds.
+type sendSession struct {
+	mu      sync.Mutex
+	key     pairKey
+	resumed bool
+
+	authFails atomic.Int32
+}
+
+// maxAuthFailures caps failed PAKE handshakes per session. Online guessing
+// of a 45-bit code is hopeless anyway; the cap makes it impossible and
+// tells the sender someone is trying.
+const maxAuthFailures = 10
+
+func (s *sendSession) current() (pairKey, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.key, s.resumed
+}
+
+// paired switches the session to the resume key on its first successful
+// PAKE. Later pairings keep the key, so the receiver needs only one.
+func (s *sendSession) paired(binding []byte) pairKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.resumed {
+		s.key, s.resumed = resumeKey(binding), true
+	}
+	return s.key
+}
+
+// authFailed counts a failed handshake and reports whether the cap is hit.
+func (s *sendSession) authFailed(err error) error {
+	if errors.Is(err, fserrors.ErrPeerAuthFailed) && s.authFails.Add(1) >= maxAuthFailures {
+		return fmt.Errorf("%w: %v", fserrors.ErrTooManyPairingFailures, err)
+	}
+	return nil
+}
+
+// acceptCounting accepts the next authenticated connection, absorbing
+// failed handshakes (impostors, a wrong code) into the session's cap.
+func (s *sendSession) acceptCounting(ctx context.Context, ln *quicconn.Listener) (*quicconn.AcceptResult, error) {
+	for {
+		res, err := ln.Accept(ctx)
+		if err == nil {
+			return res, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if capErr := s.authFailed(err); capErr != nil {
+			return nil, capErr
+		}
+		if !errors.Is(err, quicconn.ErrHandshakeFailed) {
+			return nil, err // the listener itself failed
+		}
+	}
+}
+
+// sendRound is one pairing round.
+type sendRound struct {
+	key    pairKey
+	resume bool        // key is a resume key, not the code
+	paired atomic.Bool // set once this round picked a winner
+}
+
+// consumeCode reports whether this round spent the code: the server slot
+// is then tombstoned rather than deleted, so a late second receiver hears
+// "already claimed". A resume slot is only deleted — the next round
+// re-creates it.
+func (r *sendRound) consumeCode() bool { return r.paired.Load() && !r.resume }
 
 // lanSenderPairing holds everything the LAN transfer phase needs after
 // the first peer dials in. listener stays open across retries so a
@@ -55,13 +134,12 @@ type lanSenderPairing struct {
 // internetSenderPairing is the internet-side counterpart. The QUIC
 // listener is bound to the established PacketConn (ICE-direct or relay);
 // retries re-Accept on it. The cleanup func tears down the QUIC
-// transport, the underlying PacketConn, and Deletes the server session.
+// transport, the underlying PacketConn, and ends the server session.
 type internetSenderPairing struct {
-	quicListener *quic.Listener
-	firstRes     *quicconn.AcceptResult
-	code         string
-	pathInfo     connpath.Info
-	cleanup      func()
+	listener *quicconn.Listener
+	firstRes *quicconn.AcceptResult
+	pathInfo connpath.Info
+	cleanup  func()
 
 	// sigClient, sessionID, and roleToken let the post-transfer error
 	// path probe the pairing server for a relay eviction reason. Without
@@ -78,23 +156,40 @@ type sendPairOutcome struct {
 	err    error
 }
 
-// pairOverLAN binds the deterministic LAN port for the code, announces
-// it via mDNS, and blocks on Accept until the first receiver dials in.
-// On success it stops the mDNS announcement (late receivers should fall
-// through to the server) and returns the paired connection plus the
-// listener for retry re-Accepts.
+// listener returns the winner's QUIC listener.
+func (o sendPairOutcome) listener() *quicconn.Listener {
+	if o.lan != nil {
+		return o.lan.listener
+	}
+	return o.server.listener
+}
+
+func (o sendPairOutcome) firstRes() *quicconn.AcceptResult {
+	if o.lan != nil {
+		return o.lan.firstRes
+	}
+	return o.server.firstRes
+}
+
+// pairOverLAN binds the deterministic LAN port for the round's key,
+// announces it via mDNS, and blocks until the first receiver
+// authenticates. On success it stops the mDNS announcement (late
+// receivers should fall through to the server) and returns the paired
+// connection plus the listener for retry re-Accepts.
 //
 // Errors: setup failure (port conflict, no interface) is returned
-// immediately. Context cancellation while waiting for Accept surfaces
-// as ctx.Err() — the coordinator treats that as "loser, no-op".
-func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
+// immediately. Context cancellation while waiting surfaces as ctx.Err()
+// — the coordinator treats that as "loser, no-op".
+func pairOverLAN(ctx context.Context, sess *sendSession, key pairKey) (*lanSenderPairing, error) {
 	epoch := codepkg.Epoch(time.Now())
-	port := landisc.PortForCode(code, epoch)
-	ln, err := listenLANWithRetry(ctx, port, code)
+	port := landisc.PortForCode(key.rendezvous, epoch)
+	ln, err := listenLANWithRetry(ctx, port, key.secret)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", fserrors.ErrLANListenerFailed, err)
 	}
-	mdnsConn, err := landisc.Announce(code, epoch, landisc.PreferredLocalIP())
+	// No pinned address: each query is answered with the address of the
+	// interface it arrived on (see landisc.Announce).
+	mdnsConn, err := landisc.Announce(key.rendezvous, epoch, nil)
 	if err != nil {
 		_ = ln.Close()
 		return nil, fmt.Errorf("%w: mDNS announce: %v", fserrors.ErrLANListenerFailed, err)
@@ -106,49 +201,33 @@ func pairOverLAN(ctx context.Context, code string) (*lanSenderPairing, error) {
 
 	// Keep accepting until the real receiver completes the handshake or the
 	// pairing window closes. A malicious LAN host can reach the deterministic
-	// port and complete TLS but fail the PAKE (it lacks the code); surrendering
-	// the LAN fast path to the first such impostor would be a trivial,
-	// repeatable denial of the same-LAN shortcut. Only ctx cancellation (the
-	// internet path won, or pairing gave up) ends the loop — the transfer
-	// still succeeds via the internet path meanwhile.
-	for {
-		res, err := ln.Accept(ctx)
-		if err == nil {
-			stopMDNS()
-			return &lanSenderPairing{
-				listener: ln,
-				firstRes: res,
-				cleanup: func() {
-					stopMDNS()
-					_ = ln.Close()
-					// Closing the listener leaves an accepted conn open
-					// (quic-go), so close the paired one too — else the loser
-					// in a two-receiver race hangs. Idempotent with the
-					// winning transfer's own close.
-					res.Close()
-				},
-			}, nil
-		}
-		if ctx.Err() != nil {
-			stopMDNS()
-			_ = ln.Close()
-			return nil, err
-		}
-		// An impostor's failed handshake, not our window closing: keep
-		// listening, throttled so an instantly-erroring listener can't spin.
-		select {
-		case <-time.After(lanAcceptRetryDelay):
-		case <-ctx.Done():
-			stopMDNS()
-			_ = ln.Close()
-			return nil, ctx.Err()
-		}
+	// port and complete TLS but fail the PAKE (it lacks the code);
+	// surrendering the LAN fast path to the first such impostor would be a
+	// trivial, repeatable denial of the same-LAN shortcut. Failures count
+	// toward the session's cap instead.
+	res, err := sess.acceptCounting(ctx, ln)
+	stopMDNS()
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
 	}
+	return &lanSenderPairing{
+		listener: ln,
+		firstRes: res,
+		cleanup: func() {
+			_ = ln.Close()
+			// Closing the listener leaves an accepted conn open (quic-go),
+			// so close the paired one too — else the loser in a
+			// two-receiver race hangs. Idempotent with the winning
+			// transfer's own close.
+			res.Close()
+		},
+	}, nil
 }
 
 // waitMaxConsecFails is how many consecutive Wait failures the sender
-// tolerates (sleeping 2s·n between attempts) before giving up on the
-// internet path and deleting the session.
+// tolerates (sleeping 2s·n between attempts) before declaring the server
+// down.
 const waitMaxConsecFails = 6
 
 // firstAcceptTimeout bounds the first QUIC accept after the receiver
@@ -158,15 +237,19 @@ const waitMaxConsecFails = 6
 // receiver" forever.
 const firstAcceptTimeout = 60 * time.Second
 
-// lanAcceptRetryDelay throttles re-Accept after a failed LAN handshake so a
-// wedged listener (instant errors) can't spin the CPU. Small enough that a
-// real receiver arriving right after an impostor barely waits.
-const lanAcceptRetryDelay = 100 * time.Millisecond
-
-// sessionDeleteTimeout bounds best-effort session cleanup: it runs on the
-// drain path the winning transfer and Ctrl-C wait on, so an unreachable
-// server mustn't stall it up to the client's full request timeout.
+// sessionDeleteTimeout bounds best-effort session cleanup, so an
+// unreachable server can't stall teardown up to the client's full
+// request timeout.
 const sessionDeleteTimeout = 3 * time.Second
+
+// pairTTL bounds one pairing round, matching the server's unpaired TTL:
+// past it the code (or resume key) stops being announced on the LAN and
+// re-created on the server. Var so tests can shrink it.
+var pairTTL = time.Hour
+
+// serverRetryMax caps the backoff between attempts to reach a down
+// server. Var so tests can shrink it.
+var serverRetryMax = 30 * time.Second
 
 // errPairedGone marks failures after a receiver claimed the code. The
 // LAN race can't recover from these — a receiver that joined via the
@@ -178,93 +261,132 @@ var errPairedGone = fmt.Errorf("%w: the receiver paired but the connection could
 // returns once the receiver has paired and the QUIC SenderHandshake
 // over the established data path is up.
 //
-// The function owns the server-side session lifecycle: it Creates a
-// session keyed by our code's argon2id slot (the server never learns
-// the code itself), long-polls Wait until a receiver Joins, runs ICE
-// (falling back to a server-side relay on failure), then runs the QUIC
-// handshake. The cleanup func threaded onto the returned pairing
-// guarantees the server session is Deleted and resources released on
-// any teardown path.
-func pairOverInternet(ctx context.Context, f *flags, code string, cfg *config.Config) (*internetSenderPairing, error) {
+// It owns the server-side session lifecycle: it Creates a session keyed
+// by the rendezvous's argon2id slot (the server never learns the code
+// itself), long-polls Wait until a receiver Joins, runs ICE (falling back
+// to a server-side relay on failure), then runs the QUIC handshake. The
+// cleanup func threaded onto the returned pairing ends the server session
+// and releases resources on any teardown path.
+//
+// onDown, when non-nil, makes the path persistent: an unreachable server
+// is reported once through it and retried with capped backoff, and a
+// session the server lost (restart, TTL) is re-created. With nil, the
+// first such failure is returned (the internet path is the only one).
+func pairOverInternet(ctx context.Context, f *flags, sess *sendSession, round *sendRound, cfg *config.Config, onDown func(error)) (*internetSenderPairing, error) {
 	client, _, err := signalingClient(cfg)
 	if err != nil {
 		return nil, err
 	}
-	created, err := client.Create(ctx, code)
-	if err != nil {
-		return nil, err
-	}
-	// Delete the session on every error path. Fresh ctx (the parent is often
-	// already cancelled, e.g. the LAN path won) but bounded — see
-	// sessionDeleteTimeout.
-	deleteSession := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), sessionDeleteTimeout)
-		defer cancel()
-		_ = client.Delete(ctx, created.SessionID, created.RoleToken)
-	}
-
-	waitResp, err := waitForReceiver(ctx, client, created.Code)
-	if err != nil {
-		deleteSession()
-		return nil, err
-	}
-
-	// Establish the underlying data path: ICE-direct first, relay fallback.
-	pc, pathInfo, err := establishInternetDataPath(ctx, f, client, created, waitResp)
-	if err != nil {
-		// A spent daily budget is terminal and self-explanatory. Surface it
-		// as-is (not the generic errPairedGone), and leave the session for the
-		// receiver to reach the relay and learn the same reason — it's the
-		// budget, not the pairing, that failed. The session (and its per-IP
-		// count) is reclaimed at PairedTTL rather than now; fine since the
-		// budget is already the degraded state and the message says to wait.
-		if errors.Is(err, fserrors.ErrRelayBudgetExhausted) {
+	for {
+		created, err := createWithRetry(ctx, client, round.key.rendezvous, onDown)
+		if err != nil {
 			return nil, err
 		}
-		deleteSession()
-		if ctx.Err() == nil {
-			err = fmt.Errorf("%w: %v", errPairedGone, err)
+		// End the session on every exit. Fresh ctx (the parent is often
+		// already cancelled, e.g. the LAN path won) but bounded.
+		endSession := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), sessionDeleteTimeout)
+			defer cancel()
+			if round.consumeCode() {
+				_ = client.Consume(ctx, created.SessionID, created.RoleToken)
+				return
+			}
+			_ = client.Delete(ctx, created.SessionID, created.RoleToken)
 		}
-		return nil, err
-	}
 
-	// Bring up QUIC on the established PacketConn and run the sender
-	// handshake on the first peer. Retries re-Accept on the same listener.
-	acceptCtx, cancelAccept := context.WithTimeout(ctx, firstAcceptTimeout)
-	ln, res, teardown, err := senderQUICAccept(acceptCtx, pc, created.Code)
-	cancelAccept()
-	if err != nil {
-		deleteSession()
-		if ctx.Err() == nil {
-			err = fmt.Errorf("%w: %v", errPairedGone, err)
+		waitResp, err := waitForReceiver(ctx, client, created.Code, onDown)
+		if errors.Is(err, fserrors.ErrSessionExpired) && onDown != nil && ctx.Err() == nil {
+			// The server lost the session (restart, deploy, TTL) while we
+			// still hold the code: the slot is client-derived, so simply
+			// re-create it.
+			continue
 		}
-		return nil, err
-	}
+		if err != nil {
+			endSession()
+			return nil, err
+		}
 
-	return &internetSenderPairing{
-		quicListener: ln,
-		firstRes:     res,
-		code:         created.Code,
-		pathInfo:     pathInfo,
-		sigClient:    client,
-		sessionID:    created.SessionID,
-		roleToken:    created.RoleToken,
-		cleanup: func() {
-			teardown()
-			deleteSession()
-		},
-	}, nil
+		pc, pathInfo, err := establishInternetDataPath(ctx, f, client, created, waitResp)
+		if err != nil {
+			// A spent daily budget is terminal and self-explanatory. Surface
+			// it as-is (not the generic errPairedGone), and leave the session
+			// for the receiver to reach the relay and learn the same reason.
+			if errors.Is(err, fserrors.ErrRelayBudgetExhausted) {
+				return nil, err
+			}
+			endSession()
+			if ctx.Err() == nil {
+				err = fmt.Errorf("%w: %v", errPairedGone, err)
+			}
+			return nil, err
+		}
+
+		// Bring up QUIC on the established PacketConn and authenticate the
+		// first peer. Retries re-Accept on the same listener.
+		acceptCtx, cancelAccept := context.WithTimeout(ctx, firstAcceptTimeout)
+		ln, res, teardown, err := senderQUICAccept(acceptCtx, sess, pc, round.key.secret)
+		cancelAccept()
+		if err != nil {
+			endSession()
+			if ctx.Err() == nil && !errors.Is(err, fserrors.ErrTooManyPairingFailures) {
+				err = fmt.Errorf("%w: %v", errPairedGone, err)
+			}
+			return nil, err
+		}
+
+		return &internetSenderPairing{
+			listener:  ln,
+			firstRes:  res,
+			pathInfo:  pathInfo,
+			sigClient: client,
+			sessionID: created.SessionID,
+			roleToken: created.RoleToken,
+			cleanup: func() {
+				teardown()
+				endSession()
+			},
+		}, nil
+	}
 }
 
-// listenLANWithRetry binds the code's deterministic LAN port, retrying
-// briefly: on a re-pair round the previous listener's socket is only
-// released once its dead QUIC connection finishes draining, so an
-// immediate re-bind can lose that race and needlessly surrender the
-// LAN path to the server.
-func listenLANWithRetry(ctx context.Context, port int, code string) (*quicconn.Listener, error) {
+// createWithRetry creates the session. With onDown set, transient
+// failures (unreachable, rate-limited, 5xx, an intercepted TLS session)
+// are reported once and retried with capped backoff: a sender started
+// right after wake, behind a captive portal, or during a server deploy
+// must still become reachable across networks. Auth and retirement
+// errors need the user, so they return at once.
+func createWithRetry(ctx context.Context, client *signaling.Client, rendezvous string, onDown func(error)) (*signaling.CreateResult, error) {
+	wait := min(time.Second, serverRetryMax)
+	for {
+		created, err := client.Create(ctx, rendezvous)
+		if err == nil {
+			return created, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if onDown == nil || errors.Is(err, fserrors.ErrServerAuthRequired) ||
+			errors.Is(err, fserrors.ErrServerRetired) || errors.Is(err, fserrors.ErrCodeAlreadyClaimed) {
+			return nil, err
+		}
+		onDown(err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, serverRetryMax)
+	}
+}
+
+// listenLANWithRetry binds the deterministic LAN port, retrying briefly:
+// on a re-pair round the previous listener's socket is only released once
+// its dead QUIC connection finishes draining, so an immediate re-bind can
+// lose that race and needlessly surrender the LAN path to the server.
+func listenLANWithRetry(ctx context.Context, port int, secret string) (*quicconn.Listener, error) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		ln, err := quicconn.ListenAddr(":"+strconv.Itoa(port), code)
+		ln, err := quicconn.ListenAddr(":"+strconv.Itoa(port), secret)
 		if err == nil || time.Now().After(deadline) {
 			return ln, err
 		}
@@ -283,19 +405,18 @@ var waitRetryStep = 2 * time.Second
 // waitForReceiver long-polls Wait until the receiver pairs, the user
 // cancels, or the server reaps the session. The server's per-call
 // long-poll timeout returns nil periodically; we just re-issue. There
-// is no client-side deadline — the user controls the wait duration by
-// keeping the terminal open.
+// is no client-side deadline here — the round's pairTTL bounds it.
 //
-// If the server reaps the session (unpaired TTL; ErrCodeNotFound from
-// Wait), we surface a dedicated "session expired" error instead of the
-// receiver-side E002 wording.
+// If the server reaps the session (ErrCodeNotFound from Wait), we
+// surface ErrSessionExpired; a persistent caller re-creates it.
 //
 // Anything else is retried with backoff: senders wait minutes, and a
 // single dropped poll (wifi roam, laptop sleep/wake) must not abandon a
-// session the server still holds. The give-up threshold counts
-// consecutive failures, not elapsed time — a wall-clock deadline would
-// expire during a long sleep and kill the code on wake.
-func waitForReceiver(ctx context.Context, client *signaling.Client, code string) (*server.WaitResponse, error) {
+// session the server still holds. The threshold counts consecutive
+// failures, not elapsed time — a wall-clock deadline would expire during
+// a long sleep and kill the code on wake. Past it, a nil onDown gives up;
+// otherwise onDown hears about it and polling continues at capped backoff.
+func waitForReceiver(ctx context.Context, client *signaling.Client, code string, onDown func(error)) (*server.WaitResponse, error) {
 	consecFails := 0
 	for {
 		resp, err := client.Wait(ctx, code)
@@ -312,12 +433,15 @@ func waitForReceiver(ctx context.Context, client *signaling.Client, code string)
 		default:
 			consecFails++
 			if consecFails >= waitMaxConsecFails {
-				return nil, err
+				if onDown == nil {
+					return nil, err
+				}
+				onDown(err)
 			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(time.Duration(consecFails) * waitRetryStep):
+			case <-time.After(min(time.Duration(consecFails)*waitRetryStep, serverRetryMax)):
 			}
 		}
 	}
@@ -326,7 +450,8 @@ func waitForReceiver(ctx context.Context, client *signaling.Client, code string)
 // establishInternetDataPath wraps the ICE-then-relay ladder. On ICE
 // success it returns the ICE-owning PacketConn; on failure it falls back
 // to a relay PacketConn. The pathInfo reflects the choice for UX
-// rendering.
+// rendering. The sender is the ICE controlling side, so it decides the
+// path and publishes the decision for the receiver (see iceEstablish).
 //
 // ICE gathers srflx candidates against the STUN address the server put in
 // the create response (the relay socket also answers STUN). The relay slot
@@ -340,6 +465,7 @@ func waitForReceiver(ctx context.Context, client *signaling.Client, code string)
 //   - modeRelay:  skip ICE entirely; relay only.
 func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.Client, created *signaling.CreateResult, waitResp *server.WaitResponse) (net.PacketConn, connpath.Info, error) {
 	if f != nil && f.mode == modeRelay {
+		publishPathChoice(ctx, client, created.SessionID, created.RoleToken, pathChoiceRelay)
 		return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 	}
 	// The STUN address rides on the create response, so ICE runs without a
@@ -398,57 +524,54 @@ func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID,
 }
 
 // senderQUICAccept brings up a quic.Transport on the established
-// PacketConn, accepts the first inbound QUIC connection, runs the
-// PAKE sender handshake, and returns the listener (for retries), the
-// first AcceptResult, and a teardown closure.
-func senderQUICAccept(ctx context.Context, pc net.PacketConn, code string) (*quic.Listener, *quicconn.AcceptResult, func(), error) {
+// PacketConn, authenticates the first inbound QUIC connection, and
+// returns the listener (for retries), the first AcceptResult, and a
+// teardown closure.
+func senderQUICAccept(ctx context.Context, sess *sendSession, pc net.PacketConn, secret string) (*quicconn.Listener, *quicconn.AcceptResult, func(), error) {
 	tlsCfg, err := quicconn.SenderTLSConfig()
 	if err != nil {
 		_ = pc.Close()
 		return nil, nil, nil, err
 	}
 	tr := quicconn.NewTransport(pc)
-	ln, err := tr.Listen(tlsCfg, quicconn.QuicConfig())
+	qln, err := tr.Listen(tlsCfg, quicconn.QuicConfig())
 	if err != nil {
 		_ = tr.Close()
 		_ = pc.Close()
 		return nil, nil, nil, fmt.Errorf("QUIC listen: %w", err)
 	}
-	qc, err := ln.Accept(ctx)
-	if err != nil {
-		_ = ln.Close()
-		_ = tr.Close()
-		_ = pc.Close()
-		return nil, nil, nil, fmt.Errorf("QUIC accept: %w", err)
-	}
-	res, err := quicconn.SenderHandshake(ctx, qc, code)
-	if err != nil {
-		_ = ln.Close()
-		_ = tr.Close()
-		_ = pc.Close()
-		return nil, nil, nil, err
-	}
+	ln := quicconn.NewListener(qln, secret)
 	teardown := func() {
 		_ = ln.Close()
 		_ = tr.Close()
 		_ = pc.Close()
 	}
+	// One attempt: a peer that joined this session and failed the PAKE is
+	// not going to start passing it.
+	res, err := ln.Accept(ctx)
+	if err != nil {
+		if capErr := sess.authFailed(err); capErr != nil {
+			err = capErr
+		}
+		teardown()
+		return nil, nil, nil, fmt.Errorf("QUIC accept: %w", err)
+	}
 	return ln, res, teardown, nil
 }
 
 // runSendParallel pairs and transfers, returning to "Waiting for
-// receiver" — same code — when the receiver vanishes mid-transfer.
-// Each round re-announces mDNS and re-Creates the server session (the
-// previous round's cleanup freed the slot), so a rerun `fsend <code>`
-// rediscovers the sender and resumes from its .fsend-partial. The wait
-// is unbounded, like the initial one: Ctrl-C ends it.
+// receiver" when the receiver vanishes mid-transfer. After the first
+// pairing, rounds rendezvous on the resume key, so only the original
+// receiver device can come back — a rerun `fsend <code>` there finds the
+// sender and resumes from its .fsend-partial.
 //
 // Stdin/--text transfers can't replay their reader, so they fail as
 // before instead of re-pairing.
 func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
+	sess := &sendSession{key: codeKey(code)}
 	transferDropped := false
 	for {
-		err := runSendOnce(ctx, f, plan, code, cfg, waitSpin)
+		err := runSendOnce(ctx, f, plan, sess, cfg, waitSpin)
 		if err == nil || ctx.Err() != nil || plan.consumable() ||
 			(!errors.Is(err, fserrors.ErrTransientFailure) && !isReceiverClose(err)) {
 			// A re-pair round failing with "server unreachable" after a
@@ -465,12 +588,11 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 		if !f.quiet {
 			// A deliberate close (Ctrl-C, clean exit) may genuinely re-run
 			// and reconnect. A death (kill, crash, network gone) surfaces
-			// as exhausted retries — that process is never coming back, so
-			// "reconnect" would misdirect the user; what's true is that the
-			// code still works for a fresh `fsend <code>`.
+			// as exhausted retries; the receiver may still recover on its
+			// own (network change) or be rerun on the same device.
 			msg := "Receiver disconnected — waiting for them to reconnect."
 			if !isReceiverClose(err) {
-				msg = "Lost contact with the receiver — waiting for a new connection on the same code."
+				msg = "Lost contact with the receiver — waiting for it to reconnect."
 			}
 			fmt.Fprintf(os.Stderr, "%s %s\n", uxlog.Info(), msg)
 		}
@@ -505,11 +627,14 @@ func isReceiverClose(err error) bool {
 //   - LAN-only failure (e.g. port conflict): keep waiting for the server
 //     to pair; surface an ℹ line so the user knows internet is the only
 //     remaining path.
-//   - Server-only failure (unreachable): keep waiting for LAN; surface a
-//     ⚠ line so the user knows only same-LAN receivers can connect now.
+//   - Server down: keep waiting for LAN while the server path retries in
+//     the background; surface a ⚠ line so the user knows only same-LAN
+//     receivers can connect for now.
 //   - Both fail: return the most informative error (E001 if the server
 //     was unreachable, otherwise the LAN error).
-func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg *config.Config, waitSpin *uxlog.Spinner) error {
+//   - Too many failed PAKEs, or a receiver that paired and vanished:
+//     abort the round.
+func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSession, cfg *config.Config, waitSpin *uxlog.Spinner) error {
 	pairCtx, cancelPair := context.WithCancel(ctx)
 	defer cancelPair()
 	// Belt-and-braces: if we exit through an unusual path (panic-recover,
@@ -519,8 +644,12 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 	// defer-time.
 	defer func() { waitSpin.Stop() }()
 
+	key, resumed := sess.current()
+	round := &sendRound{key: key, resume: resumed}
+
 	lanCh := make(chan sendPairOutcome, 1)
 	serverCh := make(chan sendPairOutcome, 1)
+	serverDownCh := make(chan error, 1)
 
 	// --mode collapses the LAN+internet race to a single path. The
 	// disabled side is marked done upfront and its goroutine never starts,
@@ -530,21 +659,34 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 
 	if !lanDisabled {
 		go func() {
-			p, err := pairOverLAN(pairCtx, code)
+			p, err := pairOverLAN(pairCtx, sess, key)
 			lanCh <- sendPairOutcome{lan: p, err: err}
 		}()
 	}
 	if !serverDisabled {
+		// The server path only persists while LAN can still pair.
+		var onDown func(error)
+		if !lanDisabled {
+			onDown = func(err error) {
+				select {
+				case serverDownCh <- err:
+				default:
+				}
+			}
+		}
 		go func() {
-			p, err := pairOverInternet(pairCtx, f, code, cfg)
+			p, err := pairOverInternet(pairCtx, f, sess, round, cfg, onDown)
 			serverCh <- sendPairOutcome{server: p, err: err}
 		}()
 	}
 
+	ttl := time.NewTimer(pairTTL)
+	defer ttl.Stop()
+
 	var (
 		lanDone, serverDone bool
 		lanErr, serverErr   error
-		serverDownNoticed   bool
+		serverDownErr       error
 		lanDownNoticed      bool
 		winner              sendPairOutcome
 		winnerPicked        bool
@@ -552,13 +694,48 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 	lanDone = lanDisabled
 	serverDone = serverDisabled
 
+	// abort ends the round with err, releasing whatever the paths set up.
+	abort := func(err error) error {
+		waitSpin.Stop()
+		cancelPair()
+		drainBoth(lanCh, serverCh, lanDone, serverDone)
+		return err
+	}
+	// noticeServerDown prints the LAN-only warning once. The notice names
+	// the cause when the sender can act on it (password, rate limit).
+	// Skipped under --mode=direct/relay: LAN is disabled, so the notice
+	// would be misleading. No E-coded line here: if the LAN path also
+	// fails, the final renderError prints the catalog entry.
+	noticeServerDown := func(err error) {
+		if f.debug {
+			fmt.Fprintln(os.Stderr, "DEBUG: server pairing failed:", err)
+		}
+		if serverDownErr != nil || f.quiet || lanDisabled {
+			serverDownErr = err
+			return
+		}
+		serverDownErr = err
+		waitSpin.Stop()
+		fmt.Fprintln(os.Stderr, uxlog.Warn(), serverPairNotice(err))
+		waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
+	}
+
 	for !winnerPicked && (!lanDone || !serverDone) {
 		select {
 		case <-ctx.Done():
-			waitSpin.Stop()
-			cancelPair()
-			drainBoth(lanCh, serverCh, lanDone, serverDone)
-			return ctx.Err()
+			return abort(ctx.Err())
+
+		case <-ttl.C:
+			// Stop announcing a code nobody redeemed within the server's TTL.
+			return abort(fserrors.ErrSessionExpired)
+
+		case err := <-serverDownCh:
+			noticeServerDown(err)
+			// The server path keeps retrying, but if LAN already failed
+			// nothing can pair until it recovers: report now.
+			if lanDone && lanErr != nil && !errors.Is(lanErr, context.Canceled) {
+				return abort(pickFinalSendError(lanErr, err))
+			}
 
 		case res := <-lanCh:
 			lanDone = true
@@ -571,6 +748,12 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 			if errors.Is(lanErr, context.Canceled) {
 				continue
 			}
+			if errors.Is(lanErr, fserrors.ErrTooManyPairingFailures) {
+				return abort(lanErr)
+			}
+			if serverDownErr != nil {
+				return abort(pickFinalSendError(lanErr, serverDownErr))
+			}
 			// Only the notice when there's another path left (not under
 			// --mode=local). Same-LAN receivers can still pair through
 			// the server (host↔host ICE), so this describes the loss of
@@ -578,10 +761,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 			if !lanDownNoticed && !f.quiet && !serverDisabled {
 				lanDownNoticed = true
 				// Pause the spinner so the notice prints on a clean
-				// line, then restart it for the remaining (server)
-				// path. The next pair outcome will either flip
-				// winnerPicked (and Stop fires via deferred cleanup)
-				// or trigger another notice.
+				// line, then restart it for the remaining (server) path.
 				waitSpin.Stop()
 				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local-network discovery unavailable — connecting via the server instead.")
 				waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
@@ -601,32 +781,13 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 			// A receiver claimed the code and then the connection died.
 			// That receiver already failed LAN discovery, so waiting on
 			// the LAN listener can never pair — abort the race.
-			if errors.Is(serverErr, errPairedGone) {
-				waitSpin.Stop()
-				cancelPair()
-				drainBoth(lanCh, serverCh, lanDone, serverDone)
-				return serverErr
+			if errors.Is(serverErr, errPairedGone) || errors.Is(serverErr, fserrors.ErrTooManyPairingFailures) {
+				return abort(serverErr)
 			}
-			// Any server-path failure leaves the code working on the local
-			// network only — say so, or the sender waits forever on a code
-			// that cross-network receivers can't redeem. The notice names
-			// the cause when the sender can act on it (password, rate
-			// limit); the LAN wait that follows never ends, so this line
-			// is the only place those causes can surface. Skipped when the
-			// user explicitly forced the internet path with
-			// --mode=direct/relay: LAN is disabled, so the notice would be
-			// misleading. No E-coded line here: if the LAN path also
-			// fails, the final renderError prints the catalog entry —
-			// once is enough.
-			if f.debug {
-				fmt.Fprintln(os.Stderr, "DEBUG: server pairing failed:", serverErr)
-			}
-			if !serverDownNoticed && !f.quiet && !lanDisabled {
-				serverDownNoticed = true
-				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Warn(), serverPairNotice(serverErr))
-				waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
-			}
+			// Any other server-path failure (auth, retired) leaves the code
+			// working on the local network only — say so, or the sender
+			// waits forever on a code cross-network receivers can't redeem.
+			noticeServerDown(serverErr)
 		}
 	}
 
@@ -635,8 +796,24 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 		return pickFinalSendError(lanErr, serverErr)
 	}
 
+	// Switch to the resume key before any byte moves, and before the loser
+	// tears down: the loser's server session is then consumed (tombstoned)
+	// rather than deleted, and in-transfer re-dials must use the new secret.
+	round.paired.Store(true)
+	newKey := sess.paired(winner.firstRes().Streams.Binding)
+	winner.listener().SetSecret(newKey.secret)
+
 	cancelPair()
-	drainLoser(lanCh, serverCh, winner, lanDone, serverDone)
+	// Tear the loser down in the background — its server cleanup can take
+	// seconds — but finish it before returning so a short transfer can't
+	// exit with the tombstone unwritten.
+	var loserDone sync.WaitGroup
+	loserDone.Add(1)
+	go func() {
+		defer loserDone.Done()
+		drainLoser(lanCh, serverCh, winner, lanDone, serverDone)
+	}()
+	defer loserDone.Wait()
 	// Stop the wait spinner now so the connected line and progress bar
 	// land on a clean line. The deferred Stop above is idempotent.
 	waitSpin.Stop()
@@ -659,9 +836,9 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, code string, cfg
 	}
 
 	if winner.lan != nil {
-		return runSenderTransferOverLAN(ctx, f, plan, winner.lan)
+		return runSenderTransferOverLAN(ctx, f, plan, sess, winner.lan)
 	}
-	return runSenderTransferOverInternet(ctx, f, plan, winner.server)
+	return runSenderTransferOverInternet(ctx, f, plan, sess, winner.server)
 }
 
 // startWaitSpinner returns a quiet-aware spinner. In --quiet mode we
@@ -676,16 +853,21 @@ func startWaitSpinner(f *flags, msg string) *uxlog.Spinner {
 	return uxlog.StartSpinner(msg, uxlog.HintCancel)
 }
 
+// reacceptTimeout bounds a mid-transfer re-Accept: if the receiver exited
+// terminally, an unbounded Accept would hang "retrying…" until Ctrl-C
+// instead of exhausting the retry budget.
+const reacceptTimeout = 15 * time.Second
+
 // runSenderTransferOverLAN runs the transfer protocol on a paired LAN
 // connection. The first attempt uses the AcceptResult captured at pair
 // time; transient mid-transfer errors trigger a retry that re-Accepts
 // on the same listener (the receiver's own retry loop re-Dials).
-func runSenderTransferOverLAN(ctx context.Context, f *flags, plan *sendPlan, pair *lanSenderPairing) error {
+func runSenderTransferOverLAN(ctx context.Context, f *flags, plan *sendPlan, sess *sendSession, pair *lanSenderPairing) error {
 	defer pair.cleanup()
 	return runSenderTransferLoop(ctx, f, plan, connpath.FromLAN(), pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
-		acceptCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		acceptCtx, cancel := context.WithTimeout(ctx, reacceptTimeout)
 		defer cancel()
-		res, err := pair.listener.Accept(acceptCtx)
+		res, err := sess.acceptCounting(acceptCtx, pair.listener)
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
 		}
@@ -697,22 +879,16 @@ func runSenderTransferOverLAN(ctx context.Context, f *flags, plan *sendPlan, pai
 // retry shape as LAN: first attempt uses the captured AcceptResult,
 // subsequent attempts re-Accept on the same QUIC listener (the
 // underlying PacketConn is preserved across attempts).
-func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan, pair *internetSenderPairing) error {
+func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan, sess *sendSession, pair *internetSenderPairing) error {
 	defer pair.cleanup()
 	err := runSenderTransferLoop(ctx, f, plan, pair.pathInfo, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
-		// Bounded like the LAN re-accept: if the receiver exited
-		// terminally, an unbounded Accept would hang "retrying…" until
-		// Ctrl-C instead of exhausting the retry budget.
-		acceptCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		acceptCtx, cancel := context.WithTimeout(ctx, reacceptTimeout)
 		defer cancel()
-		qc, err := pair.quicListener.Accept(acceptCtx)
+		res, err := sess.acceptCounting(acceptCtx, pair.listener)
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
 		}
-		// Bound the PAKE handshake by the same window: a peer that
-		// completes the QUIC accept then stalls the PAKE must not hang
-		// "retrying…" forever.
-		return quicconn.SenderHandshake(acceptCtx, qc, pair.code)
+		return res, nil
 	})
 	if pair.pathInfo.Kind == connpath.KindRelay {
 		return classifyRelayDrop(ctx, pair.sigClient, pair.sessionID, pair.roleToken, err)
@@ -792,7 +968,15 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 			}
 			res := current
 			current = nil
-			defer res.Close()
+			// A Ctrl-C closes with the cancel code, so the receiver reports
+			// E032 at once instead of retrying a sender that is gone.
+			defer func() {
+				if ctx.Err() != nil {
+					res.Cancel()
+					return
+				}
+				res.Close()
+			}()
 			return transfer.Send(ctx, &res.Streams, transfer.SendOptions{
 				Hostname:       hostnameOrDefault(f.hostname),
 				OS:             runtime.GOOS,
@@ -867,9 +1051,11 @@ func serverPairNotice(err error) string {
 	case errors.Is(err, fserrors.ErrServerAuthRequired):
 		return "The server requires a password (fsend --connect <host:port>,<password>) — " + lanOnly
 	case errors.Is(err, fserrors.ErrRateLimited):
-		return "The server rate-limited this device; wait a minute and try again — until then " + lanOnly
+		return "The server rate-limited this device; retrying — until then " + lanOnly
+	case errors.Is(err, fserrors.ErrServerCertUntrusted):
+		return "The server's certificate isn't trusted (a Wi-Fi login page?); retrying — until then " + lanOnly
 	default:
-		return "Server unavailable — " + lanOnly
+		return "Server unavailable; retrying — until then " + lanOnly
 	}
 }
 

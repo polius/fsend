@@ -118,6 +118,9 @@ type Server struct {
 	byID     map[string]*session
 	ipCounts map[string]int         // active sessions per source IP
 	ipBucket map[string]*rateBucket // new-session rate limiter per source IP
+	// consumed tombstones slots whose code was used (slot → expiry), so a
+	// late second receiver hears 409 "already claimed", not 404.
+	consumed map[string]time.Time
 
 	// Relay-fallback wiring (optional). When non-nil, the server exposes
 	// POST /v1/relay/allocate and returns "host(request.Host):relayUDPPort"
@@ -202,6 +205,7 @@ func New(cfg Config) *Server {
 		ipCounts: make(map[string]int),
 		ipBucket: make(map[string]*rateBucket),
 		stopping: make(chan struct{}),
+		consumed: make(map[string]time.Time),
 	}
 }
 
@@ -555,6 +559,11 @@ func (s *Server) evict(now time.Time) {
 			}
 		}
 	}
+	for slot, exp := range s.consumed {
+		if now.After(exp) {
+			delete(s.consumed, slot)
+		}
+	}
 	// Drop rate-limit buckets whose stamps have all aged out. Without
 	// this, every IP that ever connected lives in ipBucket forever — the
 	// allowNewSession write path only creates entries.
@@ -643,7 +652,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// with a fresh code+slot. With ~2^45 codes an honest collision is
 	// effectively impossible, so this is bounded-retry insurance, not a
 	// hot path.
-	if _, taken := s.bySlot[slot]; taken {
+	if _, taken := s.bySlot[slot]; taken || s.isConsumed(slot) {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusConflict, "slot already in use")
 		return
@@ -714,6 +723,11 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
+		return
+	}
+	if s.isConsumed(slot) {
+		s.mu.Unlock()
+		writeJSONError(w, http.StatusConflict, "code already used")
 		return
 	}
 	sess, ok := s.bySlot[slot]
@@ -958,8 +972,21 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	delete(s.bySlot, sess.Slot)
 	s.releaseIP(sess.SenderRateKey)
 	s.releaseIP(sess.ReceiverRateKey)
+	if r.URL.Query().Get("consumed") != "" {
+		s.consumed[sess.Slot] = time.Now().Add(consumedTTL)
+	}
 	s.cfg.Logger.Debug("session deleted", "slot", sess.Slot)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// consumedTTL is how long a used code's slot answers 409: long enough for
+// any late second receiver, short enough to hold no lasting state.
+const consumedTTL = 10 * time.Minute
+
+// isConsumed must be called with s.mu held.
+func (s *Server) isConsumed(slot string) bool {
+	exp, ok := s.consumed[slot]
+	return ok && time.Now().Before(exp)
 }
 
 // v6SiteFactor scales the per-minute budget for an IPv6 /48. A /48 is

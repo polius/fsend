@@ -29,11 +29,14 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v4"
+	"github.com/pion/transport/v5"
+	"github.com/pion/transport/v5/stdnet"
 )
 
 // Options bundle the inputs callers must supply.
@@ -132,6 +135,15 @@ func New(opts Options) (*Agent, error) {
 		}))
 	}
 
+	agentOpts = append(agentOpts,
+		ice.WithInterfaceFilter(hostInterface),
+		ice.WithIPFilter(hostIP),
+		ice.WithRemoteIPFilter(remoteIP),
+	)
+	if n, err := stdnet.NewNet(); err == nil {
+		agentOpts = append(agentOpts, ice.WithNet(bufferedNet{n}))
+	}
+
 	inner, err := ice.NewAgentWithOptions(agentOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("iceconn: new agent: %w", err)
@@ -140,7 +152,7 @@ func New(opts Options) (*Agent, error) {
 	a := &Agent{
 		inner:   inner,
 		opts:    opts,
-		localCh: make(chan string, 16),
+		localCh: make(chan string, maxLocalCandidates),
 	}
 
 	// OnCandidate fires for each gathered local candidate. A nil candidate
@@ -185,6 +197,12 @@ func (a *Agent) AddRemoteCandidate(raw string) error {
 	c, err := ice.UnmarshalCandidate(raw)
 	if err != nil {
 		return fmt.Errorf("iceconn: parse remote candidate %q: %w", raw, err)
+	}
+	// Candidates arrive through the pairing server: an IP literal only (no
+	// name for us to resolve), and never one that would aim our STUN checks
+	// at this host or a link-local service such as cloud metadata.
+	if ip := net.ParseIP(c.Address()); ip == nil || !remoteIP(ip) {
+		return fmt.Errorf("iceconn: refusing remote candidate address %q", c.Address())
 	}
 	if err := a.inner.AddRemoteCandidate(c); err != nil {
 		return fmt.Errorf("iceconn: add remote candidate: %w", err)
@@ -239,9 +257,13 @@ func (a *Agent) SelectedPair() (localType, remoteType string, ok bool) {
 	return pair.Local.Type().String(), pair.Remote.Type().String(), true
 }
 
+// maxLocalCandidates buffers every candidate a peer may publish (the
+// server caps a side at 64), so a slow pump never loses one.
+const maxLocalCandidates = 64
+
 // sendLocal delivers a candidate without blocking pion's internal
-// goroutine: if the caller hasn't drained the (generously buffered)
-// channel, we drop rather than stall.
+// goroutine: the buffer holds as many candidates as the server accepts,
+// so only surplus beyond that is dropped.
 func (a *Agent) sendLocal(candidate string) {
 	a.localMu.Lock()
 	defer a.localMu.Unlock()
@@ -251,6 +273,79 @@ func (a *Agent) sendLocal(candidate string) {
 	select {
 	case a.localCh <- candidate:
 	default:
+	}
+}
+
+// skipIfacePrefixes are interfaces whose addresses we never publish as
+// host candidates: VPN tunnels, container and VM bridges, and Apple's
+// virtual links. The pairing server would learn them (internal topology,
+// a VPN's address) and a peer can rarely use them; srflx and the relay
+// cover the cross-network case.
+var skipIfacePrefixes = []string{
+	"utun", "tun", "tap", "wg", "tailscale", "zt", "ipsec", "ppp",
+	"docker", "virbr", "veth", "br-", "vmnet", "vboxnet",
+	"awdl", "llw", "anpi", "bridge",
+}
+
+func hostInterface(name string) bool {
+	n := strings.ToLower(name)
+	for _, p := range skipIfacePrefixes {
+		if strings.HasPrefix(n, p) {
+			return false
+		}
+	}
+	return true
+}
+
+// hostIP keeps addresses a peer could reach: link-local is meaningless
+// off-link and can embed the interface's MAC.
+func hostIP(ip net.IP) bool {
+	return !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() && !ip.IsMulticast()
+}
+
+// awsMetadataV6 is the IPv6 instance-metadata address (IPv4's is
+// link-local and already refused).
+var awsMetadataV6 = net.ParseIP("fd00:ec2::254")
+
+// remoteIP screens peer candidates. Private addresses stay: same-LAN
+// peers pair over them.
+func remoteIP(ip net.IP) bool {
+	return !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast() &&
+		!ip.IsLinkLocalUnicast() && !ip.Equal(awsMetadataV6)
+}
+
+// udpBufferSize matches what quic-go asks for on its own sockets. The ICE
+// conn reaches quic-go wrapped, so quic-go can't size it; we do it here.
+const udpBufferSize = 7 << 20
+
+// bufferedNet sizes the buffers of every UDP socket pion opens, so bursts
+// at gigabit rates aren't dropped by Linux's 208 KiB default.
+type bufferedNet struct{ *stdnet.Net }
+
+func (n bufferedNet) ListenUDP(network string, laddr *net.UDPAddr) (transport.UDPConn, error) {
+	c, err := n.Net.ListenUDP(network, laddr)
+	if err == nil {
+		sizeBuffers(c)
+	}
+	return c, err
+}
+
+func (n bufferedNet) ListenPacket(network, address string) (net.PacketConn, error) {
+	c, err := n.Net.ListenPacket(network, address)
+	if err == nil {
+		sizeBuffers(c)
+	}
+	return c, err
+}
+
+// sizeBuffers is best effort: the OS may cap or refuse the size.
+func sizeBuffers(c any) {
+	if b, ok := c.(interface {
+		SetReadBuffer(int) error
+		SetWriteBuffer(int) error
+	}); ok {
+		_ = b.SetReadBuffer(udpBufferSize)
+		_ = b.SetWriteBuffer(udpBufferSize)
 	}
 }
 

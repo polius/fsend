@@ -73,6 +73,7 @@ doing that job, it observes very little:
 | Ciphertext (relay-fallback path only) | ✓ as opaque bytes — not decryptable, even by the operator |
 | The share code | ✗ never — only a derived slot (see below) |
 | Your IP | ✓ briefly, in memory, for pairing — never written to disk |
+| Your local addresses | ✓ the LAN addresses your peer may connect to directly (ICE host candidates), relayed in memory during pairing. VPN, container, VM and link-local interfaces are never published |
 
 ### What it writes to disk
 
@@ -111,7 +112,12 @@ What makes a short code safe to use as the whole secret:
   2^44 argon2id evaluations at 64 MiB each, on average. That's also why
   the SPAKE2 binding holds against the server itself — not knowing the
   code, it can't run the handshake with either side.
-- **One-shot.** Once a receiver claims a code, it can't be reused.
+- **One-shot.** Once a receiver claims a code, it can't be reused: a
+  second receiver is told the code is already claimed. If the transfer
+  drops, the two devices re-pair on a key derived from their first
+  handshake, never on the code again, so someone who saw the code can't
+  step into a dropped transfer. A sender stops after 10 failed handshakes
+  on its code.
 - **Time-limited.** A code expires on the server after one hour if no one
   receives, or ten minutes once a receiver has paired. Pressing Ctrl-C on
   the sender invalidates it immediately.

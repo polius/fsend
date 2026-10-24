@@ -25,10 +25,12 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
 
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
 )
 
@@ -62,8 +64,21 @@ const ALPN = "fsend/1"
 // ML-KEM support.
 var pqCurvePreferences = []tls.CurveID{tls.X25519MLKEM768, tls.X25519}
 
-// HandshakeTimeout caps the time we'll spend on the TLS+QUIC handshake.
+// HandshakeTimeout caps the time we'll spend on the TLS+QUIC handshake,
+// and separately on the PAKE handshake that follows it.
 const HandshakeTimeout = 10 * time.Second
+
+// Application close codes. 0 is a plain close.
+const (
+	// CloseCancelled tells the peer this side was deliberately cancelled
+	// (Ctrl-C), so it can report E032 at once instead of retrying.
+	CloseCancelled quic.ApplicationErrorCode = 0x10
+	// closeHandshakeFailed ends a connection whose PAKE handshake failed,
+	// so neither side keeps a dead connection alive on keepalives.
+	closeHandshakeFailed quic.ApplicationErrorCode = 0x11
+	// closeBusy rejects a connection while too many handshakes are pending.
+	closeBusy quic.ApplicationErrorCode = 0x12
+)
 
 // AcceptResult bundles the negotiated streams with the underlying QUIC
 // connection so callers can manage its lifecycle.
@@ -73,14 +88,43 @@ type AcceptResult struct {
 }
 
 // Close shuts the streams and the QUIC connection.
-func (r *AcceptResult) Close() {
+func (r *AcceptResult) Close() { r.closeWith(0, "") }
+
+// Cancel closes the connection with CloseCancelled so the peer learns this
+// side quit on purpose. CloseWithError returns once the close is sent.
+func (r *AcceptResult) Cancel() { r.closeWith(CloseCancelled, "cancelled") }
+
+func (r *AcceptResult) closeWith(code quic.ApplicationErrorCode, msg string) {
 	if r == nil {
 		return
 	}
 	r.Streams.Close()
 	if r.Conn != nil {
-		_ = r.Conn.CloseWithError(0, "")
+		_ = r.Conn.CloseWithError(code, msg)
 	}
+}
+
+// PeerCancelled reports whether the peer closed the connection with
+// CloseCancelled, waiting up to grace for its close to arrive: a stream
+// error usually surfaces a moment before the connection-level close.
+func (r *AcceptResult) PeerCancelled(grace time.Duration) bool {
+	if r == nil || r.Conn == nil {
+		return false
+	}
+	t := time.NewTimer(grace)
+	defer t.Stop()
+	select {
+	case <-r.Conn.Context().Done():
+	case <-t.C:
+		return false
+	}
+	return IsCancelClose(context.Cause(r.Conn.Context()))
+}
+
+// IsCancelClose reports whether err is the peer's CloseCancelled close.
+func IsCancelClose(err error) bool {
+	var appErr *quic.ApplicationError
+	return errors.As(err, &appErr) && appErr.Remote && appErr.ErrorCode == CloseCancelled
 }
 
 // SenderTLSConfig builds a TLS config for the sender (QUIC server-role).
@@ -132,37 +176,132 @@ func QuicConfig() *quic.Config {
 	if keepAlive > idle/2 {
 		keepAlive = idle / 2
 	}
+	// Windows start small and quic-go auto-tunes them up to the max, so a
+	// large max only costs memory on paths whose BDP needs it. 64 MiB keeps
+	// the single data stream near 1.7 Gbps at 300 ms RTT.
 	return &quic.Config{
 		HandshakeIdleTimeout:           HandshakeTimeout,
 		MaxIdleTimeout:                 idle,
 		KeepAlivePeriod:                keepAlive,
 		InitialStreamReceiveWindow:     512 * 1024,
-		MaxStreamReceiveWindow:         6 * 1024 * 1024,
+		MaxStreamReceiveWindow:         64 * 1024 * 1024,
 		InitialConnectionReceiveWindow: 1024 * 1024,
-		MaxConnectionReceiveWindow:     15 * 1024 * 1024,
+		MaxConnectionReceiveWindow:     80 * 1024 * 1024,
 	}
 }
 
-// Listener wraps a quic.Listener for the LAN/test path. It carries the
-// shared code so each Accept can run the PAKE handshake without an
-// extra argument at the call site.
+// maxPendingHandshakes caps concurrent PAKE handshakes per listener, so a
+// connection flood can't pile up goroutines and live connections.
+const maxPendingHandshakes = 8
+
+// Listener wraps a quic.Listener and runs the PAKE handshake for each
+// inbound connection in its own goroutine, bounded by HandshakeTimeout:
+// a stalling impostor can't block the real receiver queued behind it.
 type Listener struct {
-	ln   *quic.Listener
-	code string
+	ln *quic.Listener
+
+	mu     sync.Mutex
+	secret string
+
+	results chan *AcceptResult
+	fails   chan error // failed handshakes; dropped when full
+	done    chan struct{}
+	err     error // set before done closes
+	once    sync.Once
 }
 
-// Close stops listening.
-func (l *Listener) Close() error { return l.ln.Close() }
-
-// Accept blocks for the next inbound QUIC connection, completes the
-// stream handshake on the sender side, and returns the negotiated
-// streams.
-func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
-	c, err := l.ln.Accept(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("quicconn: accept: %w", err)
+// NewListener wraps ln, authenticating each peer with secret.
+func NewListener(ln *quic.Listener, secret string) *Listener {
+	l := &Listener{
+		ln:      ln,
+		secret:  secret,
+		results: make(chan *AcceptResult),
+		fails:   make(chan error, 64),
+		done:    make(chan struct{}),
 	}
-	return SenderHandshake(ctx, c, l.code)
+	go l.acceptLoop()
+	return l
+}
+
+// SetSecret changes the PAKE secret for handshakes that start afterwards.
+func (l *Listener) SetSecret(secret string) {
+	l.mu.Lock()
+	l.secret = secret
+	l.mu.Unlock()
+}
+
+func (l *Listener) currentSecret() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.secret
+}
+
+// Close stops listening and abandons pending handshakes.
+func (l *Listener) Close() error {
+	err := l.ln.Close()
+	l.stop(errors.New("quicconn: listener closed"))
+	return err
+}
+
+func (l *Listener) stop(err error) {
+	l.once.Do(func() {
+		l.err = err
+		close(l.done)
+	})
+}
+
+func (l *Listener) acceptLoop() {
+	sem := make(chan struct{}, maxPendingHandshakes)
+	for {
+		c, err := l.ln.Accept(context.Background())
+		if err != nil {
+			l.stop(fmt.Errorf("quicconn: accept: %w", err))
+			return
+		}
+		select {
+		case sem <- struct{}{}:
+		default:
+			_ = c.CloseWithError(closeBusy, "busy")
+			continue
+		}
+		go func() {
+			defer func() { <-sem }()
+			res, err := SenderHandshake(context.Background(), c, l.currentSecret())
+			if err != nil {
+				select {
+				case l.fails <- fmt.Errorf("%w: %w", ErrHandshakeFailed, err):
+				default:
+				}
+				return
+			}
+			select {
+			case l.results <- res:
+			case <-l.done:
+				res.Close()
+			}
+		}()
+	}
+}
+
+// ErrHandshakeFailed wraps one peer's failed handshake as returned by
+// Listener.Accept: the listener itself is still accepting.
+var ErrHandshakeFailed = errors.New("quicconn: peer handshake failed")
+
+// Accept returns the next authenticated connection. A failed handshake
+// (an impostor, a wrong code) comes back as an ErrHandshakeFailed error —
+// also wrapping fserrors.ErrPeerAuthFailed when the PAKE itself failed —
+// so the caller can count it and keep accepting.
+func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
+	select {
+	case res := <-l.results:
+		return res, nil
+	case err := <-l.fails:
+		return nil, err
+	case <-l.done:
+		return nil, l.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // SenderHandshake opens the control stream, authenticates the peer via
@@ -170,7 +309,13 @@ func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
 // The prime byte lets the receiver's AcceptUniStream return before the
 // first real chunk — without it an empty transfer (e.g. a directory tar
 // with no entries) would deadlock the receiver.
-func SenderHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptResult, error) {
+//
+// The handshake is bounded by HandshakeTimeout, and a failure closes the
+// connection: keepalives would otherwise hold it open.
+func SenderHandshake(ctx context.Context, c *quic.Conn, secret string) (res *AcceptResult, err error) {
+	ctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
+	defer cancel()
+	defer closeOnFailure(c, &err)
 	ctrl, err := c.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: open control: %w", err)
@@ -179,7 +324,7 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptRes
 	// can't pin this side until the 30s QUIC idle timeout. Cleared on
 	// success so the transfer's own control reads are not capped.
 	_ = ctrl.SetReadDeadline(time.Now().Add(HandshakeTimeout))
-	binding, err := authenticatePeer(c, ctrl, code, roleSender)
+	binding, err := authenticatePeer(c, ctrl, secret, roleSender)
 	if err != nil {
 		return nil, err
 	}
@@ -201,9 +346,25 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptRes
 	}, nil
 }
 
-// ListenAddr binds a QUIC listener on addr. code is the shared short
-// code used to authenticate every incoming peer.
-func ListenAddr(addr, code string) (*Listener, error) {
+// closeOnFailure closes c when *errp is set, so a failed handshake never
+// leaves a live connection behind. A peer that closed with
+// closeHandshakeFailed rejected us — its close can overtake its last
+// PAKE message — so that surfaces as ErrPeerAuthFailed.
+func closeOnFailure(c *quic.Conn, errp *error) {
+	if *errp == nil {
+		return
+	}
+	var appErr *quic.ApplicationError
+	if errors.As(*errp, &appErr) && appErr.Remote && appErr.ErrorCode == closeHandshakeFailed &&
+		!errors.Is(*errp, fserrors.ErrPeerAuthFailed) {
+		*errp = fmt.Errorf("%w: %v", fserrors.ErrPeerAuthFailed, *errp)
+	}
+	_ = c.CloseWithError(closeHandshakeFailed, "handshake failed")
+}
+
+// ListenAddr binds a QUIC listener on addr. secret is the PAKE secret
+// (the short code, or a resume secret) every incoming peer must know.
+func ListenAddr(addr, secret string) (*Listener, error) {
 	tlsCfg, err := SenderTLSConfig()
 	if err != nil {
 		return nil, err
@@ -212,34 +373,45 @@ func ListenAddr(addr, code string) (*Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: listen: %w", err)
 	}
-	return &Listener{ln: ln, code: code}, nil
+	return NewListener(ln, secret), nil
 }
 
 // Dial connects to a sender-side QUIC listener and returns the
-// negotiated streams from the receiver's perspective. code is the
-// shared short code used to authenticate the sender.
-func Dial(ctx context.Context, addr, code string) (*AcceptResult, error) {
-	hsCtx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
-	defer cancel()
+// negotiated streams from the receiver's perspective. secret is the
+// PAKE secret used to authenticate the sender.
+func Dial(ctx context.Context, addr, secret string) (*AcceptResult, error) {
+	return DialTimeout(ctx, addr, secret, HandshakeTimeout)
+}
 
-	c, err := quic.DialAddr(hsCtx, addr, ReceiverTLSConfig(), QuicConfig())
+// DialTimeout is Dial with a separate budget for the QUIC connect. Once
+// QUIC is up the sender is reachable, so the PAKE always gets the full
+// HandshakeTimeout: abandoning it midway could strand a sender that has
+// already committed to this connection.
+func DialTimeout(ctx context.Context, addr, secret string, connectTimeout time.Duration) (*AcceptResult, error) {
+	cctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	c, err := quic.DialAddr(cctx, addr, ReceiverTLSConfig(), QuicConfig())
+	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: dial: %w", err)
 	}
-	return ReceiverHandshake(ctx, c, code)
+	return ReceiverHandshake(ctx, c, secret)
 }
 
 // ReceiverHandshake accepts the sender's control stream, authenticates
 // the peer via CPace + TLS channel binding, then accepts the data
-// stream and consumes the priming byte.
-func ReceiverHandshake(ctx context.Context, c *quic.Conn, code string) (*AcceptResult, error) {
+// stream and consumes the priming byte. Bounded and closed on failure
+// like SenderHandshake.
+func ReceiverHandshake(ctx context.Context, c *quic.Conn, secret string) (res *AcceptResult, err error) {
+	ctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
+	defer cancel()
+	defer closeOnFailure(c, &err)
 	ctrl, err := c.AcceptStream(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: accept control: %w", err)
 	}
 	// Bound the handshake reads (see SenderHandshake); cleared on success.
 	_ = ctrl.SetReadDeadline(time.Now().Add(HandshakeTimeout))
-	binding, err := authenticatePeer(c, ctrl, code, roleReceiver)
+	binding, err := authenticatePeer(c, ctrl, secret, roleReceiver)
 	if err != nil {
 		return nil, err
 	}
