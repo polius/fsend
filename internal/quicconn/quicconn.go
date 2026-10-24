@@ -56,13 +56,11 @@ func init() {
 // Bumping this is a wire-protocol-major event.
 const ALPN = "fsend/1"
 
-// pqCurvePreferences pins the key-exchange groups so the post-quantum
-// X25519MLKEM768 hybrid is always preferred — set explicitly (not via
-// Go's default) so a toolchain default change or GODEBUG=tlsmlkem=0 can't
-// silently downgrade us; TestNegotiatesPostQuantum guards the wire result.
-// Plain X25519 stays as a classically-secure fallback for peers without
-// ML-KEM support.
-var pqCurvePreferences = []tls.CurveID{tls.X25519MLKEM768, tls.X25519}
+// pqCurvePreferences enforces the post-quantum X25519MLKEM768 hybrid key
+// exchange. Both peers are always fsend v3 builds, so there is no classical
+// fallback to offer and none an attacker could downgrade to;
+// TestNegotiatesPostQuantum guards the wire result.
+var pqCurvePreferences = []tls.CurveID{tls.X25519MLKEM768}
 
 // HandshakeTimeout caps the time we'll spend on the TLS+QUIC handshake,
 // and separately on the PAKE handshake that follows it.
