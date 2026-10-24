@@ -249,6 +249,9 @@ var queryRetries = []time.Duration{100 * time.Millisecond, 200 * time.Millisecon
 // sockets out from under it — which both unblocks its read loop and stops
 // the query spam — and reports a miss.
 func Query(ctx context.Context, code string, timeout time.Duration) (*QueryResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("landisc: query: %w", err)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	loop := func(ifc net.Interface, _ []net.Addr) bool {

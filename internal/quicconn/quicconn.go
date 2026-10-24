@@ -269,7 +269,7 @@ func (l *Listener) acceptLoop() {
 			res, err := SenderHandshake(context.Background(), c, l.currentSecret())
 			if err != nil {
 				select {
-				case l.fails <- err:
+				case l.fails <- fmt.Errorf("%w: %w", ErrHandshakeFailed, err):
 				default:
 				}
 				return
@@ -283,10 +283,14 @@ func (l *Listener) acceptLoop() {
 	}
 }
 
+// ErrHandshakeFailed wraps one peer's failed handshake as returned by
+// Listener.Accept: the listener itself is still accepting.
+var ErrHandshakeFailed = errors.New("quicconn: peer handshake failed")
+
 // Accept returns the next authenticated connection. A failed handshake
-// (an impostor, a wrong code) comes back as an error — wrapping
-// fserrors.ErrPeerAuthFailed when the PAKE itself failed — so the caller
-// can count it and keep accepting.
+// (an impostor, a wrong code) comes back as an ErrHandshakeFailed error —
+// also wrapping fserrors.ErrPeerAuthFailed when the PAKE itself failed —
+// so the caller can count it and keep accepting.
 func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
 	select {
 	case res := <-l.results:
