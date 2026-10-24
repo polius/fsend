@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 #
-# Regenerate the README demo (docs/assets/demo.svg).
+# Regenerate the README demo (docs/assets/demo.svg + demo-light.svg).
 #
 # Records the scripted two-pane fsend transfer (demo.sh) as an asciinema cast,
-# then renders it to an animated, razor-sharp SVG: Catppuccin-themed via
-# svg-term, with JetBrains Mono embedded and a macOS + coral frame added in
-# post. Vector means it stays crisp at any size and is decode-cheap on mobile.
+# then renders it twice to animated, razor-sharp SVGs — dark and light, in
+# fsend's own colour tokens — via svg-term, with JetBrains Mono embedded and a
+# macOS + coral frame added in post. Vector means it stays crisp at any size
+# and is decode-cheap on mobile.
 #
 # Requires: tmux, go, svg-term (npm i -g svg-term-cli), python3 + fonttools,
 #           and the JetBrains Mono font (brew install --cask font-jetbrains-mono).
 set -euo pipefail
 
 SESSION=fsenddemo
-OUT=docs/assets/demo.svg
+OUT=docs/assets/demo.svg          # dark: also the source of demo.mp4/.gif
+OUT_LIGHT=docs/assets/demo-light.svg
 HOLD_AFTER_SAVED=2   # let the final frame settle before killing the session
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -47,6 +49,7 @@ python3 scripts/preview/ptyrec.py "$CAST"
 # Handy while iterating on the post-processing: FSEND_KEEP_CAST=<path> preserves
 # the recording so you can re-run svg-postprocess.py without re-recording.
 if [ -n "${FSEND_KEEP_CAST:-}" ]; then cp "$CAST" "$FSEND_KEEP_CAST"; fi
-python3 scripts/preview/svg-postprocess.py "$CAST" "$OUT"
+python3 scripts/preview/svg-postprocess.py --theme dark "$CAST" "$OUT"
+python3 scripts/preview/svg-postprocess.py --theme light "$CAST" "$OUT_LIGHT"
 
-echo "wrote $OUT ($(du -h "$OUT" | cut -f1))"
+echo "wrote $OUT ($(du -h "$OUT" | cut -f1)) and $OUT_LIGHT ($(du -h "$OUT_LIGHT" | cut -f1))"

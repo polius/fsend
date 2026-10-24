@@ -1,8 +1,9 @@
 # README demo
 
 This directory generates the animated demo at the top of the repo README
-(`docs/assets/demo.svg`) — a scripted, fully local fsend transfer shown as two
-terminals (sender + receiver) side by side — plus raster **`demo.mp4`** and
+(`docs/assets/demo.svg`, dark, and `docs/assets/demo-light.svg`) — a scripted,
+fully local fsend transfer shown as two terminals (sender above receiver), in
+fsend's own colour tokens — plus raster **`demo.mp4`** and
 **`demo.gif`** exports of the same animation for places that don't render SVG
 (Reddit, chat apps, social posts).
 
@@ -30,22 +31,31 @@ npm install -g svg-term-cli              # cast -> animated SVG (needs node)
 pip install fonttools brotli             # subset + embed JetBrains Mono (woff2)
 brew install --cask font-jetbrains-mono  # the embedded terminal font
 
-# 2. regenerate docs/assets/demo.svg  (the README asset)
+# 2. regenerate docs/assets/demo.svg + demo-light.svg  (the README assets)
 scripts/preview/record-svg.sh
 
-# 3. (optional) regenerate the raster exports from that SVG
+# 3. (optional) regenerate the raster exports from the dark SVG
 pip install websocket-client             # drives headless Chrome over CDP
 python3 scripts/preview/render-video.py     # -> docs/assets/demo.{mp4,gif}
 ```
 
-`record-svg.sh` is the single entry point for the SVG: it builds fsend, records
-the scripted transfer, renders the SVG, embeds the font, and frames it. Re-run it
+`record-svg.sh` is the single entry point for the SVGs: it builds fsend from
+this checkout (so the demo shows the current, possibly unreleased, output),
+records the scripted transfer once, and renders it in both themes, embedding the
+font and framing each. Re-run it
 any time the CLI output or styling changes — then re-run `render-video.py` to
 refresh the `.mp4`/`.gif` (it just re-bakes whatever `demo.svg` currently is, so
 it needs **none** of the recording deps above — only Chrome + ffmpeg).
 
 > Note for headless/CI runs: recording drives a local loopback transfer over a
 > PTY. If it fails to start a session, run it with normal local-network access.
+
+> **Check the throughput before you commit.** The transfer's real speed is
+> printed on screen ("100 MB in 2.0s (49.7 MB/s)"). The direct path runs over
+> the machine's LAN address, not 127.0.0.1, so a VPN's split-tunnel / transparent
+> proxy or a network filter can throttle it to single-digit MB/s — the demo then
+> advertises a slow tool and the progress phase drags. Pause such software while
+> recording.
 
 ---
 
@@ -54,19 +64,19 @@ it needs **none** of the recording deps above — only Chrome + ffmpeg).
 | file | role |
 |------|------|
 | `demo.sh`                  | Sets up the isolated session and **drives** the two terminals (the "director"). |
-| `ptyrec.py`                | Records the session to an asciinema **cast** at a fixed 100x34 PTY size. |
-| `catppuccin-mocha.xresources` | The terminal **palette** svg-term applies to the cast. |
-| `svg-postprocess.py`       | Renders the cast with svg-term, then adds the **hold, embedded font, and chrome**. |
-| `record-svg.sh`            | Orchestrates: build → record → render → write `docs/assets/demo.svg`. |
+| `ptyrec.py`                | Records the session to an asciinema **cast** at a fixed 88x33 PTY size. |
+| `svg-postprocess.py`       | Themes the cast, renders it with svg-term, then adds the **grid fixes, cursor, hold, fade, embedded font, and chrome**. |
+| `record-svg.sh`            | Orchestrates: build → record → render → write both `docs/assets/demo*.svg`. |
 | `render-video.py`          | Re-bakes `demo.svg` into `demo.mp4` + `demo.gif` via headless Chrome. |
 | `README.md`                | This runbook. |
 
 Outputs:
-- `docs/assets/demo.svg` — embedded in the repo README via
-  `<img src="docs/assets/demo.svg" width="820">`.
-- `docs/assets/demo.mp4` (~1.1 MB) — H.264 at 2x, the file to upload where SVG
+- `docs/assets/demo.svg` (dark) and `docs/assets/demo-light.svg` — embedded in
+  the repo README as a `<picture>` that follows the viewer's GitHub theme, the
+  same way the icon above it does.
+- `docs/assets/demo.mp4` (~1.2 MB) — H.264 at 2x, the file to upload where SVG
   isn't rendered.
-- `docs/assets/demo.gif` (~2.2 MB) — 1x fallback for places that take only GIF.
+- `docs/assets/demo.gif` (~1.7 MB) — 1x fallback for places that take only GIF.
 
 ---
 
@@ -75,13 +85,17 @@ Outputs:
 ```
 record-svg.sh
   ├─ demo.sh setup            (off-camera: build fsend, loopback server, panes)
-  ├─ ptyrec.py demo.cast      (records demo.sh play at a fixed 100x34 PTY)
+  ├─ ptyrec.py demo.cast      (records demo.sh play at a fixed 88x33 PTY)
   │     └─ demo.sh play       (attach; the director types the transfer)
-  └─ svg-postprocess.py demo.cast docs/assets/demo.svg
-        ├─ svg-term           (cast -> animated SVG, Catppuccin palette, no cursor)
-        ├─ extend hold        (rescale @keyframes: final frame holds 6s)
+  └─ svg-postprocess.py --theme dark|light demo.cast docs/assets/demo[-light].svg
+        ├─ recolor cast       (light: map every dark token hex to its light sibling)
+        ├─ svg-term           (cast -> animated SVG on the theme's base colours)
         ├─ clip frames        (each frame gets its own viewport: no cross-frame bleed)
-        ├─ fit grid           (snap text to the 100-column grid: no edge overhang)
+        ├─ fit grid           (snap run starts to the column grid)
+        ├─ exact pitch        (font size 5/3: every glyph advances exactly 1 column)
+        ├─ style cursor       (one-cell block, shown only at prompts and questions)
+        ├─ extend hold        (rescale @keyframes: final frame holds 6s)
+        ├─ add motion         (fade across the loop seam; reduced-motion still)
         ├─ add chrome         (title bar + coral frame + macOS traffic lights)
         └─ embed fonts        (JetBrains Mono Regular+Medium+Bold, subset, woff2)
 ```
@@ -89,8 +103,9 @@ record-svg.sh
 ### 1. `demo.sh setup` — the stage
 
 Builds fsend (or reuses `$FSEND_BIN`), starts an isolated loopback `fsend server`,
-lays out two equal `tmux` panes (sender on top, receiver below) with coral card
-headers, and writes a non-compressible `/dev/urandom` payload so the transfer
+lays out two `tmux` panes (sender on top, receiver below) with coral card
+headers, sets `FSEND_THEME=dark` + `COLORTERM=truecolor` so fsend paints its
+exact dark-column hexes, and writes a non-compressible `/dev/urandom` payload so the transfer
 shows a real size/throughput. A `fsend` shim on the panes' `PATH` pins the
 transfer to the direct P2P path (`--mode=direct`) so the recording is
 deterministic and leaks no hostname, while the on-screen command stays a plain
@@ -99,7 +114,7 @@ deterministic and leaks no hostname, while the on-screen command stays a plain
 ### 2. `ptyrec.py` — the recorder
 
 svg-term needs an asciinema cast, and the demo is a **full-screen tmux** session
-that must record at an exact 100x34 geometry. `ptyrec.py` is a ~40-line PTY
+that must record at an exact 88x33 geometry. `ptyrec.py` is a ~40-line PTY
 recorder that forces that window size (so both panes render fully) and streams a
 v2 cast — `asciinema rec` can't fix the geometry headlessly, and `termtosvg`
 can't capture a full-screen tmux app at all. `record-svg.sh` runs the director in
@@ -108,21 +123,35 @@ ends on the completed transfer.
 
 ### 3. `svg-postprocess.py` — render + finish
 
-- **svg-term** renders the cast to an animated SVG, applying
-  `catppuccin-mocha.xresources` as the 16-colour palette + background.
-- **Hold:** svg-term has no "pause on the last frame" option, so we rescale its
-  `@keyframes` timeline to hold the final "Saved" frame ~6s before looping
-  (content timing is preserved; only the tail grows).
+- **Theme:** the terminal base is Tokyo Night (dark) / Tokyo Night Day
+  (light) — the family fsend's six colour roles come from — and every colour in
+  the output is one of `internal/uxlog/glyphs.go`'s tokens. For the light SVG,
+  `recolor_cast()` maps each dark hex in the cast to its light sibling via
+  `TOKENS` before svg-term runs, so one recording yields both variants. A colour
+  missing from `TOKENS` fails the run rather than shipping unmapped.
 - **Frame clip + grid:** svg-term animates a filmstrip of side-by-side frames
-  spaced exactly 100 units apart, but lays its text out on a 1.002-unit column
-  pitch (its font metric rounded to three decimals), so a line that fills all
-  100 columns — the mpb progress bar always does — runs ~0.2 units (two pixels)
-  past the end of its own frame. Because the previous frame sits exactly 100
-  units to the left, that overhang lands on the left edge of the current frame
-  as a stray glyph fragment that reads as a `:` in front of the bar. `fit_grid()`
-  snaps every run back onto integer columns so the grid ends flush with the
-  frame, and `clip_frames()` gives each frame its own viewport so no renderer can
-  bleed one frame into the next.
+  spaced exactly one terminal width apart, but lays its text out on a
+  1.002-unit column pitch (font size 1.67, its metric rounded to three
+  decimals). Long runs drift off the grid — the code box's right edge missed
+  its corners by a visible step — and a line that fills every column (the mpb
+  progress bar) spills onto the left edge of the next frame as a stray `:`.
+  `fit_grid()` snaps every run's start onto integer columns, `exact_pitch()`
+  sets the font size to 5/3 so each glyph advances exactly one column, and
+  `clip_frames()` gives each frame its own viewport so no renderer can bleed one
+  frame into the next.
+- **Cursor:** a one-cell block in the theme's foreground. fsend never hides the
+  cursor, so in a real terminal it also parks after each spinner line and at
+  column 0 under the progress bar; `style_cursor()` keeps it only on rows with a
+  shell prompt (`$`) or a question (`?`, the `[Y/n]` answer) — where someone is
+  typing.
+- **Hold:** svg-term has no "pause on the last frame" option, so we rescale its
+  `@keyframes` timeline to hold the final "Saved" frame 6s before looping
+  (content timing is preserved; only the tail grows). The hold is measured from
+  the first frame that already looks final, not from svg-term's last stop.
+- **Motion:** the loop fades out over the hold's last 0.8s and back in over
+  0.4s instead of cutting from "Saved" to an empty screen. The fade runs on the
+  terminal content only, so the window chrome stays put. Under
+  `prefers-reduced-motion`, the SVG shows the finished transfer as a still.
 - **Chrome:** a macOS title bar — traffic lights plus the `> fsend_` wordmark,
   mirroring the explainer video's title-bar style — and a coral rounded outer
   frame are drawn as static vector shapes around the untouched animation.
@@ -153,7 +182,7 @@ render-video.py docs/assets/demo.svg
   │     ├─ pause animation  (Web Animations API: el.getAnimations()[0].pause())
   │     └─ scrub + shoot     (set currentTime per fps tick; screenshot each stop)
   └─ ffmpeg
-        ├─ demo.mp4     (libx264 -crf 18, yuv420p, +faststart, 2158x1674 @30fps)
+        ├─ demo.mp4     (libx264 -crf 18, yuv420p, +faststart, 1918x1630 @30fps)
         └─ demo.gif     (global palette, dither=none, half res @12fps)
 ```
 
@@ -165,12 +194,13 @@ script is built to avoid both:
 - **Deterministic scrub, not a real-time screencast.** Chrome's screencast emits
   frames only when something changes, at irregular timestamps; resampling that to
   a fixed frame rate makes the text edges shimmer. Instead we **pause** the SVG's
-  CSS animation and **seek** `currentTime` to evenly spaced ticks, screenshotting
-  each. Held frames come out byte-identical and exactly `1/FPS` apart, so the
-  image is rock-steady and x264/GIF dedupe the repeats (which is why the files
-  stay tiny). We only screenshot once per distinct `@keyframes` stop and reuse it
-  for the held ticks, so a ~30 s clip is ~380 screenshots, not 950.
-- **2× supersample.** Capturing at `deviceScaleFactor=2` (→ 2158×1674) renders
+  CSS animations (the filmstrip and the loop fade) and **seek** `currentTime` to
+  evenly spaced ticks, screenshotting each. Held frames come out byte-identical
+  and exactly `1/FPS` apart, so the image is rock-steady and x264/GIF dedupe the
+  repeats (which is why the files stay tiny). We only screenshot once per
+  distinct `@keyframes` stop and reuse it for the held ticks; only the fade
+  spans, where every tick differs, are shot tick by tick.
+- **2× supersample.** Capturing at `deviceScaleFactor=2` (→ 1918×1630) renders
   the small terminal text at double density; encoding from that keeps it crisp
   where a 1× capture would look soft under chroma subsampling.
 - **Exact viewport.** `Emulation.setDeviceMetricsOverride` forces the viewport to
@@ -180,13 +210,13 @@ script is built to avoid both:
 ### mp4 vs gif
 
 - **`demo.mp4`** is the one to share: H.264 / `yuv420p` / even dimensions plays
-  everywhere (Reddit converts it to native video), and it's ~1.1 MB.
+  everywhere (Reddit converts it to native video), and it's ~1.2 MB.
 - **`demo.gif`** is the fallback for the few places that accept only GIF. It's
   exported at **half the capture resolution (1x)** with a global 256-colour
   palette and `dither=none` (the terminal art is flat colour, so error-diffusion
   would only add grain). The demo's two live progress bars repaint the full width
   of the frame every ~80 ms, so a full-2× gif balloons past 12 MB for no real
-  legibility gain — at 1x it lands around 2.2 MB. Always build the gif from the
+  legibility gain — at 1x it lands around 1.7 MB. Always build the gif from the
   clean PNG frames, never from the mp4: the mp4's chroma noise wrecks
   inter-frame compression and balloons it several-fold.
 
@@ -239,13 +269,15 @@ session are cleaned up on exit.
 |----------------|-------|
 | Pacing / the share-code handoff | `director()` in `demo.sh` (the `sleep`s) |
 | Pane labels, colours, layout | `do_setup()` in `demo.sh` |
-| Terminal size (columns x rows) | `COLS, ROWS` in `ptyrec.py` (100x34; also `--width/--height` in `svg-postprocess.py`) |
+| Terminal size (columns x rows) | `FSEND_DEMO_COLS` / `FSEND_DEMO_ROWS` (88x33; read by `demo.sh`, `ptyrec.py` and `svg-postprocess.py`) |
 | svg-term's column pitch (if svg-term bumps versions) | `CELL` in `svg-postprocess.py` (asserted against the runs) |
-| Colour theme | `catppuccin-mocha.xresources` |
+| Terminal base colours, title bar, cursor | `THEMES` in `svg-postprocess.py` |
+| Dark → light colour mapping | `TOKENS` in `svg-postprocess.py` (mirror `internal/uxlog/glyphs.go`) |
+| Shell prompt / card host colour | `PROMPT_RGB`, `HOST_RGB` in `demo.sh` (add the light sibling to `TOKENS`) |
+| Loop fade | `FADE_IN_S`, `FADE_OUT_S` in `svg-postprocess.py` |
 | End-of-loop pause | `HOLD_S` in `svg-postprocess.py` |
 | Coral border / window radius | `MARGIN`, `WIN_R` in `svg-postprocess.py` |
 | Transfer size shown in the demo | `PAYLOAD_BYTES` in `demo.sh` (drives the payload + the on-screen size) |
-| Title bar fill | `TITLE_BG`, `HAIRLINE` in `svg-postprocess.py` |
 | Traffic-light size / position | `DOT_R`, `DOTS`, `DOT_CX0`/`DOT_GAP` in `svg-postprocess.py` |
 | Embedded font | `find_font()` in `svg-postprocess.py` |
 | mp4 frame rate / scrub cadence | `FPS` in `render-video.py` |
@@ -259,6 +291,13 @@ session are cleaned up on exit.
 
 - **`record-svg.sh` exits "missing required tool".** Install the dependency it
   names (see TL;DR). `svg-term` is an npm global; `fonttools`/`brotli` are pip.
+- **`svg-postprocess.py`: "cast uses #xxxxxx, which has no entry in TOKENS".**
+  fsend (or `demo.sh`) now paints a colour the light theme can't map. Add the
+  dark hex and its light sibling to `TOKENS` — for a product colour, the pair
+  from `internal/uxlog/glyphs.go`.
+- **The demo reads slow ("8 MB/s", a long progress phase).** Something is
+  throttling the machine's own LAN traffic — typically a VPN split-tunnel or
+  transparent proxy. Pause it and re-record (see the TL;DR note).
 - **`svg-postprocess.py` raises an `AssertionError`.** svg-term's output format
   changed (new version) and a frame/window/keyframe pattern no longer matches.
   Pin svg-term, or update the matching assertion in `svg-postprocess.py`.
@@ -266,7 +305,7 @@ session are cleaned up on exit.
   didn't load — confirm `@font-face` is present in `docs/assets/demo.svg` and
   that it's a `data:` URL (not external).
 - **Headers scroll off / a pane is clipped.** A pane is shorter than its content;
-  check the `even-vertical` split in `do_setup` and the `ROWS` in `ptyrec.py`.
+  check the pane sizing in `director()` (`sc`, `mid`) against `FSEND_DEMO_ROWS`.
 - **Transfer shows a LAN-discovery notice or the wrong path.** Confirm the
   `fsend` shim (with `--mode=direct`) is on the panes' `PATH`.
 - **`render-video.py`: `ModuleNotFoundError: websocket`.** Install the CDP client:

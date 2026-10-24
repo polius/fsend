@@ -15,8 +15,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.svg" width="820"
-    alt="fsend demo: the sender runs 'fsend backup.zip' and gets a share code; the receiver runs 'fsend <code>', accepts, and the file lands in ~/Downloads.">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/demo.svg">
+    <img src="docs/assets/demo-light.svg" width="820"
+      alt="fsend demo: the sender runs 'fsend backup.zip' and gets a share code; the receiver runs 'fsend <code>' in ~/Downloads, accepts, and the file is saved there.">
+  </picture>
 </p>
 
 <p align="center"><em>One command to send, one to receive.</em></p>

@@ -34,6 +34,16 @@ PAYLOAD="$ROOT/payload.bin"
 P0="$SESSION.0"     # sender
 P1="$SESSION.1"     # receiver
 
+# Terminal geometry; ptyrec.py and svg-postprocess.py read the same values.
+COLS="${FSEND_DEMO_COLS:-88}"
+ROWS="${FSEND_DEMO_ROWS:-33}"
+# The shell prompt colour (Tokyo Night blue, the family fsend's tokens come
+# from). Deliberately not one of fsend's six roles: the prompt is the shell's,
+# and borrowing a role colour would blur what that colour means.
+PROMPT_RGB="122;162;247"
+# Muted tone for the card's "· your laptop": svg-term ignores SGR dim.
+HOST_RGB="154;165;206"
+
 # ensure_payload generates the cached ~100 MB transfer payload if missing. Fresh
 # /dev/urandom so it stays incompressible — a compressible payload would shrink
 # on the wire and the progress bar would misreport the transfer.
@@ -46,7 +56,7 @@ ensure_payload() {
 
 # ---------------------------------------------------------------------------
 # setup: build the binary, start an isolated pairing server, and lay out the
-# three-pane tmux session (spacer, sender, receiver) with clean prompts.
+# two-pane tmux session (sender, receiver) with clean prompts.
 # ---------------------------------------------------------------------------
 do_setup() {
   local bin="${FSEND_BIN:-$ROOT/fsend}"
@@ -64,9 +74,9 @@ do_setup() {
   # Panes inherit this: silence macOS bash's "default shell is now zsh" notice.
   export BASH_SILENCE_DEPRECATION_WARNING=1
 
-  # The 1 GiB payload is cached (generation is the slow part). Hardlink it
-  # into the sender's home so each
-  # run is instant; it's outside HOME_DIR, which is wiped above.
+  # The 100 MB payload is cached (generation is the slow part). Hardlink it
+  # into the sender's home so each run is instant; it's outside HOME_DIR,
+  # which is wiped above.
   ensure_payload
   ln -f "$PAYLOAD" "$HOME_DIR/$FILE"
 
@@ -97,11 +107,12 @@ exec '$bin' "\${args[@]}" "\$@"
 EOF
   chmod +x "$shim/fsend"
 
-  # One rcfile per pane: a clean prompt, the isolated env, and the right cwd.
-  # $2 = prompt label, $3 = ANSI color, $4 = starting directory.
   # One rcfile per pane: env, prompt persona, cwd, and a coral card header so
   # each pane reads as a distinct machine without tmux border chrome.
-  # $2 prompt label, $3 prompt color, $4 cwd, $5 peer name, $6 role, $7 host.
+  # $2 prompt label, $3 prompt colour (r;g;b), $4 cwd, $5 peer name, $6 role,
+  # $7 host, $8 leading blank lines.
+  # FSEND_THEME=dark + truecolor makes fsend paint its exact dark-column hexes,
+  # which svg-postprocess.py maps 1:1 to the light column for the light SVG.
   mkrc() {
     cat >"$1" <<EOF
 export HOME='$HOME_DIR'
@@ -109,27 +120,26 @@ export XDG_CONFIG_HOME='$ROOT/cfg'
 export PATH='$shim':"\$PATH"
 export FSEND_NO_UPDATE_CHECK=1
 export FSEND_DEMO_NAME='$5'
-PS1='\[\e[1;$3m\]$2\[\e[0m\]:\w\$ '
+export FSEND_THEME=dark COLORTERM=truecolor
+PS1='\[\e[1;38;2;$3m\]$2\[\e[0m\]:\w\$ '
 cd '$4'
 clear
-printf '$8\033[38;2;224;128;90m▌\033[0m \033[1m%s\033[0m  \033[2m%s\033[0m\n\n' '$6' '$7'
+printf '$8\033[38;2;224;128;90m▌\033[0m \033[1m%s\033[0m  \033[38;2;${HOST_RGB}m%s\033[0m\n\n' '$6' '$7'
 EOF
   }
-  #                                                                            $8 = leading blank lines
-  mkrc "$ROOT/sender.rc" "you@laptop"     "32" "$HOME_DIR"           "laptop"  "SENDER"   "· your laptop"  "\n"
-  mkrc "$ROOT/recver.rc" "friend@desktop" "36" "$HOME_DIR/Downloads" "desktop" "RECEIVER" "· their laptop" ""
+  mkrc "$ROOT/sender.rc" "you@laptop"     "$PROMPT_RGB" "$HOME_DIR"           "laptop"  "SENDER"   "· your laptop"   "\n"
+  mkrc "$ROOT/recver.rc" "friend@desktop" "$PROMPT_RGB" "$HOME_DIR/Downloads" "desktop" "RECEIVER" "· their desktop" ""
 
   # Two stacked panes top→bottom: sender, receiver. The divider between them is
   # hidden (blended into the bg) so the gap reads as whitespace. The director
   # sizes them after the recorder attaches (see "balance the layout").
-  tmux new-session  -d -s "$SESSION" -x 100 -y 34 "bash --rcfile '$ROOT/sender.rc' -i"
+  tmux new-session  -d -s "$SESSION" -x "$COLS" -y "$ROWS" "bash --rcfile '$ROOT/sender.rc' -i"
   tmux split-window -v -t "$SESSION" "bash --rcfile '$ROOT/recver.rc' -i"
 
   tmux set -t "$SESSION" status off
   tmux set -t "$SESSION" pane-border-status off
-  tmux set -t "$SESSION" pane-border-style       "fg=#1e1e2e"
-  tmux set -t "$SESSION" pane-active-border-style "fg=#1e1e2e"
-  tmux select-pane -t "$P1"  # receiver active → cursor sits at its prompt
+  tmux set -t "$SESSION" pane-border-lines spaces   # the divider row stays blank
+  tmux select-pane -t "$P0"  # sender types first; the cursor follows the typist
 }
 
 # ---------------------------------------------------------------------------
@@ -169,11 +179,11 @@ director() {
   done
 
   # Balance the layout, sized to the *final* content so nothing scrolls (the
-  # SENDER/RECEIVER card headers must stay visible). The sender now prints a
-  # boxed code block + a safety note, so its final content is ~18 rows (incl. its
-  # leading blank row); the receiver is ~12. The sender pane gets a middle gap of
-  # blank rows below it; the receiver pane takes the remainder (its trailing
-  # blanks are the bottom margin). The -1 absorbs the invisible divider row.
+  # SENDER/RECEIVER card headers must stay visible). The sender's final content
+  # is 19 rows (incl. its leading blank row), the receiver's 11. The sender pane
+  # gets a middle gap of blank rows below it; the receiver pane takes the
+  # remainder of ROWS (its trailing blank is the bottom margin). The -1 absorbs
+  # the blank divider row.
   local sc=19 mid=2
   tmux resize-pane -t "$P0" -y $(( sc + mid - 1 ))
   sleep 1.5 # let the panes register first
@@ -187,6 +197,7 @@ director() {
   sleep 2.8 # time to read "on the other machine, run: fsend <code>"
 
   # Receiver: paste the code, review the incoming transfer, accept.
+  tmux select-pane -t "$P1"
   typewriter "$P1" "fsend ${code}"
   sleep 0.7
   enter "$P1"
@@ -220,7 +231,7 @@ do_play() {
 }
 
 case "${1:-all}" in
-  payload) ensure_payload ;;   # pre-warm the 1 GiB cache
+  payload) ensure_payload ;;   # pre-warm the payload cache
   setup)   do_setup ;;
   play)    do_play ;;
   all)     do_setup; do_play ;;
