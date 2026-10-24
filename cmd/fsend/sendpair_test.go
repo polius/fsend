@@ -45,7 +45,7 @@ func TestWaitForReceiver_RetriesTransientFailures(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	resp, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm")
+	resp, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm", nil)
 	if err != nil || resp == nil {
 		t.Fatalf("expected pairing to survive transient failures, got resp=%v err=%v", resp, err)
 	}
@@ -65,7 +65,7 @@ func TestWaitForReceiver_GivesUpAfterConsecutiveFailures(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	_, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm")
+	_, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm", nil)
 	if err == nil {
 		t.Fatal("expected an error from a persistently failing server")
 	}
@@ -82,7 +82,7 @@ func TestWaitForReceiver_SessionReapedSurfacesExpired(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	_, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm")
+	_, err := waitForReceiver(context.Background(), signaling.New(ts.URL, "test"), "abc-defg-jkm", nil)
 	if !errors.Is(err, fserrors.ErrSessionExpired) {
 		t.Errorf("expected ErrSessionExpired for a reaped session, got %v", err)
 	}

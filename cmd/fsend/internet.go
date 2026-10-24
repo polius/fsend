@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,12 +17,12 @@ import (
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/iceconn"
+	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/quicconn"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/signaling"
-	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 )
@@ -34,6 +35,19 @@ import (
 // UDP) — paths that need the relay regardless — so generosity here only
 // delays the inevitable fallback.
 const iceBudget = 5 * time.Second
+
+// pathDecisionWait is how long past iceBudget the receiver waits for the
+// sender's path decision before trusting its own ICE outcome.
+const pathDecisionWait = 5 * time.Second
+
+// The sender (ICE controlling side) publishes which path it chose as a
+// pseudo-candidate on the signaling channel, so both sides agree even when
+// ICE completes right at the budget edge on one clock and not the other.
+const (
+	pathChoicePrefix = "fsend-path "
+	pathChoiceICE    = pathChoicePrefix + "ice"
+	pathChoiceRelay  = pathChoicePrefix + "relay"
+)
 
 // signalingClient builds a client pointed at the configured server.
 //
@@ -84,84 +98,35 @@ func isLocalAddr(addr string) bool {
 }
 
 // joinRetryBudget caps how long the receiver waits for the sender to
-// register the code on the pairing server. The sender Creates its
-// session the moment it starts (LAN and internet pairing run in
-// parallel), so the code is normally registered long before a human
-// can type it. The budget covers the races around that: a receiver
-// beating a slow Create, or re-joining a stale claimed slot the sender
-// is about to recycle — so neither fails instantly with E002.
+// register a fresh code on the pairing server. The sender Creates its
+// session the moment it starts, so the code is normally registered long
+// before a human can type it; the budget only covers a receiver beating a
+// slow Create. A mistyped code — the common case — must fail fast.
 //
 // Var (not const) so tests can shrink it.
-var joinRetryBudget = 15 * time.Second
+var joinRetryBudget = 6 * time.Second
 
-// runReceiveOverInternet performs the cross-internet receive flow.
-//
-// Mirror of runSendOverInternet: try ICE direct first (receiver =
-// controlled), fall back to relay on failure.
-//
-// connSpin, when non-nil, is the "Connecting" spinner the caller
-// started. We keep it animating through Join + ICE/relay setup, then
-// hand it to runReceiverQUICOver, which retitles it for classification
-// and stops it at the accept prompt. This replaces what used to be a
-// sequence of brief spinner flashes that read as glitchy. The deferred
-// Stop covers error returns; Stop is idempotent (sync.Once), so the
-// earlier stops don't double-close.
-func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config.Config, connSpin *uxlog.Spinner) error {
-	client, _, err := signalingClient(cfg)
-	if err != nil {
-		return err
-	}
-	defer connSpin.Stop()
+// resumeJoinBudget is the wait when re-pairing on a resume key: the sender
+// may still be detecting the drop (QUIC idle timeout plus its re-accept
+// retries) before it re-creates the session.
+var resumeJoinBudget = 90 * time.Second
 
-	joined, err := joinWithRetry(ctx, client, c, f, connSpin)
-	if err != nil {
-		return err
-	}
+// joinOpts tunes joinRace.
+type joinOpts struct {
+	budget time.Duration
+	// retryClaimed keeps retrying 409: a resume slot may still hold the
+	// session of the connection that just dropped until the sender
+	// recycles it. A fresh code's 409 is final (E003).
+	retryClaimed bool
+	// lan, when set, races an in-flight mDNS query: an answer before the
+	// join succeeds wins.
+	lan <-chan lanResult
+}
 
-	// STUN address rides on the join response; no relay allocation up front.
-	stunAddr := stunAddrForICE(ctx, client, joined.RelayAddr, joined.SessionID, joined.RoleToken)
-
-	// --- Try ICE direct path ---
-	iceConn, icePath, iceErr := iceEstablish(ctx, client, joined.SessionID, joined.RoleToken, iceconn.Options{
-		LocalUfrag:  joined.YourIceCredentials.Ufrag,
-		LocalPwd:    joined.YourIceCredentials.Pwd,
-		RemoteUfrag: joined.PeerIceCredentials.Ufrag,
-		RemotePwd:   joined.PeerIceCredentials.Pwd,
-		STUNAddr:    stunAddr,
-	}, false /* controlled */, f.debug)
-	if iceErr == nil {
-		defer func() { _ = iceConn.Close() }()
-		// Hand the spinner to runReceiverQUICOver: it keeps animating
-		// through classification and stops at the accept prompt (no
-		// standalone path line — the prompt block carries path info as a
-		// chip and the summary names it again).
-		return runReceiverQUICOver(ctx, f, iceConn, c, icePath, connSpin)
-	}
-	if f.debug {
-		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
-	}
-
-	// --- Fall back to relay: allocate now that we know we need it ---
-	if joined.RelayForwardingDisabled {
-		return fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
-	}
-	alloc, allocErr := client.AllocateRelay(ctx, joined.SessionID, joined.RoleToken)
-	if allocErr != nil {
-		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, allocErr)
-	}
-	if alloc.BudgetExhausted {
-		return fserrors.ErrRelayBudgetExhausted
-	}
-	if alloc.ForwardingDisabled {
-		return fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
-	}
-	relayConn, err := dialRelay(alloc, client.ServerHost())
-	if err != nil {
-		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
-	}
-	defer func() { _ = relayConn.Close() }()
-	return classifyRelayDrop(ctx, client, joined.SessionID, joined.RoleToken,
-		runReceiverQUICOver(ctx, f, relayConn, c, connpath.FromRelay(alloc.RelayAddr), connSpin))
+// lanResult is a finished mDNS query.
+type lanResult struct {
+	q   *landisc.QueryResult
+	err error
 }
 
 // classifyRelayDrop probes the relay-status endpoint when a relay-path
@@ -194,32 +159,38 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID,
 	return runErr
 }
 
-// joinWithRetry calls Join, retrying on ErrCodeNotFound and
-// ErrCodeAlreadyClaimed. Not-found covers the receiver winning the race
-// against the sender's Create (slow human, laggy network) — without
-// retries that surfaced as an instant, misleading E002. Already-claimed
-// covers a stale session whose receiver died mid-transfer: the sender
-// Deletes and re-Creates it when it re-enters pairing, so within the
-// budget the slot flips from claimed to joinable.
+// joinWithRetry joins a fresh code: joinRace with the default budget and
+// no LAN race.
+func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags, existing *uxlog.Spinner) (*server.JoinSessionResponse, error) {
+	joined, _, err := joinRace(ctx, client, code, f, existing, joinOpts{budget: joinRetryBudget})
+	return joined, err
+}
+
+// joinRace calls Join, retrying ErrCodeNotFound (and, with
+// opts.retryClaimed, ErrCodeAlreadyClaimed) within opts.budget.
+// Not-found covers the receiver winning the race against the sender's
+// Create (or, on a resume key, the sender still detecting the drop).
 //
-// Other errors propagate immediately: server-unreachable,
-// ctx-cancelled, etc., are not transient and the caller should hear
-// about them on the first try.
+// Other errors propagate immediately: server-unreachable, ctx-cancelled,
+// etc., are not transient and the caller should hear about them on the
+// first try — unless an mDNS query is still running, which then decides.
+// A LAN answer arriving first returns (nil, hit, nil).
 //
 // Every join — including a 404 — counts against the server's per-IP
 // new-session budget (that's what stops code-space probing), so the
-// schedule is deliberately sparse: ~7 joins across the budget, not a
-// tight poll. And if the server starts throttling us mid-loop after
-// retryable answers, the honest error is the last retryable one (E002/
-// E003), not E017 — a mistyped code must not surface as "too many
-// attempts".
-func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f *flags, existing *uxlog.Spinner) (*server.JoinSessionResponse, error) {
-	// The retry window can run the full budget (~15 s); a spinner stuck on
-	// the caller's "Connecting" for that long reads as a network problem.
-	// Say what we're actually doing — holding for the sender's Create.
-	const waitMsg = "Waiting for the sender to publish this code"
+// schedule is deliberately sparse rather than a tight poll. And if the
+// server starts throttling us mid-loop after retryable answers, the honest
+// error is the last retryable one (E002/E003), not E017 — a mistyped code
+// must not surface as "too many attempts".
+func joinRace(ctx context.Context, client *signaling.Client, rendezvous string, f *flags, existing *uxlog.Spinner, opts joinOpts) (*server.JoinSessionResponse, *landisc.QueryResult, error) {
+	// Say what we're actually doing — waiting for a sender that isn't on
+	// this code (yet) — rather than a reassuring "Connecting".
+	waitMsg := "No sender on this code yet — waiting"
+	if opts.retryClaimed {
+		waitMsg = "Waiting for the sender to reconnect"
+	}
 
-	deadline := time.Now().Add(joinRetryBudget)
+	deadline := time.Now().Add(opts.budget)
 	delay := 500 * time.Millisecond
 	var lastRetryable error
 	var spin *uxlog.Spinner
@@ -228,22 +199,50 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 	// still Stopped on return — a plain `defer spin.Stop()` would only
 	// stop the nil pointer captured at defer-time.
 	defer func() { spin.Stop() }()
+	lan := opts.lan
+	// lanHit drains a finished query without blocking; a miss disarms it.
+	lanHit := func() *landisc.QueryResult {
+		select {
+		case r := <-lan:
+			lan = nil
+			if r.err == nil {
+				return r.q
+			}
+		default:
+		}
+		return nil
+	}
 	for {
-		joined, err := client.Join(ctx, code)
+		if q := lanHit(); q != nil {
+			return nil, q, nil
+		}
+		joined, err := client.Join(ctx, rendezvous)
 		if err == nil {
 			if retitled {
 				// The caller's spinner keeps running through ICE/relay setup;
 				// hand it back with its original label.
 				existing.SetMessage("Connecting")
 			}
-			return joined, nil
+			return joined, nil, nil
 		}
-		if lastRetryable != nil && errors.Is(err, fserrors.ErrRateLimited) {
-			return nil, lastRetryable
+		throttled := lastRetryable != nil && errors.Is(err, fserrors.ErrRateLimited)
+		if throttled {
+			err = lastRetryable
 		}
-		retryable := errors.Is(err, fserrors.ErrCodeNotFound) || errors.Is(err, fserrors.ErrCodeAlreadyClaimed)
+		retryable := !throttled && (errors.Is(err, fserrors.ErrCodeNotFound) ||
+			(opts.retryClaimed && errors.Is(err, fserrors.ErrCodeAlreadyClaimed)))
 		if !retryable || time.Now().After(deadline) {
-			return nil, err
+			// The server can't help; a LAN query still in flight might.
+			if lan != nil && ctx.Err() == nil {
+				select {
+				case r := <-lan:
+					if r.err == nil {
+						return nil, r.q, nil
+					}
+				case <-ctx.Done():
+				}
+			}
+			return nil, nil, err
 		}
 		lastRetryable = err
 		// Animate a single line for the duration of the wait so the user
@@ -260,13 +259,26 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
+		case r := <-lan:
+			lan = nil
+			if r.err == nil {
+				return nil, r.q, nil
+			}
 		case <-time.After(delay):
 		}
 		if delay < 4*time.Second {
 			delay *= 2
 		}
 	}
+}
+
+// publishPathChoice tells the receiver which path the sender committed to.
+// Best effort: without it the receiver falls back to its own ICE outcome.
+func publishPathChoice(ctx context.Context, sig *signaling.Client, sessionID, roleToken, choice string) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_ = sig.PushCandidates(ctx, sessionID, roleToken, []string{choice})
 }
 
 // iceEstablish runs the full ICE handshake: starts an agent, pumps local
@@ -277,8 +289,10 @@ func joinWithRetry(ctx context.Context, client *signaling.Client, code string, f
 // connpath.Info derived from the selected candidate pair, on success. On
 // failure, the agent is closed and the caller falls back to relay.
 //
-// controlling=true → sender role (calls Dial).
-// controlling=false → receiver role (calls Accept).
+// controlling=true → sender role: calls Dial, then publishes its path
+// choice. controlling=false → receiver role: calls Accept, and follows the
+// sender's published choice, so the two never split between ICE and the
+// relay when ICE completes right at the budget edge.
 //
 // debug enables candidate-level stderr logging — the data needed to
 // diagnose "why did this pair of networks relay?" reports.
@@ -288,11 +302,18 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 			fmt.Fprintf(os.Stderr, "DEBUG: "+format+"\n", args...)
 		}
 	}
-	ctx, cancel := context.WithTimeout(parent, iceBudget)
+	budget := iceBudget
+	if !controlling {
+		budget += pathDecisionWait
+	}
+	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
 
 	agent, err := iceconn.New(opts)
 	if err != nil {
+		if controlling {
+			publishPathChoice(parent, sig, sessionID, roleToken, pathChoiceRelay)
+		}
 		return nil, connpath.Info{}, fmt.Errorf("agent: %w", err)
 	}
 
@@ -300,19 +321,20 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 	// server's push/pull endpoints route candidates between peers; see
 	// internal/server.{pushCandidates,pullCandidates}.
 	pumpCtx, pumpCancel := context.WithCancel(ctx)
+	defer pumpCancel()
 	var wg sync.WaitGroup
+	decision := make(chan string, 1)
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Push each gathered local candidate one-shot. The select on
-		// pumpCtx is load-bearing: if ICE times out before pion finishes
-		// gathering (no STUN host on loopback, no candidates beyond the
-		// initial host set), agent.LocalCandidates never closes — a bare
-		// `for range` would block here, wg.Wait() would hang waiting for
-		// it, and the deferred agent.Close() (which closes the channel)
-		// would never run. Closing the loop on pumpCtx breaks that cycle.
+		// The select on pumpCtx is load-bearing: if ICE times out before
+		// pion finishes gathering, agent.LocalCandidates never closes — a
+		// bare `for range` would block here, wg.Wait() would hang waiting
+		// for it, and the deferred agent.Close() (which closes the channel)
+		// would never run.
 		for {
+			var batch []string
 			select {
 			case <-pumpCtx.Done():
 				return
@@ -320,12 +342,33 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 				if !ok {
 					return
 				}
-				debugf("ICE local candidate: %s", cstr)
-				if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, []string{cstr}); err != nil {
-					// Best-effort: pion's ICE will keep going with whatever
-					// candidates have already crossed.
-					debugf("ICE push candidate failed: %v", err)
+				batch = append(batch, cstr)
+			}
+			// Batch whatever else is already gathered into one request, so
+			// a host with many interfaces doesn't queue its srflx candidate
+			// behind a POST per host candidate.
+		drain:
+			for {
+				select {
+				case cstr, ok := <-agent.LocalCandidates():
+					if !ok {
+						break drain
+					}
+					batch = append(batch, cstr)
+				default:
+					break drain
 				}
+			}
+			sort.SliceStable(batch, func(i, j int) bool {
+				return strings.Contains(batch[i], " typ srflx") && !strings.Contains(batch[j], " typ srflx")
+			})
+			for _, c := range batch {
+				debugf("ICE local candidate: %s", c)
+			}
+			if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, batch); err != nil {
+				// Best-effort: pion's ICE will keep going with whatever
+				// candidates have already crossed.
+				debugf("ICE push candidates failed: %v", err)
 			}
 		}
 	}()
@@ -349,22 +392,37 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 				continue
 			}
 			for _, cstr := range resp.Candidates {
+				if strings.HasPrefix(cstr, pathChoicePrefix) {
+					select {
+					case decision <- cstr:
+					default:
+					}
+					continue
+				}
 				debugf("ICE remote candidate: %s", cstr)
-				_ = agent.AddRemoteCandidate(cstr)
+				if err := agent.AddRemoteCandidate(cstr); err != nil {
+					debugf("ICE remote candidate rejected: %v", err)
+				}
 			}
 			since = resp.NextSince
 		}
 	}()
 
-	// Drive Dial or Accept under the ICE budget.
 	var (
 		conn    net.PacketConn
 		dialErr error
 	)
 	if controlling {
-		conn, dialErr = agent.Dial(ctx)
+		dctx, dcancel := context.WithTimeout(ctx, iceBudget)
+		conn, dialErr = agent.Dial(dctx)
+		dcancel()
+		choice := pathChoiceICE
+		if dialErr != nil {
+			choice = pathChoiceRelay
+		}
+		publishPathChoice(parent, sig, sessionID, roleToken, choice)
 	} else {
-		conn, dialErr = agent.Accept(ctx)
+		conn, dialErr = acceptFollowingSender(ctx, agent, decision)
 	}
 
 	pumpCancel()
@@ -384,6 +442,56 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 		return nil, connpath.Info{}, fmt.Errorf("ice: no selected candidate pair")
 	}
 	return &iceOwningConn{PacketConn: conn, agent: agent}, connpath.FromICE(localCT, remoteCT), nil
+}
+
+// errSenderChoseRelay is the receiver dropping ICE on the sender's word.
+var errSenderChoseRelay = errors.New("ice: sender chose the relay")
+
+// acceptFollowingSender runs the controlled side's Accept and reconciles
+// it with the sender's published choice. ctx bounds the whole wait
+// (iceBudget + pathDecisionWait). No choice by then: trust our own result.
+func acceptFollowingSender(ctx context.Context, agent *iceconn.Agent, decision <-chan string) (net.PacketConn, error) {
+	type result struct {
+		conn net.PacketConn
+		err  error
+	}
+	acceptCtx, cancelAccept := context.WithCancel(ctx)
+	defer cancelAccept()
+	accepted := make(chan result, 1)
+	go func() {
+		c, err := agent.Accept(acceptCtx)
+		accepted <- result{c, err}
+	}()
+
+	var got *result
+	choice := ""
+	for {
+		select {
+		case r := <-accepted:
+			got = &r
+			accepted = nil
+		case choice = <-decision:
+			decision = nil
+		case <-ctx.Done():
+			if got == nil {
+				cancelAccept()
+				r := <-accepted
+				got = &r
+			}
+			return got.conn, got.err
+		}
+		switch {
+		case choice == pathChoiceRelay:
+			if got == nil {
+				cancelAccept()
+				r := <-accepted
+				got = &r
+			}
+			return nil, errSenderChoseRelay
+		case got != nil && (choice == pathChoiceICE || got.err != nil):
+			return got.conn, got.err
+		}
+	}
 }
 
 // iceOwningConn keeps the ICE Agent alive for the lifetime of the
@@ -478,79 +586,75 @@ func unsafeRelayIP(ip net.IP) bool {
 		ip.IsMulticast() || ip.IsInterfaceLocalMulticast()
 }
 
-// runReceiverQUICOver runs the receiver's QUIC + transfer flow over an
-// already-established net.PacketConn.
-//
-// spin is the caller's "Connecting" spinner (nil under --quiet); it is
-// retitled and kept alive through classification — with --checksum the
-// pre-prompt hashing scales with the data already on disk — and stopped
-// by the accept prompt (or ui.close on error).
-//
-// Symmetric retry: a transient error tears down the current QUIC
-// session, sleeps, and re-Dials on the same PacketConn. The receiver's
-// .fsend-partial sidecar plus its imohash fingerprint let the next
-// attempt resume mid-file — the sender verifies the prefix, seeks past
-// it, and streams the remainder.
-func runReceiverQUICOver(ctx context.Context, f *flags, pc net.PacketConn, code string, pathInfo connpath.Info, spin *uxlog.Spinner) error {
-	tr := quicconn.NewTransport(pc)
-	defer func() { _ = tr.Close() }()
-
-	outDir, sink, err := resolveOutDir(f)
-	if err != nil {
-		return err
-	}
-	ui := newReceiverUI(ctx, f, outDir, sink, pathInfo)
-	spin.SetMessage("Checking existing files")
-	ui.spin = spin
-	defer ui.close()
-
-	start := time.Now()
-	// Sink mode gets one attempt: emitted bytes can't be reconciled, so
-	// a retry would duplicate output.
-	opts := retry.Options{OnRetry: ui.retryNotice()}
-	if sink {
-		opts.Attempts = 1
-	}
-	if err := retry.WithBackoff(ctx, opts, nil,
-		func(attempt int) error {
-			if attempt > 1 {
-				ui.resetAttemptCounts()
-			}
-			return runReceiverOneAttempt(ctx, tr, f, ui, code)
-		}); err != nil {
-		// A Ctrl-C at an interactive prompt cancels ctx but surfaces as a
-		// decline/target-exists error; report it as a cancellation (E026).
-		if ctx.Err() != nil {
-			printCancelKeptHint(f, ui)
-			return ctx.Err()
+// linkViaInternet turns a successful join into a recvLink: ICE direct
+// first (receiver = controlled, following the sender's choice), relay on
+// failure. The link dials QUIC over the established PacketConn.
+func linkViaInternet(ctx context.Context, f *flags, client *signaling.Client, joined *server.JoinSessionResponse) (*recvLink, error) {
+	// STUN address rides on the join response; no relay allocation up front.
+	stunAddr := stunAddrForICE(ctx, client, joined.RelayAddr, joined.SessionID, joined.RoleToken)
+	pc, path, iceErr := iceEstablish(ctx, client, joined.SessionID, joined.RoleToken, iceconn.Options{
+		LocalUfrag:  joined.YourIceCredentials.Ufrag,
+		LocalPwd:    joined.YourIceCredentials.Pwd,
+		RemoteUfrag: joined.PeerIceCredentials.Ufrag,
+		RemotePwd:   joined.PeerIceCredentials.Pwd,
+		STUNAddr:    stunAddr,
+	}, false /* controlled */, f.debug)
+	var probe *relayProbe
+	if iceErr != nil {
+		if f.debug {
+			fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
 		}
-		return err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// Fall back to relay: allocate now that we know we need it.
+		if joined.RelayForwardingDisabled {
+			return nil, fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
+		}
+		var err error
+		pc, path, err = allocAndDialRelay(ctx, client, joined.SessionID, joined.RoleToken)
+		if err != nil {
+			return nil, err
+		}
+		probe = &relayProbe{client: client, sessionID: joined.SessionID, roleToken: joined.RoleToken}
 	}
-	return finishReceive(f, ui, time.Since(start))
+	tr := quicconn.NewTransport(pc)
+	return &recvLink{
+		path:  path,
+		relay: probe,
+		dial: func(ctx context.Context, secret string) (*quicconn.AcceptResult, error) {
+			return dialOverTransport(ctx, tr, secret)
+		},
+		close: func() {
+			_ = tr.Close()
+			_ = pc.Close()
+		},
+	}, nil
 }
 
-// runReceiverOneAttempt is one Dial → handshake → transfer iteration.
-// Mirror of runSenderOneAttempt; returns nil on success or an error for
-// the retry layer to classify.
-func runReceiverOneAttempt(ctx context.Context, tr *quic.Transport, f *flags, ui *receiverUI, code string) error {
-	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
-	defer dialCancel()
+// dialOverTransport is one QUIC dial plus the receiver PAKE over an
+// established ICE or relay PacketConn.
+func dialOverTransport(ctx context.Context, tr *quic.Transport, secret string) (*quicconn.AcceptResult, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	// The PacketConn ignores the dial address (both relay.Conn and our
 	// iceOwningConn route via fixed underlying paths). quic-go uses the
 	// address as a per-peer routing tag — the shared synthetic value
 	// suffices. See relay.SyntheticPeer.
-	dialAddr := relay.SyntheticPeer
-	qc, err := tr.Dial(dialCtx, dialAddr, quicconn.ReceiverTLSConfig(), quicconn.QuicConfig())
+	qc, err := tr.Dial(dialCtx, relay.SyntheticPeer, quicconn.ReceiverTLSConfig(), quicconn.QuicConfig())
 	if err != nil {
-		return fmt.Errorf("QUIC dial: %w", err)
+		return nil, fmt.Errorf("QUIC dial: %w", err)
 	}
-	res, err := quicconn.ReceiverHandshake(ctx, qc, code)
-	if err != nil {
-		return err
-	}
-	defer res.Close()
+	// ReceiverHandshake bounds itself by HandshakeTimeout: a stalled peer
+	// or a hostile relay can't hang the receiver.
+	return quicconn.ReceiverHandshake(ctx, qc, secret)
+}
 
-	return transfer.Recv(ctx, &res.Streams, ui.recvOptions(hostnameOrDefault(f.hostname)))
+// relayProbe identifies a relay allocation for classifyRelayDrop.
+type relayProbe struct {
+	client    *signaling.Client
+	sessionID string
+	roleToken string
 }
 
 // retryNoticeFor returns an OnRetry callback that prints the standard

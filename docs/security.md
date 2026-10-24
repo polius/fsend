@@ -107,7 +107,12 @@ What makes a short code safe to use as the whole secret:
   2^44 argon2id evaluations at 64 MiB each, on average. That's also why
   the SPAKE2 binding holds against the server itself — not knowing the
   code, it can't run the handshake with either side.
-- **One-shot.** Once a receiver claims a code, it can't be reused.
+- **One-shot.** Once a receiver claims a code, it can't be reused: a
+  second receiver is told the code is already claimed. If the transfer
+  drops, the two devices re-pair on a key derived from their first
+  handshake, never on the code again, so someone who saw the code can't
+  step into a dropped transfer. A sender stops after 10 failed handshakes
+  on its code.
 - **Time-limited.** A code expires on the server after one hour if no one
   receives, or ten minutes once a receiver has paired. Pressing Ctrl-C on
   the sender invalidates it immediately.
