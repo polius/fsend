@@ -294,17 +294,26 @@ your overrides were picked up (the password value is never printed, only
 whether one is set):
 
 ```
-fsend server configuration (2 of 9 customized; * = changed from default):
+fsend server configuration (3 of 14 customized; * = changed from default):
     FSEND_LOG_LEVEL                              info
+    FSEND_LOG_FORMAT                             text
+    FSEND_METRICS_ADDR                           (none)
+  * FSEND_STATE_FILE                             /state/sessions.json
   * FSEND_SERVER_PASSWORD                        (set)
     FSEND_SERVER_ADDR                            :8080
   * FSEND_SERVER_MAX_SESSIONS_PER_IP             10
     FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE  0 (unlimited)
+    FSEND_MIN_CLIENT_VERSION                     (none)
     FSEND_RELAY_ENABLED                          true
     FSEND_RELAY_ADDR                             :443
+    FSEND_RELAY_PUBLIC_ADDR                      (none)
     FSEND_RELAY_MAX_BYTES_PER_SESSION            0 (unlimited)
     FSEND_RELAY_MAX_BYTES_PER_DAY                0 (unlimited)
 ```
+
+An `FSEND_*` name the server doesn't know (a typo such as
+`FSEND_SERVER_MAX_SESSION_PER_IP`) is logged as a warning right after this
+block, so it can't silently leave a cap unset.
 
 Variables fall into three groups: **server-wide** controls (logging and
 auth, which apply to every endpoint), the **pairing / control plane** (its
