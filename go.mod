@@ -11,6 +11,7 @@ require (
 	github.com/pion/ice/v4 v4.4.8
 	github.com/pion/mdns/v2 v2.2.2
 	github.com/pion/stun/v4 v4.0.1
+	github.com/pion/transport/v5 v5.0.1
 	github.com/quic-go/quic-go v0.64.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -33,7 +34,6 @@ require (
 	github.com/pion/dtls/v3 v3.1.9 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/transport/v5 v5.0.1 // indirect
 	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/twmb/murmur3 v1.2.0 // indirect
 	github.com/vbauerster/cupwriter v0.0.5 // indirect

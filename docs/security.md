@@ -73,6 +73,7 @@ doing that job, it observes very little:
 | Ciphertext (relay-fallback path only) | ✓ as opaque bytes — not decryptable, even by the operator |
 | The share code | ✗ never — only a derived slot (see below) |
 | Your IP | ✓ briefly, in memory, for pairing — never written to disk |
+| Your local addresses | ✓ the LAN addresses your peer may connect to directly (ICE host candidates), relayed in memory during pairing. VPN, container, VM and link-local interfaces are never published |
 
 ### What it writes to disk
 
