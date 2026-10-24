@@ -352,12 +352,13 @@ func waitForSidecarSize(dir string, minBytes int64, budget time.Duration) bool {
 	return false
 }
 
-// waitForStderr polls a sender's stderr for substr within budget.
 // waitForResumeKey polls for the receiver's saved resume key under xdg.
+// [^.]* skips atomicfile's dot-prefixed temp file, which exists before
+// the key is complete.
 func waitForResumeKey(xdg string, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		if matches, _ := filepath.Glob(filepath.Join(xdg, "fsend", "resume", "*")); len(matches) > 0 {
+		if matches, _ := filepath.Glob(filepath.Join(xdg, "fsend", "resume", "[^.]*")); len(matches) > 0 {
 			return true
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -365,6 +366,7 @@ func waitForResumeKey(xdg string, budget time.Duration) bool {
 	return false
 }
 
+// waitForStderr polls a sender's stderr for substr within budget.
 func waitForStderr(s *senderProc, substr string, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
