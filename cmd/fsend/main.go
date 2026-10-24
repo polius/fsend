@@ -141,6 +141,7 @@ func renderError(err error, debug bool) int {
 		errors.Is(err, fserrors.ErrUnsendableSymlink) ||
 		errors.Is(err, fserrors.ErrRelayCapHit) ||
 		errors.Is(err, fserrors.ErrRelayIdleTimeout) ||
+		errors.Is(err, fserrors.ErrUDPBlocked) ||
 		errors.Is(err, fserrors.ErrServerStartup) ||
 		errors.Is(err, fserrors.ErrUpdateFailed) ||
 		errors.Is(err, fserrors.ErrUninstallFailed) ||

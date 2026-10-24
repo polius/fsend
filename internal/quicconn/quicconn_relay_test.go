@@ -85,16 +85,14 @@ func TestQUIC_OverRelay(t *testing.T) {
 	defer receiverUDP.Close()
 	receiverConn := relay.NewClient(receiverUDP, relayAddr, tok)
 
-	// Bootstrap: each peer sends one byte so the relay learns both
-	// addresses. The relay drops these (PeerA registers, PeerB
-	// registers — only after both, forwarding actually works).
-	if _, err := senderConn.WriteTo([]byte{0}, nil); err != nil {
-		t.Fatal(err)
+	// Register both peers so the relay learns (and verifies) their addresses.
+	regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer regCancel()
+	for _, c := range []*relay.Conn{senderConn, receiverConn} {
+		if err := c.Register(regCtx); err != nil {
+			t.Fatalf("relay Register: %v", err)
+		}
 	}
-	if _, err := receiverConn.WriteTo([]byte{0}, nil); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(100 * time.Millisecond)
 
 	// --- Sender: QUIC Transport over relay.Conn ---
 	senderTLS, err := SenderTLSConfig()

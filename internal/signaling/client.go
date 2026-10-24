@@ -234,6 +234,18 @@ func (c *Client) AllocateRelay(ctx context.Context, sessionID, roleToken string)
 	return &out, err
 }
 
+// RelayWSEndpoint returns the URL and auth headers for the relay's TCP
+// fallback (GET /v1/relay/ws), which the caller dials as a WebSocket.
+func (c *Client) RelayWSEndpoint(sessionID, roleToken string) (string, http.Header) {
+	h := http.Header{}
+	h.Set("User-Agent", "fsend/"+c.version)
+	h.Set("Authorization", "Bearer "+roleToken)
+	if c.password != "" {
+		h.Set(server.AuthHeader, c.password)
+	}
+	return c.baseURL + "/v1/relay/ws?session_id=" + url.QueryEscape(sessionID), h
+}
+
 // RelayStatus probes the pairing server for the current state of a
 // relay allocation. Used after a relay-path drop to surface the real
 // reason (e.g. cap_hit) instead of looping on retry forever. roleToken

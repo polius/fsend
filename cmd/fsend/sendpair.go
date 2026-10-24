@@ -394,11 +394,7 @@ func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID,
 	if alloc.ForwardingDisabled {
 		return nil, connpath.Info{}, fmt.Errorf("%w: this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 	}
-	rc, err := dialRelay(alloc, client.ServerHost())
-	if err != nil {
-		return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
-	}
-	return rc, connpath.FromRelay(alloc.RelayAddr), nil
+	return dialRelay(ctx, client, alloc, sessionID, roleToken)
 }
 
 // senderQUICAccept brings up a quic.Transport on the established

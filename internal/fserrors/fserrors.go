@@ -155,6 +155,13 @@ var (
 	// E061 — `fsend server` stopped because its relay UDP socket failed at
 	// runtime. Exits non-zero so the container's restart policy applies.
 	ErrRelayFailed = errors.New("relay failed")
+	// E042 — the relay never answered over UDP (the network blocks it) and
+	// the TCP fallback failed or this server doesn't offer it. Distinct from
+	// E014 so the user learns the cause instead of a generic failure.
+	ErrUDPBlocked = errors.New("udp blocked")
+	// E043 — `fsend doctor` found at least one degraded check. The checks
+	// themselves already printed the details; this gives scripts an exit code.
+	ErrDoctorFailed = errors.New("doctor checks failed")
 )
 
 // Entry is one row of the user-facing error catalog.
@@ -500,6 +507,17 @@ var catalog = map[error]Entry{
 		Message: "The server stopped: its relay UDP socket failed.",
 		Action: "A restart policy (Docker: restart: unless-stopped) brings it back.\n" +
 			"  The socket error is logged above.",
+	},
+	ErrUDPBlocked: {
+		Code: "E042", Exit: 42,
+		Message: "This network seems to block the UDP traffic fsend uses.",
+		Action: "Try another network (a phone hotspot works), or ask the network admin\n" +
+			"  to allow outbound UDP port 443. `fsend doctor` checks both paths.",
+	},
+	ErrDoctorFailed: {
+		Code: "E043", Exit: 43,
+		Message: "Some checks found a problem — see the warnings above.",
+		Action:  "Each one says what it affects and what still works.",
 	},
 }
 

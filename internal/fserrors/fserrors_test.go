@@ -124,6 +124,8 @@ func TestNewSentinels_LookupAndExit(t *testing.T) {
 		{ErrUpdateDevBuild, "E041", 41},
 		{ErrClientTooOld, "E060", 60},
 		{ErrRelayFailed, "E061", 61},
+		{ErrUDPBlocked, "E042", 42},
+		{ErrDoctorFailed, "E043", 43},
 	}
 	for _, c := range cases {
 		entry, ok := Lookup(c.err)

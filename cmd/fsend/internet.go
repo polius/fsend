@@ -155,13 +155,13 @@ func runReceiveOverInternet(ctx context.Context, f *flags, c string, cfg *config
 	if alloc.ForwardingDisabled {
 		return fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 	}
-	relayConn, err := dialRelay(alloc, client.ServerHost())
+	relayConn, relayPath, err := dialRelay(ctx, client, alloc, joined.SessionID, joined.RoleToken)
 	if err != nil {
-		return fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
+		return err
 	}
 	defer func() { _ = relayConn.Close() }()
 	return classifyRelayDrop(ctx, client, joined.SessionID, joined.RoleToken,
-		runReceiverQUICOver(ctx, f, relayConn, c, connpath.FromRelay(alloc.RelayAddr), connSpin))
+		runReceiverQUICOver(ctx, f, relayConn, c, relayPath, connSpin))
 }
 
 // classifyRelayDrop probes the relay-status endpoint when a relay-path
@@ -402,39 +402,84 @@ func (c *iceOwningConn) Close() error {
 	return err
 }
 
-// dialRelay wires up a relay.Conn for QUIC. Mirrors the original
-// internet.go relay path; factored out so both sender and receiver code
-// can share it.
+// relayUDPWait is how long the relay's UDP registration may go unanswered
+// before we take UDP as blocked and switch to the TCP fallback. A reachable
+// relay answers in one RTT. Var so tests can shrink it.
+var relayUDPWait = 2 * time.Second
+
+// relayTCPWait bounds the TCP fallback's dial and registration.
+const relayTCPWait = 15 * time.Second
+
+// dialRelay connects to the relay for alloc and registers this side,
+// returning a net.PacketConn ready for QUIC and the path to show the user.
+// UDP first; if the relay never answers over UDP (or UDP fails outright),
+// the same relay frames go over a WebSocket on the server's HTTPS port.
+// Shared by sender and receiver.
+func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.RelayAllocateResponse, sessionID, roleToken string) (net.PacketConn, connpath.Info, error) {
+	tok, err := relay.ParseToken(alloc.SessionToken)
+	if err != nil {
+		return nil, connpath.Info{}, fmt.Errorf("%w: parsing relay token: %v", fserrors.ErrConnectFailed, err)
+	}
+	// Stable per side, so a re-dial (or the switch to TCP) reclaims this
+	// side's relay slot.
+	id := relay.PeerIDFor(roleToken)
+	if !forceRelayTCP() {
+		pc, err := dialRelayUDP(ctx, alloc.RelayAddr, client.ServerHost(), tok, id)
+		switch {
+		case err == nil:
+			return pc, connpath.FromRelay(alloc.RelayAddr), nil
+		case ctx.Err() != nil:
+			return nil, connpath.Info{}, ctx.Err()
+		case !alloc.TCPFallback && errors.Is(err, relay.ErrNoReply):
+			return nil, connpath.Info{}, fmt.Errorf("%w: No UDP reply from the relay, and this server has no TCP fallback (it may need an update).", fserrors.ErrUDPBlocked)
+		case !alloc.TCPFallback:
+			return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
+		}
+	} else if !alloc.TCPFallback {
+		return nil, connpath.Info{}, fmt.Errorf("%w: this server has no relay TCP fallback", fserrors.ErrConnectFailed)
+	}
+	wsURL, hdr := client.RelayWSEndpoint(sessionID, roleToken)
+	wctx, cancel := context.WithTimeout(ctx, relayTCPWait)
+	defer cancel()
+	pc, err := relay.DialWS(wctx, wsURL, hdr, tok, id)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, connpath.Info{}, ctx.Err()
+		}
+		return nil, connpath.Info{}, fmt.Errorf("%w: The relay was unreachable over UDP, and the TCP fallback failed (%v).", fserrors.ErrUDPBlocked, err)
+	}
+	return pc, connpath.FromRelay(client.ServerHost() + " over TCP"), nil
+}
+
+// forceRelayTCP skips the UDP relay. Undocumented test knob: the e2e suite
+// can't block UDP on loopback.
+func forceRelayTCP() bool { return os.Getenv("FSEND_RELAY_TRANSPORT") == "tcp" }
+
+// dialRelayUDP registers with the relay over UDP. It returns
+// relay.ErrNoReply when the relay stays silent for relayUDPWait.
 //
 // serverHost is the signaling server's host (signaling.Client.ServerHost);
 // the relay address is server-chosen, so validateRelayAddr screens it before
 // we dial (SSRF-ish defense against a hostile/misconfigured server).
-func dialRelay(alloc *server.RelayAllocateResponse, serverHost string) (net.PacketConn, error) {
-	if err := validateRelayAddr(alloc.RelayAddr, serverHost); err != nil {
+func dialRelayUDP(ctx context.Context, relayAddr, serverHost string, tok relay.Token, id relay.PeerID) (net.PacketConn, error) {
+	if err := validateRelayAddr(relayAddr, serverHost); err != nil {
 		return nil, err
+	}
+	relayUDPAddr, err := net.ResolveUDPAddr("udp", relayAddr)
+	if err != nil {
+		return nil, fmt.Errorf("resolving relay: %w", err)
 	}
 	myUDP, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	if err != nil {
 		return nil, fmt.Errorf("local UDP: %w", err)
 	}
-	relayUDPAddr, err := net.ResolveUDPAddr("udp", alloc.RelayAddr)
-	if err != nil {
-		_ = myUDP.Close()
-		return nil, fmt.Errorf("resolving relay: %w", err)
-	}
-	tok, err := relay.ParseToken(alloc.SessionToken)
-	if err != nil {
-		_ = myUDP.Close()
-		return nil, fmt.Errorf("parsing session token: %w", err)
-	}
-	rc := relay.NewClient(myUDP, relayUDPAddr, tok)
-	if _, err := rc.WriteTo([]byte{0}, nil); err != nil {
+	rc := relay.NewClient(myUDP, relayUDPAddr, tok).WithPeerID(id)
+	regCtx, cancel := context.WithTimeout(ctx, relayUDPWait)
+	defer cancel()
+	if err := rc.Register(regCtx); err != nil {
 		_ = rc.Close()
-		return nil, fmt.Errorf("relay bootstrap: %w", err)
+		return nil, err
 	}
-	// Resend the bootstrap until the relay forwards us a datagram: a single
-	// lost one would strand the passive sender (it only waits to be dialed).
-	rc.KeepBootstrapping(500*time.Millisecond, 20*time.Second)
 	return rc, nil
 }
 

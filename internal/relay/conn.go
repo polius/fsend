@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -16,18 +18,23 @@ import (
 // accepts via Transport.Conn. That means we can run QUIC end-to-end
 // between two peers, with all packets transparently relayed through
 // the server — the relay only sees opaque ciphertext after the QUIC
-// handshake completes.
+// handshake completes. The underlying conn is a UDP socket aimed at the
+// relay, or a WebSocket link (see DialWS); the framing is the same.
 //
 // Concurrency: ReadFrom / WriteTo / Close may all be called from
 // different goroutines (quic-go does exactly that).
 type Conn struct {
 	underlying net.PacketConn
-	relayAddr  *net.UDPAddr
+	relayAddr  net.Addr
 	token      Token
+	id         PeerID
 
 	gotInbound atomic.Bool   // set once the relay forwards us a datagram
-	stop       chan struct{} // closed by Close to stop the bootstrap resender
+	stop       chan struct{} // closed by Close to stop the keepalive
 	stopOnce   sync.Once
+
+	readMu  sync.Mutex
+	readBuf []byte
 
 	mu     sync.Mutex
 	closed bool
@@ -40,48 +47,113 @@ type Conn struct {
 // so both hand quic-go the same tag.
 var SyntheticPeer = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1}
 
-// NewClient wraps an underlying UDP socket for relay-mode operation.
+// ErrNoReply means the relay never answered the registration handshake.
+// Over UDP that is the signature of a network that blocks UDP.
+var ErrNoReply = errors.New("relay: no reply")
+
+// NewClient wraps an underlying socket for relay-mode operation, with a
+// random PeerID (see WithPeerID). Call Register before handing it to QUIC.
 //
 // The caller is expected to have already POST'd /v1/relay/allocate and
 // gotten back the relayAddr and token.
-func NewClient(underlying net.PacketConn, relayAddr *net.UDPAddr, token Token) *Conn {
-	return &Conn{
+func NewClient(underlying net.PacketConn, relayAddr net.Addr, token Token) *Conn {
+	c := &Conn{
 		underlying: underlying,
 		relayAddr:  relayAddr,
 		token:      token,
 		stop:       make(chan struct{}),
+		readBuf:    make([]byte, MaxDatagram+1),
+	}
+	_, _ = rand.Read(c.id[:])
+	return c
+}
+
+// WithPeerID sets the id the relay files this side under. A stable id
+// (PeerIDFor) lets a re-dial reclaim this side's slot. Returns c.
+func (c *Conn) WithPeerID(id PeerID) *Conn {
+	c.id = id
+	return c
+}
+
+// registerResend is how often Register repeats an unanswered message.
+const registerResend = 250 * time.Millisecond
+
+// keepaliveInterval refreshes our registration (and any NAT mapping on the
+// way) while we wait, passively, for the first datagram from the peer.
+const keepaliveInterval = 15 * time.Second
+
+// Register runs the relay's registration handshake (HELLO → CHALLENGE →
+// REGISTER → REGISTERED) and returns once the relay has recorded our
+// address. It returns ErrNoReply if the relay never answered before ctx
+// ended, so ctx should carry a deadline. Must be called before the conn is
+// handed to QUIC: it reads the underlying conn directly.
+func (c *Conn) Register(ctx context.Context) error {
+	defer func() { _ = c.underlying.SetReadDeadline(time.Time{}) }()
+	msg := c.control(msgHello, nil)
+	buf := make([]byte, MaxDatagram)
+	send := true
+	for {
+		if send {
+			if _, err := c.underlying.WriteTo(msg, c.relayAddr); err != nil {
+				return err
+			}
+			dl := time.Now().Add(registerResend)
+			if d, ok := ctx.Deadline(); ok && d.Before(dl) {
+				dl = d
+			}
+			_ = c.underlying.SetReadDeadline(dl)
+			send = false
+		}
+		n, _, err := c.underlying.ReadFrom(buf)
+		if err != nil {
+			var ne net.Error
+			if !errors.As(err, &ne) || !ne.Timeout() {
+				return err
+			}
+			if ctx.Err() != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return ctx.Err()
+				}
+				return ErrNoReply
+			}
+			send = true
+			continue
+		}
+		tok, typ, id, cookie, ok := parseControl(buf[:n])
+		if !ok || tok != c.token {
+			continue
+		}
+		switch {
+		case typ == msgChallenge:
+			msg = c.control(msgRegister, &cookie)
+			send = true
+		case typ == msgRegistered && id == c.id:
+			go c.keepalive()
+			return nil
+		}
 	}
 }
 
-// KeepBootstrapping resends the one-byte bootstrap datagram every interval
-// (up to max) until the relay forwards us our first datagram, or the conn
-// closes. The bootstrap is how the relay learns our address; after it, the
-// sender is passive (it waits to be dialed), so a single lost bootstrap
-// would strand the pairing. Harmless for the receiver — it dials QUIC
-// immediately, so its first inbound arrives fast and the resender stops.
-func (c *Conn) KeepBootstrapping(interval, max time.Duration) {
-	go func() {
-		deadline := time.Now().Add(max)
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-c.stop:
+// keepalive repeats HELLO until the peer's first datagram arrives or the
+// conn closes. The relay's CHALLENGE is answered in ReadFrom.
+func (c *Conn) keepalive() {
+	t := time.NewTicker(keepaliveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-t.C:
+			if c.gotInbound.Load() {
 				return
-			case <-t.C:
-				// Recheck stop: a Close racing the tick shouldn't send.
-				select {
-				case <-c.stop:
-					return
-				default:
-				}
-				if c.gotInbound.Load() || time.Now().After(deadline) {
-					return
-				}
-				_, _ = c.WriteTo([]byte{0}, nil)
 			}
+			_, _ = c.underlying.WriteTo(c.control(msgHello, nil), c.relayAddr)
 		}
-	}()
+	}
+}
+
+func (c *Conn) control(typ byte, cookie *[cookieSize]byte) []byte {
+	return frameControl(c.token, typ, c.id, cookie)
 }
 
 // LocalAddr returns the underlying socket's local address.
@@ -113,28 +185,30 @@ func (c *Conn) Close() error {
 //
 // Datagrams whose token doesn't match ours are dropped silently (defense
 // in depth: should not happen given the relay's demux, but cheap to check).
+// A CHALLENGE means the relay saw our data from an address it doesn't
+// know (NAT rebinding, network change): we re-register from the new one.
 func (c *Conn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	// One byte more than a payload of len(p) needs: if the datagram fills
-	// this buffer, its payload is oversize for the caller's buffer, so the
-	// loop drops it instead of handing back a silently truncated packet.
-	buf := make([]byte, len(p)+HeaderSize+1)
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	buf := c.readBuf
 	for {
 		nn, _, err := c.underlying.ReadFrom(buf)
 		if err != nil {
 			return 0, nil, err
 		}
+		if nn > 0 && buf[0] == ControlVersion {
+			if tok, typ, _, cookie, ok := parseControl(buf[:nn]); ok && tok == c.token && typ == msgChallenge {
+				_, _ = c.underlying.WriteTo(c.control(msgRegister, &cookie), c.relayAddr)
+			}
+			continue
+		}
 		ver, token, payload, ok := Parse(buf[:nn])
-		if !ok || ver != ProtocolVersion {
+		if !ok || ver != ProtocolVersion || token != c.token {
 			continue
 		}
-		if token != c.token {
-			continue
-		}
-		if len(payload) > len(p) {
+		if nn == len(buf) || len(payload) > len(p) {
 			continue // oversize: drop rather than truncate
 		}
-		// The relay only forwards once both peers are registered, so any
-		// inbound datagram means our address is known — stop resending.
 		c.gotInbound.Store(true)
 		n = copy(p, payload)
 		return n, SyntheticPeer, nil
@@ -146,7 +220,7 @@ func (c *Conn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 // The `addr` argument is ignored — we always write to the relay. This
 // matches quic-go's expectation that PacketConn semantics are stable.
 func (c *Conn) WriteTo(p []byte, _ net.Addr) (int, error) {
-	if len(p)+HeaderSize > 65535 {
+	if len(p)+HeaderSize > MaxDatagram {
 		return 0, fmt.Errorf("relay: payload too large")
 	}
 	out := make([]byte, HeaderSize+len(p))
