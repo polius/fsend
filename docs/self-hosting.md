@@ -141,6 +141,11 @@ and restart:
       FSEND_SERVER_PASSWORD: "your-secret"
 ```
 
+Use a long random value (`openssl rand -base64 24`). Wrong guesses are
+counted in metrics but not throttled per client — behind Caddy every client
+shares one source address, so a lockout would lock everyone out — and the
+server warns at startup about passwords shorter than 16 characters.
+
 ```sh
 docker compose up -d
 ```

@@ -97,6 +97,13 @@ func runServer() error {
 	for _, name := range unknownServerEnv(os.Environ()) {
 		logger.Warn("ignoring unknown variable (typo?)", "name", name)
 	}
+	if n := len(cfg.serverPassword); n > 0 && n < minServerPasswordLen {
+		// Guesses aren't throttled per client (behind a proxy every client
+		// shares one IP, so a per-IP lockout would lock out everyone):
+		// length is the defense.
+		logger.Warn("FSEND_SERVER_PASSWORD is short and can be guessed online; use a random one",
+			"min_length", minServerPasswordLen, "example", "openssl rand -base64 24")
+	}
 
 	s := server.New(server.Config{
 		ServerVersion:        version.Version,
@@ -248,6 +255,9 @@ func runServer() error {
 	logger.Info("shutdown complete")
 	return exitErr
 }
+
+// minServerPasswordLen is the length below which startup warns.
+const minServerPasswordLen = 16
 
 // Shutdown bounds: relayDrainGrace for in-flight relay transfers, then
 // httpDrainGrace for signaling requests. The deployment's stop_grace_period
