@@ -117,6 +117,27 @@ func TestWait_ExpiryIs404(t *testing.T) {
 	}
 }
 
+// Rotating /64s inside one IPv6 /48 hits the site budget (limit × v6SiteFactor).
+func TestRateLimit_V6SiteBudget(t *testing.T) {
+	const limit = 2
+	s := New(Config{MaxNewSessionsPerMin: limit})
+	h := s.Handler()
+	ok := 0
+	for i := range 20 {
+		remote := fmt.Sprintf("[2001:db8:abcd:%x::1]:443", i+1) // a fresh /64 each time
+		if postCreateDirect(t, h, remote, fmt.Sprintf("%032x", i+1)) == http.StatusOK {
+			ok++
+		}
+	}
+	if ok != limit*v6SiteFactor {
+		t.Errorf("ok = %d, want %d (the /48 must cap /64 rotation)", ok, limit*v6SiteFactor)
+	}
+	// Another /48 is unaffected.
+	if got := postCreateDirect(t, h, "[2001:db8:ffff::1]:443", fmt.Sprintf("%032x", 99)); got != http.StatusOK {
+		t.Errorf("other /48: status %d, want 200", got)
+	}
+}
+
 // RelayPublicAddr overrides the Host-derived relay/STUN address.
 func TestRelayPublicAddr(t *testing.T) {
 	s := New(Config{RelayPublicAddr: "relay.example.com:3478"})

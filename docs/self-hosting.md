@@ -39,7 +39,14 @@ You'll need:
 - A publicly reachable host (a public IP) with **Docker** and **Docker
   Compose v2**.
 - A domain or subdomain you control, with an `A` record pointing at that
-  host — e.g. `fs.example.com`.
+  host — e.g. `fs.example.com`. Add an `AAAA` record only if Docker itself
+  has IPv6 enabled (`"ipv6": true` and `"ip6tables": true` in
+  `daemon.json`, plus `enable_ipv6: true` on the compose network). Without
+  that, Docker's userland proxy can relay IPv6 clients over IPv4, so the
+  server sees the bridge gateway instead of the client: STUN answers carry
+  the wrong address and every IPv6 client shares one rate-limit identity.
+  Host networking (`network_mode: host` on the `fsend` service) also
+  avoids it.
 - Three inbound ports open:
   - `80/tcp` — Let's Encrypt certificate issuance
   - `443/tcp` — HTTPS signaling

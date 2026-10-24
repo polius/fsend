@@ -114,7 +114,8 @@ What makes a short code safe to use as the whole secret:
   the sender invalidates it immediately.
 - **Rate-limited.** The public server is configured to cap new sessions
   at 30 per minute per source IP (keyed on the direct connection's IPv4
-  address, or the /64 prefix for IPv6 — proxy headers are never trusted,
+  address, or the /64 prefix for IPv6, with 4× that budget per /48 so
+  rotating /64s inside one site doesn't help — proxy headers are never trusted,
   since a client could otherwise rotate its "IP" past the cap), so online
   guessing against the ~45-bit space is infeasible. On a self-hosted
   server the cap is opt-in — it defaults to

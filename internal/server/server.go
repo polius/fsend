@@ -611,7 +611,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	if !s.allowNewSession(rateKey, time.Now()) {
+	if !s.allowNewSession(clientIP, time.Now()) {
 		s.mu.Unlock()
 		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
@@ -695,7 +695,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	// without this an attacker could probe the code space (each guess
 	// submitted as its derived slot) or churn joins against a known
 	// slot at line rate.
-	if !s.allowNewSession(rateKey, time.Now()) {
+	if !s.allowNewSession(clientIP, time.Now()) {
 		s.mu.Unlock()
 		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
@@ -764,7 +764,7 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	// the same lookup join performs). The legitimate sender polls once
 	// per LongPollTimeout (~25s ≈ 2-3/min), far under the recommended
 	// 30/min budget — see TestWaitRateLimit_PollCadenceStaysUnderBudget.
-	if !s.allowNewSession(rateLimitKey(clientIP(r)), time.Now()) {
+	if !s.allowNewSession(clientIP(r), time.Now()) {
 		s.mu.Unlock()
 		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
@@ -940,18 +940,44 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// allowNewSession must be called with s.mu held. key is the
-// rateLimitKey-collapsed identity (raw v4, /64 for v6).
-func (s *Server) allowNewSession(key string, now time.Time) bool {
-	if s.cfg.MaxNewSessionsPerMin <= 0 {
+// v6SiteFactor scales the per-minute budget for an IPv6 /48. A /48 is
+// typically one site (RFC 6177), so an abuser holding one can't mint 65k
+// /64 buckets; the headroom spares sites with several busy hosts.
+const v6SiteFactor = 4
+
+// allowNewSession must be called with s.mu held. ip is the raw client IP:
+// it is limited by rateLimitKey (v4 /32, v6 /64), and IPv6 also by its /48.
+func (s *Server) allowNewSession(ip string, now time.Time) bool {
+	limit := s.cfg.MaxNewSessionsPerMin
+	if limit <= 0 {
 		return true // unlimited
 	}
+	if !s.bucket(rateLimitKey(ip)).allow(now, limit, time.Minute) {
+		return false
+	}
+	if site := v6SiteKey(ip); site != "" {
+		return s.bucket(site).allow(now, limit*v6SiteFactor, time.Minute)
+	}
+	return true
+}
+
+func (s *Server) bucket(key string) *rateBucket {
 	b := s.ipBucket[key]
 	if b == nil {
 		b = &rateBucket{}
 		s.ipBucket[key] = b
 	}
-	return b.allow(now, s.cfg.MaxNewSessionsPerMin, time.Minute)
+	return b
+}
+
+// v6SiteKey returns the /48 bucket key for an IPv6 address, or "" for IPv4
+// and unparseable input.
+func v6SiteKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil {
+		return ""
+	}
+	return parsed.Mask(net.CIDRMask(48, 128)).String() + "/48"
 }
 
 // releaseIP must be called with s.mu held. key is the
