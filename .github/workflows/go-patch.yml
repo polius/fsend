@@ -12,24 +12,29 @@ on:
     - cron: "17 6 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   bump:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # push the chore/go-patch branch
+      pull-requests: write # open the PR and enable auto-merge
+      actions: write       # dispatch the checks on it
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # create-pull-request pushes the branch, so it needs the credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 # zizmor: ignore[artipacked]
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "stable"
+          cache: false
       - run: |
           minor=$(go mod edit -json | jq -r .Go | cut -d. -f1-2)
-          go get go@$minor
+          go get "go@$minor"
       # With no diff (already current) the action skips, so quiet days
       # between Go releases cost nothing.
-      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+      - id: pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           branch: chore/go-patch
           delete-branch: true
@@ -39,4 +44,23 @@ jobs:
             Keeps go.mod's `go` directive at the newest patch of the current
             minor so `GOTOOLCHAIN=auto` forces a security-patched toolchain
             for every build. Scheduled from .github/workflows/go-patch.yml;
-            merged automatically once checks pass.
+            merged automatically once the required checks pass.
+      # A PR pushed with GITHUB_TOKEN starts no pull_request workflows, so
+      # the required checks would never report. workflow_dispatch is exempt
+      # from that rule: run them on the branch head, which is the PR head.
+      # Auto-merge is enabled only if the ruleset requires ci-ok; otherwise
+      # --auto could merge before (or without) the checks.
+      - if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.pr.outputs.pull-request-url }}
+        run: |
+          gh workflow run checks.yml --ref chore/go-patch
+          gh workflow run codeql.yml --ref chore/go-patch
+          required=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | index("ci-ok")')
+          if [ "$required" = "null" ]; then
+            echo "::warning::ci-ok is not a required check on main; leaving $PR_URL for a manual merge"
+            exit 0
+          fi
+          gh pr merge --auto --squash "$PR_URL"

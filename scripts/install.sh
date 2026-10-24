@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
 # fsend installer — https://github.com/polius/fsend
 #
-# Downloads a release, verifies its SHA-256 checksum, and installs the
-# binary. Per-user by design: refuses to run as root (opt in with
+# Downloads a release, verifies its SHA-256 checksum (and the release's
+# Sigstore signature when cosign is installed), and installs the binary.
+# Per-user by design: refuses to run as root (opt in with
 # FSEND_ALLOW_ROOT=1 on single-user machines), never elevates,
 # never asks for a password. Everything it does is readable
 # top-to-bottom below.
@@ -16,8 +17,8 @@ BINARY="fsend"
 DOCS="https://github.com/${REPO}#readme"
 
 FSEND_VERSION="${FSEND_VERSION:-latest}"
-# FSEND_PREFIX is the documented name; PREFIX is kept because `fsend --update`
-# sets it when re-running this installer pinned to the binary's directory.
+# FSEND_PREFIX is the documented name (and what `fsend --update` sets to pin
+# the binary's directory); PREFIX is kept for older fsend releases.
 # FSEND_UPDATE (also set by `fsend --update`) trims the install-only parts
 # of the output — the "currently installed" preamble and the newcomer
 # sign-off — which fsend's own update narration already covers.
@@ -31,6 +32,11 @@ VERBOSE=0
 RELEASE_BASE="${FSEND_RELEASE_BASE_URL:-https://github.com/${REPO}/releases}"
 
 if [ -n "$PREFIX" ]; then PREFIX_EXPLICIT=1; else PREFIX_EXPLICIT=0; fi
+
+# Keyless-cosign identity of the release workflow that signs checksums.txt
+# (signs: in .goreleaser.yml).
+COSIGN_IDENTITY='^https://github\.com/polius/fsend/\.github/workflows/release\.yml@refs/tags/v'
+COSIGN_ISSUER='https://token.actions.githubusercontent.com'
 
 # Color only when stderr is a tty and NO_COLOR is unset/empty — the same
 # auto-detection the fsend binary applies (https://no-color.org).
@@ -146,7 +152,8 @@ default_prefix() {
     case "$1" in
         windows) echo "${HOME:-/usr/local}/bin" ;;
         *)
-            if [ -w "/usr/local/bin" ]; then
+            # /usr/local is Homebrew's prefix on Intel Macs: stay out of it.
+            if [ -w "/usr/local/bin" ] && [ ! -d "/usr/local/Cellar" ] && [ ! -d "/usr/local/Homebrew" ]; then
                 echo "/usr/local/bin"
             else
                 echo "${HOME:-/tmp}/.local/bin"
@@ -155,7 +162,22 @@ default_prefix() {
     esac
 }
 
+# brew_managed reports whether $1 is a Homebrew-owned binary (a symlink
+# into a Cellar or Caskroom), which only `brew upgrade` may replace.
+brew_managed() {
+    [ -L "$1" ] || return 1
+    case "$(readlink "$1" 2>/dev/null || true)" in
+        */Cellar/*|*/Caskroom/*) return 0 ;;
+    esac
+    return 1
+}
+
 download() {
+    fetch "$1" "$2" || err "download failed: $1"
+}
+
+# fetch downloads $1 to $2, returning non-zero on failure.
+fetch() {
     url="$1"
     out="$2"
     if command -v curl >/dev/null 2>&1; then
@@ -171,10 +193,10 @@ download() {
         # Quiet: downloads are small and the outro narrates the result —
         # a progress meter is noise.
         # shellcheck disable=SC2086  # $pin is an intentional word split
-        curl $pin -fsSL --tlsv1.2 -o "$out" "$url" || err "download failed: $url"
+        curl $pin -fsSL --tlsv1.2 -o "$out" "$url"
     elif command -v wget >/dev/null 2>&1; then
         # shellcheck disable=SC2046 disable=SC2086  # $(...) split intentionally
-        wget $(wget_flags) -O "$out" "$url" || err "download failed: $url"
+        wget $(wget_flags) -O "$out" "$url"
     else
         err "need curl or wget to download fsend"
     fi
@@ -224,10 +246,8 @@ extract_zip() {
     err "no zip extractor found (need unzip, bsdtar, or PowerShell)"
 }
 
-# The checksum catches corruption and truncation. checksums.txt and the
-# archive both come from the same HTTPS host, so this is an integrity
-# check, not a guarantee against a tampered release — that is GitHub's
-# side of the trust model (see docs/security.md).
+# verify_checksum checks the archive against checksums.txt (an integrity
+# check; authenticity comes from verify_signature).
 verify_checksum() {
     _archive="$1"
     _sums="$2"
@@ -248,6 +268,26 @@ verify_checksum() {
 
     [ "$_actual" = "$_expected" ] \
         || err "checksum mismatch: expected $_expected, got $_actual"
+}
+
+# verify_signature checks the release's keyless Sigstore signature on
+# checksums.txt when cosign is installed. Opportunistic by design: this
+# script reaches you over the same channel as the release, so it can't
+# vouch for itself; `fsend --update` verifies the script first. A bad
+# signature aborts; a release without one (older tags) is checksum-only.
+# Returns 0 only if a signature was checked.
+verify_signature() {
+    command -v cosign >/dev/null 2>&1 || return 1
+    _bundle="$tmp/checksums.txt.sigstore.json"
+    if ! fetch "${RELEASE_BASE}/download/${version}/checksums.txt.sigstore.json" "$_bundle" 2>/dev/null; then
+        warn "release $version publishes no signature — checking the checksum only"
+        return 1
+    fi
+    cosign verify-blob --bundle "$_bundle" \
+        --certificate-identity-regexp "$COSIGN_IDENTITY" \
+        --certificate-oidc-issuer "$COSIGN_ISSUER" \
+        "$tmp/checksums.txt" >/dev/null 2>&1 \
+        || err "signature verification failed for checksums.txt — refusing to install"
 }
 
 ensure_prefix() {
@@ -365,6 +405,10 @@ main() {
     if [ "$PREFIX_EXPLICIT" = "0" ]; then
         PREFIX="$(default_prefix "$os")"
     fi
+    if brew_managed "$PREFIX/$BINARY"; then
+        err "$PREFIX/$BINARY is managed by Homebrew — update it with: brew upgrade fsend
+  (or install elsewhere with -p/--prefix)"
+    fi
 
     # Upgrade awareness: say what's already installed before touching it.
     # Under FSEND_UPDATE the caller has already named both versions, so this
@@ -416,13 +460,12 @@ main() {
     vinfo "downloading $archive"
     download "${RELEASE_BASE}/download/${version}/${archive}" "$tmp/$archive"
 
-    # The checksum catches corruption and truncation. checksums.txt and the
-    # archive both come from the same HTTPS host, so this is an integrity
-    # check, not a guarantee against a tampered release — that is GitHub's
-    # side of the trust model (see docs/security.md).
+    # The checksum catches corruption and truncation; the signature (when
+    # cosign is installed) ties checksums.txt to the release workflow.
     vinfo "verifying checksum"
+    if verify_signature; then verified="checksum and signature"; else verified="checksum"; fi
     verify_checksum "$tmp/$archive" "$tmp/checksums.txt"
-    ok "checksum verified"
+    ok "$verified verified"
 
     vinfo "extracting"
     case "$ext" in

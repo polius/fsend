@@ -6,7 +6,9 @@ run:
 linters:
   default: standard
   enable:
+    - bodyclose
     - errcheck
+    - errorlint
     - gosec
     - staticcheck
     - revive
@@ -16,13 +18,19 @@ linters:
         - name: var-naming
         - name: package-comments
         - name: exported
+    errorlint:
+      # Comparisons and type assertions on wrapped errors are real bugs;
+      # %v vs %w in fmt.Errorf is a style choice here (the catalog wraps
+      # its sentinel explicitly and formats the cause for humans).
+      errorf: false
     gosec:
+      # G110/G304/G305 (decompression bomb, file inclusion, path traversal)
+      # are the rules that matter most for a file receiver: they stay on
+      # globally and are waived per reviewed file below, so new code is
+      # checked.
       excludes:
-        - G110
         - G115
         - G301
-        - G304
-        - G305
         - G402
         - G404 # weak RNG: math/rand/v2 is used only for retry jitter, not for any secret
         - G602
@@ -32,6 +40,19 @@ linters:
         linters:
           - gosec
           - errcheck
+          - errorlint
+      # Reviewed G304 sites: the receiver opens only paths already passed
+      # through transfer.SanitizeRelativePath and confined to the output
+      # dir; the sender and config open paths the local user chose.
+      - path: internal/(transfer/(recv|pack|imohash|util|walk)|atomicfile/atomicfile|config/config|update/update)\.go
+        text: G304
+        linters:
+          - gosec
+      # Chain walks the unwrap tree itself, one level at a time.
+      - path: internal/fserrors/fserrors\.go
+        text: type switch on error
+        linters:
+          - errorlint
 
 formatters:
   enable:

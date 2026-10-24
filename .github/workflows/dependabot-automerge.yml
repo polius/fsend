@@ -2,30 +2,35 @@ name: dependabot-automerge
 
 on: pull_request
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   automerge:
-    # Majors are left for human review; minor/patch merge once the
-    # required checks pass. Requires repo auto-merge enabled and a
-    # ruleset marking the checks as required — without required checks,
-    # --auto merges immediately. go-patch PRs (go directive patch bumps)
-    # automerge the same way; fetch-metadata only understands Dependabot.
-    if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' ||
-      github.event.pull_request.user.login == 'github-actions[bot]'
+    # Minor/patch Go module updates merge once the ruleset's required
+    # check (ci-ok in checks.yml, which includes govulncheck) passes.
+    # Majors and every GitHub Actions update wait for a human: an action
+    # runs with the workflow's token, so a compromised one is worse than a
+    # library. Without a required check, --auto would merge immediately,
+    # so the job refuses unless ci-ok is required on main.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
         id: meta
-        if: github.event.pull_request.user.login == 'dependabot[bot]'
       - if: >-
-          (github.event.pull_request.user.login == 'dependabot[bot]' &&
-           steps.meta.outputs.update-type != 'version-update:semver-major') ||
-          startsWith(github.event.pull_request.head.ref, 'chore/go-patch')
-        run: gh pr merge --auto --squash "$PR_URL"
+          steps.meta.outputs.package-ecosystem == 'go_modules' &&
+          steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          required=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | index("ci-ok")')
+          if [ "$required" = "null" ]; then
+            echo "::error::ci-ok is not a required check on main; refusing to enable auto-merge"
+            exit 1
+          fi
+          gh pr merge --auto --squash "$PR_URL"

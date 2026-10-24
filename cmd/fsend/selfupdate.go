@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/polius/fsend/internal/fserrors"
@@ -16,10 +17,11 @@ import (
 )
 
 // runUpdate replaces the running binary with the latest release by
-// re-running the platform installer (runInstaller, per-OS) pinned to
-// the directory the binary lives in. The installer — not fsend — does
-// the download and checksum verification, so the update path can never
-// drift from a fresh install.
+// running that release's own installer (runInstaller, per-OS) pinned to
+// the version and to the directory the binary lives in. fsend verifies
+// the installer against the release checksums (and their signature when
+// cosign is installed) before running it; the installer then verifies
+// the archive, so the update path can never drift from a fresh install.
 //
 // check reports instead of installing: it shares the lookup and the
 // wording, and stops before anything is written.
@@ -80,7 +82,21 @@ func runUpdate(check bool) error {
 
 	fmt.Fprintf(os.Stderr, "%s Updating fsend %s → %s in %s\n", uxlog.Step(), current, latest, filepath.Dir(binPath))
 	fmt.Fprintf(os.Stderr, "  what's new: %s\n", uxlog.Link(update.ReleaseURL(latest)))
-	if err := runInstaller(binPath); err != nil {
+	tmp, err := os.MkdirTemp("", "fsend-update-")
+	if err != nil {
+		return fmt.Errorf("%w: %v", fserrors.ErrUpdateFailed, err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	script, signed, err := update.FetchInstaller(context.Background(), latest, installerAsset, tmp)
+	if err != nil {
+		return fmt.Errorf("%w: verifying the installer: %v", fserrors.ErrUpdateFailed, err)
+	}
+	if signed {
+		fmt.Fprintln(os.Stderr, uxlog.Check(), "Release signature verified")
+	} else {
+		fmt.Fprintln(os.Stderr, uxlog.Step(), "Installer checksum verified (install cosign to also check the release signature)")
+	}
+	if err := runInstaller(binPath, script, latest); err != nil {
 		return fmt.Errorf("%w: %s", fserrors.ErrUpdateFailed, installerFailureDetail(err))
 	}
 	return nil
@@ -95,6 +111,23 @@ func installerFailureDetail(err error) string {
 		return fmt.Sprintf("the installer exited with status %d", exit.ExitCode())
 	}
 	return err.Error()
+}
+
+// installerEnv pins the installer to version and to binPath's directory.
+// An exported FSEND_VERSION, FSEND_PREFIX or PREFIX is dropped so a stale
+// pin can't install an older release or land somewhere else. FSEND_UPDATE
+// tells the installer this is an update: it drops its "currently
+// installed" preamble and newcomer sign-off, which fsend already narrates.
+func installerEnv(binPath, version string) []string {
+	env := slices.DeleteFunc(slices.Clone(os.Environ()), func(e string) bool {
+		return strings.HasPrefix(e, "FSEND_VERSION=") ||
+			strings.HasPrefix(e, "FSEND_PREFIX=") ||
+			strings.HasPrefix(e, "PREFIX=")
+	})
+	return append(env,
+		"FSEND_VERSION=v"+strings.TrimPrefix(version, "v"),
+		"FSEND_UPDATE=1",
+		"FSEND_PREFIX="+filepath.Dir(binPath))
 }
 
 // rootOptIn reports whether the user explicitly accepted a root install

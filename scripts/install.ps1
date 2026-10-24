@@ -3,8 +3,9 @@
   fsend installer for Windows (PowerShell).
 
 .DESCRIPTION
-  Downloads the latest fsend release, verifies its SHA-256 checksum, and
-  installs fsend.exe into a directory on your PATH. PowerShell 5.1+ (in-box
+  Downloads the latest fsend release, verifies its SHA-256 checksum (and the
+  release's Sigstore signature when cosign is installed), and installs
+  fsend.exe into a directory on your PATH. PowerShell 5.1+ (in-box
   on Windows 10/11) is the only requirement - no Git Bash needed, and no
   admin rights: everything is per-user.
 
@@ -50,6 +51,11 @@ $ReleaseBase = if ($env:FSEND_RELEASE_BASE_URL) {
 } else {
     "https://github.com/$Repo/releases"
 }
+
+# Keyless-cosign identity of the release workflow that signs checksums.txt
+# (signs: in .goreleaser.yml).
+$CosignIdentity = '^https://github\.com/polius/fsend/\.github/workflows/release\.yml@refs/tags/v'
+$CosignIssuer = 'https://token.actions.githubusercontent.com'
 
 # PowerShell 5.1 renders Invoke-WebRequest progress byte-by-byte, which
 # makes downloads orders of magnitude slower - silence it. curl.exe (the
@@ -130,7 +136,38 @@ function Get-Arch {
     }
 }
 
+# Verify-Signature checks the release's keyless Sigstore signature on
+# checksums.txt when cosign is installed. Opportunistic, like install.sh:
+# this script can't vouch for itself, and `fsend --update` verifies it
+# first. A bad signature aborts; a release without one is checksum-only.
+# Returns $true only if a signature was checked.
+function Verify-Signature($sums, $tag, $dir) {
+    $cosign = Get-Command cosign -ErrorAction SilentlyContinue
+    if (-not $cosign) { return $false }
+    $bundle = Join-Path $dir 'checksums.txt.sigstore.json'
+    if (-not (Fetch "$ReleaseBase/download/$tag/checksums.txt.sigstore.json" $bundle)) {
+        Warn "release $tag publishes no signature - checking the checksum only"
+        return $false
+    }
+    # PS 5.1 turns a native command's redirected stderr into a terminating
+    # error under EAP=Stop; judge by the exit code instead.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $cosign.Source verify-blob --bundle $bundle `
+        --certificate-identity-regexp $CosignIdentity `
+        --certificate-oidc-issuer $CosignIssuer $sums *> $null
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($code -ne 0) { Err 'signature verification failed for checksums.txt - refusing to install' }
+    return $true
+}
+
 function Download($url, $out) {
+    if (-not (Fetch $url $out)) { Err "download failed: $url" }
+}
+
+# Fetch downloads $url to $out and returns whether it succeeded.
+function Fetch($url, $out) {
     # curl.exe ships in-box since Windows 10 1803; Invoke-WebRequest is the
     # fallback for stripped-down hosts. Quiet: downloads are small and the
     # outro narrates the result - a progress meter is noise.
@@ -143,13 +180,13 @@ function Download($url, $out) {
         if (-not $env:FSEND_RELEASE_BASE_URL) { $curlArgs += @('--proto', '=https') }
         $curlArgs += @('-o', $out, $url)
         & $curl.Source @curlArgs
-        if ($LASTEXITCODE -ne 0) { Err "download failed: $url" }
-        return
+        return ($LASTEXITCODE -eq 0)
     }
     try {
         Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+        return $true
     } catch {
-        Err "download failed: $url"
+        return $false
     }
 }
 
@@ -209,17 +246,16 @@ try {
     VInfo "downloading $archive"
     Download "$ReleaseBase/download/$Version/$archive" (Join-Path $tmp $archive)
 
-    # The checksum catches corruption and truncation. checksums.txt and the
-    # archive both come from the same HTTPS host, so this is an integrity
-    # check, not a guarantee against a tampered release - that is GitHub's
-    # side of the trust model (see docs/security.md).
+    # The checksum catches corruption and truncation; the signature (when
+    # cosign is installed) ties checksums.txt to the release workflow.
     VInfo 'verifying checksum'
+    $signed = Verify-Signature $checksums $Version $tmp
     $row = Get-Content $checksums | Where-Object { $_ -match ("\s" + [regex]::Escape($archive) + "$") } | Select-Object -First 1
     if (-not $row) { Err "no checksum found for $archive" }
     $expected = (($row -split '\s+') | Where-Object { $_ })[0].ToLower()
     $actual   = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $tmp $archive)).Hash.ToLower()
     if ($actual -ne $expected) { Err "checksum mismatch: expected $expected, got $actual" }
-    Ok 'checksum verified'
+    if ($signed) { Ok 'checksum and signature verified' } else { Ok 'checksum verified' }
 
     VInfo 'extracting'
     Expand-Archive -LiteralPath (Join-Path $tmp $archive) -DestinationPath $tmp -Force

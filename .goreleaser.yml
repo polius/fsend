@@ -14,13 +14,16 @@ builds:
     main: ./cmd/fsend
     env:
       - CGO_ENABLED=0
+    # Reproducible: no local paths, no build ID, and every timestamp is
+    # the commit's, so a rebuild of the tag matches the published bytes.
     flags:
       - -trimpath
     ldflags:
       - -s -w -buildid=
       - -X github.com/polius/fsend/internal/version.Version={{.Version}}
       - -X github.com/polius/fsend/internal/version.Commit={{.ShortCommit}}
-      - -X github.com/polius/fsend/internal/version.Date={{.Date}}
+      - -X github.com/polius/fsend/internal/version.Date={{.CommitDate}}
+    mod_timestamp: '{{ .CommitTimestamp }}'
     goos:
       - linux
       - darwin
@@ -60,9 +63,15 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
+    builds_info:
+      mtime: '{{ .CommitDate }}'
     files:
-      - LICENSE
-      - README.md
+      - src: LICENSE
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: README.md
+        info:
+          mtime: '{{ .CommitDate }}'
 
 homebrew_casks:
   # Publishes a cask to github.com/polius/homebrew-tap so macOS users can:
@@ -78,14 +87,21 @@ homebrew_casks:
     directory: Casks
     homepage: 'https://github.com/polius/fsend'
     description: 'Peer-to-peer, end-to-end encrypted file transfer'
-    # Binaries aren't Apple-notarized, so Homebrew quarantines them and Gatekeeper
-    # blocks the first run. Strip the quarantine attr on install.
+    # Binaries aren't Apple-notarized (no Developer ID), so Gatekeeper would
+    # block the first run of a quarantined download. The hook strips the
+    # quarantine attr; the caveat below says so at install time instead of
+    # doing it silently, and points at the CI provenance to check instead.
     hooks:
       post:
         install: |
           if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/fsend"]
           end
+    caveats: |
+      fsend is not notarized by Apple, so this cask removed the
+      com.apple.quarantine attribute from the fsend binary to let it run.
+      Verify it was built by the fsend release workflow with:
+        gh attestation verify "$(brew --prefix)/bin/fsend" --repo polius/fsend
     skip_upload: auto
     commit_author:
       name: goreleaser-bot
@@ -95,6 +111,26 @@ homebrew_casks:
 checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
+  # The installers are checksummed too: `fsend --update` verifies the
+  # pinned release's script against this file before running it.
+  extra_files:
+    - glob: ./scripts/install.sh
+    - glob: ./scripts/install.ps1
+
+# Keyless Sigstore signature over checksums.txt, bound to this repo's
+# release workflow; every asset is covered through its checksum line.
+#   cosign verify-blob --bundle checksums.txt.sigstore.json \
+#     --certificate-identity-regexp '^https://github\.com/polius/fsend/\.github/workflows/release\.yml@refs/tags/v' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: '${artifact}.sigstore.json'
+    args: [sign-blob, '--bundle=${signature}', '${artifact}', '--yes']
+    output: true
+
+sboms:
+  - artifacts: archive
 
 snapshot:
   version_template: '{{ incpatch .Version }}-snapshot'

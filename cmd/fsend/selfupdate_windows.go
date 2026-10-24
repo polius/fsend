@@ -6,33 +6,26 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"slices"
-	"strings"
 	"syscall"
 )
 
-// runInstaller re-runs the PowerShell installer pinned (via
-// FSEND_PREFIX) to the directory binPath lives in. The installer moves
-// the running image aside itself (a running .exe can be renamed, not
-// overwritten) and swaps the fresh binary in; this function only reaps
-// the leftover .old once this process exits and restores the original
-// if the installer died between those two moves.
-func runInstaller(binPath string) error {
+// installerAsset is the release asset runUpdate verifies and runs.
+const installerAsset = "install.ps1"
+
+// runInstaller runs the verified PowerShell installer pinned to version
+// and to the directory binPath lives in (installerEnv). The installer
+// moves the running image aside itself (a running .exe can be renamed,
+// not overwritten) and swaps the fresh binary in; this function only
+// reaps the leftover .old once this process exits and restores the
+// original if the installer died between those two moves.
+func runInstaller(binPath, script, version string) error {
 	old := binPath + ".old"
 	_ = os.Remove(old) // stale leftover from an interrupted update
 
-	cmd := exec.Command("powershell", "-NoProfile", "-Command",
-		"irm https://getfsend.alzina.dev/windows | iex")
-	// --update always wants the newest release: drop any FSEND_VERSION the
-	// user exported, so a stale pin can't reinstall an older version over
-	// a newer binary. FSEND_UPDATE tells the installer this is an update,
-	// not a first install: it drops its own "currently installed" preamble
-	// and newcomer sign-off, which fsend's narration already covers.
-	env := slices.DeleteFunc(slices.Clone(os.Environ()), func(e string) bool {
-		return strings.HasPrefix(e, "FSEND_VERSION=")
-	})
-	cmd.Env = append(env, "FSEND_VERSION=latest", "FSEND_UPDATE=1", "FSEND_PREFIX="+filepath.Dir(binPath))
+	// Bypass is process-scoped: the default Restricted policy refuses any
+	// -File script, and this one is already verified.
+	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script) //nolint:gosec // G204: the installer FetchInstaller just verified
+	cmd.Env = installerEnv(binPath, version)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
