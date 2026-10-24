@@ -147,3 +147,36 @@ func TestAlphabet_NoConfusables(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalize(t *testing.T) {
+	tests := []struct {
+		in, want string
+		ok       bool
+	}{
+		{"abc-defg-jkm", "abc-defg-jkm", true},
+		{"ABC-DEFG-JKM", "abc-defg-jkm", true},
+		{"  abc-defg-jkm\r\n", "abc-defg-jkm", true},
+		{"abc defg jkm", "abc-defg-jkm", true},
+		{"abc_defg_jkm", "abc-defg-jkm", true},
+		{"abc.defg.jkm", "abc-defg-jkm", true},
+		{"abc  defg - jkm", "abc-defg-jkm", true},
+		{"abcdefgjkm", "abc-defg-jkm", true},
+		{"Abcdefgjkm", "abc-defg-jkm", true},
+		{"abc-defg-jkm.", "abc-defg-jkm", true},
+		{"\"abc-defg-jkm\"", "abc-defg-jkm", true},
+		{"abc-defg-jkm?!", "abc-defg-jkm", true},
+		{"abcd-efg-jkm", "", false}, // separators off the 3-4-3 boundaries
+		{"abc-defg-jk", "", false},  // a letter short
+		{"abcdefgjkmn", "", false},  // a letter long
+		{"abc-defg-jko", "", false}, // o is not in the alphabet
+		{"abc-def1-jkm", "", false}, // digit
+		{"report.pdf", "", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := Normalize(tt.in)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("Normalize(%q) = (%q, %v), want (%q, %v)", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}
