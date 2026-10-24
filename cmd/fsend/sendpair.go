@@ -366,7 +366,8 @@ func createWithRetry(ctx context.Context, client *signaling.Client, rendezvous s
 			return nil, ctx.Err()
 		}
 		if onDown == nil || errors.Is(err, fserrors.ErrServerAuthRequired) ||
-			errors.Is(err, fserrors.ErrServerRetired) || errors.Is(err, fserrors.ErrCodeAlreadyClaimed) {
+			errors.Is(err, fserrors.ErrServerRetired) || errors.Is(err, fserrors.ErrCodeAlreadyClaimed) ||
+			errors.Is(err, fserrors.ErrClientTooOld) {
 			return nil, err
 		}
 		onDown(err)
@@ -1076,6 +1077,8 @@ func serverPairNotice(err error) string {
 		return "The server requires a password (fsend --connect <host:port>,<password>) — " + lanOnly
 	case errors.Is(err, fserrors.ErrRateLimited):
 		return "The server rate-limited this device; retrying — until then " + lanOnly
+	case errors.Is(err, fserrors.ErrClientTooOld):
+		return "This fsend is too old for the server (run fsend --update) — " + lanOnly
 	case errors.Is(err, fserrors.ErrServerCertUntrusted):
 		return "The server's certificate isn't trusted (a Wi-Fi login page?); retrying — until then " + lanOnly
 	default:

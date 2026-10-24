@@ -150,7 +150,7 @@ Examples:
 	c.Flags().BoolVar(&f.rename, "rename", false, "keep both: save incoming files that differ as \"name (1).ext\"")
 	c.Flags().BoolVar(&f.checksum, "checksum", false, "decide identical files by content hash, not size+mtime (like rsync -c)")
 	c.Flags().BoolVar(&f.preview, "preview", false, "list what would be sent (CSV: path,size) and exit; no transfer")
-	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status) of the received files to this path")
+	c.Flags().StringVar(&f.manifest, "manifest", "", "write a CSV record (path,size,status,sha256) of the received files to this path")
 	c.Flags().BoolVarP(&f.quiet, "quiet", "q", false, "suppress all non-error output (send still prints the bare code to stdout)")
 	c.Flags().BoolVar(&f.json, "json", false, "emit NDJSON events (code, final summary) on stdout")
 	c.Flags().StringVar(&f.hostname, "device-name", "", "override the device name shown to the peer (default: hostname)")
@@ -311,7 +311,7 @@ const advancedHelpTemplate = `fsend — advanced options
 MORE FLAGS
   --checksum             Decide identical files by content hash, not
                          size+mtime (like rsync -c)
-  --manifest <file>      Write a CSV record (path,size,status) of the
+  --manifest <file>      Write a CSV record (path,size,status,sha256) of the
                          received files to <file>
   --device-name <name>   Device name shown to the peer (default: hostname)
   --send / --receive     Force a mode (skip code/path auto-detect);

@@ -31,6 +31,7 @@ import (
 // degraded, so scripts can gate on it; the report says which fallback
 // will kick in.
 func doctorCmd() *cobra.Command {
+	var server string
 	c := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check config, server and relay reachability, and LAN discovery",
@@ -43,12 +44,13 @@ func doctorCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if runDoctor() > 0 {
+			if runDoctor(server) > 0 {
 				return fserrors.ErrDoctorFailed
 			}
 			return nil
 		},
 	}
+	c.Flags().StringVar(&server, "server", "", "check this server instead of the saved one (or FSEND_SERVER)")
 	dht := boldHelpHeaders(doctorHelpTemplate)
 	c.SetHelpTemplate(dht)
 	c.SetUsageTemplate(dht)
@@ -78,7 +80,7 @@ type doctorCheck struct {
 }
 
 // runDoctor prints the report and returns how many checks failed.
-func runDoctor() (failed int) {
+func runDoctor(serverFlag string) (failed int) {
 	passed := 0
 	say := func(c doctorCheck) {
 		glyph := uxlog.Warn()
@@ -125,12 +127,16 @@ func runDoctor() (failed int) {
 		}
 		sayf(true, "config", "%s", detail)
 	}
-	// FSEND_SERVER redirects every run, so check the server runs would use.
-	if err := setServerOverride(""); err != nil {
-		sayf(false, "config", "FSEND_SERVER is invalid (%v)", err)
+	// --server / FSEND_SERVER redirect the run, so check that server.
+	src := "FSEND_SERVER"
+	if serverFlag != "" {
+		src = "--server"
+	}
+	if err := setServerOverride(serverFlag); err != nil {
+		sayf(false, "config", "%s is invalid (%v)", src, err)
 	} else if serverOverride != "" {
 		srv = serverOverride
-		sayf(true, "config", "FSEND_SERVER overrides it: %s", srv)
+		sayf(true, "config", "%s overrides it: %s", src, srv)
 	}
 
 	// Server reachability: /health is the one endpoint that never requires
@@ -311,4 +317,7 @@ Exits 0 when every check passes and 43 (E043) when any is degraded.
 Every degraded check has a graceful fallback: without a server,
 same-LAN transfers still work; without mDNS, transfers use the
 pairing server; without UDP, the relay's TCP fallback.
+
+  --server <host>   Check this server instead of the saved one
+                    (or FSEND_SERVER)
 `
