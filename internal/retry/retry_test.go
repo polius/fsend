@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -187,6 +190,20 @@ func TestIsTransient_Classification(t *testing.T) {
 		// surface as E099. This is the exact field-report string.
 		{"ice_stun_write_false_positive_transient",
 			errors.New("wire: writing chunk payload: failed to write STUN message to ICE connection"), true},
+
+		// Network changes (roam, sleep, VPN reconnect): recoverable on
+		// fresh sockets, so they must retry rather than end the transfer.
+		{"enetunreach_transient",
+			&net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("sendto", syscall.ENETUNREACH)}, true},
+		{"eaddrnotavail_transient",
+			fmt.Errorf("dial: %w", os.NewSyscallError("bind", syscall.EADDRNOTAVAIL)), true},
+		{"ehostunreach_transient", syscall.EHOSTUNREACH, true},
+		{"ice_no_candidate_pairs_transient",
+			errors.New("wire: writing chunk payload: no candidate pairs available"), true},
+
+		// The peer's deliberate cancel close is final.
+		{"quic_cancel_close_remote_terminal",
+			fmt.Errorf("recv: %w", &quic.ApplicationError{Remote: true, ErrorCode: 0x10}), false},
 
 		// Terminal cases — explicitly tested because a wrapping mistake
 		// here would silently turn user errors into 3-retry hangs.
