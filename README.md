@@ -30,24 +30,19 @@
 possible. No account, no upload step, no ports to open — just two commands and a
 short share code.
 
-- **Direct by default** — on the same network or across NATs that can be
-  hole-punched, the bytes go straight from sender to receiver. A relay is used
-  only when a direct path can't be found.
+- **Direct, with no network setup** — on the same network or across NATs that
+  can be hole-punched, the bytes go straight from sender to receiver. When no
+  direct path exists, or a network blocks UDP, a relay over HTTPS (TCP 443)
+  takes over. Nothing to configure.
 - **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the
-  share code through a PAKE (CPace) bound to the TLS session. Even the
-  fallback relay only ever sees ciphertext.
-- **No network setup** — works behind NAT, and falls back to a relay over
-  HTTPS (TCP 443) when a network blocks UDP. Nothing to configure.
+  share code through a PAKE (CPace) bound to the TLS session, over a
+  post-quantum hybrid key exchange (X25519MLKEM768). Even the relay only ever
+  sees ciphertext.
 - **Send anything** — a file, a folder, several at once, a stdin stream, or a
   literal string.
-- **Resumable** — if a transfer drops, the next send picks up where it left off
-  instead of starting over.
-- **Skips what's there** — re-send a folder and only the new or changed files move.
-- **One receiver per code** — the first receiver to connect owns the
-  transfer; if it drops, only that device can resume it.
+- **Resumable** — if a transfer drops, the next send picks up where it left
+  off, and re-sending a folder moves only the new or changed files.
 - **Optional password** — gate any transfer with `--password`.
-- **PQ-hybrid key exchange** — X25519MLKEM768, required between peers, so
-  recorded transfers stay private against a future quantum computer.
 - **Runs anywhere** — one static binary for Linux, macOS, FreeBSD and Windows,
   on x86 and ARM. Self-host the pairing server if you like.
 
@@ -71,9 +66,7 @@ brew install polius/tap/fsend
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
-Releases are signed (keyless Sigstore) and carry GitHub build attestations;
-the install script and `fsend --update` verify checksums, and the signature
-too when `cosign` is installed. See
+Releases are signed and verified on install — see
 [Security → Release integrity](docs/security.md#release-integrity).
 
 <details>
@@ -108,6 +101,7 @@ fsend completion powershell | Out-String | Invoke-Expression   # powershell
 Send a file, a folder, several at once, a stdin stream, or a literal string:
 
 ```bash
+fsend backup.zip                   # a single file
 fsend ./project                    # a whole folder
 fsend a.txt b.txt c.txt            # several files at once
 pg_dump mydb | fsend               # a stream from stdin
@@ -118,6 +112,7 @@ fsend backup.zip --password        # gated behind a password
 …and to receive:
 
 ```bash
+fsend abc-defg-jkm                    # save to the current folder
 fsend --yes abc-defg-jkm              # skip the confirmation prompt
 fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
 fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as tar)
@@ -132,6 +127,10 @@ fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as ta
   </a>
 </p>
 
+<p align="center"><em>One minute: pairing with a share code, then the local, direct and relay
+routes fsend races to move the bytes. Plays as an MP4 in your browser; prefer reading?
+See <a href="docs/architecture.md">Architecture</a>.</em></p>
+
 ## Documentation
 
 | | |
@@ -142,12 +141,7 @@ fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as ta
 | [Self-hosting](docs/self-hosting.md) | Run your own pairing server in three steps |
 | [Development](docs/development.md) | Build and test from source |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and what to do about them |
-
-## Comparison
-
-**[fsend vs croc vs magic-wormhole vs sendme vs LocalSend](docs/comparison.md)**
-— a side-by-side table on security, network, and tooling, plus the
-trade-offs.
+| [Comparison](docs/comparison.md) | fsend vs croc, magic-wormhole, sendme and LocalSend |
 
 ## Contributing
 
@@ -155,4 +149,4 @@ Bug reports and pull requests welcome — see [Development](docs/development.md)
 
 ## License
 
-MIT
+[MIT](LICENSE)
