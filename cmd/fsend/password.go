@@ -216,6 +216,8 @@ func generatePassphrase(n int) (string, error) {
 
 // passphraseList holds short, common, distinct-sounding English words:
 // lowercase, no homophones, nothing easily misheard over a call.
+//
+//nolint:gosec // G101: a public word list, not a credential
 const passphraseList = `
 able acid acorn actor adapt admit adult agent agree ahead aisle alarm album alert alive allow alpha amber ample angle
 ankle apple april apron arena armor arrow atlas attic audio aunt award awake axis bacon badge bagel baker bamboo banjo

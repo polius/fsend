@@ -69,7 +69,7 @@ func TestControl_RoundtripParse(t *testing.T) {
 }
 
 func TestPeerIDFor_StableAndDistinct(t *testing.T) {
-	if PeerIDFor("a") != PeerIDFor("a") {
+	if a1, a2 := PeerIDFor("a"), PeerIDFor("a"); a1 != a2 {
 		t.Error("PeerIDFor must be deterministic")
 	}
 	if PeerIDFor("a") == PeerIDFor("b") {

@@ -82,7 +82,8 @@ func saveResumeKey(c string, k pairKey) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return
 	}
-	b, err := json.Marshal(resumeRecord{Rendezvous: k.rendezvous, Secret: k.secret, Saved: time.Now()})
+	// G117: storing the secret is the point; the file is 0600 in a 0700 dir.
+	b, err := json.Marshal(resumeRecord{Rendezvous: k.rendezvous, Secret: k.secret, Saved: time.Now()}) //nolint:gosec
 	if err != nil {
 		return
 	}

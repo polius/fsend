@@ -215,7 +215,7 @@ func IsTransient(err error) bool {
 	if errors.As(err, &appErr) {
 		// Except a deliberate cancel (quicconn.CloseCancelled; not imported
 		// to keep this package free of the transport): it isn't coming back.
-		return !(appErr.Remote && appErr.ErrorCode == closeCancelled)
+		return !appErr.Remote || appErr.ErrorCode != closeCancelled
 	}
 	var streamErr *quic.StreamError
 	if errors.As(err, &streamErr) && streamErr.Remote {

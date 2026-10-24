@@ -22,7 +22,9 @@ import (
 // as UDP. It returns a registered Conn, ready for QUIC. ctx bounds the
 // dial and registration only.
 func DialWS(ctx context.Context, wsURL string, header http.Header, tok Token, id PeerID) (*Conn, error) {
-	ws, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
+	// On success the body is the upgraded connection, owned by ws;
+	// wsDialErr closes it on failure.
+	ws, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose
 	if err != nil {
 		return nil, wsDialErr(resp, err)
 	}
@@ -40,7 +42,7 @@ func DialWS(ctx context.Context, wsURL string, header http.Header, tok Token, id
 // to wsURL, has the server echo a message, and returns the response
 // headers (the server names its UDP relay address there).
 func ProbeWS(ctx context.Context, wsURL string, header http.Header) (http.Header, error) {
-	ws, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
+	ws, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose // see DialWS
 	if err != nil {
 		return nil, wsDialErr(resp, err)
 	}
@@ -118,6 +120,9 @@ func (e *HTTPStatusError) Error() string {
 }
 
 func wsDialErr(resp *http.Response, err error) error {
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols {
 		return &HTTPStatusError{Code: resp.StatusCode}
 	}

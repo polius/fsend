@@ -26,6 +26,7 @@ import (
 // is already on disk.
 type ConflictPolicy uint8
 
+// ConflictPolicy values.
 const (
 	ConflictKeep    ConflictPolicy = iota // keep the local copy; skip the incoming one
 	ConflictReplace                       // replace the local copy (never a non-empty folder)

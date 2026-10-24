@@ -44,7 +44,7 @@ linters:
       # Reviewed G304 sites: the receiver opens only paths already passed
       # through transfer.SanitizeRelativePath and confined to the output
       # dir; the sender and config open paths the local user chose.
-      - path: internal/(transfer/(recv|pack|imohash|util|walk)|atomicfile/atomicfile|config/config|update/update)\.go
+      - path: internal/(transfer/(recv|pack|util|walk|classify|filehash|fsmeta|partials)|atomicfile/atomicfile|config/config|update/update|server/state)\.go|cmd/fsend/resume\.go
         text: G304
         linters:
           - gosec

@@ -492,6 +492,11 @@ func acceptFollowingSender(ctx context.Context, agent *iceconn.Agent, decision <
 				r := <-accepted
 				got = &r
 			}
+			// The sender went with the relay: don't leak an ICE conn that
+			// completed in the meantime.
+			if got.conn != nil {
+				_ = got.conn.Close()
+			}
 			return nil, errSenderChoseRelay
 		case got != nil && (choice == pathChoiceICE || got.err != nil):
 			return got.conn, got.err
@@ -544,6 +549,7 @@ func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.Rela
 		case ctx.Err() != nil:
 			return nil, connpath.Info{}, ctx.Err()
 		case !alloc.TCPFallback && errors.Is(err, relay.ErrNoReply):
+			//nolint:staticcheck // ST1005: shown verbatim as E042's detail line
 			return nil, connpath.Info{}, fmt.Errorf("%w: No UDP reply from the relay, and this server has no TCP fallback (it may need an update).", fserrors.ErrUDPBlocked)
 		case !alloc.TCPFallback:
 			return nil, connpath.Info{}, fmt.Errorf("%w: %v", fserrors.ErrConnectFailed, err)
@@ -559,6 +565,7 @@ func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.Rela
 		if ctx.Err() != nil {
 			return nil, connpath.Info{}, ctx.Err()
 		}
+		//nolint:staticcheck // ST1005: shown verbatim as E042's detail line
 		return nil, connpath.Info{}, fmt.Errorf("%w: The relay was unreachable over UDP, and the TCP fallback failed (%v).", fserrors.ErrUDPBlocked, err)
 	}
 	return pc, connpath.FromRelay(client.ServerHost() + " over TCP"), nil
