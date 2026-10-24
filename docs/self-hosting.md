@@ -39,7 +39,16 @@ You'll need:
 - A publicly reachable host (a public IP) with **Docker** and **Docker
   Compose v2**.
 - A domain or subdomain you control, with an `A` record pointing at that
-  host — e.g. `fs.example.com`.
+  host — e.g. `fs.example.com`. Add an `AAAA` record only if Docker itself
+  has IPv6 enabled (`"ipv6": true` and `"ip6tables": true` in
+  `daemon.json`, plus `enable_ipv6: true` on the compose network). Without
+  that, Docker's userland proxy can relay IPv6 clients over IPv4, so the
+  server sees the bridge gateway instead of the client: STUN answers carry
+  the wrong address and every IPv6 client shares one rate-limit identity.
+  Host networking (`network_mode: host` on the `fsend` service) also
+  avoids it; drop the `sysctls` entry then, and since the image runs as
+  uid 65532, either move the relay to a high port (`FSEND_RELAY_ADDR=:8443`)
+  or set `net.ipv4.ip_unprivileged_port_start=443` on the host.
 - Three inbound ports open:
   - `80/tcp` — Let's Encrypt certificate issuance
   - `443/tcp` — HTTPS signaling
@@ -49,7 +58,10 @@ You'll need:
 
 Two containers on one host. Caddy terminates TLS on TCP/443 and proxies
 HTTP signaling to fsend's `:8080`; UDP/443 goes straight to the fsend
-container, so Caddy is never in the data path.
+container, so Caddy is never in the data path. (The Caddyfile turns off
+Caddy's HTTP/3 for that reason: UDP/443 belongs to the relay.) The fsend
+container runs as a non-root user with a read-only filesystem and no
+capabilities; base images are pinned by digest.
 
 ```
                 ┌───────────────── Your VM ──────────────────┐
@@ -134,6 +146,11 @@ and restart:
       FSEND_SERVER_PASSWORD: "your-secret"
 ```
 
+Use a long random value (`openssl rand -base64 24`). Wrong guesses are
+counted in metrics but not throttled per client — behind Caddy every client
+shares one source address, so a lockout would lock everyone out — and the
+server warns at startup about passwords shorter than 16 characters.
+
 ```sh
 docker compose up -d
 ```
@@ -155,14 +172,28 @@ or with the wrong one — fails with `E028`.
 
 - **Logs.** `docker compose logs -f fsend` for the server,
   `docker compose logs -f caddy` for TLS and the proxy. The default log
-  level (`info`) records only lifecycle events — no per-transfer lines, no
-  IPs, no share codes.
+  level (`info`) records lifecycle events and one route-only line per
+  failed request — no per-transfer lines, no IPs, no slots, no share codes.
+  `FSEND_LOG_LEVEL=debug` adds IPs and request paths.
 - **Update.** `docker compose pull && docker compose up -d`. The image
-  tracks the floating `poliuscorp/fsend:latest` tag; pin a version tag if
-  you want immutable, reproducible upgrades. On stop the server drains
-  in-flight transfers and long-polls for up to 30s; the compose file sets
-  `stop_grace_period: 35s` so an upgrade doesn't cut them short (keep it if
-  you edit the file — Docker's 10s default would SIGKILL mid-drain).
+  tracks `poliuscorp/fsend:latest` unless you pin a release with
+  `FSEND_VERSION=1.15.0` for immutable, reproducible upgrades. On stop the
+  server first lets in-flight relay transfers finish (up to 30s) while
+  pairing keeps working, then stops signaling (up to 5s); a second
+  `SIGTERM`/Ctrl-C skips the wait. The compose file sets
+  `stop_grace_period: 40s` to cover both (keep it if you edit the file —
+  Docker's 10s default would SIGKILL mid-drain).
+- **Codes survive a redeploy.** With `FSEND_STATE_FILE` set (the compose
+  file sets it, on the `fsend_state` volume), the server saves every
+  pending, not-yet-received code on shutdown and restores it on start, so
+  a sender waiting on a code just keeps waiting. The file holds slots and
+  random session tokens, never IPs or codes; it is written `0600` and
+  deleted as soon as it is read. Codes a receiver already joined are not
+  kept: those transfers were already drained in step one.
+- **Single instance only.** Pairing state lives in one process's memory,
+  so run exactly one `fsend` server per hostname: two replicas behind a
+  load balancer would split senders and receivers across processes that
+  can't see each other's codes. Scale up the VM instead of out.
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
   within an hour; certificates live in the `caddy_data` volume, and Caddy
   reissues them automatically if you lose it. That reissue is the recovery
@@ -175,7 +206,21 @@ or with the wrong one — fails with `E028`.
 
 ## Metrics
 
-`GET /metrics` returns a small JSON snapshot for monitoring:
+Metrics are off by default. Set `FSEND_METRICS_ADDR` to serve them on a
+**separate listener** that the public signaling port never exposes:
+
+```yaml
+    environment:
+      FSEND_METRICS_ADDR: ":9090"   # not published; reachable on the compose network
+```
+
+That listener serves two paths:
+
+- `GET /metrics` — Prometheus text format (also accepted by OpenMetrics
+  scrapers). Names are `fsend_<field>`, e.g. `fsend_sessions_created_total`,
+  `fsend_sessions_rejected_total{reason="rate_limit"}`,
+  `fsend_relay_forwarded_bytes_total`, `fsend_build_info{version="…"}`.
+- `GET /metrics.json` — the same snapshot as JSON:
 
 ```json
 {
@@ -199,8 +244,8 @@ or with the wrong one — fails with `E028`.
 
 Every value is an **aggregate count or gauge** — there is no per-IP,
 per-session, or per-code data, so it can't leak anything the server doesn't
-store. That's deliberate: the endpoint is public on an open server precisely
-so anyone can verify the server holds nothing sensitive.
+store. It does name the running build, though, which is why it stays off
+the public port.
 
 | Field | What it tells you |
 |---|---|
@@ -223,29 +268,10 @@ so anyone can verify the server holds nothing sensitive.
 
 The `relay` block is omitted when the server runs without a relay.
 
-**Access.** `/metrics` inherits the server's own openness, like every
-endpoint except `/`, `/health`, `/healthz`, and `/readyz`:
-
-- **Open server (no `FSEND_SERVER_PASSWORD`)** — public, no credentials:
-
-  ```sh
-  curl https://fs.example.com/metrics
-  ```
-
-- **Password-protected server** — pass the password in the `X-Fsend-Auth`
-  header (the same one clients use):
-
-  ```sh
-  curl -H "X-Fsend-Auth: your-secret" https://fs.example.com/metrics
-  ```
-
-  Without it you get `401`. Note a **web browser can't open this URL**
-  directly — it can't set the header — so use `curl`, or configure your
-  monitoring scraper to send `X-Fsend-Auth` (Prometheus: a static header
-  under the scrape job).
-
-So a public server is transparently inspectable by anyone, and a locked-down
-one keeps its metrics to whoever holds the password.
+**Access.** Bind `FSEND_METRICS_ADDR` to loopback (`127.0.0.1:9090`) when
+the scraper runs on the host, or leave the port unpublished in Docker and
+attach the scraper to the compose network. There is no authentication on
+this listener; never publish it.
 
 ## Troubleshooting
 
@@ -268,17 +294,26 @@ your overrides were picked up (the password value is never printed, only
 whether one is set):
 
 ```
-fsend server configuration (2 of 9 customized; * = changed from default):
+fsend server configuration (3 of 14 customized; * = changed from default):
     FSEND_LOG_LEVEL                              info
+    FSEND_LOG_FORMAT                             text
+    FSEND_METRICS_ADDR                           (none)
+  * FSEND_STATE_FILE                             /state/sessions.json
   * FSEND_SERVER_PASSWORD                        (set)
     FSEND_SERVER_ADDR                            :8080
   * FSEND_SERVER_MAX_SESSIONS_PER_IP             10
     FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE  0 (unlimited)
+    FSEND_MIN_CLIENT_VERSION                     (none)
     FSEND_RELAY_ENABLED                          true
     FSEND_RELAY_ADDR                             :443
+    FSEND_RELAY_PUBLIC_ADDR                      (none)
     FSEND_RELAY_MAX_BYTES_PER_SESSION            0 (unlimited)
     FSEND_RELAY_MAX_BYTES_PER_DAY                0 (unlimited)
 ```
+
+An `FSEND_*` name the server doesn't know (a typo such as
+`FSEND_SERVER_MAX_SESSION_PER_IP`) is logged as a warning right after this
+block, so it can't silently leave a cap unset.
 
 Variables fall into three groups: **server-wide** controls (logging and
 auth, which apply to every endpoint), the **pairing / control plane** (its
@@ -287,14 +322,19 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 
 | Variable | Default | Notes |
 |---|---|---|
-| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable. |
+| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable (an unknown `FSEND_*` name is logged as a warning). Only `debug` logs client IPs and request paths (which carry slots). |
+| `FSEND_LOG_FORMAT` | `text` | `json` emits one JSON object per line, for log shippers. |
+| `FSEND_STATE_FILE` | _(off; compose: `/state/sessions.json`)_ | Where to save pending codes on shutdown and restore them on start — see [Operations](#operations). The directory must be writable by the server (uid 65532 in the image). |
+| `FSEND_METRICS_ADDR` | _(off)_ | Extra listener for `/metrics` (Prometheus) and `/metrics.json` — see [Metrics](#metrics). Never publish it. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/`, `/health`, `/healthz`, and `/readyz` — see [Require a password](#require-a-password-optional). |
 | `FSEND_SERVER_PASSWORD_FILE` | _(unset)_ | Read the password from this file (trailing newline trimmed) instead of `FSEND_SERVER_PASSWORD` — for Docker secrets / systemd credentials. Used only when `FSEND_SERVER_PASSWORD` is unset. |
 | `FSEND_SERVER_ADDR` | `:8080` | TCP signaling listener. |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP` | `0` (unlimited) | **Concurrency cap** — how many sessions one source IP may have **alive at once**. A session gates relay allocation too, so this caps relay access as well. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
 | `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` | `0` (unlimited) | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). |
+| `FSEND_MIN_CLIENT_VERSION` | _(none)_ | Refuse fsend releases below this version (e.g. `1.15.0`): they get HTTP 426 and `E060` ("too old for the pairing server"). Clients on an older wire protocol than the server speaks are always refused this way. Development builds are not checked. |
 | `FSEND_RELAY_ENABLED` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
-| `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>`, so no separate public-address knob is needed. |
+| `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>` unless `FSEND_RELAY_PUBLIC_ADDR` is set. |
+| `FSEND_RELAY_PUBLIC_ADDR` | _(unset)_ | `host:port` advertised to clients for STUN and the relay, overriding `<request-host>:<FSEND_RELAY_ADDR port>`. Set it when signaling is behind a CDN proxy (e.g. Cloudflare's orange cloud, which can't carry UDP) or on a different hostname than the relay. |
 | `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap — wire bytes after compression. Defaults to unlimited; set a value to bound per-transfer bandwidth. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |
 | `FSEND_RELAY_MAX_BYTES_PER_DAY` | `0` (unlimited) | **Egress budget** — outbound bytes the relay forwards **per UTC day** across all sessions. The Denial-of-Wallet ceiling: once spent, the relay stops forwarding and refuses new transfers until 00:00 UTC. Bounds a distributed abuser that the per-IP caps can't. Each byte is counted once, so a 1 MB file sent over the relay uses about 1 MB of budget. Only relay-fallback transfers count — same-network and direct transfers don't, and STUN doesn't. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500GB`, `2TB`) or a plain byte count; default unlimited — **set a value to bound your bandwidth bill**. |
 

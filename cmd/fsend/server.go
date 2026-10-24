@@ -5,13 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/update"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 )
@@ -81,12 +83,27 @@ func runServer() error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", fserrors.ErrServerStartup, err)
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.logLevel}))
+	logOpts := &slog.HandlerOptions{Level: cfg.logLevel}
+	var logHandler slog.Handler = slog.NewTextHandler(os.Stdout, logOpts)
+	if cfg.logJSON {
+		logHandler = slog.NewJSONHandler(os.Stdout, logOpts)
+	}
+	logger := slog.New(logHandler)
 	slog.SetDefault(logger)
 
 	// Print the effective config before the structured logs so an operator
 	// can confirm their FSEND_* overrides took effect.
 	_, _ = fmt.Fprint(os.Stdout, formatServerConfig(cfg))
+	for _, name := range unknownServerEnv(os.Environ()) {
+		logger.Warn("ignoring unknown variable (typo?)", "name", name)
+	}
+	if n := len(cfg.serverPassword); n > 0 && n < minServerPasswordLen {
+		// Guesses aren't throttled per client (behind a proxy every client
+		// shares one IP, so a per-IP lockout would lock out everyone):
+		// length is the defense.
+		logger.Warn("FSEND_SERVER_PASSWORD is short and can be guessed online; use a random one",
+			"min_length", minServerPasswordLen, "example", "openssl rand -base64 24")
+	}
 
 	s := server.New(server.Config{
 		ServerVersion:        version.Version,
@@ -94,7 +111,18 @@ func runServer() error {
 		MaxNewSessionsPerMin: cfg.maxNewSessionsPerMin,
 		Logger:               logger,
 		ServerPassword:       cfg.serverPassword,
+		MinClientVersion:     cfg.minClientVersion,
+		RelayPublicAddr:      cfg.relayPublicAddr,
 	})
+
+	if cfg.stateFile != "" {
+		n, err := s.LoadState(cfg.stateFile)
+		if err != nil {
+			logger.Warn("discarding saved sessions", "err", err)
+		} else if n > 0 {
+			logger.Info("restored pending sessions", "count", n)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -118,9 +146,10 @@ func runServer() error {
 	s.WithRelay(relaySrv, udpPort)
 	relayCtx, relayCancel := context.WithCancel(ctx)
 	defer relayCancel()
+	relayErr := make(chan error, 1)
 	go func() {
 		if err := relaySrv.Run(relayCtx); err != nil {
-			logger.Error("relay loop ended", "err", err)
+			relayErr <- err
 		}
 	}()
 	logger.Info("relay UDP listener up", "addr", cfg.udpAddr, "udp_port", udpPort)
@@ -147,46 +176,96 @@ func runServer() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		logger.Info("fsend server starting", "http", cfg.httpAddr, "version", version.Version)
 		errCh <- httpSrv.ListenAndServe()
 	}()
+	if cfg.metricsAddr != "" {
+		// Its own listener so metrics never ride the public signaling port.
+		metricsSrv := &http.Server{
+			Addr:              cfg.metricsAddr,
+			Handler:           s.MetricsHandler(),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		defer func() { _ = metricsSrv.Close() }()
+		go func() {
+			logger.Info("metrics listener up", "addr", cfg.metricsAddr)
+			if err := metricsSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("metrics: %w", err)
+			}
+		}()
+	}
 
+	var exitErr error
 	select {
 	case <-sigCh:
 		logger.Info("shutdown requested")
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("%w: http listen on %s: %v", fserrors.ErrServerStartup, cfg.httpAddr, err)
+			return fmt.Errorf("%w: listen: %v", fserrors.ErrServerStartup, err)
 		}
+	case err := <-relayErr:
+		// A dead relay socket: exit non-zero so the restart policy applies,
+		// rather than serving pairings for a relay that forwards nothing.
+		logger.Error("relay loop ended; shutting down", "err", err)
+		exitErr = fmt.Errorf("%w: %v", fserrors.ErrRelayFailed, err)
 	}
 
-	// Graceful shutdown: stop new relay allocations, then let in-flight HTTP
-	// (including 25s /wait long-polls) and in-flight relay transfers finish
-	// before tearing down. Both are bounded by shutdownGrace so a wedged
-	// session can't block shutdown forever. For the drain to complete under a
-	// container runtime, set stop_grace_period above shutdownGrace; otherwise
-	// the default (Docker: 10s) cuts it short.
+	// A second signal skips whatever drain is left.
+	force, forceNow := context.WithCancel(context.Background())
+	defer forceNow()
+	go func() {
+		select {
+		case <-sigCh:
+			logger.Warn("second signal: skipping the drain")
+			forceNow()
+		case <-force.Done():
+		}
+	}()
+
+	// Graceful shutdown, in order:
+	//  1. Refuse new relay allocations and let in-flight relay transfers
+	//     finish (≤ relayDrainGrace). Signaling keeps serving meanwhile, so
+	//     pending codes stay reachable and long-polls stay parked.
+	//  2. Stop signaling (≤ httpDrainGrace): parked /wait polls are released
+	//     at once and their senders re-poll the next process.
+	//  3. Save pending sessions for the next process (FSEND_STATE_FILE).
+	// The deployment's stop_grace_period must exceed both graces.
 	relaySrv.Drain()
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownGrace)
-	defer shutdownCancel()
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); _ = httpSrv.Shutdown(shutdownCtx) }()
-	go func() { defer wg.Done(); drainRelay(shutdownCtx, relaySrv, logger) }()
-	wg.Wait()
+	drainCtx, cancelRelayDrain := context.WithTimeout(force, relayDrainGrace)
+	drainRelay(drainCtx, relaySrv, logger)
+	cancelRelayDrain()
+
+	httpSrv.RegisterOnShutdown(s.ReleaseWaiters)
+	httpCtx, cancelHTTP := context.WithTimeout(force, httpDrainGrace)
+	_ = httpSrv.Shutdown(httpCtx)
+	cancelHTTP()
 	cancel()
+
+	if cfg.stateFile != "" {
+		if n, err := s.SaveState(cfg.stateFile); err != nil {
+			logger.Error("saving pending sessions", "err", err)
+		} else {
+			logger.Info("saved pending sessions", "count", n)
+		}
+	}
 	// Marks a clean drain: absent from the logs when SIGKILL (e.g. a too-low
 	// stop_grace_period) cut the shutdown short.
 	logger.Info("shutdown complete")
-	return nil
+	return exitErr
 }
 
-// shutdownGrace bounds graceful shutdown. Set above the 25s /wait long-poll so
-// in-flight polls return naturally rather than being severed; the deployment's
-// stop_grace_period must exceed it.
-const shutdownGrace = 30 * time.Second
+// minServerPasswordLen is the length below which startup warns.
+const minServerPasswordLen = 16
+
+// Shutdown bounds: relayDrainGrace for in-flight relay transfers, then
+// httpDrainGrace for signaling requests. The deployment's stop_grace_period
+// must exceed their sum (compose sets 40s).
+const (
+	relayDrainGrace = 30 * time.Second
+	httpDrainGrace  = 5 * time.Second
+)
 
 // drainRelay blocks until no relay transfer has moved bytes recently (so the
 // socket can close without cutting an in-flight transfer) or ctx expires. It
@@ -221,6 +300,11 @@ const (
 	envMaxBytesPerDay       = "FSEND_RELAY_MAX_BYTES_PER_DAY"
 	envRelayEnabled         = "FSEND_RELAY_ENABLED"
 	envLogLevel             = "FSEND_LOG_LEVEL"
+	envMinClientVersion     = "FSEND_MIN_CLIENT_VERSION"
+	envRelayPublicAddr      = "FSEND_RELAY_PUBLIC_ADDR"
+	envMetricsAddr          = "FSEND_METRICS_ADDR"
+	envLogFormat            = "FSEND_LOG_FORMAT"
+	envStateFile            = "FSEND_STATE_FILE"
 
 	defaultServerAddr = ":8080"
 	defaultRelayAddr  = ":443"
@@ -234,6 +318,28 @@ const (
 	defaultRelayEnabled         = true
 )
 
+// knownServerEnv lists every FSEND_* variable `fsend server` reads, so a
+// typo'd name is reported instead of silently ignored.
+var knownServerEnv = []string{
+	envServerAddr, envRelayAddr, envMaxSessionsPerIP, envMaxNewSessionsPerMin,
+	envMaxBytesPerSession, envMaxBytesPerDay, envRelayEnabled, envLogLevel,
+	envMinClientVersion, envRelayPublicAddr, envMetricsAddr, envLogFormat, envStateFile,
+	"FSEND_SERVER_PASSWORD", "FSEND_SERVER_PASSWORD_FILE",
+}
+
+// unknownServerEnv returns the FSEND_* names in environ the server doesn't
+// read. Names only: values may be secrets.
+func unknownServerEnv(environ []string) []string {
+	var out []string
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "FSEND_") && !slices.Contains(knownServerEnv, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // serverRuntimeConfig is the parsed environment for `fsend server`.
 type serverRuntimeConfig struct {
 	httpAddr             string
@@ -245,6 +351,11 @@ type serverRuntimeConfig struct {
 	maxBytesPerDay       uint64
 	serverPassword       string
 	enableRelay          bool
+	minClientVersion     string
+	relayPublicAddr      string
+	metricsAddr          string
+	logJSON              bool
+	stateFile            string
 }
 
 func loadServerConfig() (serverRuntimeConfig, error) {
@@ -274,6 +385,28 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 	}
 	if cfg.enableRelay, err = envBool(envRelayEnabled, defaultRelayEnabled); err != nil {
 		return cfg, err
+	}
+	if v := strings.TrimPrefix(strings.TrimSpace(os.Getenv(envMinClientVersion)), "v"); v != "" {
+		if !update.Newer(v, "0.0.0") {
+			return cfg, fmt.Errorf("%s=%q: not a release version (use MAJOR.MINOR.PATCH)", envMinClientVersion, v)
+		}
+		cfg.minClientVersion = v
+	}
+	if v := strings.TrimSpace(os.Getenv(envRelayPublicAddr)); v != "" {
+		host, _, err := net.SplitHostPort(v)
+		if _, perr := udpPortFromAddr(v); err != nil || perr != nil || host == "" {
+			return cfg, fmt.Errorf("%s=%q: want host:port, e.g. relay.example.com:443", envRelayPublicAddr, v)
+		}
+		cfg.relayPublicAddr = v
+	}
+	cfg.metricsAddr = strings.TrimSpace(os.Getenv(envMetricsAddr))
+	cfg.stateFile = strings.TrimSpace(os.Getenv(envStateFile))
+	switch v := strings.TrimSpace(os.Getenv(envLogFormat)); strings.ToLower(v) {
+	case "", "text":
+	case "json":
+		cfg.logJSON = true
+	default:
+		return cfg, fmt.Errorf("%s=%q: not a log format (use text or json)", envLogFormat, v)
 	}
 	// A typo'd level fails loudly like every other FSEND_* var — silently
 	// running at info would hide the debug logs the operator asked for.
@@ -312,14 +445,19 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		// plane (its listener + session limits), then the relay data plane
 		// (its listener + byte limits). Matches the docs table order.
 		{envLogLevel, logLevelName(cfg.logLevel), cfg.logLevel != slog.LevelInfo},
+		{envLogFormat, map[bool]string{false: "text", true: "json"}[cfg.logJSON], cfg.logJSON},
+		{envMetricsAddr, orNone(cfg.metricsAddr), cfg.metricsAddr != ""},
+		{envStateFile, orNone(cfg.stateFile), cfg.stateFile != ""},
 		// Env-var name inlined (not a shared const) so gosec G101 doesn't
 		// mistake a password-named identifier for a hardcoded credential.
 		{"FSEND_SERVER_PASSWORD", password, cfg.serverPassword != ""},
 		{envServerAddr, cfg.httpAddr, cfg.httpAddr != defaultServerAddr},
 		{envMaxSessionsPerIP, capCount(cfg.maxSessionsPerIP), cfg.maxSessionsPerIP != defaultMaxSessionsPerIP},
 		{envMaxNewSessionsPerMin, capCount(cfg.maxNewSessionsPerMin), cfg.maxNewSessionsPerMin != defaultMaxNewSessionsPerMin},
+		{envMinClientVersion, orNone(cfg.minClientVersion), cfg.minClientVersion != ""},
 		{envRelayEnabled, strconv.FormatBool(cfg.enableRelay), !cfg.enableRelay},
 		{envRelayAddr, cfg.udpAddr, cfg.udpAddr != defaultRelayAddr},
+		{envRelayPublicAddr, orNone(cfg.relayPublicAddr), cfg.relayPublicAddr != ""},
 		{envMaxBytesPerSession, capBytes(cfg.maxBytesPerSession), cfg.maxBytesPerSession != defaultMaxBytesPerSession},
 		{envMaxBytesPerDay, capBytes(cfg.maxBytesPerDay), cfg.maxBytesPerDay != defaultMaxBytesPerDay},
 	}
@@ -345,6 +483,14 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		fmt.Fprintf(&b, "  %s %-*s  %s\n", mark, width, s.name, s.value)
 	}
 	return b.String()
+}
+
+// orNone renders an optional setting, showing "" as "(none)".
+func orNone(v string) string {
+	if v == "" {
+		return "(none)"
+	}
+	return v
 }
 
 // capCount renders a session cap, showing 0 as "0 (unlimited)".
@@ -463,6 +609,10 @@ func envBytes(name string, def uint64) (uint64, error) {
 	if err != nil || n < 0 {
 		return 0, fmt.Errorf("%s=%q: not a byte count (use B, KB, MB, GB, TB, or a plain byte count)", name, v)
 	}
+	// uint64(f) is implementation-defined past 2^64; refuse rather than wrap.
+	if n*mul >= math.Exp2(64) {
+		return 0, fmt.Errorf("%s=%q: too large", name, v)
+	}
 	return uint64(n * mul), nil
 }
 
@@ -514,6 +664,17 @@ CONFIGURATION (environment variables — all optional)
 
   Server-wide:
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
+                                      Only debug logs client IPs and slots.
+    FSEND_LOG_FORMAT                  Default text; json for log shippers.
+    FSEND_STATE_FILE                  Save pending (unpaired) codes here on
+                                      shutdown and restore them on start, so
+                                      a redeploy doesn't kill them. No IPs
+                                      are saved; the file is deleted once
+                                      read. Default off.
+    FSEND_METRICS_ADDR                Serve /metrics (Prometheus) and
+                                      /metrics.json on this extra listener,
+                                      e.g. 127.0.0.1:9090. Default off. Keep
+                                      it off the public internet.
     FSEND_SERVER_PASSWORD             Optional shared secret. When set, all
                                       endpoints except /health, /healthz,
                                       /readyz, and / require the X-Fsend-Auth
@@ -535,6 +696,10 @@ CONFIGURATION (environment variables — all optional)
                                       How many new sessions one IP may create
                                       per minute (rate cap). Default 0 =
                                       unlimited; set a positive value to cap.
+    FSEND_MIN_CLIENT_VERSION          Refuse fsend releases below this
+                                      version (e.g. 1.15.0) with E060.
+                                      Clients on an older wire protocol are
+                                      always refused.
 
   Relay (UDP data plane — also answers STUN):
     FSEND_RELAY_ENABLED               Default true. false = pairing + STUN
@@ -543,6 +708,11 @@ CONFIGURATION (environment variables — all optional)
     FSEND_RELAY_ADDR                  Default :443 (UDP). Also the STUN
                                       endpoint, so it stays in use even
                                       when forwarding is disabled.
+    FSEND_RELAY_PUBLIC_ADDR           host:port clients dial for STUN and
+                                      the relay. Default: the signaling
+                                      request's host + FSEND_RELAY_ADDR's
+                                      port. Set it when signaling sits
+                                      behind a CDN or another hostname.
     FSEND_RELAY_MAX_BYTES_PER_SESSION Per-session wire bytes after
                                       compression. Accepts B, KB, MB, GB,
                                       TB, or a plain byte count. Default 0 =

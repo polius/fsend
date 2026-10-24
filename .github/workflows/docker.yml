@@ -12,7 +12,20 @@ permissions:
   attestations: write
 
 jobs:
+  # Tag pushes don't run PR checks, so gate the image on a fresh test run.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test -race -timeout 300s ./...
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     env:
       IMAGE: poliuscorp/fsend

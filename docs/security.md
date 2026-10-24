@@ -78,15 +78,20 @@ doing that job, it observes very little:
 
 Effectively nothing:
 
-- **No access log, no per-transfer line.** The default log level emits
-  only lifecycle events — startup, shutdown, and errors.
-- **No IPs in the logs** at the default level, and share codes never
-  reach the server at all. (`FSEND_LOG_LEVEL=debug` logs IPs and session
-  slots for troubleshooting — don't run a privacy-sensitive server at
-  debug level.)
-- **No database, no persistence.** Pairing state lives only in RAM. It
-  evicts within an hour at most — ten minutes once a transfer has paired
-  — and is gone for good on restart.
+- **No per-transfer line.** The default log level emits lifecycle events
+  (startup, shutdown, errors) and one line per *failed* request, naming
+  only the method, route pattern (e.g. `/v1/session/{slot}/join`), and
+  status.
+- **No IPs or slots in the logs** at the default level, and share codes
+  never reach the server at all. (`FSEND_LOG_LEVEL=debug` adds the client
+  IP and the request path, which carries the slot, for troubleshooting —
+  don't run a privacy-sensitive server at debug level.)
+- **No database.** Pairing state lives in RAM. It evicts within an hour
+  at most — ten minutes once a transfer has paired. The one exception is
+  a restart with `FSEND_STATE_FILE` set (the bundled compose file sets
+  it): pending, unpaired sessions are saved at shutdown so their codes
+  survive a redeploy. That file holds slots and random session tokens —
+  no IPs, no codes — and is deleted as soon as the next process reads it.
 
 If you'd still rather not trust the public server,
 [self-host one](self-hosting.md): it's a single binary with nothing to
@@ -112,7 +117,8 @@ What makes a short code safe to use as the whole secret:
   the sender invalidates it immediately.
 - **Rate-limited.** The public server is configured to cap new sessions
   at 30 per minute per source IP (keyed on the direct connection's IPv4
-  address, or the /64 prefix for IPv6 — proxy headers are never trusted,
+  address, or the /64 prefix for IPv6, with 4× that budget per /48 so
+  rotating /64s inside one site doesn't help — proxy headers are never trusted,
   since a client could otherwise rotate its "IP" past the cap), so online
   guessing against the ~45-bit space is infeasible. On a self-hosted
   server the cap is opt-in — it defaults to

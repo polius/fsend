@@ -22,6 +22,8 @@ import (
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/relay"
+	"github.com/polius/fsend/internal/update"
+	"github.com/polius/fsend/internal/wire"
 )
 
 // Config holds runtime tuning for the signaling server.
@@ -40,6 +42,15 @@ type Config struct {
 	// header. Empty leaves the server open (the default for the public
 	// fsend.alzina.dev pairing server and for the canonical Docker stack).
 	ServerPassword string
+
+	// MinClientVersion, when set, makes create/join answer 426 to fsend
+	// releases below it (by the User-Agent semver). Dev builds pass.
+	MinClientVersion string
+
+	// RelayPublicAddr, when set, is the host:port advertised for STUN and
+	// the relay instead of host(request.Host):relayUDPPort — for a CDN-
+	// proxied or split signaling hostname.
+	RelayPublicAddr string
 }
 
 // Default fills in zero values with sensible defaults.
@@ -116,6 +127,9 @@ type Server struct {
 	relayUDPPort   int
 
 	met serverMetrics
+
+	stopping chan struct{} // closed by ReleaseWaiters
+	stopOnce sync.Once
 }
 
 // serverMetrics holds aggregate counters for /metrics (cumulative
@@ -152,6 +166,9 @@ func (s *Server) WithRelay(allocator RelayAllocator, udpPort int) *Server {
 // the request's Host header (what the client used to reach signaling)
 // with the relay's UDP port.
 func (s *Server) relayAddrFor(r *http.Request) string {
+	if s.cfg.RelayPublicAddr != "" {
+		return s.cfg.RelayPublicAddr
+	}
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
@@ -184,6 +201,7 @@ func New(cfg Config) *Server {
 		byID:     make(map[string]*session),
 		ipCounts: make(map[string]int),
 		ipBucket: make(map[string]*rateBucket),
+		stopping: make(chan struct{}),
 	}
 }
 
@@ -214,6 +232,31 @@ func (b *rateBucket) allow(now time.Time, limit int, window time.Duration) bool 
 // Join — the two auth surfaces are independent.
 const AuthHeader = "X-Fsend-Auth"
 
+// ProtocolHeader carries the client's newest wire protocol version
+// (wire.ProtocolVersion, decimal) on every pairing request.
+const ProtocolHeader = "X-Fsend-Protocol"
+
+// clientUpgradeMsg is the 426 body. Old clients without E060 print it raw.
+const clientUpgradeMsg = "fsend client too old for this server; run `fsend --update` " +
+	"or reinstall: https://github.com/polius/fsend#install"
+
+// clientAllowed answers 426 Upgrade Required for a client that cannot pair
+// through this server: one speaking a wire protocol older than this build
+// supports (its peer would fail the HELLO anyway), or a release below
+// Config.MinClientVersion. Checked at create/join, where every flow starts.
+func (s *Server) clientAllowed(w http.ResponseWriter, r *http.Request) bool {
+	p, err := strconv.Atoi(r.Header.Get(ProtocolHeader))
+	ok := err == nil && p >= wire.MinProtocolVersion
+	if ok && s.cfg.MinClientVersion != "" {
+		v, _ := strings.CutPrefix(r.UserAgent(), "fsend/")
+		ok = !update.Newer(s.cfg.MinClientVersion, v)
+	}
+	if !ok {
+		writeJSONError(w, http.StatusUpgradeRequired, clientUpgradeMsg)
+	}
+	return ok
+}
+
 // Handler returns the HTTP handler the server should expose. When
 // Config.ServerPassword is set, every endpoint except /health is
 // wrapped in a constant-time password check; /health stays open so
@@ -235,14 +278,13 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /health", s.health)
 	m.HandleFunc("GET /healthz", s.liveness)
 	m.HandleFunc("GET /readyz", s.readiness)
-	m.HandleFunc("GET /metrics", s.metrics)
 	// {$} matches exactly "/" so unknown paths still 404.
 	m.HandleFunc("GET /{$}", s.root)
 	var h http.Handler = m
 	if s.cfg.ServerPassword != "" {
 		h = s.withServerAuth(h)
 	}
-	h = s.accessLog(h)
+	h = s.accessLog(m, h)
 	return withSecurityHeaders(h)
 }
 
@@ -262,7 +304,10 @@ func withSecurityHeaders(next http.Handler) http.Handler {
 // accessLog emits one structured line per request. Failures (4xx/5xx) log at
 // info so an operator gets an audit trail out of the box; successes log at
 // debug so a busy public server isn't drowned at the default level.
-func (s *Server) accessLog(inner http.Handler) http.Handler {
+//
+// Privacy: the default level records only the route pattern. The raw path
+// (it carries the slot or session ID) and the client IP are debug-only.
+func (s *Server) accessLog(mux *http.ServeMux, inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w}
@@ -271,10 +316,20 @@ func (s *Server) accessLog(inner http.Handler) http.Handler {
 		if rec.status >= http.StatusBadRequest {
 			level = slog.LevelInfo
 		}
-		s.cfg.Logger.Log(r.Context(), level, "http request",
-			"method", r.Method, "path", r.URL.Path, "status", rec.status,
-			"bytes", rec.written, "duration_ms", time.Since(start).Milliseconds(),
-			"ip", clientIP(r))
+		ctx := r.Context()
+		if !s.cfg.Logger.Enabled(ctx, level) {
+			return
+		}
+		route := r.Pattern
+		if route == "" { // a gate answered before the mux ran
+			_, route = mux.Handler(r)
+		}
+		attrs := []any{"method", r.Method, "route", route, "status", rec.status,
+			"bytes", rec.written, "duration_ms", time.Since(start).Milliseconds()}
+		if s.cfg.Logger.Enabled(ctx, slog.LevelDebug) {
+			attrs = append(attrs, "path", r.URL.Path, "ip", clientIP(r))
+		}
+		s.cfg.Logger.Log(ctx, level, "http request", attrs...)
 	})
 }
 
@@ -286,6 +341,10 @@ type statusRecorder struct {
 	status  int
 	written int
 }
+
+// Unwrap lets http.ResponseController reach the underlying writer
+// (Flush, Hijack) through the recorder.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *statusRecorder) WriteHeader(code int) {
 	if r.status == 0 {
@@ -418,6 +477,11 @@ func (s *Server) allocateRelay(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, RelayAllocateResponse{BudgetExhausted: true})
 				return
 			}
+			if errors.Is(err, relay.ErrDraining) { // restarting: retry shortly
+				w.Header().Set("Retry-After", "5")
+				writeJSONError(w, http.StatusServiceUnavailable, "server restarting")
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, "alloc failed")
 			return
 		}
@@ -537,6 +601,9 @@ func (s *Server) readiness(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
+	if !s.clientAllowed(w, r) {
+		return
+	}
 	clientIP := clientIP(r)
 	rateKey := rateLimitKey(clientIP)
 
@@ -557,7 +624,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	if !s.allowNewSession(rateKey, time.Now()) {
+	if !s.allowNewSession(clientIP, time.Now()) {
 		s.mu.Unlock()
 		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
@@ -580,7 +647,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sid := ulid.Make().String()
+	// crypto/rand entropy: session IDs must be unguessable, not just unique.
+	sid := ulid.MustNew(ulid.Now(), rand.Reader).String()
 	senderTok, err := newRoleToken()
 	if err != nil {
 		s.mu.Unlock()
@@ -627,6 +695,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
+	if !s.clientAllowed(w, r) {
+		return
+	}
 	slot := strings.ToLower(r.PathValue("slot"))
 	clientIP := clientIP(r)
 	rateKey := rateLimitKey(clientIP)
@@ -637,7 +708,7 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	// without this an attacker could probe the code space (each guess
 	// submitted as its derived slot) or churn joins against a known
 	// slot at line rate.
-	if !s.allowNewSession(rateKey, time.Now()) {
+	if !s.allowNewSession(clientIP, time.Now()) {
 		s.mu.Unlock()
 		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
@@ -706,13 +777,20 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	// the same lookup join performs). The legitimate sender polls once
 	// per LongPollTimeout (~25s ≈ 2-3/min), far under the recommended
 	// 30/min budget — see TestWaitRateLimit_PollCadenceStaysUnderBudget.
-	if !s.allowNewSession(rateLimitKey(clientIP(r)), time.Now()) {
+	if !s.allowNewSession(clientIP(r), time.Now()) {
 		s.mu.Unlock()
 		s.met.rejRate.Add(1)
 		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
 		return
 	}
 	sess, ok := s.bySlot[slot]
+	// Only the sender may wait: the answer carries the receiver's address
+	// and ICE credentials. A bad token is a 404 too, so the slot leaks no
+	// existence oracle beyond what join already exposes.
+	if ok {
+		side, authed := sess.sideForToken(bearerToken(r))
+		ok = authed && side == "sender"
+	}
 	if !ok {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusNotFound, "code not found")
@@ -720,6 +798,11 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Each /wait poll doubles as the sender's liveness heartbeat.
 	sess.LastSeen = time.Now()
+	if sess.SenderRateKey == "" { // restored from a snapshot, which holds no IPs
+		sess.SenderAddr = clientIP(r)
+		sess.SenderRateKey = rateLimitKey(sess.SenderAddr)
+		s.ipCounts[sess.SenderRateKey]++
+	}
 	// Snapshot what we need under the lock so concurrent joinSession
 	// writes don't race the reads below.
 	state := sess.State
@@ -741,6 +824,8 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-ctx.Done():
 		w.WriteHeader(http.StatusNoContent)
+	case <-s.stopping: // shutting down: let the sender re-poll the next process
+		w.WriteHeader(http.StatusNoContent)
 	case <-waiters:
 		// Re-fetch in case janitor evicted between wakeup and now. Compare the
 		// session ID too: the slot may have been reclaimed and reused by a new
@@ -758,7 +843,8 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 		if !ok {
-			writeJSONError(w, http.StatusGone, "session expired")
+			// 404, not 410: clients read 410 as "server retired" (E018).
+			writeJSONError(w, http.StatusNotFound, "session expired")
 			return
 		}
 		writeJSON(w, http.StatusOK, WaitResponse{
@@ -874,18 +960,44 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// allowNewSession must be called with s.mu held. key is the
-// rateLimitKey-collapsed identity (raw v4, /64 for v6).
-func (s *Server) allowNewSession(key string, now time.Time) bool {
-	if s.cfg.MaxNewSessionsPerMin <= 0 {
+// v6SiteFactor scales the per-minute budget for an IPv6 /48. A /48 is
+// typically one site (RFC 6177), so an abuser holding one can't mint 65k
+// /64 buckets; the headroom spares sites with several busy hosts.
+const v6SiteFactor = 4
+
+// allowNewSession must be called with s.mu held. ip is the raw client IP:
+// it is limited by rateLimitKey (v4 /32, v6 /64), and IPv6 also by its /48.
+func (s *Server) allowNewSession(ip string, now time.Time) bool {
+	limit := s.cfg.MaxNewSessionsPerMin
+	if limit <= 0 {
 		return true // unlimited
 	}
+	if !s.bucket(rateLimitKey(ip)).allow(now, limit, time.Minute) {
+		return false
+	}
+	if site := v6SiteKey(ip); site != "" {
+		return s.bucket(site).allow(now, limit*v6SiteFactor, time.Minute)
+	}
+	return true
+}
+
+func (s *Server) bucket(key string) *rateBucket {
 	b := s.ipBucket[key]
 	if b == nil {
 		b = &rateBucket{}
 		s.ipBucket[key] = b
 	}
-	return b.allow(now, s.cfg.MaxNewSessionsPerMin, time.Minute)
+	return b
+}
+
+// v6SiteKey returns the /48 bucket key for an IPv6 address, or "" for IPv4
+// and unparseable input.
+func v6SiteKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil {
+		return ""
+	}
+	return parsed.Mask(net.CIDRMask(48, 128)).String() + "/48"
 }
 
 // releaseIP must be called with s.mu held. key is the
