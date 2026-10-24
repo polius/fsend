@@ -833,11 +833,19 @@ func sourceErrReason(err error) string {
 }
 
 // printSkippedList lists files a transfer skipped, after the summary.
-func printSkippedList(f *flags, verb string, rows []string) {
+// cause, if set, says why ("could not be read").
+func printSkippedList(f *flags, cause string, rows []string) {
 	if f.quiet || len(rows) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s %s %s skipped:\n", uxlog.Warn(), uxlog.CountNoun(len(rows), "file"), verb)
+	verb := "were"
+	if len(rows) == 1 {
+		verb = "was"
+	}
+	if cause != "" {
+		cause += " and "
+	}
+	fmt.Fprintf(os.Stderr, "%s %s %s%s skipped:\n", uxlog.Warn(), uxlog.CountNoun(len(rows), "file"), cause, verb)
 	const show = 10
 	for _, r := range rows[:min(len(rows), show)] {
 		fmt.Fprintf(os.Stderr, "    %s\n", r)

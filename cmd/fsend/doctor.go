@@ -223,13 +223,13 @@ func relayChecks(baseURL, pw string) []doctorCheck {
 	var se *relay.HTTPStatusError
 	switch {
 	case tcpErr == nil:
-		tcp.msg = fmt.Sprintf("relay fallback over HTTPS works (echo in %s)", time.Since(start).Round(time.Millisecond))
+		tcp.msg = fmt.Sprintf("relay fallback over TCP works (echo in %s)", time.Since(start).Round(time.Millisecond))
 	case errors.As(tcpErr, &se) && se.Code == http.StatusUnauthorized:
 		tcp.msg = "the server wants a password — set it with: fsend --connect <host:port>,<password>"
 	case errors.As(tcpErr, &se) && (se.Code == http.StatusNotFound || se.Code == http.StatusServiceUnavailable):
 		tcp.msg = "this server has no TCP fallback for its relay — on a network that blocks UDP, cross-network transfers will fail"
 	default:
-		tcp.msg = fmt.Sprintf("relay fallback over HTTPS failed (%s) — on a network that blocks UDP, cross-network transfers will fail", plainNetErr(tcpErr))
+		tcp.msg = fmt.Sprintf("relay fallback over TCP failed (%s) — on a network that blocks UDP, cross-network transfers will fail", plainNetErr(tcpErr))
 	}
 
 	host := ""
@@ -300,8 +300,8 @@ loopback, then the physical interface — as separate rows:
   server    HTTPS reachability of that server's /health
   UDP       the server's relay answers over UDP (needed unless the TCP
             fallback below works)
-  TCP       the relay's TCP fallback over HTTPS, used when a network
-            blocks UDP
+  TCP       the relay's TCP fallback (a WebSocket on the server's port),
+            used when a network blocks UDP
   network   the local LAN address fsend would announce
   mDNS      a real announce→query roundtrip on this machine, in two
             tiers: loopback (fsend's mDNS machinery) and the physical

@@ -1049,7 +1049,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// exit E050 so scripts notice.
 	var retErr error
 	if n := len(unreadable()); n > 0 {
-		printSkippedList(f, "could not be read and", unreadable())
+		printSkippedList(f, "could not be read", unreadable())
 		retErr = fmt.Errorf("%w: %d unreadable on the sender", fserrors.ErrFilesSkipped, n)
 		entry, _ := fserrors.Lookup(retErr)
 		ev.Ok, ev.Error, ev.Exit = false, entry.Code, entry.Exit

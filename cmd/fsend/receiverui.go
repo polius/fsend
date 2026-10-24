@@ -673,7 +673,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 				len(files), uxlog.CountNoun(len(files)+skippedSame+kept+len(skipped), "file"), uxlog.Path(saveTargetLabel(ui.outDir)))
 		}
 		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
-		printSkippedList(f, "were", skipped)
+		printSkippedList(f, "", skipped)
 		if !f.quiet {
 			for _, c := range changed {
 				fmt.Fprintf(os.Stderr, "%s %s changed on the sender while it was being sent — the copy may be inconsistent\n", uxlog.Warn(), c)
