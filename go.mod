@@ -11,14 +11,14 @@ require (
 	github.com/pion/ice/v4 v4.4.8
 	github.com/pion/mdns/v2 v2.2.2
 	github.com/pion/stun/v4 v4.0.1
-	github.com/pion/transport/v5 v5.1.1
+	github.com/pion/transport/v5 v5.1.4
 	github.com/quic-go/quic-go v0.64.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/vbauerster/mpb/v8 v8.16.3
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
 	golang.org/x/text v0.43.0
