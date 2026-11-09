@@ -1,0 +1,26 @@
+name: Image scan
+
+# Scans the image people actually run: the one published on Docker Hub, not
+# a fresh build. A vulnerability can appear without any commit here, and a
+# fix only reaches users with a new release, so this fails (and notifies)
+# when a fixable high or critical vulnerability is waiting for one.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  scan:
+    name: Scan the published image for fixable vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: poliuscorp/fsend:latest
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
