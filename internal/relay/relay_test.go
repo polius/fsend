@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -597,7 +598,16 @@ func TestAllowReply_PerPrefixCap(t *testing.T) {
 		if allowed != stunPerPrefixPerSec {
 			t.Errorf("one prefix got %d replies, want %d", allowed, stunPerPrefixPerSec)
 		}
-		if !s.allowReply(base, net.IPv4(198, 51, 100, 7)) {
+		// Buckets are hashed with a random seed, so a fixed address would
+		// share the attacker's full bucket about once in 4096 runs.
+		slot := func(ip net.IP) uint64 {
+			return maphash.Bytes(s.stunSeed, stunPrefix(ip)) % stunPrefixSlots
+		}
+		other := net.IPv4(198, 51, 100, 7)
+		for b := byte(0); slot(other) == slot(attacker(0)); b++ {
+			other = net.IPv4(198, 51, b, 7)
+		}
+		if !s.allowReply(base, other) {
 			t.Error("another network must still be answered")
 		}
 	}
