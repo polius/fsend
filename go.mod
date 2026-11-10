@@ -12,7 +12,7 @@ require (
 	github.com/pion/mdns/v2 v2.2.2
 	github.com/pion/stun/v4 v4.0.1
 	github.com/pion/transport/v5 v5.1.5
-	github.com/quic-go/quic-go v0.64.1
+	github.com/quic-go/quic-go v0.65.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
 	github.com/vbauerster/mpb/v8 v8.16.3
