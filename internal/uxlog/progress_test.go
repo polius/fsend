@@ -207,12 +207,12 @@ func TestETALabel(t *testing.T) {
 		secs float64
 		want string
 	}{
-		{0.042, "1s"}, // sub-second rounds up, never "42ms"
-		{0.943, "1s"},
-		{1.2, "2s"},
-		{9.01, "10s"},
-		{59.5, "1m00s"},
-		{90, "1m30s"},
+		{0.042, "1 s"}, // sub-second rounds up, never "42 ms"
+		{0.943, "1 s"},
+		{1.2, "2 s"},
+		{9.01, "10 s"},
+		{59.5, "1 min 00 s"},
+		{90, "1 min 30 s"},
 	}
 	for _, c := range cases {
 		if got := etaLabel(c.secs); got != c.want {
@@ -271,18 +271,18 @@ func TestLayout(t *testing.T) {
 		route     string
 		want      barLayout
 	}{
-		{"40 cols keeps %, ETA and rate", 40, big, true, "LAN",
-			barLayout{eta: true, rate: true}},
-		{"60 cols adds the counter, no track", 60, big, true, "LAN",
-			barLayout{eta: true, rate: true, counter: true}},
-		{"80 cols adds the name before the bar", 80, big, true, "LAN",
-			barLayout{eta: true, rate: true, counter: true, nameCap: 16}},
+		{"40 cols keeps % and ETA, rate no longer fits", 40, big, true, "LAN",
+			barLayout{bar: 10, eta: true}},
+		{"60 cols adds the rate and a name, no counter", 60, big, true, "LAN",
+			barLayout{eta: true, rate: true, nameCap: 12}},
+		{"80 cols adds the counter before the bar", 80, big, true, "LAN",
+			barLayout{eta: true, rate: true, counter: true, nameCap: 13}},
 		{"100 cols: bar and name share the spare", 100, big, true, "LAN",
-			barLayout{bar: 20, eta: true, rate: true, counter: true, nameCap: 14}},
+			barLayout{bar: 19, eta: true, rate: true, counter: true, nameCap: 12}},
 		{"140 cols books the route", 140, big, true, "LAN",
-			barLayout{bar: 36, eta: true, rate: true, counter: true, nameCap: 30, route: true}},
+			barLayout{bar: 33, eta: true, rate: true, counter: true, nameCap: 30, route: true}},
 		{"200 cols: bar capped, name takes the rest", 200, big, true, "LAN",
-			barLayout{bar: 40, eta: true, rate: true, counter: true, nameCap: 86, route: true}},
+			barLayout{bar: 40, eta: true, rate: true, counter: true, nameCap: 83, route: true}},
 		{"no names means no chip", 200, big, false, "LAN",
 			barLayout{bar: 40, eta: true, rate: true, counter: true, route: true}},
 		{"no rate/ETA below the threshold", 100, 900_000, true, "LAN",

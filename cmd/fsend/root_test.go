@@ -541,3 +541,31 @@ func TestStartReceive_NormalizesMangledCodes(t *testing.T) {
 		t.Errorf("invalid code should stay E004, got %v", err)
 	}
 }
+
+// A code typed as separate words ("fsend abc defg jkm") receives, unless
+// one of the words exists as a path — real files always win.
+func TestDispatch_CodeAsSeparateWords(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, args := range [][]string{{"abc", "defg", "jkm"}, {"ABC", "DEFG", "JKM"}, {"abc-defg", "jkm"}} {
+		if c, ok := splitCode(args); !ok || c != "abc-defg-jkm" {
+			t.Errorf("splitCode(%q) = %q, %v; want abc-defg-jkm", args, c, ok)
+		}
+		cmd := rootCmd()
+		cmd.SetArgs(append([]string{"--quiet"}, args...))
+		cmd.SetOut(io.Discard)
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--quiet on receive requires --yes") {
+			t.Errorf("fsend %q: got %v, want it received as a code", args, err)
+		}
+	}
+	for _, args := range [][]string{{"a.txt", "b.txt"}, {"abc", "defg"}, {"abc", "defg", "jkm", "xyz"}} {
+		if _, ok := splitCode(args); ok {
+			t.Errorf("splitCode(%q) took non-code arguments as a code", args)
+		}
+	}
+	if err := os.WriteFile("defg", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := splitCode([]string{"abc", "defg", "jkm"}); ok {
+		t.Error("an existing path among the words must win")
+	}
+}

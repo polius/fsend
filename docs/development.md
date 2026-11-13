@@ -73,10 +73,10 @@ parallel:
 
 | role | dark | light | both (default) | means |
 | --- | --- | --- | --- | --- |
-| accent | `#ff9e64` | `#b15c00` | `#c85000` | act — share code, code box, spinner, direction arrows |
+| accent | `#e0805a` | `#bd4f23` | `#c85000` | act — share code, code box, spinner, direction arrows |
 | primary | `#bb9af7` | `#7847bd` | `#8f58dc` | decide — questions, prompts |
 | success | `#9ece6a` | `#587539` | `#47851b` | reassure / file references — ✓, paths |
-| warning | `#e0af68` | `#8c6c3e` | `#a06b00` | caution — ⚠, "differs" |
+| warning | `#e5c07b` | `#7d6500` | `#a06b00` | caution — ⚠, "differs" |
 | error | `#f7768e` | `#b3261e` | `#da3644` | failure — ✗ |
 | info | `#7dcfff` | `#007197` | `#007fa9` | status — ℹ, `--help` flags, links |
 
@@ -96,9 +96,10 @@ Truecolour is used when the terminal advertises it
 (`COLORTERM=truecolor`/`24bit`). Otherwise dark and light map each hex to
 its nearest xterm-256 cell at render time, so the fallback can never
 drift from the palette it approximates; the both column uses hand-picked
-256-colour cells, and the terminal's default foreground for accent and
-warning, where the cube has no cell that clears 4.5:1 on both
-backgrounds. `FSEND_PLAIN=1` (or a non-UTF-8 locale) drops colour,
+256-colour cells. The cube has no orange or amber that clears 4.5:1 on
+both backgrounds, so accent and warning use 208 and 178 there and accept
+a small miss on white rather than losing the brand colour (SSH does not
+forward `COLORTERM`, so this is the usual remote case). `FSEND_PLAIN=1` (or a non-UTF-8 locale) drops colour,
 animation and Unicode symbols altogether.
 
 There is deliberately no dim/muted renderer. Secondary text renders in
@@ -106,11 +107,13 @@ the terminal's default foreground — the one colour guaranteed readable on
 the user's theme — and hierarchy comes from emphasising the primary
 elements, never from darkening the rest.
 
-**`brand/logo-orange` is a separate, fixed token: `#E0805A`.** The
-wordmark and the README icon use it because a logo may hold a colour the
-terminal theme cannot shift; it is a muted, print-safe sibling of `accent`
-(`#ff9e64`, ~6:1 on the dark background). Do not "correct" it to the
-accent — `docs/assets/icon*.svg` is the reference. The README demo
+**`brand/logo-orange` is a fixed token: `#E0805A`.** The wordmark and the
+README icon use it, and the dark column's accent is the same value
+(7.4:1 on black, 4.9:1 on One Dark's `#282c34`), so the brand has one
+orange. The light accent `#bd4f23` is that hue darkened to clear 4.5:1 on
+white. Do not change the logo — `docs/assets/icon*.svg` is the
+reference. Warning sits towards yellow so it never reads as a second
+accent. The README demo
 (`docs/assets/demo.svg` and `demo-light.svg`, produced by `scripts/preview`)
 is rendered in the dark and light columns above; a new token needs its
 dark → light pair added to `TOKENS` in `scripts/preview/svg-postprocess.py`.

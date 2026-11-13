@@ -327,13 +327,24 @@ var knownServerEnv = []string{
 	"FSEND_SERVER_PASSWORD", "FSEND_SERVER_PASSWORD_FILE",
 }
 
+// clientEnv lists the FSEND_* variables the client and the install scripts
+// read. A shell that runs both sets them legitimately, so the server must
+// not call them typos.
+var clientEnv = []string{
+	"FSEND_CODE", "FSEND_PASSWORD", "FSEND_PASSWORD_FILE", "FSEND_SERVER",
+	"FSEND_THEME", "FSEND_PLAIN", "FSEND_NO_NOTIFY", "FSEND_NO_UPDATE_CHECK",
+	"FSEND_DEBUG", "FSEND_ALLOW_ROOT", "FSEND_RELAY_TRANSPORT",
+	"FSEND_QUIC_IDLE_TIMEOUT", "FSEND_VERSION", "FSEND_PREFIX",
+}
+
 // unknownServerEnv returns the FSEND_* names in environ the server doesn't
 // read. Names only: values may be secrets.
 func unknownServerEnv(environ []string) []string {
 	var out []string
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(name, "FSEND_") && !slices.Contains(knownServerEnv, name) {
+		if strings.HasPrefix(name, "FSEND_") && !slices.Contains(knownServerEnv, name) &&
+			!slices.Contains(clientEnv, name) {
 			out = append(out, name)
 		}
 	}

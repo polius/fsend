@@ -141,20 +141,26 @@ func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken) {
 //
 // Rendering uses truecolour when the terminal reports it
 // (COLORTERM=truecolor/24bit), else a 256-colour cell. For dark/light
-// that is the nearest cell; for both it is both256, hand-picked because
-// the cube holds no orange, amber or cyan inside the 4.5:1-on-both band —
-// those roles get "" (the terminal's default foreground, readable by
-// definition). The zero token means "no colour".
+// that is the nearest cell; for both it is both256, hand-picked. The cube
+// holds no orange or amber inside the 4.5:1-on-both band, so accent and
+// warning take 208 and 178 and accept a small miss on white: a brand
+// colour that misses by a little beats one that disappears (SSH sessions
+// drop COLORTERM, so this is a common case). The zero token means "no
+// colour".
+//
+// The dark accent is the logo orange (#E0805A) and the light one is the
+// same hue darkened to clear 4.5:1 on white; warning sits towards yellow
+// so it never reads as a second accent.
 type colourToken struct {
 	dark, light, both string // "#rrggbb"
 	both256           string // xterm-256 index for both; "" = default fg
 }
 
 var (
-	tokenAccent  = colourToken{"#ff9e64", "#b15c00", "#c85000", ""}
+	tokenAccent  = colourToken{"#e0805a", "#bd4f23", "#c85000", "208"}
 	tokenPrimary = colourToken{"#bb9af7", "#7847bd", "#8f58dc", "98"}
 	tokenSuccess = colourToken{"#9ece6a", "#587539", "#47851b", "29"}
-	tokenWarning = colourToken{"#e0af68", "#8c6c3e", "#a06b00", ""}
+	tokenWarning = colourToken{"#e5c07b", "#7d6500", "#a06b00", "178"}
 	tokenError   = colourToken{"#f7768e", "#b3261e", "#da3644", "131"}
 	tokenInfo    = colourToken{"#7dcfff", "#007197", "#007fa9", "63"}
 )

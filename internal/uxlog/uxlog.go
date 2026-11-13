@@ -81,11 +81,11 @@ func (p *plainProgress) add(n int64) {
 		// Clamp to 0..100: a percentage outside that range is never correct
 		// output, whatever the caller's accounting did.
 		line := fmt.Sprintf("%d%%  %s / %s",
-			max(0, min(100, p.current*100/p.total)), HumanBytes(p.current), HumanBytes(p.total))
+			Percent(p.current, p.total), HumanBytes(p.current), HumanBytes(p.total))
 		// Rate and ETA matter most in CI logs, where nobody watches a bar.
 		now := time.Now()
 		if r := p.win.observe(now, p.current); p.total >= rateThreshold && r >= 1 && !p.win.stalled(now) {
-			line += "  ·  " + HumanBytes(int64(r)) + "/s"
+			line += "  ·  " + RateLabel(r)
 			if left := float64(p.total-p.current) / r; left > 0 {
 				line += "  ·  ETA " + etaLabel(left)
 			}
@@ -164,7 +164,7 @@ const barMin = 10
 const (
 	pctFurniture  = 8  // "  100%  ", or the "  ...  " streaming stand-in
 	rateFurniture = 15 // "  ·  999.9 MB/s"
-	etaFurniture  = 17 // "  ·  ETA 10h02m03s"
+	etaFurniture  = 20 // "  ·  ETA 10 h 02 min"
 	barFurniture  = 2  // the spaces mpb puts around the track
 	nameMin       = 12 // runes below which the file chip isn't worth showing
 	nameGrow      = 30 // the name grows to this before the bar takes the rest
@@ -374,7 +374,17 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	// telegraph aesthetic the default style carries. Unknown totals get
 	// no track at all: it could never fill, and a full-width ─ line at
 	// 0% reads as "stalled" — the counter/rate decorators carry the line.
-	var style mpb.BarFillerBuilder = mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	// The filled part carries the accent, like the spinner it replaces, so
+	// the element in motion keeps one colour from waiting to done; the
+	// unfilled track stays in the default foreground.
+	bs := mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	if colorEnabled() {
+		if c := fg(tokenAccent); c != "" {
+			accent := func(s string) string { return c + s + colorReset }
+			bs = bs.FillerMeta(accent).TipMeta(accent)
+		}
+	}
+	var style mpb.BarFillerBuilder = bs
 	if !hasTotal {
 		style = mpb.NopStyle()
 	}
@@ -398,7 +408,9 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		decor.Name("  "),
 		// "%d" renders "66%", matching plain mode — the default
 		// "% d" pads a space before the sign ("66 %").
-		decor.NewPercentage("%d", decor.WC{W: 4}),
+		decor.Any(func(s decor.Statistics) string {
+			return fmt.Sprintf("%3d%%", Percent(s.Current, s.Total))
+		}, decor.WC{W: 4}),
 		decor.Name("  "),
 	}
 	if !hasTotal {
@@ -449,7 +461,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 					if r < 1 {
 						return ""
 					}
-					return "  ·  " + HumanBytes(int64(r)) + "/s"
+					return "  ·  " + RateLabel(r)
 				}),
 				// Colour only the stalled marker — the warning token, the
 				// caution family, since a stall is a soft warning. Measuring
@@ -509,10 +521,17 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 		// the chip; terminalWidth falls back to the width seen at
 		// construction if the size query starts failing.
 		appendDecs = append(appendDecs,
+			// Colour the name only: the separator before it stays neutral.
+			// decor.Meta keeps mpb measuring the ANSI-free width.
 			decor.Meta(decor.Any(func(decor.Statistics) string {
 				name, _ := p.chipParts(lay().nameCap)
 				return name
-			}), func(str string) string { return Path(str) }),
+			}), func(str string) string {
+				if rest, ok := strings.CutPrefix(str, chipSep); ok && rest != "" {
+					return chipSep + Path(rest)
+				}
+				return str
+			}),
 			decor.Any(func(decor.Statistics) string {
 				_, tail := p.chipParts(lay().nameCap)
 				return tail
@@ -566,7 +585,7 @@ func etaLabel(remainingSecs float64) string {
 		secs = 1
 	}
 	if secs < 60 {
-		return fmt.Sprintf("%ds", secs)
+		return fmt.Sprintf("%d s", secs)
 	}
 	return HumanDuration(time.Duration(secs) * time.Second)
 }
@@ -642,8 +661,11 @@ func (p *Progress) chipParts(chipCap int) (name, tail string) {
 			chipCap -= len(t)
 		}
 	}
-	return "  ·  " + truncateName(label, chipCap), tail
+	return chipSep + truncateName(label, chipCap), tail
 }
+
+// chipSep separates the bar's chips.
+const chipSep = "  ·  "
 
 // truncateName caps s at max runes with a middle cut: the whole basename
 // stays when it fits ("assets/…/video1.bin"), else the basename itself is

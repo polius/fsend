@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 // We can't easily inject stderr or fake a TTY in unit tests, so the
@@ -129,5 +130,42 @@ func TestSpinner_SetMessage(t *testing.T) {
 	s.draw("⠋")
 	if got := buf.String(); !strings.Contains(got, "second") || strings.Contains(got, "first") {
 		t.Errorf("draw after SetMessage = %q", got)
+	}
+}
+
+// A spinner line wider than the terminal wraps, and every \r redraw then
+// leaves a row behind. fitSpinner keeps it inside width-1 columns: the
+// hint goes first, then the message's tail; the elapsed time stays.
+func TestFitSpinner(t *testing.T) {
+	const pw = "Waiting for Pols-MacBook-Pro to enter the password"
+	cases := []struct {
+		msg, elapsed, hint string
+		width              int
+		want               string
+	}{
+		{"Waiting for receiver", "4 s", HintCancel, 100, "Waiting for receiver  ·  4 s  ·  Ctrl-C to cancel"},
+		{"Waiting for receiver", "4 s", HintCancel, 40, "Waiting for receiver  ·  4 s"},
+		{"Waiting for receiver", "", HintCancel, 40, "Waiting for receiver"},
+		{pw, "11 s", HintCancel, 80, pw + "  ·  11 s"},
+		{pw, "11 s", HintCancel, 44, "Waiting for Pols-MacBook-Pro to…  ·  11 s"},
+		{"Waiting for receiver", "4 s", HintCancel, 12, "Waiting…"},
+	}
+	for _, c := range cases {
+		got := fitSpinner(c.msg, c.elapsed, c.hint, c.width)
+		if got != c.want {
+			t.Errorf("fitSpinner(%q, %d) = %q, want %q", c.msg, c.width, got, c.want)
+		}
+		if n := utf8.RuneCountInString(got) + 2; n > c.width-1 {
+			t.Errorf("fitSpinner(%q, %d): line is %d columns", c.msg, c.width, n)
+		}
+	}
+}
+
+// Static lines wrap at word boundaries under the indent; off a terminal
+// they stay on one line.
+func TestWrapOffTerminal(t *testing.T) {
+	const s = "The code works for one receiver, while this stays open."
+	if got := Wrap(s, 2); got != "  "+s {
+		t.Errorf("Wrap off a terminal = %q", got)
 	}
 }

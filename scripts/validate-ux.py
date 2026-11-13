@@ -47,10 +47,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Truecolour hex per semantic token and palette. These must match
 # internal/uxlog/glyphs.go's colourToken table (dark, light, both).
 PALETTES = {
-    'dark':  {'accent': '#ff9e64', 'primary': '#bb9af7', 'success': '#9ece6a',
-              'warning': '#e0af68', 'error': '#f7768e', 'info': '#7dcfff'},
-    'light': {'accent': '#b15c00', 'primary': '#7847bd', 'success': '#587539',
-              'warning': '#8c6c3e', 'error': '#b3261e', 'info': '#007197'},
+    'dark':  {'accent': '#e0805a', 'primary': '#bb9af7', 'success': '#9ece6a',
+              'warning': '#e5c07b', 'error': '#f7768e', 'info': '#7dcfff'},
+    'light': {'accent': '#bd4f23', 'primary': '#7847bd', 'success': '#587539',
+              'warning': '#7d6500', 'error': '#b3261e', 'info': '#007197'},
     'both':  {'accent': '#c85000', 'primary': '#8f58dc', 'success': '#47851b',
               'warning': '#a06b00', 'error': '#da3644', 'info': '#007fa9'},
 }
@@ -346,7 +346,14 @@ class Harness:
         s.bind(('127.0.0.1', 0))
         self.port = s.getsockname()[1]
         s.close()
-        env = dict(os.environ, **self.client_env(FSEND_SERVER_ADDR=f'127.0.0.1:{self.port}'))
+        # The relay gets its own free UDP port too: the default (:443) would
+        # collide with any other server running on this machine.
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.bind(('127.0.0.1', 0))
+        relay = u.getsockname()[1]
+        u.close()
+        env = dict(os.environ, **self.client_env(FSEND_SERVER_ADDR=f'127.0.0.1:{self.port}',
+                                                 FSEND_RELAY_ADDR=f'127.0.0.1:{relay}'))
         self.server = subprocess.Popen(
             [self.bin, 'server'], cwd=self.tmp, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -486,26 +493,25 @@ def s2_folder():
 
 
 def s3_conflict():
-    s = 'S3 conflict + overwrite prompt'
+    s = 'S3 conflict prompt'
     d = fresh('s3')
     with open(os.path.join(d, 'recv_out', 'small.txt'), 'wb') as f:
         f.write(os.urandom(12))
-    snd, rcv = pair(s, d, ['small.txt'], ['--out', 'recv_out'],
-                    [(4.0, b'y\n'), (6.0, b'n\n')])
+    # One question covers the accept and the existing file; "s" skips it.
+    snd, rcv = pair(s, d, ['small.txt'], ['--out', 'recv_out'], [(4.0, b's\n')])
     sp, rv = snd.text, rcv.text if rcv else ''
-    check(s, 'prompt header primary', rv, 'incoming copy?',
-          'Replace 1 file with the incoming copy?', VIOLET)
-    check(s, 'delete consequence warning', rv, 'incoming copy?',
-          '⚠ your local version is deleted', YELLOW)
+    check(s, 'conflict header primary', rv, 'already exists',
+          '1 file here already exists and differs:', VIOLET)
+    check(s, 'delete consequence warning', rv, '[r]eplace', '(deletes yours)', YELLOW)
     check(s, 'conflict name green', rv, '→', 'small.txt', GREEN)
     check(s, 'local size diff-removed', rv, '→', '12 B', RED)
     check(s, 'incoming size diff-added', rv, '→', '52 B', GREEN)
-    check(s, 'prompt primary', rv, None, 'Replace your local copy?', VIOLET)
+    check(s, 'question primary', rv, '[K]eep both', 'Save to', VIOLET)
     check(s, 'kept clause warning', rv, 'kept', '1 file kept', YELLOW)
     check(s, 'sender warn glyph', sp, 'Nothing sent', '⚠', YELLOW)
     check(s, 'Nothing sent default', sp, 'Nothing sent', 'Nothing sent', DEFAULT, False)
     glob_ok(s, 'no dim attribute', '\x1b[2m' not in sp and '\x1b[2m' not in rv)
-    # Answering "n" is a choice, not a failure.
+    # Skipping is a choice, not a failure.
     glob_ok(s, 'kept-by-choice exits 0', rcv is not None and rcv.status == 0,
             f'exit {rcv.status if rcv else None}')
     contrast_ok(s, sp + rv)
@@ -548,8 +554,14 @@ def s5_decline():
     d = fresh('s5')
     snd, rcv = pair(s, d, ['small.txt'], ['--out', 'recv_out'], [(4.0, b'n\n')])
     rv = rcv.text if rcv else ''
+    sp = snd.text if snd else ''
     check(s, 'decline info glyph', rv, 'Declined', 'ℹ', CYAN)
-    check(s, 'E006 tag default', rv, 'Declined', '[E006]', DEFAULT, False)
+    lacks_text(s, "the receiver's own choice carries no code", rv, '[E006]')
+    # U1: the HELLO reply is not consent — the sender waits, naming the
+    # device, and a decline never prints "accepted".
+    has_text(s, 'sender waits on the device while it decides', sp, ' to accept')
+    lacks_text(s, 'a decline never prints "accepted"', sp, ' accepted')
+    has_text(s, 'sender names who declined', sp, 'declined the transfer. [E006]')
     glob_ok(s, "receiver's own decline exits 0", rcv is not None and rcv.status == 0,
             f'exit {rcv.status if rcv else None}')
     glob_ok(s, 'sender sees the decline as E006 (exit 6)', snd.status == 6, f'exit {snd.status}')
@@ -562,7 +574,9 @@ def s6_text():
     sp, rv = snd.text, rcv.text if rcv else ''
     check(s, 'arrow accent', sp, 'Sending text', '⇢', ORANGE)
     check(s, '"text" NOT path-green', sp, 'Sending text', 'Sending text', DEFAULT, False)
-    check(s, 'recv question primary', rv, 'Show the text?', 'Show the text?', VIOLET)
+    # Short text is sanitized and printed, never saved: no question first.
+    lacks_text(s, 'short text needs no prompt', rv, 'Show the text?')
+    has_text(s, 'text printed', rv, 'wifi: hunter2')
     has_text(s, 'sender summary says text', sp, 'Sent text to ')
 
 
@@ -572,6 +586,12 @@ def s7_errors():
     out = PtyRun([H.bin, 'nope.txt'], d, runtime=6)
     out.start(); out.join()
     check(s, 'cross error glyph', out.text, 'E025', '✗', RED)
+    has_text(s, 'sentence leads, code follows', out.text, 'No such file or directory: nope.txt [E025]')
+    # U3: a code typed as three words receives (no sender here: E002).
+    words = PtyRun([H.bin, 'abc', 'defg', 'jkm'], d, runtime=20)
+    words.start(); words.join()
+    has_text(s, 'three-word code receives', words.text, '[E002]')
+    lacks_text(s, 'three-word code is not three missing files', words.text, 'No such file')
     out2 = PtyRun([H.bin, 'abc-defg-jk'], d, runtime=6)
     out2.start(); out2.join()
     check(s, 'code-typo hint accent', out2.text, 'receive code', 'abc-defg-jkm', ORANGE, True)
@@ -754,10 +774,38 @@ def s17_plain():
                 '[*] Waiting for receiver' in p.text and '⠋' not in p.text)
 
 
+def s18_spinner_width():
+    """U2: a waiting sender keeps exactly one spinner row at every width —
+    a line wider than the pane would leave a row behind on each redraw —
+    and the share code stays on screen."""
+    s = 'S18 waiting spinner fits the width'
+    runs = []
+    for cols in (40, 60, 80, 100):
+        d = fresh(f's18-{cols}')
+        p = PtyRun([H.bin, 'small.txt'], d, runtime=16, cols=cols)
+        p.start()
+        runs.append((cols, p))
+    for cols, p in runs:
+        p.join()
+        # Each \r redraw is its own segment; a wrapped frame leaves a
+        # segment that starts mid-message ("l", " to cancel").
+        segs = [line_colors(x)[0] for x in split_stream(p.text)]
+        frames = [x for x in segs if 'Waiting for receiver' in x]
+        orphans = [x for x in segs if x.strip() and not x.startswith(('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'))
+                   and ('cancel' in x or 'Ctrl-C' in x)]
+        wide = [x for x in frames if len(x) > cols - 1]
+        glob_ok(s, f'{cols} cols: frames fit', bool(frames) and not wide and not orphans,
+                repr((wide or orphans)[:1]) if (wide or orphans) else f'{len(frames)} frames')
+        glob_ok(s, f'{cols} cols: elapsed time kept', any(re.search(r'1[45] s', x) for x in frames))
+        broken = [x for x in segs if re.search(r'\w-$', x.rstrip())]
+        glob_ok(s, f'{cols} cols: tagline breaks between words', not broken, repr(broken[:1]) if broken else None)
+        has_text(s, f'{cols} cols: share code still shown', p.text, 'fsend ')
+
+
 SCENARIOS = (s1_single_file, s2_folder, s3_conflict, s4_password, s5_decline,
              s6_text, s7_errors, s8_no_color, s9_help, s10_piped, s11_themes,
              s12_narrow, s13_cancel, s14_late_arriver, s15_completion, s16_notify,
-             s17_plain)
+             s17_plain, s18_spinner_width)
 
 
 def main():

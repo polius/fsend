@@ -180,24 +180,42 @@ func renderError(err error, debug bool) int {
 		glyph, exit = uxlog.Info(), 0
 	case errors.Is(err, fserrors.ErrUserCancelled):
 		glyph = uxlog.Info()
+	case errors.Is(err, fserrors.ErrReceiverDeclined):
+		// The sender's view of someone else's choice: not a fault, but
+		// still exit 6 so scripts see the file was not delivered.
+		glyph = uxlog.Info()
 	}
 
+	// The sentence leads and the catalog code follows it, where support
+	// and scripts still find it without it being the first thing read —
+	// on the opening line, never glued to a command the user will copy. A
+	// line the user caused (Ctrl-C, their own "n") carries no code: the
+	// exit status still records it, but a number makes a choice look like
+	// a fault.
+	var lines []string
+	add := func(l string) { lines = append(lines, l) }
 	switch {
 	case errors.Is(err, errKeptByChoice):
 		// The user answered "n" at the overwrite prompt — narrate their
 		// decision, not a failure, and skip the "Use --overwrite" advice
 		// they just declined.
-		fmt.Fprintf(os.Stderr, "%s [%s] Kept your local copies — nothing was overwritten.\n", glyph, entry.Code)
+		add("Kept your local copies — nothing was overwritten.")
+	case errorRole == "sender" && errors.Is(err, fserrors.ErrReceiverDeclined):
+		// Not a fault on either side: the receiver said no. Name who.
+		who := sendState.peerName()
+		if who == "" {
+			who = "The receiver"
+		}
+		add(who + " declined the transfer.")
 	case detail != "" && errors.Is(err, fserrors.ErrUsage):
 		// The specific reason is the headline; the generic "Invalid
 		// usage" + "see --help" pair would only bury it.
-		fmt.Fprintf(os.Stderr, "%s [%s] %s\n", glyph, entry.Code, withCommandAccent(capitalize(detail)))
+		add(withCommandAccent(capitalize(detail)))
 	case detail != "" && errors.Is(err, fserrors.ErrSourceNotFound):
 		// Inline the missing path into the message: the catalog message
 		// ends in "." which we strip so it reads as one sentence —
-		// "[E025] No such file or directory: hola".
-		msg := strings.TrimSuffix(entry.Message, ".")
-		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, msg, detail)
+		// "No such file or directory: hola".
+		add(strings.TrimSuffix(entry.Message, ".") + ": " + detail)
 		// A mistyped receive code falls through dispatch to the send
 		// path and lands here — by far the most common failure when
 		// codes are relayed verbally. Without the hint, the bare "no
@@ -206,41 +224,49 @@ func renderError(err error, debug bool) int {
 		// the argument is a path.
 		switch {
 		case code.LooksLikeCode(detail) && !argsHaveFlag("--send"):
-			fmt.Fprintf(os.Stderr, "  If this was a receive code, check it with the sender — codes look like %s.\n",
-				uxlog.Code("abc-defg-jkm"))
+			add("  If this was a receive code, check it with the sender — codes look like " +
+				uxlog.Code("abc-defg-jkm") + ".")
 		// Muscle-memory from other tools: there are no subcommands.
 		case detail == "version":
-			fmt.Fprintf(os.Stderr, "  For the fsend version, run: fsend --version\n")
+			add("  For the fsend version, run: fsend --version")
 		default:
 			if hint := subcommandHint(detail); hint != "" {
-				fmt.Fprintf(os.Stderr, "  %s\n", hint)
+				add("  " + hint)
 			}
 		}
 		if entry.Action != "" {
-			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
+			add("  " + entry.Action)
 		}
 	case detail != "" && errors.Is(err, fserrors.ErrUnsendableSymlink):
 		// Inline the offending link into the message (period stripped, as
-		// for E025) — "[E036] Cannot follow this symlink: broken link
-		// foo → ../gone (target does not exist)".
-		msg := strings.TrimSuffix(entry.Message, ".")
-		fmt.Fprintf(os.Stderr, "%s [%s] %s: %s\n", glyph, entry.Code, msg, detail)
+		// for E025) — "Cannot follow this symlink: broken link foo →
+		// ../gone (target does not exist)".
+		add(strings.TrimSuffix(entry.Message, ".") + ": " + detail)
 		if entry.Action != "" {
-			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
+			add("  " + entry.Action)
 		}
 	case errors.Is(err, fserrors.ErrUpdateRootRefused):
 		// The opt-in command is the whole point of this refusal — give it
 		// a block of its own, mirroring the installer's root refusal.
-		fmt.Fprintf(os.Stderr, "%s [%s] %s\n  to update anyway, run:\n\n      %s\n",
-			glyph, entry.Code, entry.Message, uxlog.Code("FSEND_ALLOW_ROOT=1 fsend --update"))
+		add(entry.Message)
+		add("  to update anyway, run:")
+		add("")
+		add("      " + uxlog.Code("FSEND_ALLOW_ROOT=1 fsend --update"))
 	case detail != "":
-		fmt.Fprintf(os.Stderr, "%s [%s] %s\n  %s\n", glyph, entry.Code, entry.Message, withCommandAccent(detail))
+		add(entry.Message)
+		add("  " + withCommandAccent(detail))
 		if entry.Action != "" {
-			fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
+			add("  " + entry.Action)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "%s %s\n", glyph, entry.Render())
+		for _, l := range strings.Split(entry.Format(), "\n") {
+			add(l)
+		}
 	}
+	if entry.Code != "" && !userCaused(err) {
+		lines[0] += " [" + entry.Code + "]"
+	}
+	fmt.Fprintf(os.Stderr, "%s %s\n", glyph, strings.Join(lines, "\n"))
 	// The interrupted receiver's partial resumes with the very same code
 	// while the sender waits; spell it out rather than "<code>".
 	if errorRole == "receiver" && receiveResume != "" {
@@ -265,6 +291,12 @@ func renderError(err error, debug bool) int {
 	// No-op if the summary already emitted the rich done event.
 	jsonEmitDone(jsonDoneFromErr(err, exit, errorRole))
 	return exit
+}
+
+// userCaused reports errors that only record what the user did — Ctrl-C,
+// or their own answer at a prompt. Their lines carry no catalog code.
+func userCaused(err error) bool {
+	return deliberateChoice(err) || errors.Is(err, fserrors.ErrUserCancelled)
 }
 
 // deliberateChoice reports errors that only record the user's own answer

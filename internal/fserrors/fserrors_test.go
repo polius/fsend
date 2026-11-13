@@ -82,10 +82,10 @@ func TestCatalog_UniqueCodes(t *testing.T) {
 	}
 }
 
-func TestEntryRender_PrependsCode(t *testing.T) {
+func TestEntryRender_CodeFollowsSentence(t *testing.T) {
 	e := Entry{Code: "E001", Message: "Boom.", Action: "Try X."}
 	got := e.Render()
-	want := "[E001] Boom.\n  Try X."
+	want := "Boom. [E001]\n  Try X."
 	if got != want {
 		t.Errorf("Render() = %q, want %q", got, want)
 	}
@@ -94,7 +94,7 @@ func TestEntryRender_PrependsCode(t *testing.T) {
 func TestEntryRender_NoActionStillIncludesCode(t *testing.T) {
 	e := Entry{Code: "E026", Message: "Cancelled."}
 	got := e.Render()
-	want := "[E026] Cancelled."
+	want := "Cancelled. [E026]"
 	if got != want {
 		t.Errorf("Render() = %q, want %q", got, want)
 	}

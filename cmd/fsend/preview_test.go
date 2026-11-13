@@ -402,3 +402,15 @@ func TestPromptAccept_ListsFiles(t *testing.T) {
 		}
 	}
 }
+
+// "… and 1 more" would cost the very row it hides: 11 files print all 11.
+func TestRenderPreview_NeverHidesExactlyOneRow(t *testing.T) {
+	var items []previewItem
+	for i := 0; i < previewRows+1; i++ {
+		items = append(items, previewItem{name: "f", size: 10})
+	}
+	got := render(items)
+	if strings.Contains(got, "more") || strings.Count(got, "\n") != previewRows+1 {
+		t.Errorf("want all %d rows and no remainder line:\n%s", previewRows+1, got)
+	}
+}
