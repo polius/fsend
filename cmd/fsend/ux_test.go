@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -179,5 +180,21 @@ func TestCollectPlan_As(t *testing.T) {
 		if _, err := collectPlan(&flags{as: bad}, []string{"-"}); err == nil {
 			t.Errorf("--as %q accepted", bad)
 		}
+	}
+}
+
+// Entries the receiver refused are listed by name with its (sanitized)
+// reason, once each however many retries report them.
+func TestRefusalHooks(t *testing.T) {
+	plan := &sendPlan{sources: []transfer.Source{
+		{Entry: wire.ListingEntry{Index: 0, RelativePath: "proj/ok.txt"}},
+		{Entry: wire.ListingEntry{Index: 1, RelativePath: "proj/aux.c"}},
+	}}
+	list, on := refusalHooks(plan)
+	on(1, "the name isn't allowed on this system (reserved device name)\x1b[31m")
+	on(1, "the name isn't allowed on this system (reserved device name)")
+	got := list()
+	if len(got) != 1 || got[0] != "proj/aux.c — the name isn't allowed on this system (reserved device name)" {
+		t.Errorf("refusals = %q", got)
 	}
 }

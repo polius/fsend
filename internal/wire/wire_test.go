@@ -323,3 +323,34 @@ func TestControl_ErrorFramePropertyRoundtrip(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// Decision.Reason is additive: a peer built before it decodes a decision
+// carrying one, and a decision from such a peer reads as Reason "".
+func TestDecisionReasonIsAdditive(t *testing.T) {
+	type oldDecision struct {
+		Index        uint32
+		Action       DecisionAction
+		ResumeOffset uint64
+		PrefixRoot   []byte
+		Kept         bool
+	}
+	var buf bytes.Buffer
+	if err := WriteControl(&buf, TypeClassifyBatch, []Decision{{Index: 3, Action: DecisionSkip, Kept: true, Reason: "reserved device name"}}); err != nil {
+		t.Fatal(err)
+	}
+	var old []oldDecision
+	if _, err := ReadControl(bytes.NewReader(buf.Bytes()), &old); err != nil || len(old) != 1 || old[0].Index != 3 || !old[0].Kept {
+		t.Fatalf("old peer decode = %+v, %v", old, err)
+	}
+	buf.Reset()
+	if err := WriteControl(&buf, TypeClassifyBatch, []oldDecision{{Index: 4, Action: DecisionSkip, Kept: true}}); err != nil {
+		t.Fatal(err)
+	}
+	var cur []Decision
+	if _, err := ReadControl(bytes.NewReader(buf.Bytes()), &cur); err != nil || len(cur) != 1 || cur[0].Reason != "" {
+		t.Fatalf("new peer decode = %+v, %v", cur, err)
+	}
+	if !CapsSupported.Has(CapSkipReasons) {
+		t.Error("this build must advertise CapSkipReasons")
+	}
+}

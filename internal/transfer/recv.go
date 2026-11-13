@@ -239,6 +239,9 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	decisions := make([]wire.Decision, len(plans))
 	for i := range plans {
 		decisions[i] = planToDecision(&plans[i], policy == ConflictReplace, opts)
+		if !hello.Caps.Has(wire.CapSkipReasons) {
+			decisions[i].Reason = ""
+		}
 	}
 	if err := sendDecisions(s.Control, decisions); err != nil {
 		return fmt.Errorf("recv: decisions: %w", err)
@@ -918,10 +921,10 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 	parent := filepath.Dir(target)
 	r.dirs.unlock(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return false, err
+		return false, r.refuseName(p, err)
 	}
 	if err := moveFile(pf.partial, target); err != nil {
-		return false, err
+		return false, r.refuseName(p, err)
 	}
 	r.ps.dropMeta(p.rel)
 	if runtime.GOOS == "windows" {
@@ -930,6 +933,22 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 		_ = os.Chtimes(target, t, t)
 	}
 	return true, nil
+}
+
+// refuseName turns a failure to create p into a per-entry refusal when the
+// filesystem rejected the name itself (isNameErr): the partial is dropped,
+// the entry is reported through OnEntrySkipped, and the transfer carries
+// on. Any other error is returned unchanged.
+func (r *receiver) refuseName(p *entryPlan, err error) error {
+	if !isNameErr(err) {
+		return err
+	}
+	r.ps.remove(p.rel)
+	p.disp, p.skipReason = dispRefused, nameRefusedReason
+	if r.opts.OnEntrySkipped != nil {
+		r.opts.OnEntrySkipped(p.entry.RelativePath, p.skipReason)
+	}
+	return nil
 }
 
 // parallelSync flushes every file in batch to the device, a few at a time.
@@ -1032,6 +1051,9 @@ func (r *receiver) materialize(p *entryPlan) error {
 		}
 		r.dirs.unlock(filepath.Dir(target))
 		if err := os.MkdirAll(target, dirMode(p.entry.Mode)); err != nil {
+			if isNameErr(err) {
+				return r.refuseName(p, err)
+			}
 			return r.writeFail("mkdir", p.rel, err)
 		}
 		return nil
@@ -1126,6 +1148,7 @@ func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.
 	case dispRefused:
 		d.Action = wire.DecisionSkip
 		d.Kept = true
+		d.Reason = p.skipReason
 		if opts.OnEntrySkipped != nil {
 			opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
 		}

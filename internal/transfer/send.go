@@ -35,7 +35,11 @@ type SendOptions struct {
 	// OnSkip fires per receiver-declined entry. kept is true when the
 	// receiver reported keeping a differing copy; false also means
 	// "unknown" (old receivers don't send the flag).
-	OnSkip         func(index uint32, kept bool)
+	OnSkip func(index uint32, kept bool)
+	// OnRefused fires per entry the receiver could not create (a name its
+	// system doesn't allow), with the receiver's reason. Without it such
+	// entries are reported through OnSkip as kept.
+	OnRefused      func(index uint32, reason string)
 	OnStreamingEOF func(index uint32, finalBytes uint64)
 	// OnPeer fires when the receiver answers the HELLO: its self-reported
 	// device name (peer-supplied — sanitize before display) and whether it
@@ -152,7 +156,11 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 		if !ok || d.Action == wire.DecisionSkip {
 			// Mirror the receiver (recv.go): directories aren't user-facing
 			// "files", so a skipped dir mustn't inflate the unchanged count.
-			if ok && opts.OnSkip != nil && src.Entry.Type != wire.EntryDir {
+			switch {
+			case !ok || src.Entry.Type == wire.EntryDir:
+			case d.Reason != "" && opts.OnRefused != nil:
+				opts.OnRefused(src.Entry.Index, d.Reason)
+			case opts.OnSkip != nil:
 				opts.OnSkip(src.Entry.Index, d.Kept)
 			}
 			continue
