@@ -48,7 +48,7 @@ func WriteListingBatchZ(w io.Writer, batch []ListingEntry) error {
 	if len(body) > MaxControlFrameSize {
 		return fmt.Errorf("%w: compressed listing batch %d bytes", ErrFrameTooLarge, len(body))
 	}
-	header := [controlHeaderSize]byte{ProtocolVersion, byte(TypeListingBatchZ)}
+	header := [controlHeaderSize]byte{Stamp(w, TypeListingBatchZ), byte(TypeListingBatchZ)}
 	binary.BigEndian.PutUint32(header[2:6], uint32(len(body)))
 	if _, err := w.Write(header[:]); err != nil {
 		return fmt.Errorf("wire: writing header: %w", err)

@@ -132,11 +132,13 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	if ft != wire.TypeHello {
 		return fmt.Errorf("%w: expected HELLO, got %v", fserrors.ErrProtocolError, ft)
 	}
-	if _, ok := wire.Negotiate(hello.MinVersion, hello.MaxVersion); !ok {
+	v, ok := wire.Negotiate(hello.MinVersion, hello.MaxVersion)
+	if !ok {
 		ackProceed(s, opts, false)
 		drainControl(s)
 		return fserrors.ErrIncompatibleVersion
 	}
+	setVersion(s, v)
 
 	if hello.Mode == wire.ModeStream {
 		return recvStream(ctx, s, &hello, opts)

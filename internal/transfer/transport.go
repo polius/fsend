@@ -34,3 +34,18 @@ func (s *Streams) Close() {
 		_ = s.Data.Close()
 	}
 }
+
+// versionedConn marks a control stream with the protocol version the peers
+// negotiated, so every frame written after the hello carries it
+// (wire.Stamp).
+type versionedConn struct {
+	io.ReadWriteCloser
+	v uint8
+}
+
+func (c versionedConn) WireVersion() uint8 { return c.v }
+
+// setVersion marks s's control stream with the negotiated version v.
+func setVersion(s *Streams, v uint8) {
+	s.Control = versionedConn{ReadWriteCloser: s.Control, v: v}
+}
