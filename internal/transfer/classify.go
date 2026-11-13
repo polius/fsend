@@ -55,7 +55,9 @@ type entryPlan struct {
 	// the user approves the replace, the transfer resumes from it instead of
 	// sending every byte again.
 	replaceResume bool
-	skipReason    string // dispRefused: why, for the user
+	// keptAs: an earlier keep-both copy of this exact version (rel path).
+	keptAs     string
+	skipReason string // dispRefused: why, for the user
 }
 
 // needsConsent reports a destructive disagreement requiring --overwrite.
@@ -92,6 +94,10 @@ type SummaryEntry struct {
 	Status        string // "new" | "identical" | "differs" | "resume" | "refused"
 	Type          wire.EntryType
 	SymlinkTarget string // EntrySymlink only
+	// KeptAs names an earlier keep-both copy ("src/f1 (1).go") that already
+	// holds this exact version (same size and mtime). Under keep-both the
+	// file counts as up to date instead of gaining another copy.
+	KeptAs string
 }
 
 // Conflict describes one entry that disagrees with what's on disk, for the
@@ -108,6 +114,8 @@ type Conflict struct {
 	// NonEmptyDir: a folder with contents is in the way. Replace keeps it
 	// (fsend never deletes a folder's contents); keep both still works.
 	NonEmptyDir bool
+	// KeptAs: see SummaryEntry.KeptAs.
+	KeptAs string
 }
 
 // classifier resolves listing entries against the receive directory.
@@ -117,6 +125,11 @@ type classifier struct {
 	sem       fsSemantics
 	ps        *partialStore
 	progress  func(done, total uint64) // resume-prefix hashing
+
+	// policy is the conflict answer given up front (--rename, --overwrite),
+	// when there is one: a keep-both whose earlier copy already holds the
+	// incoming version is then up to date from the start.
+	policy ConflictPolicy
 
 	// Per-directory memos for the ancestor checks: a tree's entries share
 	// their parents, so each folder is examined once per receive instead of
@@ -384,6 +397,11 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 			// An interrupted replace leaves a partial of the new version:
 			// note it now, use it only once the replace is approved.
 			if st.Mode().IsRegular() {
+				// A previous keep-both may already have saved this version.
+				if p.keptAs = c.keptCopy(rel, e); p.keptAs != "" && c.policy == ConflictRename {
+					p.disp = dispIdentical
+					return p
+				}
 				c.resumeCandidate(&p)
 				if p.disp == dispResume {
 					p.disp, p.replaceResume = dispDiffers, true
@@ -464,6 +482,7 @@ func summarize(plans []entryPlan) classifySummary {
 				Status:        dispStatus(p.disp),
 				Type:          p.entry.Type,
 				SymlinkTarget: p.entry.SymlinkTarget,
+				KeptAs:        filepath.ToSlash(p.keptAs),
 			})
 		}
 	}
@@ -500,7 +519,7 @@ func conflicts(plans []entryPlan) []Conflict {
 			dirs = append(dirs, p.rel)
 		}
 		c := Conflict{RelativePath: p.entry.RelativePath, IncomingSize: p.entry.Size, Kind: "differs", NonEmptyDir: p.nonEmptyDir,
-			IncomingModTime: time.Unix(p.entry.ModTimeSec, 0)}
+			IncomingModTime: time.Unix(p.entry.ModTimeSec, 0), KeptAs: filepath.ToSlash(p.keptAs)}
 		if st, err := os.Lstat(p.target); err == nil {
 			c.LocalSize = st.Size()
 			c.LocalModTime = st.ModTime()
@@ -579,6 +598,12 @@ func applyPolicy(plans []entryPlan, policy ConflictPolicy, c *classifier) {
 			if moved || !p.needsConsent() {
 				continue
 			}
+			// An earlier keep-both copy already holds this version: the
+			// file is up to date; another "(n)" copy would be a duplicate.
+			if p.keptAs != "" && p.disp == dispDiffers {
+				p.disp = dispIdentical
+				continue
+			}
 			to := freeName(p.rel, c, taken)
 			if p.entry.Type == wire.EntryDir {
 				moves = append(moves, move{p.rel, to})
@@ -608,6 +633,30 @@ func (c *classifier) retarget(p *entryPlan, rel string) {
 			}
 		}
 	}
+}
+
+// keptCopy returns the first "name (k).ext" beside rel that is a regular
+// file holding e's version (same size and mtime) — what an earlier
+// keep-both saved — or "". The numbered copies are contiguous from 1, as
+// freeName creates them; the scan stops at the first gap.
+func (c *classifier) keptCopy(rel string, e wire.ListingEntry) string {
+	dir, base := filepath.Split(rel)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	if stem == "" {
+		stem, ext = base, ""
+	}
+	for k := 1; k <= 99; k++ {
+		cand := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, k, ext))
+		st, err := os.Lstat(filepath.Join(c.targetDir, cand))
+		if err != nil {
+			return ""
+		}
+		if st.Mode().IsRegular() && uint64(st.Size()) == e.Size && c.sem.sameMtime(st.ModTime(), e.ModTimeSec) {
+			return cand
+		}
+	}
+	return ""
 }
 
 // freeName returns "name (n).ext" beside rel, unused on disk and in this
