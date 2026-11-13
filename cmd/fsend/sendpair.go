@@ -495,10 +495,10 @@ func waitForReceiver(ctx context.Context, client *signaling.Client, code string,
 // path and publishes the decision for the receiver (see iceEstablish).
 //
 // ICE gathers srflx candidates against the STUN address the server put in
-// the create response (the relay socket also answers STUN). The relay slot
-// itself is allocated only on ICE failure, when we actually need to relay —
-// so a direct connection never reserves one. Old servers that don't
-// advertise the address fall back to allocating up front for STUN (see
+// the create response (the relay socket also answers STUN). The relay is
+// allocated and dialed while ICE runs (see prepareRelay) and dropped if ICE
+// wins, so a fallback costs no time on top of ICE. Old servers that don't
+// advertise the STUN address get an allocation for it up front (see
 // stunAddrForICE).
 //
 // The debug --mode flag short-circuits the ladder:
@@ -509,9 +509,12 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 		publishPathChoice(ctx, client, created.SessionID, created.RoleToken, pathChoiceRelay)
 		return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
 	}
-	// The STUN address rides on the create response, so ICE runs without a
-	// relay allocation. We allocate only if ICE fails and we must relay.
+	// The STUN address rides on the create response.
 	stunAddr := stunAddrForICE(ctx, client, created.RelayAddr, created.SessionID, created.RoleToken)
+	var prep *relayPrep
+	if (f == nil || f.mode != modeDirect) && !created.RelayForwardingDisabled {
+		prep = prepareRelay(ctx, client, created.SessionID, created.RoleToken)
+	}
 	iceConn, icePath, iceErr := iceEstablish(ctx, client, created.SessionID, created.RoleToken, iceconn.Options{
 		LocalUfrag:  created.IceCredentials.Ufrag,
 		LocalPwd:    created.IceCredentials.Pwd,
@@ -520,6 +523,7 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 		STUNAddr:    stunAddr,
 	}, true /* controlling */, f != nil && f.debug)
 	if iceErr == nil {
+		prep.discard()
 		return iceConn, icePath, nil
 	}
 	if f != nil && f.debug {
@@ -528,10 +532,10 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 	if f != nil && f.mode == modeDirect {
 		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=direct: %v", fserrors.ErrConnectFailed, iceErr)
 	}
-	if created.RelayForwardingDisabled {
+	if prep == nil {
 		return nil, connpath.Info{}, fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 	}
-	return allocAndDialRelay(ctx, client, created.SessionID, created.RoleToken)
+	return prep.wait()
 }
 
 // stunAddrForICE returns the STUN address for srflx gathering: the one the
@@ -1073,7 +1077,9 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		// past the re-accept grace so runSendParallel re-pairs now. The
 		// raw error never reaches the user — the re-pair loop always
 		// catches it (re-pairable items only).
-		classify = func(err error) bool { return !isReceiverClose(err) && retry.IsTransient(err) }
+		classify = func(err error) bool {
+			return !isReceiverClose(err) && !errors.Is(err, errRouteGone) && retry.IsTransient(err)
+		}
 	}
 	err := retry.WithBackoff(ctx, opts, classify,
 		func(attempt int) error {
@@ -1083,6 +1089,12 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 			if current == nil {
 				res, err := reaccept(ctx)
 				if err != nil {
+					// The receiver did not come back on this route within
+					// the grace: re-pair now (a new round on the resume
+					// key) rather than wait out another re-accept.
+					if ctx.Err() == nil && retry.IsTransient(err) {
+						return fmt.Errorf("%w: %w: %v", fserrors.ErrTransientFailure, errRouteGone, err)
+					}
 					return err
 				}
 				current = res
