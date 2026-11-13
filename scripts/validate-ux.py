@@ -309,6 +309,12 @@ class PtyRun(threading.Thread):
             e.pop(k, None)
         # Never the user's real clipboard: S22 opts back in with a fake helper.
         e['FSEND_NO_CLIPBOARD'] = '1'
+        # The isolated HOME and config, so every client pairs through the
+        # harness's own server and never reads or writes the user's real
+        # fsend config (or reaches the public server it may point at).
+        if H is not None:
+            e.update(H.client_env())
+        e['FSEND_NO_UPDATE_CHECK'] = '1'
         if self.env:
             e.update(self.env)
         return e
@@ -450,7 +456,9 @@ class Harness:
         raise RuntimeError('pairing server did not become healthy')
 
     def configure_client(self):
-        subprocess.run([self.bin, '--connect', f'127.0.0.1:{self.port}'],
+        # http://: the harness server speaks plain HTTP, and a bare
+        # host:port means HTTPS.
+        subprocess.run([self.bin, '--connect', f'http://127.0.0.1:{self.port}'],
                        cwd=self.tmp, env=dict(os.environ, **self.client_env()),
                        check=True, capture_output=True)
 
@@ -477,6 +485,10 @@ class Harness:
     def kill_clients(self):
         out = subprocess.run(['pgrep', '-f', self.bin + ' '], capture_output=True, text=True)
         for pid in out.stdout.split():
+            # The server's command line matches too ("<bin> server"); it
+            # must outlive the scenarios.
+            if self.server and pid == str(self.server.pid):
+                continue
             try:
                 os.kill(int(pid), signal.SIGKILL)
             except (OSError, ValueError):
@@ -536,6 +548,9 @@ def s1_single_file():
     lacks_text(s, 'no box around the command', sp, '│')
     has_text(s, 'command line is runnable as is', sp, '      fsend ' + code + '\n')
     check(s, 'tagline faint', sp, 'One receiver', 'One receiver', DEFAULT, False, True)
+    # The install-and-receive hint pairs through the default server; this
+    # harness uses its own, so the hint must stay away.
+    lacks_text(s, 'no install hint on a server of its own', sp, 'No fsend there yet')
     check(s, 'spinner accent', sp, 'Waiting for receiver', '⠋', ORANGE)
     check(s, 'summary ✓ success', sp, 'Sent', '✓', GREEN)
     check(s, 'summary subject bold', sp, 'Sent', 'small.txt', DEFAULT, True)

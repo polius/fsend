@@ -357,7 +357,7 @@ func TestPrintSendArtifact_ListsFiles(t *testing.T) {
 		},
 	}
 	got := captureStderr(t, func() {
-		sp := printSendArtifact(&flags{}, "abc-defg-hij", plan)
+		sp := printSendArtifact(&flags{}, "abc-defg-hij", plan, false)
 		if sp != nil {
 			sp.Stop()
 		}
@@ -412,5 +412,27 @@ func TestRenderPreview_NeverHidesExactlyOneRow(t *testing.T) {
 	got := render(items)
 	if strings.Contains(got, "more") || strings.Count(got, "\n") != previewRows+1 {
 		t.Errorf("want all %d rows and no remainder line:\n%s", previewRows+1, got)
+	}
+}
+
+// A receiver without fsend gets one line to run instead: it installs fsend
+// and receives with the code. Only on the default server — a fresh install
+// pairs there — and in the code JSON event too.
+func TestPrintSendArtifact_InstallHint(t *testing.T) {
+	plan := &sendPlan{mode: wire.ModeFiles, totalFiles: 1, totalBytes: 7, label: "a.txt"}
+	got := captureStderr(t, func() {
+		sp := printSendArtifact(&flags{}, "abc-defg-hij", plan, true)
+		sp.Stop()
+	})
+	want := "    curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hij\n"
+	if !strings.Contains(got, "No fsend there yet?") || !strings.Contains(got, want) {
+		t.Errorf("install hint missing:\n%s", got)
+	}
+	got = captureStderr(t, func() {
+		sp := printSendArtifact(&flags{}, "abc-defg-hij", plan, false)
+		sp.Stop()
+	})
+	if strings.Contains(got, "curl") {
+		t.Errorf("a custom server must not get the hint:\n%s", got)
 	}
 }

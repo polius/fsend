@@ -95,7 +95,9 @@ func runSend(f *flags, paths []string) error {
 		// uxlog.DetectTheme).
 		uxlog.DetectTheme()
 	}
-	waitSpin := printSendArtifact(f, c, plan)
+	// A receiver that installs fresh pairs through the default server, so
+	// the install-and-receive hint only holds when this send uses it too.
+	waitSpin := printSendArtifact(f, c, plan, withServerOverride(cfg).IsDefault())
 	return runSendParallel(ctx, f, plan, c, cfg, waitSpin)
 }
 
@@ -251,12 +253,25 @@ func shortRand() string {
 	return string(b[:])
 }
 
+// installCommand is the one line that installs fsend and receives with
+// the code, for a receiver who has never heard of it (scripts/install.sh
+// takes the code as its argument and runs the fresh binary with it).
+func installCommand(c string) string {
+	return "curl -fsSL https://getfsend.alzina.dev | sh -s -- " + c
+}
+
 // printSendArtifact renders the receive-command block and starts the
 // "Waiting for receiver" spinner. --quiet emits just the code on stdout.
-func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
+// installHint adds the install-and-receive line for a receiver without
+// fsend (only meaningful on the default server).
+func printSendArtifact(f *flags, c string, plan *sendPlan, installHint bool) *uxlog.Spinner {
 	// Under --json the code event replaces --quiet's bare-code line —
 	// stdout must carry exactly one machine format.
-	jsonEmitCode(c)
+	install := ""
+	if installHint {
+		install = installCommand(c)
+	}
+	jsonEmitCode(c, install)
 	if f.quiet {
 		if !jsonEnabled() {
 			_, _ = fmt.Fprintln(os.Stdout, c)
@@ -301,6 +316,13 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 	fmt.Fprintln(os.Stderr)
 	copied := copyCommand(f, "fsend "+c)
 	renderCodeBlock(os.Stderr, c, f.passArg != "", copied)
+	if install != "" {
+		// Every transfer needs a second person, who may never have heard
+		// of fsend: one faint block they can run instead.
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, uxlog.Detail("No fsend there yet? This installs it and receives:"))
+		fmt.Fprintln(os.Stderr, "    "+uxlog.Muted(install))
+	}
 	fmt.Fprintln(os.Stderr)
 	return uxlog.StartSpinner("Waiting for receiver", uxlog.HintCancel)
 }

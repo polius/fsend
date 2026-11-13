@@ -273,6 +273,11 @@ func renderError(err error, debug bool) int {
 	if entry.Code != "" && !userCaused(err) {
 		lines[0] += " " + uxlog.Muted("["+entry.Code+"]")
 	}
+	// After a Ctrl-C the terminal has echoed "^C", leaving the cursor two
+	// columns in; the block belongs in column 0.
+	if errors.Is(err, fserrors.ErrUserCancelled) && uxlog.CanEscape(os.Stderr) {
+		fmt.Fprint(os.Stderr, "\r")
+	}
 	fmt.Fprintf(os.Stderr, "%s %s\n", glyph, strings.Join(lines, "\n"))
 	// The interrupted receiver's partial resumes with the very same code
 	// while the sender waits; spell it out rather than "<code>".

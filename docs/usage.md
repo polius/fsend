@@ -298,7 +298,7 @@ minus the code:
 
 | Event | When | Fields |
 | --- | --- | --- |
-| `code` | Sender: the code is issued | `code` |
+| `code` | Sender: the code is issued | `code`; `install`, the one-liner that installs fsend and receives with the code (omitted when the send uses a server of its own) |
 | `peer` | The other side connected; once per peer | `name` (its device name), `route` |
 | `accepted` | The receiver agreed: on the sender when the receiver's decisions arrive, on the receiver when it says yes | — |
 | `retry` | A dropped connection is retried | `attempt`, `of` (the cap), `wait_ms` |

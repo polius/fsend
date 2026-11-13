@@ -61,3 +61,25 @@ func TestJSONTransferEvents(t *testing.T) {
 		t.Errorf("events =\n%s\nwant\n%s", out, want)
 	}
 }
+
+// The code event carries the install-and-receive line when there is one.
+func TestJSONCodeEventInstall(t *testing.T) {
+	jsonOut.mu.Lock()
+	jsonOut.enabled = true
+	jsonOut.mu.Unlock()
+	t.Cleanup(func() {
+		jsonOut.mu.Lock()
+		jsonOut.enabled = false
+		jsonOut.mu.Unlock()
+	})
+	out := captureStdout(t, func() {
+		jsonEmitCode("abc-defg-hij", installCommand("abc-defg-hij"))
+		jsonEmitCode("abc-defg-hij", "")
+	})
+	want := `{"v":1,"event":"code","code":"abc-defg-hij","install":"curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hij"}
+{"v":1,"event":"code","code":"abc-defg-hij"}
+`
+	if out != want {
+		t.Errorf("code events =\n%s\nwant\n%s", out, want)
+	}
+}

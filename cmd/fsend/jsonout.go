@@ -64,6 +64,9 @@ type jsonCodeEvent struct {
 	V     int    `json:"v"`
 	Event string `json:"event"`
 	Code  string `json:"code"`
+	// Install is the one-liner that installs fsend and receives with the
+	// code; omitted when the send uses a server of its own.
+	Install string `json:"install,omitempty"`
 }
 
 type jsonPeerEvent struct {
@@ -169,13 +172,8 @@ type jsonDoneEvent struct {
 	Text         string `json:"text,omitempty"` // receiver: --text payload (replaces raw stdout)
 }
 
-func jsonEmitCode(code string) {
-	jsonOut.mu.Lock()
-	on := jsonOut.enabled
-	jsonOut.mu.Unlock()
-	if on {
-		jsonEvent(jsonCodeEvent{V: 1, Event: "code", Code: code})
-	}
+func jsonEmitCode(code, install string) {
+	jsonEmit(jsonCodeEvent{V: 1, Event: "code", Code: code, Install: install})
 }
 
 // jsonEmitDone emits the done event once; later calls are no-ops.

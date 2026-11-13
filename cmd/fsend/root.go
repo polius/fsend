@@ -347,6 +347,8 @@ ENVIRONMENT
                          readers, logs); automatic when the locale isn't UTF-8
   FSEND_NO_NOTIFY=1      No bell or desktop notification after long runs
   FSEND_NO_CLIPBOARD=1   Don't copy the receive command to the clipboard
+  FSEND_NO_UPDATE_CHECK=1
+                         No daily check for a newer release
   NO_COLOR=1             No color
 
 EXIT STATUS
