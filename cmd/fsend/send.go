@@ -855,6 +855,36 @@ func sourceIssueHooks(f *flags, plan *sendPlan) (skipped func() []string, onSkip
 	return skipped, onSkipped, onChanged
 }
 
+// refusalHooks collects the entries the receiver refused because its system
+// cannot create their names (transfer.SendOptions.OnRefused), keyed by index
+// so a retry doesn't count one twice; list returns them sorted for
+// printSkippedList.
+func refusalHooks(plan *sendPlan) (list func() []string, on func(uint32, string)) {
+	var mu sync.Mutex
+	rows := map[uint32]string{}
+	list = func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r)
+		}
+		sort.Strings(out)
+		return out
+	}
+	on = func(i uint32, reason string) {
+		name := fmt.Sprintf("#%d", i)
+		if int(i) < len(plan.sources) {
+			name = plan.sources[i].Entry.RelativePath
+		}
+		mu.Lock()
+		// The reason is peer-supplied text: sanitize it like a name.
+		rows[i] = name + " — " + sanitizeForDisplay(reason, 160)
+		mu.Unlock()
+	}
+	return list, on
+}
+
 // sourceErrReason is the cause of a source read failure without the path
 // (which the caller already shows).
 func sourceErrReason(err error) string {

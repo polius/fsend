@@ -57,8 +57,12 @@ func (m excludeMatcher) match(rel string) bool {
 // letters, UNC paths, and empties — even when not running on Windows, since
 // the bytes still arrive over the wire.
 func SanitizeRelativePath(p string) (string, error) {
-	return sanitizeRelativePath(p, runtime.GOOS)
+	return sanitizeRelativePath(p, hostOS)
 }
+
+// hostOS is the receiver's OS for the Windows-only name rules; a var so
+// tests can apply them on any host.
+var hostOS = runtime.GOOS
 
 // sanitizeRelativePath is SanitizeRelativePath with the receiver OS injected,
 // so the Windows-only hazard gate can be exercised from tests on any host.
@@ -80,18 +84,6 @@ func sanitizeRelativePath(p, goos string) (string, error) {
 	if strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, "//") {
 		return "", fmt.Errorf("UNC-style path rejected: %q", p)
 	}
-	// Windows-only: these characters, reserved names and trailing
-	// dots/spaces are legal in Unix filenames (e.g. aux.c, a\b), so gate on
-	// the receiver OS to avoid breaking Unix→Unix transfers. Checked on the
-	// wire's '/'-separated components, before a '\' could turn into a
-	// separator and merge "a\b" with "a/b".
-	if goos == "windows" {
-		for _, part := range strings.Split(p, "/") {
-			if reason := windowsPathHazard(part); reason != "" {
-				return "", fmt.Errorf("windows-unsafe path (%s) rejected: %q", reason, p)
-			}
-		}
-	}
 	clean := filepath.Clean(filepath.FromSlash(p))
 	for _, part := range strings.Split(clean, string(filepath.Separator)) {
 		if part == ".." {
@@ -101,8 +93,29 @@ func sanitizeRelativePath(p, goos string) (string, error) {
 	if filepath.VolumeName(clean) != "" {
 		return "", fmt.Errorf("volume name rejected: %q", p)
 	}
+	// Windows-only: these characters, reserved names and trailing
+	// dots/spaces are legal in Unix filenames (e.g. aux.c, a\b), so gate on
+	// the receiver OS to avoid breaking Unix→Unix transfers. Checked on the
+	// wire's '/'-separated components, before a '\' could turn into a
+	// separator and merge "a\b" with "a/b". Checked after the traversal
+	// rules, so "..\x" stays an attack. Such a name is not an attack: it
+	// is a file this system cannot create (UnplaceableError).
+	if goos == "windows" {
+		for _, part := range strings.Split(p, "/") {
+			if reason := windowsPathHazard(part); reason != "" {
+				return "", &UnplaceableError{Reason: reason}
+			}
+		}
+	}
 	return clean, nil
 }
+
+// UnplaceableError is a peer path that is safe but names a file the
+// receiver's system cannot create (a Windows reserved name, a character it
+// forbids). The entry is refused on its own; the transfer carries on.
+type UnplaceableError struct{ Reason string }
+
+func (e *UnplaceableError) Error() string { return "name not allowed here (" + e.Reason + ")" }
 
 // windowsPathHazard reports why a path component is unsafe to create on
 // Windows, or "" if it's fine. Each hazard makes the file that lands differ

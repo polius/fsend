@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -140,7 +141,21 @@ func (c *classifier) run(entries []wire.ListingEntry) ([]entryPlan, error) {
 		}
 		rel, err := SanitizeRelativePath(e.RelativePath)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
+			// A name this system cannot create costs that entry, not the
+			// transfer, and is not an attack (E012 stays for traversal).
+			// rel is display-only here: a refused plan is never written.
+			var un *UnplaceableError
+			if !errors.As(err, &un) {
+				return nil, fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
+			}
+			slash := e.RelativePath
+			if _, dup := exact[slash]; dup {
+				return nil, fmt.Errorf("%w: duplicate path %q", fserrors.ErrProtocolError, e.RelativePath)
+			}
+			exact[slash] = struct{}{}
+			plans = append(plans, entryPlan{entry: e, rel: filepath.FromSlash(slash), disp: dispRefused,
+				skipReason: "the name isn't allowed on this system (" + un.Reason + ")"})
+			continue
 		}
 		target := filepath.Join(c.targetDir, rel)
 		// Defense-in-depth: target must stay under targetDir.

@@ -35,9 +35,16 @@ type Capability uint64
 
 // Capabilities this build supports. New bits are appended; never reuse one.
 const (
+	// CapSkipReasons: the sender reads Decision.Reason, so the receiver
+	// says why it refused an entry (a name its system can't create).
+	CapSkipReasons Capability = 1 << 0
+
 	// CapsSupported is the bitmap this build advertises.
-	CapsSupported Capability = 0
+	CapsSupported = CapSkipReasons
 )
+
+// Has reports whether c includes every bit of want.
+func (c Capability) Has(want Capability) bool { return c&want == want }
 
 // Negotiate returns the highest version both ranges share, or false if
 // the ranges don't overlap.

@@ -985,6 +985,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		onSkip(fi, kept)
 	}
 	unreadable, onUnreadable, onChanged := sourceIssueHooks(f, plan)
+	refused, onRefused := refusalHooks(plan)
 	current := firstRes
 	notice := retryNoticeFor(f)
 	opts := retry.Options{OnRetry: func(attempt int, wait time.Duration, lastErr error) {
@@ -1048,6 +1049,10 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 				OnAccepted:      accepted,
 				OnSourceSkipped: onUnreadable,
 				OnSourceChanged: onChanged,
+				OnRefused: func(i uint32, why string) {
+					spin.Stop()
+					onRefused(i, why)
+				},
 			})
 		})
 	if err != nil {
@@ -1075,7 +1080,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		ev.BytesTotal = ptr64(int64(plan.totalBytes))
 	}
 	if plan.mode == wire.ModeFiles {
-		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles)
+		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles - len(refused()))
 		ev.FilesSkipped = ptrInt(s.skippedFiles - s.keptFiles)
 		ev.FilesKept = ptrInt(s.keptFiles)
 	}
@@ -1085,6 +1090,16 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	if n := len(unreadable()); n > 0 {
 		printSkippedList(f, "could not be read", unreadable())
 		retErr = fmt.Errorf("%w: %d unreadable on the sender", fserrors.ErrFilesSkipped, n)
+	}
+	// Names the receiver's system cannot create: those files only, listed
+	// with the receiver's reason; everything else arrived.
+	if n := len(refused()); n > 0 {
+		printSkippedList(f, "could not be created on the receiver", refused())
+		if retErr == nil {
+			retErr = fmt.Errorf("%w: %d refused by the receiver", fserrors.ErrFilesSkipped, n)
+		}
+	}
+	if retErr != nil {
 		entry, _ := fserrors.Lookup(retErr)
 		ev.Ok, ev.Error, ev.Exit = false, entry.Code, entry.Exit
 	}
