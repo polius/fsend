@@ -365,6 +365,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
 | `--device-name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming from …` line, the receiver's name in the sender's `… accepted` and summary lines. (`--name` still works.) |
 | `--server <host[:port]>` | Use this pairing server for this run only; the config file is untouched. Also `FSEND_SERVER`. |
+| `--local` | Local network only: never contact the pairing server, on either side. For when the server is down or must not be used; a receiver that finds no sender on the network gets `E002`. |
 | `-q`, `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
 | `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
 | `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
@@ -379,7 +380,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 |---|---|---|
 | `FSEND_PASSWORD` | `--password` | Supply the transfer password out-of-band. |
 | `FSEND_PASSWORD_FILE` | `--password` | Read the transfer password from this file (trailing newline trimmed). Used only when `FSEND_PASSWORD` is unset; keeps the secret out of both argv and the environment. |
-| `FSEND_SERVER_PASSWORD` | `--connect <host:port>,<password>` | Shared secret for a self-hosted pairing server. |
+| `FSEND_SERVER_PASSWORD` | `--connect <host:port>,<password>` | Shared secret for a self-hosted pairing server. Never sent to the public default server. |
 | `FSEND_SERVER_PASSWORD_FILE` | `--connect <host:port>,<password>` | Read the server password from this file instead. Used only when `FSEND_SERVER_PASSWORD` is unset. |
 | `FSEND_CODE` | `fsend <code>` | The code to receive, kept out of `ps` on shared machines. Used when no path or code is given (`FSEND_CODE=… fsend`), and by bare `--receive`. |
 | `FSEND_SERVER` | `--server` | Pairing server for this run, without saving it. |
@@ -418,13 +419,17 @@ fsend doctor — checking what a transfer depends on
 ✓ config   server fsend.alzina.dev:443 (default)
 ✓ config   FSEND_SERVER overrides it: fs.example.com:443
 ✓ server   reachable in 1ms
+✓ clock    matches the server's
 ✓ UDP      relay fs.example.com:443 answered in 1ms
 ✓ TCP      relay fallback over TCP works (echo in 1ms)
+✓ NAT      behind NAT, public address 203.0.113.7 — direct paths need hole punching; when it fails, transfers use the relay
 ✓ network  LAN address 192.168.1.85
+✓ IPv6     no global address (IPv4 only) — fine; direct paths use IPv4
+✓ firewall macOS firewall allows incoming connections to fsend
 ✓ mDNS     local roundtrip ok in 3ms
 ✓ mDNS     answered on the LAN in 30ms
 
-✓ All 8 checks passed. Transfers will try your local network first.
+✓ All 12 checks passed. Transfers will try your local network first.
 ```
 
 A degraded run, against a server that predates the TCP fallback (shown
@@ -450,9 +455,13 @@ fsend doctor — checking what a transfer depends on
 |---|---|
 | `config` | Which pairing server is configured (custom vs default; the server password is never printed). |
 | `server` | HTTPS reachability of that server's `/health`. Unreachable → cross-network transfers fail, LAN transfers are unaffected. |
+| `clock` | This device's clock against the server's `Date` header. Codes are salted with the UTC day, so a clock more than a few minutes off is flagged: such a device still pairs through the server, but its codes can't be found on the local network. |
 | `UDP` | The server's relay answers a STUN request over UDP. No reply → the network blocks UDP, and relayed transfers need the TCP fallback. |
 | `TCP` | The relay's TCP fallback (a WebSocket on the server's HTTPS port) echoes a message. Used automatically when UDP is blocked. |
+| `NAT` | Whether this machine is behind NAT, from the public address the relay saw. Informational. Telling NAT types apart would need a second STUN server. No row when the relay is on your own network. |
 | `network` | The local LAN address fsend would announce. VPN/container interfaces are skipped. |
+| `IPv6` | Whether this machine has a global IPv6 address. Informational. |
+| `firewall` | macOS only: whether the application firewall lets other devices on the network connect to fsend. Blocked → same-network receivers go through the server instead. |
 | `mDNS` (roundtrip) | fsend's mDNS machinery tested over loopback — deterministic, the OS cannot filter it. A miss here means LAN discovery is unavailable entirely. |
 | `mDNS` (LAN answer) | Multicast across the physical interface. Blocked → discovering *other* devices falls back to the pairing server (transfers still complete; same-device transfers keep working). |
 
@@ -533,7 +542,7 @@ failure. For what to *do* about a given error, see
 | `41`  | `E041` — `fsend --update` from a development build; there is no release to compare against. Install a release build. |
 | `42`  | `E042` — the network blocks UDP and the relay's TCP fallback failed too (or the server doesn't offer it). |
 | `43`  | `E043` — `fsend doctor` found at least one degraded check. |
-| `46`  | `E046` — the sender stopped after 10 failed handshakes on its code (someone may be guessing it). |
+| `46`  | `E046` — no longer raised (older senders stopped after 10 failed handshakes on their code). |
 | `47`  | `E047` — the pairing server's TLS certificate isn't trusted (captive portal or intercepting proxy). |
 | `50`  | `E050` — the transfer finished, but some files were skipped (unreadable on the sender, or a name that can't be placed on the receiver). |
 | `51`  | `E051` — more than 4,000,000 files and folders in one transfer. |

@@ -7,6 +7,8 @@
 
 <p align="center"><strong>Private file transfer, straight between two computers.</strong></p>
 
+<p align="center">Like croc or magic-wormhole, but no part of the code ever reaches a server, the key exchange is post-quantum, and files of any size go direct whenever a path exists (<a href="docs/comparison.md">comparison</a>).</p>
+
 <p align="center">
   <a href="https://github.com/polius/fsend/actions/workflows/checks.yml"><img src="https://github.com/polius/fsend/actions/workflows/checks.yml/badge.svg" alt="checks"></a>
   <a href="https://github.com/polius/fsend/releases"><img src="https://img.shields.io/github/v/release/polius/fsend" alt="Release"></a>
@@ -66,7 +68,9 @@ brew install polius/tap/fsend
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
-Releases are signed and verified on install — see
+The installers check every archive against the release's checksum file,
+whose Sigstore signature they also verify when `cosign` is installed. The
+binaries themselves carry no Apple or Microsoft code signature — see
 [Security → Release integrity](docs/security.md#release-integrity).
 
 <details>
@@ -128,14 +132,14 @@ fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as ta
 </p>
 
 <p align="center"><em>One minute: pairing with a share code, then the local, direct and relay
-routes fsend races to move the bytes. Plays as an MP4 in your browser; prefer reading?
+routes fsend tries to move the bytes. Plays as an MP4 in your browser; prefer reading?
 See <a href="docs/architecture.md">Architecture</a>.</em></p>
 
 ## Documentation
 
 | | |
 |---|---|
-| [Architecture](docs/architecture.md) | Three transfer modes, raced concurrently — and why |
+| [Architecture](docs/architecture.md) | Three transfer modes, how fsend picks one — and why |
 | [Security](docs/security.md) | Threat model — what the server can and cannot see |
 | [Usage](docs/usage.md) | Every flag, env var, and exit code |
 | [Self-hosting](docs/self-hosting.md) | Run your own pairing server in three steps |

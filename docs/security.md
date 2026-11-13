@@ -95,7 +95,9 @@ It's a matchmaker, not a middleman. Its only job is to introduce two
 peers who can't otherwise find each other across NAT, then step aside
 (for the full mechanics, see
 [How it works → Why a server?](architecture.md#why-a-server)). Same-LAN
-transfers don't involve it at all.
+transfers carry no data through it, but every send still registers its
+session there (the slot, ICE credentials and client version) so a
+receiver on another network can find it, unless you pass `--local`.
 
 What a server operator can observe:
 
@@ -180,8 +182,11 @@ about 45 bits. What makes a short code safe to use as the whole secret:
   and a 256-bit PAKE secret — never on the code again. The code's server
   slot is tombstoned for ten minutes, so another receiver using the code
   in that window gets `E003` ("already claimed"); after that it gets
-  `E002`. A sender stops with `E046` after 10 failed handshakes on its
-  code.
+  `E002`. A receiver that joins but never completes the handshake
+  (it quit, or had no working path) doesn't spend the code: the sender
+  re-creates its session and waits again. After 10 failed handshakes on
+  the local network in one pairing round, the sender stops listening
+  there and keeps waiting via the server.
 - **Resume only from the original device.** The receiver saves its
   resume key in the fsend config directory (mode `0600`, kept up to 24
   hours, deleted when the transfer completes), so rerunning the same
@@ -194,14 +199,19 @@ about 45 bits. What makes a short code safe to use as the whole secret:
   ends it immediately. Once the sender exits, the code is gone; resuming
   then takes a new code.
 - **Rate-limited.** The public server is configured to cap new sessions
-  and joins at 30 per minute per source IP (keyed on the direct connection's IPv4 address, or the
+  and joins at 30 per minute per client address: the IPv4 address, or the
   /64 prefix for IPv6, with 4× that budget per /48 so rotating /64s inside
-  one site doesn't help — proxy headers are never trusted, since a client
-  could otherwise rotate its "IP" past the cap). Each guess also costs
-  an argon2id derivation to find the slot, works only against a live
-  session, and a sender gives up after 10 failed handshakes. On a self-hosted server the per-IP caps are
-  opt-in — they default to unlimited until you set
-  `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` and
+  one site doesn't help. The address is the direct connection's, or, when
+  that connection comes from a reverse proxy listed in
+  `FSEND_SERVER_TRUSTED_PROXIES`, the client the proxy forwarded for.
+  Forwarded headers from anyone else are ignored, since a client could
+  otherwise rotate its "IP" past the cap. Behind a proxy that isn't
+  listed, every client shares the proxy's single allowance. A waiting
+  sender's own polls are not charged. Each guess also costs an argon2id
+  derivation to find the slot and works only against a live session, and
+  failed handshakes slow the sender's listener down. On a self-hosted
+  server the per-IP caps are opt-in — they default to unlimited until you
+  set `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` and
   `FSEND_SERVER_MAX_SESSIONS_PER_IP` (see [self-hosting](self-hosting.md)).
 - **Not the encryption key.** File data is encrypted with the TLS 1.3
   session keys. The code only drives the CPace handshake that
@@ -288,9 +298,10 @@ What the tools check for you:
 
 - The **install scripts** verify the archive against `checksums.txt`
   before installing. When `cosign` is installed they first verify
-  `checksums.txt`'s signature and abort if it is bad; without cosign
-  (or for an old release with no signature) they fall back to the
-  checksum alone, with a warning in the latter case.
+  `checksums.txt`'s signature and abort if it is bad; for an old release
+  with no signature they warn and go on. Without cosign they check the
+  checksum alone, which comes from the same place as the archive: that
+  proves the download is intact, not who built it.
 - **`fsend --update`** downloads the new release's own install script,
   checks it against that release's `checksums.txt` (checking the
   signature first when cosign is installed), and runs it pinned to that

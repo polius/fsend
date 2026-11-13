@@ -108,11 +108,15 @@ The server's whole job was to introduce the peers and broker the ICE
 exchange. Once a hole-punched path works, the bytes flow directly between
 the two machines — and the server never sees one. Throughput is then
 bounded by the slower of the two links, and also by latency and packet
-loss on the path and by CPU on either end (the transfer engine has
-reached about 1.1–1.3 GB/s for one 512 MiB file over loopback on an M2
-Pro, as recorded in commit `8fb5210`). The sender gives ICE 5 seconds to
-find a path before choosing the relay, and tells the receiver which it
-chose so both sides agree.
+loss on the path and by CPU on either end. For scale, on an M2 Pro with
+both ends on one machine, `fsend backup.zip` to `fsend --yes --out - <code>`
+moved a 1 GiB file over the local-network route at about 45–75 MB/s,
+while the transfer engine alone (`go test -bench LargeFile
+./internal/transfer/`, no QUIC) reaches about 1.0–1.4 GB/s. The sender
+gives ICE up to 5 seconds to find a path (1.5 seconds when neither side
+has a public address, since only peers on one network could then connect
+directly), preparing the relay in the meantime, and tells the receiver
+which it chose so both sides agree.
 
 ### Relay (fallback)
 

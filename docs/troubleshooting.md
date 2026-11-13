@@ -70,19 +70,24 @@ exiting.
 | Code | Meaning | Fix |
 |---|---|---|
 | `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. Case, spaces and a missing hyphen are fine. |
-| `E002` | No sender is waiting on that code (after about 6 seconds of trying) | It was mistyped, the sender stopped, or it was used more than ten minutes ago. Have the sender run again for a fresh code. |
+| `E002` | No sender is waiting on that code (after about 6 seconds of trying) | It was mistyped, the sender stopped, or it was used more than ten minutes ago. Have the sender run again for a fresh code. If a second line says this device's clock is off, fix the date and time: codes are salted with the UTC day. |
 | `E003` | Another receiver already connected with this code | Each code works for one receiver. (A receiver resuming its own dropped transfer on the same device doesn't hit this.) Have the sender run again and share the new code. |
 
 Codes can't be reused — a new send always produces a new code to share.
 After a receiver connects, the server remembers the code as used for ten
 minutes (`E003`); after that it no longer knows it (`E002`).
 
-### The sender stopped: "too many failed attempts" (`E046`, sender side)
+### "Stopped taking local-network connections after 10 failed attempts" (sender side)
 
-The sender allows 10 failed handshakes on one code, then stops. A failed
-handshake is a receiver using the wrong code against your listener — so
-either someone mistyped it ten times, or someone is guessing. Run fsend
-again for a fresh code and share it only with the receiver.
+A failed handshake is something on your network connecting to the
+sender's local listener without the code. After 10 of them in one
+pairing round the sender stops listening on the local network and keeps
+waiting via the server, so your receiver can still connect. Each failure
+also makes the listener wait a little longer before the next attempt.
+If you see this often, someone on the network may be probing it.
+
+`E046` ("too many failed attempts") is no longer raised; older senders
+stopped with it after 10 failed handshakes.
 
 ### Your code expired before anyone received it (`E007`, sender side)
 
