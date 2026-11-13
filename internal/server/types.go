@@ -49,7 +49,14 @@ type CreateSessionResponse struct {
 // JoinSessionRequest is the body of POST /v1/session/<slot>/join.
 type JoinSessionRequest struct {
 	ClientVersion string `json:"client_version"`
+	// Nonce, when set, makes the join idempotent: a retry carrying the
+	// same nonce after a lost response gets the same answer again instead
+	// of 409 "already paired". Random, at most MaxJoinNonceLen chars.
+	Nonce string `json:"nonce,omitempty"`
 }
+
+// MaxJoinNonceLen bounds JoinSessionRequest.Nonce.
+const MaxJoinNonceLen = 64
 
 // JoinSessionResponse is the success body of POST /v1/session/<slot>/join.
 type JoinSessionResponse struct {
@@ -177,6 +184,7 @@ type session struct {
 	ReceiverRateKey string
 	ReceiverICE     IceCreds
 	ReceiverToken   string
+	ReceiverNonce   string // JoinSessionRequest.Nonce of the receiver that paired
 	State           string // "waiting" | "paired" | "complete"
 	CreatedAt       time.Time
 	PairedAt        time.Time

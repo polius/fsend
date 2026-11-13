@@ -230,6 +230,12 @@ func pairOverLAN(ctx context.Context, key pairKey, closeAtCap func() bool) (*lan
 	}, nil
 }
 
+// maxVanishedReceivers bounds how often one round re-creates its session
+// after a receiver joined and then failed before authenticating (see
+// pairOverInternet). Each costs the sender up to firstAcceptTimeout, and
+// past a few something other than bad luck is going on.
+const maxVanishedReceivers = 3
+
 // waitMaxConsecFails is how many consecutive Wait failures the sender
 // tolerates (sleeping 2s·n between attempts) before declaring the server
 // down.
@@ -277,10 +283,29 @@ var errPairedGone = fmt.Errorf("%w: the receiver paired but the connection could
 // is reported once through it and retried with capped backoff, and a
 // session the server lost (restart, TTL) is re-created. With nil, the
 // first such failure is returned (the internet path is the only one).
-func pairOverInternet(ctx context.Context, f *flags, sess *sendSession, round *sendRound, cfg *config.Config, onDown func(error)) (*internetSenderPairing, error) {
+//
+// A receiver that joins and then fails to connect or authenticate (it
+// quit, lost its network, or never had a working path) has not proved it
+// holds the code, so it does not spend it: the session is re-created and
+// the sender waits again, up to maxVanishedReceivers times per round.
+// onVanished, when non-nil, hears about each such return to waiting.
+func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *config.Config, onDown func(error), onVanished func()) (*internetSenderPairing, error) {
 	client, _, err := signalingClient(cfg)
 	if err != nil {
 		return nil, err
+	}
+	vanished := 0
+	// waitAgain reports whether to go back to waiting after a joined
+	// receiver failed before the PAKE succeeded.
+	waitAgain := func() bool {
+		if ctx.Err() != nil || vanished >= maxVanishedReceivers {
+			return false
+		}
+		vanished++
+		if onVanished != nil {
+			onVanished()
+		}
+		return true
 	}
 	for {
 		created, err := createWithRetry(ctx, client, round.key.rendezvous, onDown)
@@ -320,6 +345,9 @@ func pairOverInternet(ctx context.Context, f *flags, sess *sendSession, round *s
 				return nil, err
 			}
 			endSession()
+			if waitAgain() {
+				continue
+			}
 			if ctx.Err() == nil {
 				err = fmt.Errorf("%w: %v", errPairedGone, err)
 			}
@@ -333,6 +361,9 @@ func pairOverInternet(ctx context.Context, f *flags, sess *sendSession, round *s
 		cancelAccept()
 		if err != nil {
 			endSession()
+			if waitAgain() {
+				continue
+			}
 			if ctx.Err() == nil {
 				err = fmt.Errorf("%w: %v", errPairedGone, err)
 			}
@@ -670,6 +701,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	lanCh := make(chan sendPairOutcome, 1)
 	serverCh := make(chan sendPairOutcome, 1)
 	serverDownCh := make(chan error, 1)
+	vanishedCh := make(chan struct{}, 1)
 
 	// --mode collapses the LAN+internet race to a single path. The
 	// disabled side is marked done upfront and its goroutine never starts,
@@ -701,7 +733,13 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 			}
 		}
 		go func() {
-			p, err := pairOverInternet(pairCtx, f, sess, round, cfg, onDown)
+			onVanished := func() {
+				select {
+				case vanishedCh <- struct{}{}:
+				default:
+				}
+			}
+			p, err := pairOverInternet(pairCtx, f, round, cfg, onDown, onVanished)
 			serverCh <- sendPairOutcome{server: p, err: err}
 		}()
 	}
@@ -754,6 +792,14 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 		case <-ttl.C:
 			// Stop announcing a code nobody redeemed within the server's TTL.
 			return abort(fserrors.ErrSessionExpired)
+
+		case <-vanishedCh:
+			// The code is still good: nobody proved they held it.
+			if !f.quiet {
+				waitSpin.Stop()
+				fmt.Fprintln(os.Stderr, uxlog.Info(), "A receiver joined but didn't connect. The code still works.")
+				waitSpin = startWaitSpinner(f, "Waiting for receiver")
+			}
 
 		case err := <-serverDownCh:
 			noticeServerDown(err)
@@ -871,9 +917,9 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	}
 
 	if winner.lan != nil {
-		return runSenderTransferOverLAN(ctx, f, plan, sess, winner.lan)
+		return runSenderTransferOverLAN(ctx, f, plan, winner.lan)
 	}
-	return runSenderTransferOverInternet(ctx, f, plan, sess, winner.server)
+	return runSenderTransferOverInternet(ctx, f, plan, winner.server)
 }
 
 // startWaitSpinner returns a quiet-aware spinner. In --quiet mode we
@@ -897,7 +943,7 @@ const reacceptTimeout = 15 * time.Second
 // connection. The first attempt uses the AcceptResult captured at pair
 // time; transient mid-transfer errors trigger a retry that re-Accepts
 // on the same listener (the receiver's own retry loop re-Dials).
-func runSenderTransferOverLAN(ctx context.Context, f *flags, plan *sendPlan, sess *sendSession, pair *lanSenderPairing) error {
+func runSenderTransferOverLAN(ctx context.Context, f *flags, plan *sendPlan, pair *lanSenderPairing) error {
 	defer pair.cleanup()
 	return runSenderTransferLoop(ctx, f, plan, connpath.FromLAN(), pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		acceptCtx, cancel := context.WithTimeout(ctx, reacceptTimeout)
@@ -914,7 +960,7 @@ func runSenderTransferOverLAN(ctx context.Context, f *flags, plan *sendPlan, ses
 // retry shape as LAN: first attempt uses the captured AcceptResult,
 // subsequent attempts re-Accept on the same QUIC listener (the
 // underlying PacketConn is preserved across attempts).
-func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan, sess *sendSession, pair *internetSenderPairing) error {
+func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan, pair *internetSenderPairing) error {
 	defer pair.cleanup()
 	err := runSenderTransferLoop(ctx, f, plan, pair.pathInfo, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		acceptCtx, cancel := context.WithTimeout(ctx, reacceptTimeout)

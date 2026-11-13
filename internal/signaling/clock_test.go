@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/server"
 )
 
 // skewed returns a client whose clock runs off from the real one (and so
@@ -81,5 +84,39 @@ func TestClockSkewDetail(t *testing.T) {
 	}
 	if _, ok := ServerSkew(http.Header{}, time.Now()); ok {
 		t.Error("ServerSkew reported a skew without a Date header")
+	}
+}
+
+// The server pairs the receiver but the response never arrives: the join
+// is retried with the same nonce and gets the pairing, not "already
+// claimed".
+func TestClient_JoinSurvivesLostResponse(t *testing.T) {
+	s := server.New(server.Config{ServerVersion: "0.0.0-test", UnpairedTTL: 2 * time.Second, LongPollTimeout: 500 * time.Millisecond})
+	inner := s.Handler()
+	var dropped atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/join") && dropped.CompareAndSwap(false, true) {
+			inner.ServeHTTP(httptest.NewRecorder(), r) // the server pairs...
+			conn, _, err := w.(http.Hijacker).Hijack() // ...and the answer is lost
+			if err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
+		inner.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	ctx := context.Background()
+	created, err := New(ts.URL, "test").Create(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := New(ts.URL, "test").Join(ctx, created.Code)
+	if err != nil {
+		t.Fatalf("Join after a lost response: %v", err)
+	}
+	if !dropped.Load() || joined.SessionID != created.SessionID {
+		t.Fatalf("dropped=%v, joined %q, created %q", dropped.Load(), joined.SessionID, created.SessionID)
 	}
 }

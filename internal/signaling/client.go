@@ -13,8 +13,10 @@ package signaling
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -244,8 +246,7 @@ func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionR
 			}
 			tried[epoch] = true
 			out = server.JoinSessionResponse{}
-			err = c.do(ctx, http.MethodPost, "/v1/session/"+code.SlotAt(codeStr, epoch)+"/join",
-				server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
+			err = c.joinSlot(ctx, code.SlotAt(codeStr, epoch), &out)
 			if !errors.Is(err, fserrors.ErrCodeNotFound) {
 				return &out, err
 			}
@@ -255,6 +256,38 @@ func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionR
 		err = &ClockSkewError{Skew: d, Err: err}
 	}
 	return &out, err
+}
+
+// joinSlot joins one slot. The request carries a fresh nonce, so when the
+// response is lost in transit (the server paired us, but we never heard)
+// the single retry gets the same answer instead of 409 "already claimed".
+func (c *Client) joinSlot(ctx context.Context, slot string, out *server.JoinSessionResponse) error {
+	var n [16]byte
+	if _, err := rand.Read(n[:]); err != nil {
+		return fmt.Errorf("join nonce: %w", err)
+	}
+	req := server.JoinSessionRequest{ClientVersion: c.version, Nonce: hex.EncodeToString(n[:])}
+	err := c.do(ctx, http.MethodPost, "/v1/session/"+slot+"/join", req, out, nil)
+	if mayHaveArrived(err) && ctx.Err() == nil {
+		*out = server.JoinSessionResponse{}
+		err = c.do(ctx, http.MethodPost, "/v1/session/"+slot+"/join", req, out, nil)
+	}
+	return err
+}
+
+// mayHaveArrived reports whether a failed request could still have reached
+// the server: a transport failure after the connection was up, not a
+// failed lookup or dial.
+func mayHaveArrived(err error) bool {
+	if !errors.Is(err, fserrors.ErrServerUnreachable) {
+		return false
+	}
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	if errors.As(err, &dnsErr) {
+		return false
+	}
+	return !errors.As(err, &opErr) || opErr.Op != "dial"
 }
 
 // ClockSkewError is a not-found from a device whose clock is more than
