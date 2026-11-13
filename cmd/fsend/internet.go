@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -35,6 +36,14 @@ import (
 // UDP) — paths that need the relay regardless — so generosity here only
 // delays the inevitable fallback.
 const iceBudget = 5 * time.Second
+
+// noSrflxCutoff ends ICE early on the controlling side when, by then,
+// neither side has gathered a server-reflexive candidate: without one a
+// direct path exists only between hosts on one network, and those connect
+// well inside this time. A network that blocks UDP, or a server without
+// STUN, then reaches the relay in 1.5 s instead of the whole iceBudget.
+// Var so tests can shrink it.
+var noSrflxCutoff = 1500 * time.Millisecond
 
 // pathDecisionWait is how long past iceBudget the receiver waits for the
 // sender's path decision before trusting its own ICE outcome.
@@ -324,6 +333,9 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 	defer pumpCancel()
 	var wg sync.WaitGroup
 	decision := make(chan string, 1)
+	// srflx is set once either side has a server-reflexive candidate.
+	var srflx atomic.Bool
+	isSrflx := func(c string) bool { return strings.Contains(c, " typ srflx") }
 
 	wg.Add(1)
 	go func() {
@@ -360,10 +372,13 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 				}
 			}
 			sort.SliceStable(batch, func(i, j int) bool {
-				return strings.Contains(batch[i], " typ srflx") && !strings.Contains(batch[j], " typ srflx")
+				return isSrflx(batch[i]) && !isSrflx(batch[j])
 			})
 			for _, c := range batch {
 				debugf("ICE local candidate: %s", c)
+				if isSrflx(c) {
+					srflx.Store(true)
+				}
 			}
 			if err := sig.PushCandidates(pumpCtx, sessionID, roleToken, batch); err != nil {
 				// Best-effort: pion's ICE will keep going with whatever
@@ -400,6 +415,9 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 					continue
 				}
 				debugf("ICE remote candidate: %s", cstr)
+				if isSrflx(cstr) {
+					srflx.Store(true)
+				}
 				if err := agent.AddRemoteCandidate(cstr); err != nil {
 					debugf("ICE remote candidate rejected: %v", err)
 				}
@@ -414,7 +432,14 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 	)
 	if controlling {
 		dctx, dcancel := context.WithTimeout(ctx, iceBudget)
+		cutoff := time.AfterFunc(noSrflxCutoff, func() {
+			if !srflx.Load() {
+				debugf("ICE: no server-reflexive candidate on either side after %v; using the relay", noSrflxCutoff)
+				dcancel()
+			}
+		})
 		conn, dialErr = agent.Dial(dctx)
+		cutoff.Stop()
 		dcancel()
 		if dialErr == nil {
 			if _, _, ok := agent.SelectedPair(); !ok {
@@ -645,10 +670,15 @@ func unsafeRelayIP(ip net.IP) bool {
 
 // linkViaInternet turns a successful join into a recvLink: ICE direct
 // first (receiver = controlled, following the sender's choice), relay on
-// failure. The link dials QUIC over the established PacketConn.
+// failure. The relay is prepared while ICE runs (see prepareRelay). The
+// link dials QUIC over the established PacketConn.
 func linkViaInternet(ctx context.Context, f *flags, client *signaling.Client, joined *server.JoinSessionResponse) (*recvLink, error) {
-	// STUN address rides on the join response; no relay allocation up front.
+	// STUN address rides on the join response.
 	stunAddr := stunAddrForICE(ctx, client, joined.RelayAddr, joined.SessionID, joined.RoleToken)
+	var prep *relayPrep
+	if !joined.RelayForwardingDisabled && f.mode != modeDirect {
+		prep = prepareRelay(ctx, client, joined.SessionID, joined.RoleToken)
+	}
 	pc, path, iceErr := iceEstablish(ctx, client, joined.SessionID, joined.RoleToken, iceconn.Options{
 		LocalUfrag:  joined.YourIceCredentials.Ufrag,
 		LocalPwd:    joined.YourIceCredentials.Pwd,
@@ -657,19 +687,25 @@ func linkViaInternet(ctx context.Context, f *flags, client *signaling.Client, jo
 		STUNAddr:    stunAddr,
 	}, false /* controlled */, f.debug)
 	var probe *relayProbe
-	if iceErr != nil {
+	if iceErr == nil {
+		prep.discard()
+	} else {
 		if f.debug {
 			fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
 		}
 		if ctx.Err() != nil {
+			prep.discard()
 			return nil, ctx.Err()
 		}
-		// Fall back to relay: allocate now that we know we need it.
 		if joined.RelayForwardingDisabled {
 			return nil, fmt.Errorf("%w: direct connection failed and this server has relay forwarding disabled", fserrors.ErrConnectFailed)
 		}
 		var err error
-		pc, path, err = allocAndDialRelay(ctx, client, joined.SessionID, joined.RoleToken)
+		if prep != nil {
+			pc, path, err = prep.wait()
+		} else {
+			pc, path, err = allocAndDialRelay(ctx, client, joined.SessionID, joined.RoleToken)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -687,6 +723,51 @@ func linkViaInternet(ctx context.Context, f *flags, client *signaling.Client, jo
 			_ = pc.Close()
 		},
 	}, nil
+}
+
+// relayPrep is a relay allocation and dial running in the background while
+// ICE tries for a direct path. Waiting for ICE to fail before even asking
+// for the relay cost the worst networks most: the allocation, and on a
+// network that blocks UDP the UDP probe before the TCP fallback, came on
+// top of the full ICE budget.
+type relayPrep struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	pc     net.PacketConn
+	path   connpath.Info
+	err    error
+}
+
+// prepareRelay starts allocating and dialing the relay for this side.
+func prepareRelay(ctx context.Context, client *signaling.Client, sessionID, roleToken string) *relayPrep {
+	rctx, cancel := context.WithCancel(ctx)
+	p := &relayPrep{done: make(chan struct{}), cancel: cancel}
+	go func() {
+		defer close(p.done)
+		p.pc, p.path, p.err = allocAndDialRelay(rctx, client, sessionID, roleToken)
+	}()
+	return p
+}
+
+// wait returns the relay connection once it is ready (or failed).
+func (p *relayPrep) wait() (net.PacketConn, connpath.Info, error) {
+	<-p.done
+	p.cancel()
+	return p.pc, p.path, p.err
+}
+
+// discard abandons the relay: ICE won. Nil-safe.
+func (p *relayPrep) discard() {
+	if p == nil {
+		return
+	}
+	p.cancel()
+	go func() {
+		<-p.done
+		if p.pc != nil {
+			_ = p.pc.Close()
+		}
+	}()
 }
 
 // dialOverTransport is one QUIC dial plus the receiver PAKE over an
