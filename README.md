@@ -68,6 +68,17 @@ brew install polius/tap/fsend
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
+**Someone sent you a code and you don't have fsend yet?** Add the code to
+install and receive in one go:
+
+```bash
+curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hjk
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code abc-defg-hjk
+```
+
 The installers check every archive against the release's checksum file,
 whose Sigstore signature they also verify when `cosign` is installed. The
 binaries themselves carry no Apple or Microsoft code signature — see

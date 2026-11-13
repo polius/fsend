@@ -24,6 +24,11 @@
 .PARAMETER Version
   Version to install, e.g. 1.2.3 or v1.2.3 (default: latest). Env: FSEND_VERSION.
 
+.PARAMETER Code
+  A share code to receive right after installing. The one-liner can't pass
+  parameters, so use:
+    & ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code abc-defg-hjk
+
 .PARAMETER NoModifyPath
   Don't add the install dir to your user PATH. Env: FSEND_NO_MODIFY_PATH=1.
 
@@ -44,7 +49,9 @@ param(
     [string]$Prefix  = $env:FSEND_PREFIX,
     [string]$Version = $env:FSEND_VERSION,
     [switch]$NoModifyPath = ($env:FSEND_NO_MODIFY_PATH -eq '1'),
-    [switch]$Help
+    [switch]$Help,
+    # A share code to receive with the fresh binary right after installing.
+    [string]$Code
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,6 +115,8 @@ Parameters (or matching env var):
   -Prefix DIR        Install location    (default: %LOCALAPPDATA%\Programs\fsend; env FSEND_PREFIX)
   -Version VERSION   Version to install  (default: latest; env FSEND_VERSION)
   -NoModifyPath      Don't add the install dir to your user PATH (env FSEND_NO_MODIFY_PATH=1)
+  -Code CODE         Receive this share code right after installing:
+                       & ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code CODE
   -Verbose           Show the individual install steps
   -Help              Show this help and exit
 
@@ -341,6 +350,27 @@ try {
     Remove-Item -LiteralPath $oldDst -Force -ErrorAction SilentlyContinue
 
     Ok "fsend $Version installed -> $dst"
+    # Run as a file, this installer is a child process, so the caller's
+    # window never sees the PATH change; through the one-liner it does,
+    # unless PATH was left alone. Either way, one line fixes this window.
+    $onPath = @(($env:PATH -split ';') | Where-Object { $_ -and $_.TrimEnd('\') -eq $Prefix.TrimEnd('\') }).Count -gt 0
+    if (($PSCommandPath -or -not $onPath) -and $env:FSEND_UPDATE -ne '1' -and $env:GITHUB_ACTIONS -ne 'true') {
+        Write-Host "  To use it in this window: `$env:PATH += ';$Prefix'"
+    }
+    if ($Code) {
+        if ([Console]::IsInputRedirected) {
+            Warn "no console to answer fsend's prompt - to receive, run: & '$dst' $Code"
+            return
+        }
+        Write-Host ''
+        # The code goes in FSEND_CODE, not the command line, where other
+        # local users could read it; restored after.
+        $prevCode = $env:FSEND_CODE
+        $env:FSEND_CODE = $Code
+        try { & $dst --receive } finally { $env:FSEND_CODE = $prevCode }
+        if ($PSCommandPath -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        return
+    }
     # Newcomer pointers are for a first install; an update already knows them.
     if ($env:FSEND_UPDATE -ne '1') {
         Write-Host ''

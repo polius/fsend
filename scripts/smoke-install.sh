@@ -62,6 +62,10 @@ ARCHIVE="fsend_${VER}_${os}_${arch}.tar.gz"
 mkdir -p "$FIX/download/v$VER" "$FIX/latest/download"
 cat > "$FIX/fsend" <<EOF
 #!/bin/sh
+if [ "\${1:-}" = "--receive" ]; then
+    printf 'stub receiving %s\n' "\${FSEND_CODE:-}"
+    exit 0
+fi
 printf 'fsend $VER (smoke)\n'
 EOF
 chmod 755 "$FIX/fsend"
@@ -209,12 +213,31 @@ H7="$WORK/home7"
 mkdir -p "$H7"
 run_installer "$H7" -v >"$WORK/out7a" 2>&1 && fail "scenario7: -v without value accepted"
 run_installer "$H7" --bogus >"$WORK/out7b" 2>&1 && fail "scenario7: unknown flag accepted"
-run_installer "$H7" positional >"$WORK/out7c" 2>&1 && fail "scenario7: positional arg accepted"
+run_installer "$H7" a/b >"$WORK/out7c" 2>&1 && fail "scenario7: a path accepted as a code"
+run_installer "$H7" abc-defg-hjk xyz-pqrs-tuv >"$WORK/out7f" 2>&1 && fail "scenario7: two codes accepted"
 run_installer "$H7" -h >"$WORK/out7d" 2>&1 || fail "scenario7: -h failed"
 run_installer "$H7" -p "$H7/bin" -v "$VER" --verbose >"$WORK/out7e" 2>&1 \
     || { cat "$WORK/out7e" >&2; fail "scenario7: --verbose run failed"; }
 grep -q "downloading fsend_" "$WORK/out7e" || fail "scenario7: --verbose hides the steps"
-pass "flag handling (missing value, unknown flag, positional, -h, --verbose)"
+pass "flag handling (missing value, unknown flag, stray positionals, -h, --verbose)"
+
+# 13. a share code: install, then receive it with the fresh binary (its
+# prompt needs the terminal, which CI lacks: then the command to run is
+# printed instead). Either way, the PATH line for this shell is shown.
+H13="$WORK/home13"
+mkdir -p "$H13"
+run_installer "$H13" -p "$H13/bin" -v "$VER" abc-defg-hjk >"$WORK/out13" 2>&1 \
+    || { cat "$WORK/out13" >&2; fail "scenario13: install with a code failed"; }
+[ -x "$H13/bin/fsend" ] || fail "scenario13: binary not installed"
+if { : </dev/tty; } 2>/dev/null; then
+    grep -q "stub receiving abc-defg-hjk" "$WORK/out13" || { cat "$WORK/out13" >&2; fail "scenario13: the code was not received"; }
+else
+    grep -q "fsend abc-defg-hjk" "$WORK/out13" || { cat "$WORK/out13" >&2; fail "scenario13: no command to receive"; }
+fi
+grep -qF "To use it in this shell: export PATH=\"$H13/bin:\$PATH\"" "$WORK/out13" \
+    || { cat "$WORK/out13" >&2; fail "scenario13: no PATH line for this shell"; }
+grep -q "fsend <path>" "$WORK/out13" && fail "scenario13: newcomer pointers instead of receiving"
+pass "share code: installs, then receives (or says how), PATH line for this shell"
 
 # 8. root refusal (needs passwordless sudo).
 if [ "$WITH_ROOT" = "1" ]; then

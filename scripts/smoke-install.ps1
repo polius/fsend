@@ -206,6 +206,20 @@ try { `$null = `$notSetAnywhere } catch { `$leaks += 'StrictMode' }
     Check "one-liner leaves the session unchanged ($leakLine)" ("$leakLine" -eq 'LEAKS:')
     $env:FSEND_VERSION = $null; $env:FSEND_PREFIX = $null; $env:FSEND_NO_MODIFY_PATH = $null
 
+    # 9. a share code through the scriptblock form of the one-liner: the
+    # install finishes, then fsend receives it (needs a console; without one
+    # the command to run is printed instead).
+    $p9 = Join-Path $work 'bin-code'
+    $codeRun = @"
+`$env:FSEND_VERSION = '$ver'; `$env:FSEND_PREFIX = '$p9'; `$env:FSEND_NO_MODIFY_PATH = '1'
+& ([scriptblock]::Create((irm '$($env:FSEND_RELEASE_BASE_URL)/install.ps1'))) -Code abc-defg-hjk
+"@
+    $out = @(& $ps -NoProfile -Command $codeRun 2>&1)
+    Check "-Code installs" (Test-Path (Join-Path $p9 'fsend.exe'))
+    Check "-Code receives or says how" ($null -ne ($out | Where-Object { "$_" -like '*abc-defg-hjk*' -or "$_" -like '*receiv*' }))
+    Check "-Code skips the newcomer sign-off" ($null -eq ($out | Where-Object { "$_" -like '*all options*' }))
+    $env:FSEND_VERSION = $null; $env:FSEND_PREFIX = $null; $env:FSEND_NO_MODIFY_PATH = $null
+
     # 6. a corrupted archive is rejected by the checksum. Runs last: it
     # poisons the shared fixture archive.
     $bytes = [System.IO.File]::ReadAllBytes("$work/fixture/download/v$ver/$archive")
