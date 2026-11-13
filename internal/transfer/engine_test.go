@@ -1020,3 +1020,56 @@ func TestEngine_PasswordImpostorSenderRejected(t *testing.T) {
 		t.Fatalf("recv err = %v, want ErrPeerAuthFailed", err)
 	}
 }
+
+// Re-sending a folder whose file the receiver edited: the first keep-both
+// saves "f1 (1).go"; later ones find that copy already holds the incoming
+// version and count the file as up to date — no "(2)", "(3)" pile-up — from
+// the prompt as well as from --rename. The listing names the copy.
+func TestEngine_KeepBothDoesNotDuplicate(t *testing.T) {
+	for _, viaPrompt := range []bool{false, true} {
+		src, dst := t.TempDir(), t.TempDir()
+		sp := filepath.Join(src, "f1.go")
+		writeFile(t, sp, []byte("theirs"))
+		writeFile(t, filepath.Join(dst, "f1.go"), []byte("mine, edited"))
+		run := func() (keptAs string, skipped int) {
+			_, re := fileTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+				o.Accept = func(_ wire.SenderHello, s ClassifySummary) bool {
+					if len(s.Files) == 1 {
+						keptAs = s.Files[0].KeptAs
+					}
+					return true
+				}
+				o.OnSkip = func(uint32) { skipped++ }
+				if viaPrompt {
+					o.ResolveConflicts = func([]Conflict) ConflictPolicy { return ConflictRename }
+				} else {
+					o.Conflict = ConflictRename
+				}
+			})
+			if re != nil {
+				t.Fatalf("prompt=%v: recv = %v", viaPrompt, re)
+			}
+			return keptAs, skipped
+		}
+		if keptAs, _ := run(); keptAs != "" {
+			t.Errorf("prompt=%v: first run already reports a kept copy %q", viaPrompt, keptAs)
+		}
+		for i := 0; i < 2; i++ {
+			keptAs, skipped := run()
+			if keptAs != "f1 (1).go" || skipped != 1 {
+				t.Errorf("prompt=%v run %d: keptAs=%q skipped=%d, want f1 (1).go counted up to date", viaPrompt, i+2, keptAs, skipped)
+			}
+		}
+		ents, _ := os.ReadDir(dst)
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		if got := strings.Join(names, ","); got != "f1 (1).go,f1.go" {
+			t.Errorf("prompt=%v: files = %s, want one kept copy", viaPrompt, got)
+		}
+		if b := mustRead(t, filepath.Join(dst, "f1.go")); string(b) != "mine, edited" {
+			t.Errorf("prompt=%v: the user's file changed: %q", viaPrompt, b)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -488,12 +489,22 @@ func receiverPreview(files []transfer.SummaryEntry) []previewItem {
 	items := make([]previewItem, 0, len(files))
 	for _, f := range files {
 		note := ""
-		switch f.Status {
-		case "identical":
+		// kept: an earlier keep-both copy already holds this version, so
+		// keep-both makes no new copy.
+		kept := ""
+		if f.KeptAs != "" {
+			kept = "kept earlier as " + sanitizeForDisplay(path.Base(f.KeptAs), 128)
+		}
+		switch {
+		case f.Status == "identical" && kept != "":
+			note = kept
+		case f.Status == "identical":
 			note = "up to date"
-		case "differs":
+		case f.Status == "differs" && kept != "":
+			note = "differs, " + kept
+		case f.Status == "differs":
 			note = "differs"
-		case "resume":
+		case f.Status == "resume":
 			note = "resume"
 		}
 		it := previewItem{

@@ -191,7 +191,7 @@ func newReceiver(s *Streams, opts RecvOptions) *receiver {
 	r := &receiver{s: s, opts: opts, ps: ps, wantSHA: opts.OnManifest != nil,
 		dirs: newDirUnlocker(opts.TargetDir)}
 	r.cls = &classifier{targetDir: opts.TargetDir, checksum: opts.Checksum, sem: probeFS(opts.TargetDir),
-		ps: ps, progress: opts.OnHashProgress}
+		ps: ps, progress: opts.OnHashProgress, policy: opts.policy()}
 	r.commit = &committer{r: r}
 	return r
 }
@@ -1116,7 +1116,9 @@ func restoreDirModes(plans []entryPlan) {
 // hash under --checksum) would otherwise skip it and never pick up the new
 // mode. Best-effort; a chmod failure isn't worth failing the transfer.
 func repairIdenticalMode(p *entryPlan) {
-	if p.entry.Type != wire.EntryFile || p.blockedAncestor {
+	// keptAs: "identical" through an earlier copy; the file at target is
+	// the user's own differing version and keeps its mode.
+	if p.entry.Type != wire.EntryFile || p.blockedAncestor || p.keptAs != "" {
 		return
 	}
 	want := fileMode(p.entry.Mode)
