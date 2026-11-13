@@ -354,3 +354,45 @@ func TestDecisionReasonIsAdditive(t *testing.T) {
 		t.Error("this build must advertise CapSkipReasons")
 	}
 }
+
+type versioned struct {
+	bytes.Buffer
+	v uint8
+}
+
+func (w *versioned) WireVersion() uint8 { return w.v }
+
+// The stamping rule, independent of today's constants: HELLO and HELLO_ACK
+// always carry MinProtocolVersion (a v3 reader rejects any other), later
+// frames carry what the session negotiated — not the build's own newest
+// version — and a stream with nothing negotiated falls back to the minimum.
+func TestStampFollowsNegotiation(t *testing.T) {
+	neg := &versioned{v: MinProtocolVersion + 1}
+	for _, c := range []struct {
+		w    io.Writer
+		ft   FrameType
+		want byte
+	}{
+		{neg, TypeHello, MinProtocolVersion},
+		{neg, TypeHelloAck, MinProtocolVersion},
+		{neg, TypeListingBatch, MinProtocolVersion + 1},
+		{neg, TypeError, MinProtocolVersion + 1},
+		{&bytes.Buffer{}, TypeError, MinProtocolVersion},
+	} {
+		if got := Stamp(c.w, c.ft); got != c.want {
+			t.Errorf("Stamp(%T, %v) = %d, want %d", c.w, c.ft, got, c.want)
+		}
+	}
+	// What a newer build must avoid: a frame stamped past a peer's newest
+	// version is unreadable to it.
+	newer := &versioned{v: ProtocolVersion + 1}
+	if err := WriteControl(newer, TypeListingEnd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if newer.Bytes()[0] != ProtocolVersion+1 {
+		t.Fatalf("WriteControl ignored the negotiated version: %x", newer.Bytes())
+	}
+	if _, _, err := ReadControlRaw(&newer.Buffer); !errors.Is(err, ErrUnsupportedVersion) {
+		t.Errorf("a frame from a newer version must be refused, got %v", err)
+	}
+}

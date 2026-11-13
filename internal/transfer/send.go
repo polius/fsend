@@ -51,6 +51,17 @@ type SendOptions struct {
 	// OnSourceChanged fires for a file whose size or mtime changed while it
 	// was being read; the copy that arrives may be inconsistent.
 	OnSourceChanged func(index uint32)
+
+	// advertiseMax overrides the newest version the HELLO offers — tests
+	// stand in for a newer build with it. 0 means wire.ProtocolVersion.
+	advertiseMax uint8
+}
+
+func (o SendOptions) maxVersion() uint8 {
+	if o.advertiseMax != 0 {
+		return o.advertiseMax
+	}
+	return wire.ProtocolVersion
 }
 
 // Send executes the full sender-side protocol over the supplied streams.
@@ -77,7 +88,7 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 
 	hello := &wire.SenderHello{
 		MinVersion:    wire.MinProtocolVersion,
-		MaxVersion:    wire.ProtocolVersion,
+		MaxVersion:    opts.maxVersion(),
 		Caps:          wire.CapsSupported,
 		Hostname:      opts.Hostname,
 		OS:            opts.OS,
@@ -102,9 +113,11 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	if ft != wire.TypeHelloAck {
 		return fmt.Errorf("%w: expected HELLO_ACK, got %v", fserrors.ErrProtocolError, ft)
 	}
-	if _, ok := wire.Negotiate(ack.MinVersion, ack.MaxVersion); !ok {
+	v, ok := wire.Negotiate(ack.MinVersion, ack.MaxVersion)
+	if !ok {
 		return fserrors.ErrIncompatibleVersion
 	}
+	setVersion(s, v)
 	if opts.OnPeer != nil {
 		opts.OnPeer(ack.Hostname, ack.Accepts)
 	}

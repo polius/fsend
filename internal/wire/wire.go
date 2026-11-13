@@ -23,7 +23,8 @@ package wire
 //
 // Negotiation rule for future versions: HELLO and HELLO_ACK frames carry
 // MinProtocolVersion in their header so any supported peer can parse them;
-// every later frame carries the negotiated version.
+// every later frame carries the negotiated version (see Stamp; the transfer
+// layer marks its control stream Versioned once the hellos are exchanged).
 const ProtocolVersion = 0x03
 
 // MinProtocolVersion is the oldest wire protocol version this build speaks.
