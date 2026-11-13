@@ -136,15 +136,15 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	if opts.Mode == wire.ModeStream {
 		return sendStream(ctx, s, opts)
 	}
-	return sendFiles(ctx, s, opts)
+	return sendFiles(ctx, s, opts, ack.Caps)
 }
 
 // sendFiles runs the listing → classify → data flow.
-func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
+func sendFiles(ctx context.Context, s *Streams, opts SendOptions, peerCaps wire.Capability) error {
 	if len(opts.Sources) > maxListingEntries {
 		return fmt.Errorf("%w: %d entries, the limit is %d", fserrors.ErrTooManyEntries, len(opts.Sources), maxListingEntries)
 	}
-	if err := sendListing(s.Control, opts.Sources); err != nil {
+	if err := sendListing(s.Control, opts.Sources, peerCaps.Has(wire.CapCompressedListing)); err != nil {
 		return fmt.Errorf("send: listing: %w", err)
 	}
 	decisions, err := senderNegotiate(s, opts.Sources)

@@ -31,6 +31,10 @@ func PartialDir(targetDir string) string { return filepath.Join(targetDir, state
 // sidecar recording which source version the bytes belong to.
 type partialStore struct {
 	dir string
+	// absent caches "no state folder exists": then no partial can exist
+	// either, and lookups and removals are skipped (a re-send of 500,000
+	// unchanged files otherwise Lstats and unlinks twice per file).
+	absent bool
 }
 
 func newPartialStore(targetDir string) *partialStore {
@@ -68,12 +72,16 @@ func (ps *partialStore) ensure() error {
 	if err := os.Mkdir(ps.dir, 0o700); err != nil && !os.IsExist(err) {
 		return err
 	}
+	ps.absent = false
 	return nil
 }
 
 // lookup returns the partial for rel when its sidecar matches e. Mismatched,
 // oversized or orphaned partials are removed.
 func (ps *partialStore) lookup(rel string, e wire.ListingEntry) (string, int64, bool) {
+	if ps.absent {
+		return "", 0, false
+	}
 	data, meta := ps.paths(rel)
 	st, err := os.Lstat(data)
 	if err != nil {
@@ -93,30 +101,57 @@ func (ps *partialStore) lookup(rel string, e wire.ListingEntry) (string, int64, 
 	return data, st.Size(), true
 }
 
-// create starts a fresh partial for rel, recording e as its source.
-func (ps *partialStore) create(rel string, e wire.ListingEntry) (*os.File, string, error) {
+// create starts a fresh partial for rel, recording e as its source. Only a
+// file that can ever resume (more than one hash block) gets a sidecar: the
+// create-and-delete of one per small file was most of the per-file cost of
+// a folder of many small files. The partial is created with the entry's
+// final mode, so the commit needn't chmod it; fresh reports that (false
+// when a stale partial was reused, whose mode the caller still sets). The
+// state folder is owner-only, so the mode reveals nothing in flight.
+func (ps *partialStore) create(rel string, e wire.ListingEntry) (f *os.File, path string, fresh bool, err error) {
 	if err := ps.ensure(); err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	data, meta := ps.paths(rel)
 	for _, p := range []string{data, meta} {
 		if st, err := os.Lstat(p); err == nil && !st.Mode().IsRegular() {
-			return nil, "", fmt.Errorf("partial %s is not a regular file", filepath.Base(p))
+			return nil, "", false, fmt.Errorf("partial %s is not a regular file", filepath.Base(p))
 		}
 	}
-	b, _ := json.Marshal(partialMeta{Path: filepath.ToSlash(rel), Size: e.Size, ModTime: e.ModTimeSec})
-	if err := os.WriteFile(meta, b, 0o600); err != nil {
-		return nil, "", err
+	if canResume(e.Size) {
+		b, _ := json.Marshal(partialMeta{Path: filepath.ToSlash(rel), Size: e.Size, ModTime: e.ModTimeSec})
+		if err := os.WriteFile(meta, b, 0o600); err != nil {
+			return nil, "", false, err
+		}
 	}
-	f, err := os.OpenFile(data, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	perm := os.FileMode(0o600)
+	if e.Mode != 0 {
+		perm = fileMode(e.Mode)
+	}
+	f, err = os.OpenFile(data, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+	if err == nil {
+		return f, data, e.Mode != 0, nil
+	}
+	if !os.IsExist(err) {
+		return nil, "", false, err
+	}
+	// A stale partial from an earlier run: truncate it in place.
+	f, err = os.OpenFile(data, os.O_RDWR|os.O_TRUNC, 0o600)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
-	return f, data, nil
+	return f, data, false, nil
 }
+
+// canResume reports whether a file of this size could ever resume: a
+// resume needs at least one whole hash block before the last byte.
+func canResume(size uint64) bool { return size > hashBlockSize }
 
 // remove drops rel's partial and sidecar.
 func (ps *partialStore) remove(rel string) {
+	if ps.absent {
+		return
+	}
 	data, meta := ps.paths(rel)
 	_ = os.Remove(data)
 	_ = os.Remove(meta)
@@ -133,8 +168,10 @@ func (ps *partialStore) dropMeta(rel string) {
 func (ps *partialStore) sweep() {
 	ents, err := os.ReadDir(ps.dir)
 	if err != nil {
+		ps.absent = os.IsNotExist(err)
 		return
 	}
+	ps.absent = false
 	now := time.Now()
 	for _, e := range ents {
 		name := e.Name()

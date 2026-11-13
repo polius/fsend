@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,7 +69,9 @@ func benchTransfer(tb testing.TB, src []string, dst string) {
 }
 
 // BenchmarkSmallFiles2000 receives 2,000 4 KiB files onto the real disk; it
-// is dominated by per-file durability work (fsync, rename, dir sync).
+// is dominated by per-file filesystem work. On macOS that is creates and
+// renames (fsync there skips the drive cache; one F_FULLFSYNC covers a
+// batch); on Linux it was an fsync per file until one syncfs per batch.
 func BenchmarkSmallFiles2000(b *testing.B) {
 	src := b.TempDir()
 	root := filepath.Join(src, "tree")
@@ -98,5 +102,39 @@ func BenchmarkLargeFile(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		benchTransfer(b, []string{p}, b.TempDir())
+	}
+}
+
+// deepTree lists n files spread over folders six levels deep, as a large
+// project tree arrives: each folder entry, then its files.
+func deepTree(n int) []wire.ListingEntry {
+	var es []wire.ListingEntry
+	add := func(rel string, t wire.EntryType, size uint64) {
+		es = append(es, wire.ListingEntry{Index: uint32(len(es)), RelativePath: rel, Type: t, Size: size, Mode: 0o644, ModTimeSec: 1717414800})
+	}
+	seen := map[string]bool{}
+	for i := 0; i < n; i++ {
+		dir := fmt.Sprintf("proj/a%d/b%d/c%d/d%d/e%d", i/20000, i/4000, i/800, i/160, i/32)
+		for d, parts := "", strings.Split(dir, "/"); len(parts) > 0; parts = parts[1:] {
+			d = path.Join(d, parts[0])
+			if !seen[d] {
+				seen[d] = true
+				add(d, wire.EntryDir, 0)
+			}
+		}
+		add(fmt.Sprintf("%s/file%06d.go", dir, i), wire.EntryFile, 1024)
+	}
+	return es
+}
+
+// BenchmarkClassifyDeepTree classifies 100,000 files six folders deep into
+// an empty directory: before the per-folder memo every entry re-examined
+// each of its ancestors.
+func BenchmarkClassifyDeepTree(b *testing.B) {
+	es := deepTree(100_000)
+	for b.Loop() {
+		if _, err := classify(es, b.TempDir(), false); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
