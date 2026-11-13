@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +52,14 @@ type Config struct {
 	// the relay instead of host(request.Host):relayUDPPort — for a CDN-
 	// proxied or split signaling hostname.
 	RelayPublicAddr string
+
+	// TrustedProxies lists the reverse proxies whose X-Forwarded-For the
+	// server believes. A request whose direct peer is in the list is
+	// keyed on the rightmost address in that header that is not itself a
+	// trusted proxy; every other request on its direct peer. Empty (the
+	// default) ignores forwarded headers entirely: behind a proxy, every
+	// client then shares the proxy's per-IP limits.
+	TrustedProxies []netip.Prefix
 }
 
 // Default fills in zero values with sensible defaults.
@@ -332,7 +341,7 @@ func (s *Server) accessLog(mux *http.ServeMux, inner http.Handler) http.Handler 
 		attrs := []any{"method", r.Method, "route", route, "status", rec.status,
 			"bytes", rec.written, "duration_ms", time.Since(start).Milliseconds()}
 		if s.cfg.Logger.Enabled(ctx, slog.LevelDebug) {
-			attrs = append(attrs, "path", r.URL.Path, "ip", clientIP(r))
+			attrs = append(attrs, "path", r.URL.Path, "ip", s.clientIP(r))
 		}
 		s.cfg.Logger.Log(ctx, level, "http request", attrs...)
 	})
@@ -615,7 +624,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if !s.clientAllowed(w, r) {
 		return
 	}
-	clientIP := clientIP(r)
+	clientIP := s.clientIP(r)
 	rateKey := rateLimitKey(clientIP)
 
 	// The slot is required and client-derived: the client generates the
@@ -710,8 +719,15 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slot := strings.ToLower(r.PathValue("slot"))
-	clientIP := clientIP(r)
+	clientIP := s.clientIP(r)
 	rateKey := rateLimitKey(clientIP)
+	// The body is optional: older clients' bodies carry nothing the
+	// server needs, so a missing or malformed one just means no nonce.
+	var req JoinSessionRequest
+	_ = decodeJSON(w, r, &req)
+	if len(req.Nonce) > MaxJoinNonceLen {
+		req.Nonce = ""
+	}
 
 	s.mu.Lock()
 	// Rate-limit symmetrically with createSession: a join is the same
@@ -734,6 +750,14 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		s.mu.Unlock()
 		writeJSONError(w, http.StatusNotFound, "code not found")
+		return
+	}
+	if sess.State == "paired" && req.Nonce != "" &&
+		subtle.ConstantTimeCompare([]byte(req.Nonce), []byte(sess.ReceiverNonce)) == 1 {
+		// The same receiver retrying after a lost response.
+		resp := s.joinResponse(r, sess)
+		s.mu.Unlock()
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	if sess.State != "waiting" {
@@ -765,12 +789,22 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 	sess.ReceiverRateKey = rateKey
 	sess.ReceiverICE = recvICE
 	sess.ReceiverToken = recvTok
+	sess.ReceiverNonce = req.Nonce
 	sess.State = "paired"
 	sess.PairedAt = time.Now()
 	s.ipCounts[rateKey]++
 	s.met.sessionsPaired.Add(1)
 	close(sess.waiters)
-	resp := JoinSessionResponse{
+	resp := s.joinResponse(r, sess)
+	s.mu.Unlock()
+	s.cfg.Logger.Debug("session paired", "slot", slot, "ip", clientIP)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// joinResponse is the receiver's answer for a paired session. Called with
+// s.mu held.
+func (s *Server) joinResponse(r *http.Request, sess *session) JoinSessionResponse {
+	return JoinSessionResponse{
 		SessionID:               sess.ID,
 		YourObservedAddr:        r.RemoteAddr,
 		PeerObservedAddr:        sess.SenderAddr,
@@ -780,25 +814,11 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		RelayAddr:               s.stunAddrFor(r),
 		RelayForwardingDisabled: s.relayForwardingDisabled(),
 	}
-	s.mu.Unlock()
-	s.cfg.Logger.Debug("session paired", "slot", slot, "ip", clientIP)
-	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	slot := strings.ToLower(r.PathValue("slot"))
 	s.mu.Lock()
-	// Same rate limit as create/join. Without it, /wait is an
-	// unthrottled existence oracle over the slot space (404 vs 204 for
-	// the same lookup join performs). The legitimate sender polls once
-	// per LongPollTimeout (~25s ≈ 2-3/min), far under the recommended
-	// 30/min budget — see TestWaitRateLimit_PollCadenceStaysUnderBudget.
-	if !s.allowNewSession(clientIP(r), time.Now()) {
-		s.mu.Unlock()
-		s.met.rejRate.Add(1)
-		writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
-		return
-	}
 	sess, ok := s.bySlot[slot]
 	// Only the sender may wait: the answer carries the receiver's address
 	// and ICE credentials. A bad token is a 404 too, so the slot leaks no
@@ -808,14 +828,26 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 		ok = authed && side == "sender"
 	}
 	if !ok {
+		// Same rate limit as create/join for anything but the session's
+		// own sender. Without it, /wait is an unthrottled existence
+		// oracle over the slot space (404 vs 204 for the same lookup join
+		// performs). The sender's own polls are free: charging them let
+		// a handful of waiting senders behind one address use up the
+		// budget everyone else at that address needs to create and join.
+		limited := !s.allowNewSession(s.clientIP(r), time.Now())
 		s.mu.Unlock()
+		if limited {
+			s.met.rejRate.Add(1)
+			writeJSONError(w, http.StatusTooManyRequests, "rate limit hit")
+			return
+		}
 		writeJSONError(w, http.StatusNotFound, "code not found")
 		return
 	}
 	// Each /wait poll doubles as the sender's liveness heartbeat.
 	sess.LastSeen = time.Now()
 	if sess.SenderRateKey == "" { // restored from a snapshot, which holds no IPs
-		sess.SenderAddr = clientIP(r)
+		sess.SenderAddr = s.clientIP(r)
 		sess.SenderRateKey = rateLimitKey(sess.SenderAddr)
 		s.ipCounts[sess.SenderRateKey]++
 	}
@@ -1109,13 +1141,59 @@ func newIceCreds() (IceCreds, error) {
 	}, nil
 }
 
-// clientIP returns the connection's source address. Proxy headers are ignored:
-// attacker-controlled, and trusting them bypassed the per-IP caps.
-func clientIP(r *http.Request) string {
+// clientIP returns the address the per-IP limits apply to: the
+// connection's source, or, when that is a trusted proxy, the client it
+// forwarded for (see Config.TrustedProxies). Forwarded headers from
+// anyone else are attacker-controlled and ignored.
+func (s *Server) clientIP(r *http.Request) string {
+	direct := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
+		direct = host
 	}
-	return r.RemoteAddr
+	if len(s.cfg.TrustedProxies) == 0 || !s.trustedProxy(direct) {
+		return direct
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	// Walk from the nearest hop outwards: entries left of the first
+	// untrusted one were written by the client and prove nothing.
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, ok := parseHop(hops[i])
+		if !ok {
+			return direct // garbled header: the proxy's own key, never a forged one
+		}
+		if !s.trustedProxy(addr.String()) {
+			return addr.String()
+		}
+	}
+	return direct
+}
+
+// trustedProxy reports whether ip is in Config.TrustedProxies.
+func (s *Server) trustedProxy(ip string) bool {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, p := range s.cfg.TrustedProxies {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseHop parses one X-Forwarded-For entry: an address, optionally with
+// a port.
+func parseHop(h string) (netip.Addr, bool) {
+	h = strings.TrimSpace(h)
+	if a, err := netip.ParseAddr(h); err == nil {
+		return a.Unmap(), true
+	}
+	if ap, err := netip.ParseAddrPort(h); err == nil {
+		return ap.Addr().Unmap(), true
+	}
+	return netip.Addr{}, false
 }
 
 // rateLimitKey collapses a client IP into the unit we want to throttle.

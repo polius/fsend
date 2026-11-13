@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"slices"
@@ -113,6 +114,7 @@ func runServer() error {
 		ServerPassword:       cfg.serverPassword,
 		MinClientVersion:     cfg.minClientVersion,
 		RelayPublicAddr:      cfg.relayPublicAddr,
+		TrustedProxies:       cfg.trustedProxies,
 	})
 
 	if cfg.stateFile != "" {
@@ -305,6 +307,7 @@ const (
 	envMetricsAddr          = "FSEND_METRICS_ADDR"
 	envLogFormat            = "FSEND_LOG_FORMAT"
 	envStateFile            = "FSEND_STATE_FILE"
+	envTrustedProxies       = "FSEND_SERVER_TRUSTED_PROXIES"
 
 	defaultServerAddr = ":8080"
 	defaultRelayAddr  = ":443"
@@ -324,6 +327,7 @@ var knownServerEnv = []string{
 	envServerAddr, envRelayAddr, envMaxSessionsPerIP, envMaxNewSessionsPerMin,
 	envMaxBytesPerSession, envMaxBytesPerDay, envRelayEnabled, envLogLevel,
 	envMinClientVersion, envRelayPublicAddr, envMetricsAddr, envLogFormat, envStateFile,
+	envTrustedProxies,
 	"FSEND_SERVER_PASSWORD", "FSEND_SERVER_PASSWORD_FILE",
 }
 
@@ -367,6 +371,7 @@ type serverRuntimeConfig struct {
 	metricsAddr          string
 	logJSON              bool
 	stateFile            string
+	trustedProxies       []netip.Prefix
 }
 
 func loadServerConfig() (serverRuntimeConfig, error) {
@@ -410,6 +415,9 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		}
 		cfg.relayPublicAddr = v
 	}
+	if cfg.trustedProxies, err = parseTrustedProxies(os.Getenv(envTrustedProxies)); err != nil {
+		return cfg, err
+	}
 	cfg.metricsAddr = strings.TrimSpace(os.Getenv(envMetricsAddr))
 	cfg.stateFile = strings.TrimSpace(os.Getenv(envStateFile))
 	switch v := strings.TrimSpace(os.Getenv(envLogFormat)); strings.ToLower(v) {
@@ -434,6 +442,41 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		return cfg, fmt.Errorf("%s=%q: not a log level (use debug, info, warn, or error)", envLogLevel, v)
 	}
 	return cfg, nil
+}
+
+// parseTrustedProxies parses a comma-separated list of IPs and CIDR
+// ranges, e.g. "10.0.0.5, 172.16.0.0/12".
+func parseTrustedProxies(v string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, f := range strings.Split(v, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(f); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(f)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q is not an IP address or CIDR range", envTrustedProxies, f)
+		}
+		a = a.Unmap()
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	return out, nil
+}
+
+// formatPrefixes renders trusted proxies for the startup summary.
+func formatPrefixes(ps []netip.Prefix) string {
+	if len(ps) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, len(ps))
+	for i, p := range ps {
+		parts[i] = p.String()
+	}
+	return strings.Join(parts, ", ")
 }
 
 // formatServerConfig renders the effective server configuration as a
@@ -463,6 +506,7 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		// mistake a password-named identifier for a hardcoded credential.
 		{"FSEND_SERVER_PASSWORD", password, cfg.serverPassword != ""},
 		{envServerAddr, cfg.httpAddr, cfg.httpAddr != defaultServerAddr},
+		{envTrustedProxies, formatPrefixes(cfg.trustedProxies), len(cfg.trustedProxies) > 0},
 		{envMaxSessionsPerIP, capCount(cfg.maxSessionsPerIP), cfg.maxSessionsPerIP != defaultMaxSessionsPerIP},
 		{envMaxNewSessionsPerMin, capCount(cfg.maxNewSessionsPerMin), cfg.maxNewSessionsPerMin != defaultMaxNewSessionsPerMin},
 		{envMinClientVersion, orNone(cfg.minClientVersion), cfg.minClientVersion != ""},
@@ -667,8 +711,9 @@ EXAMPLE
   File data over UDP/443 is already end-to-end encrypted, but the HTTP
   pairing channel carries session slots, bearer tokens, and the
   FSEND_SERVER_PASSWORD header in plaintext.
-  Note: per-IP session caps key on the direct connection peer, so behind
-  a proxy they apply server-wide (every client shares the proxy's address).
+  Per-IP session caps key on the direct connection peer unless that peer
+  is listed in FSEND_SERVER_TRUSTED_PROXIES; behind an unlisted proxy they
+  apply server-wide (every client shares the proxy's address).
   See deploy/compose/docker-compose.yml for a Caddy + Let's Encrypt setup.
 
 CONFIGURATION (environment variables — all optional)
@@ -699,6 +744,13 @@ CONFIGURATION (environment variables — all optional)
 
   Pairing (TCP signaling/control plane):
     FSEND_SERVER_ADDR                 Default :8080 (TCP).
+    FSEND_SERVER_TRUSTED_PROXIES      Reverse proxies (IPs or CIDR ranges,
+                                      comma-separated) whose X-Forwarded-For
+                                      is believed, so each client behind
+                                      them gets its own per-IP limits.
+                                      List only addresses that nothing but
+                                      your proxy can connect from. Default
+                                      none: forwarded headers are ignored.
     FSEND_SERVER_MAX_SESSIONS_PER_IP  How many sessions one IP may have
                                       alive at once (concurrency cap; gates
                                       relay access too). Default 0 =

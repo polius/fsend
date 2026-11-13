@@ -111,8 +111,8 @@ func TestPairOverInternet_RecreatesLostSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := pairOverInternet(ctx, &flags{quiet: true}, &sendSession{}, &sendRound{key: codeKey("abc-defg-jkm")},
-			&config.Config{Server: ts.URL}, func(error) {})
+		_, err := pairOverInternet(ctx, &flags{quiet: true}, &sendRound{key: codeKey("abc-defg-jkm")},
+			&config.Config{Server: ts.URL}, func(error) {}, nil)
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
