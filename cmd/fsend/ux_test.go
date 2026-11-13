@@ -134,7 +134,7 @@ func TestDropNotice(t *testing.T) {
 	sendState.setPeer("bobs-laptop")
 	sendState.setPct(52)
 	got := dropNotice(true, "abc-defg-jkm")
-	if want := "bobs-laptop stopped at 52% — to resume, rerun on that device: fsend abc-defg-jkm"; got != want {
+	if want := "bobs-laptop stopped at 52%\n  To resume, rerun on that device: fsend abc-defg-jkm"; got != want {
 		t.Errorf("deliberate = %q, want %q", got, want)
 	}
 	sendState = sessionState{}

@@ -58,7 +58,7 @@ CELL = 1.002
 # fsend's six colour roles come from. TOKENS maps each dark-column hex in the
 # cast to its light sibling; the first six rows are glyphs.go's roles verbatim.
 TOKENS = {
-    "#e0805a": "#bd4f23",   # accent
+    "#e0805a": "#b54c22",   # accent
     "#bb9af7": "#7847bd",   # primary
     "#9ece6a": "#587539",   # success
     "#e5c07b": "#7d6500",   # warning

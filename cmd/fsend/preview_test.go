@@ -306,10 +306,10 @@ func TestPromptAccept_HeadlineNoDuplicateCount(t *testing.T) {
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
 		_ = ui.promptAccept(h, sum)
 	})
-	if strings.Contains(got, "2 files  ·  2 files") {
+	if strings.Contains(got, "2 files · 2 files") {
 		t.Errorf("headline duplicates the count:\n%s", got)
 	}
-	if !strings.Contains(got, "2 files  ·  100 B") {
+	if !strings.Contains(got, "2 files · 100 B") {
 		t.Errorf("expected collapsed 'count · size' headline:\n%s", got)
 	}
 }
@@ -321,7 +321,7 @@ func TestReceiverSizeClause(t *testing.T) {
 		want string
 	}{
 		{"all new", transfer.ClassifySummary{OfferedBytes: 1_200_000_000, BytesToRecv: 1_200_000_000}, "1.2 GB"},
-		{"some skipped", transfer.ClassifySummary{OfferedBytes: 1_200_000_000, BytesToRecv: 307_000_000}, "307 MB of 1.2 GB"},
+		{"some skipped", transfer.ClassifySummary{OfferedBytes: 1_200_000_000, BytesToRecv: 307_000_000}, "307 MB left of 1.2 GB"},
 		{"all up to date", transfer.ClassifySummary{OfferedBytes: 1_200_000_000, BytesToRecv: 0, Identical: 3}, "already up to date"},
 		{"single differ", transfer.ClassifySummary{OfferedBytes: 4_200_000_000, BytesToRecv: 0, Differing: 1}, "4.2 GB"},
 		// net and offered round to the same human string → show one number,
@@ -396,7 +396,7 @@ func TestPromptAccept_ListsFiles(t *testing.T) {
 		t.Errorf("accept prompt missing per-file status:\n%s", got)
 	}
 	// Headline: file count (not items), "X of Y", and the differ count.
-	for _, want := range []string{"2 files", "10 B of 30 B", "1 differ"} {
+	for _, want := range []string{"2 files", "10 B left of 30 B", "1 differ"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("headline missing %q:\n%s", want, got)
 		}

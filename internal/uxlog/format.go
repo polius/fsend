@@ -134,13 +134,44 @@ func Code(c string) string {
 	return fgBold(tokenAccent) + c + colorReset
 }
 
-// There is deliberately no "dim"/muted renderer here. Secondary text
-// renders in the terminal's default foreground: that is the one colour
-// guaranteed readable on the user's theme, and hierarchy comes from
-// emphasising the primary elements (accent orange, primary violet,
-// success green, bold) — never from darkening the rest. opencode can
-// calibrate a muted tone against the known background; a portable CLI
-// cannot, and every grey gamble loses on someone's palette.
+// Three levels rank everything on screen: bold for the subject of a line,
+// default text for the sentence, faint (Muted) for the detail — sizes,
+// counts, the route, timings, hints, rows that need no attention. Colour
+// is left for what needs a decision or reports an outcome, so a screen
+// needs few hues.
+
+// Muted renders s in the faint attribute (SGR 2) for metadata. Faint is
+// derived from the user's own foreground, so it stays readable on every
+// theme, unlike a fixed grey. Gated on colour; plain text on pipes.
+func Muted(s string) string {
+	if !colorEnabled() || s == "" {
+		return s
+	}
+	return colorFaint + s + "\x1b[22m"
+}
+
+// Subject renders the subject of a line — the file a summary is about,
+// the destination a prompt names — in bold. Gated on colour.
+func Subject(s string) string {
+	if !colorEnabled() || s == "" {
+		return s
+	}
+	return colorBold + s + "\x1b[22m"
+}
+
+// Sep joins the facts on a line: one separator, one space each side.
+const Sep = " · "
+
+// Join joins the non-empty parts with Sep.
+func Join(parts ...string) string {
+	out := parts[:0:0]
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, Sep)
+}
 
 // Prompt wraps s in the primary accent — the colour of a question, the
 // role opencode's themes give their primary token. Used for the lines
@@ -154,52 +185,17 @@ func Prompt(s string) string {
 	return fg(tokenPrimary) + s + colorReset
 }
 
-// Good wraps s in the success colour — the reassurance family the ✓
-// glyph leads — for positive clauses in summary lines ("2 files up to
-// date"). Gated on colour.
-func Good(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return fg(tokenSuccess) + s + colorReset
-}
+// Path marks a file reference. File names render in the default
+// foreground — green means "it worked" and is kept for the ✓ alone — so
+// this is the identity; it stays as the one place to change if names ever
+// need a treatment of their own.
+func Path(s string) string { return s }
 
-// Path wraps s in the success colour — the file-reference accent. In
-// opencode's TUI, file paths and code references render through the
-// theme's green tokens (diffAdded / markdownCode / syntaxString share
-// one green), which teaches the eye "green = a file on disk". fsend
-// follows the same convention: listing names, saved destinations,
-// conflict rows. Shares the green with Good so the association stays
-// single. Gated on colour.
-func Path(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return fg(tokenSuccess) + s + colorReset
-}
+// Good marks a positive clause. Green is kept for the ✓ alone, so this
+// renders default text; it remains so callers can keep marking intent.
+func Good(s string) string { return s }
 
-// Added wraps s in the diff-added colour — opencode's diffAdded role.
-// Used where the UI narrates a change as old → new (the overwrite
-// prompt's size delta): the incoming, about-to-be-written side.
-// Gated on colour.
-func Added(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return fg(tokenSuccess) + s + colorReset
-}
-
-// Removed wraps s in the diff-removed colour — opencode's diffRemoved
-// role. The counterpart of Added: the on-disk side a consented overwrite
-// will replace. Gated on colour.
-func Removed(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return fg(tokenError) + s + colorReset
-}
-
-// Alert wraps s in the warning colour (the same family as the ⚠ glyph)
+// Alert wraps s in the warning colour (the same family as the ! glyph)
 // so an attention-worthy inline tag — e.g. a "differs" status — stands
 // out instead of receding. Plain text when colour is off.
 func Alert(s string) string {
@@ -224,13 +220,6 @@ func Link(s string) string {
 		return s
 	}
 	return fg(tokenInfo) + s + colorReset
-}
-
-// Brand wraps s in the accent colour, unconditionally like Bold and
-// Accent. The caller gates it (ColorFor) for elements that must vanish
-// on pipes: direction arrows, the code box frame.
-func Brand(s string) string {
-	return fg(tokenAccent) + s + colorReset
 }
 
 // Bold wraps s in the ANSI bold escape, unconditionally. Unlike Prompt

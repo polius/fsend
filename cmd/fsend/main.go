@@ -195,6 +195,13 @@ func renderError(err error, debug bool) int {
 	var lines []string
 	add := func(l string) { lines = append(lines, l) }
 	switch {
+	case errors.Is(err, fserrors.ErrUserCancelled) && errorRole == "receiver" && cancelKept != nil:
+		// Ctrl-C with partial data on disk: say where it stopped, where
+		// the data is, and the command that picks it up again.
+		glyph = uxlog.Warn()
+		add(fmt.Sprintf("Cancelled at %d%%", cancelKept.pct))
+		add(uxlog.Detail("Partial data kept in " + cancelKept.partial))
+		add(uxlog.Detail("Resume while the sender waits: ") + uxlog.Code(receiveResume))
 	case errors.Is(err, errKeptByChoice):
 		// The user answered "n" at the overwrite prompt — narrate their
 		// decision, not a failure, and skip the "Use --overwrite" advice
@@ -264,7 +271,7 @@ func renderError(err error, debug bool) int {
 		}
 	}
 	if entry.Code != "" && !userCaused(err) {
-		lines[0] += " [" + entry.Code + "]"
+		lines[0] += " " + uxlog.Muted("["+entry.Code+"]")
 	}
 	fmt.Fprintf(os.Stderr, "%s %s\n", glyph, strings.Join(lines, "\n"))
 	// The interrupted receiver's partial resumes with the very same code

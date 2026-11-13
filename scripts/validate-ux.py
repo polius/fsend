@@ -5,13 +5,16 @@ Builds the CLI from the working tree, starts an isolated pairing server
 on loopback, and runs every user-facing scenario as concurrent pty
 sessions (sender + receiver). Both sides' raw stderr is captured and
 audited per character: each checked element must render in exactly the
-semantic colour token the design assigns it (truecolour SGR), every
-colour emitted must clear WCAG AA (4.5:1) against the background(s) its
-palette targets, global invariants must hold (no dim attribute, no muted
-grey), and degraded modes must stay byte-clean (NO_COLOR, FSEND_PLAIN,
-piped stderr → zero colour escapes, ASCII glyph fallbacks). Text checks
-assert on what the user reads (headlines, hints, exit codes), not just
-on escapes.
+semantic colour token the design assigns it, with the right weight (bold,
+faint). With the background unknown — the default here: no emulator
+answers the OSC 11 query in a bare pty — output may use only the
+terminal's ANSI colours; with a declared or detected background every
+truecolour value must clear WCAG AA (4.5:1) on that theme's usual
+backgrounds. The grid holds (glyphs in column 0, text from column 2),
+green appears only on ✓, only ✓ ✗ ! ? → ← and the spinner are glyphs,
+and degraded modes stay byte-clean (NO_COLOR, FSEND_PLAIN, piped stderr
+→ zero colour escapes, ASCII glyph fallbacks). Text checks assert on
+what the user reads (headlines, hints, exit codes), not just on escapes.
 
 Scenarios: single file, folder, conflict + overwrite prompt, password
 flow (wrong → correct), decline, text send, error rendering, NO_COLOR,
@@ -45,18 +48,22 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Truecolour hex per semantic token and palette. These must match
-# internal/uxlog/glyphs.go's colourToken table (dark, light, both).
+# internal/uxlog/glyphs.go's colourToken table (dark, light).
 PALETTES = {
     'dark':  {'accent': '#e0805a', 'primary': '#bb9af7', 'success': '#9ece6a',
               'warning': '#e5c07b', 'error': '#f7768e', 'info': '#7dcfff'},
-    'light': {'accent': '#bd4f23', 'primary': '#7847bd', 'success': '#587539',
+    'light': {'accent': '#b54c22', 'primary': '#7847bd', 'success': '#587539',
               'warning': '#7d6500', 'error': '#b3261e', 'info': '#007197'},
-    'both':  {'accent': '#c85000', 'primary': '#8f58dc', 'success': '#47851b',
-              'warning': '#a06b00', 'error': '#da3644', 'info': '#007fa9'},
 }
-# The backgrounds each palette must read on.
-BACKGROUNDS = {'dark': [(0, 0, 0)], 'light': [(255, 255, 255)],
-               'both': [(255, 255, 255), (0, 0, 0)]}
+# The usual backgrounds of each kind of theme: black, VS Code, One Dark,
+# Solarized, Tokyo Night; white, Solarized, off-white, Catppuccin Latte,
+# Gruvbox.
+BACKGROUNDS = {
+    'dark': [(0, 0, 0), (0x1e, 0x1e, 0x1e), (0x28, 0x2c, 0x34), (0x00, 0x2b, 0x36), (0x1a, 0x1b, 0x26)],
+    'light': [(255, 255, 255), (0xfd, 0xf6, 0xe3), (0xfa, 0xfa, 0xfa), (0xef, 0xf1, 0xf5), (0xfb, 0xf1, 0xc7)],
+}
+# ANSI SGR per token when the background is unknown.
+ANSI = {'accent': '36', 'primary': '35', 'success': '32', 'warning': '33', 'error': '31', 'info': '36'}
 
 
 def sgr(hexcol):
@@ -65,14 +72,19 @@ def sgr(hexcol):
 
 
 def tokens(theme):
+    if theme == 'unknown':
+        return tuple(ANSI[k] for k in ('accent', 'primary', 'success', 'warning', 'error', 'info'))
     p = PALETTES[theme]
     return tuple(sgr(p[k]) for k in ('accent', 'primary', 'success', 'warning', 'error', 'info'))
 
 
-# The harness sets neither FSEND_THEME nor COLORFGBG, so the default runs
-# get the unknown-background ("both") palette.
-ORANGE, VIOLET, GREEN, YELLOW, RED, CYAN = tokens('both')
+# The harness sets neither FSEND_THEME nor COLORFGBG and no emulator answers
+# the background query, so the default runs use the terminal's ANSI colours.
+ORANGE, VIOLET, GREEN, YELLOW, RED, CYAN = tokens('unknown')
 DEFAULT = None                 # terminal default foreground
+GLYPHS = '✓✗!?→←'
+SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+OLD_GLYPHS = '⚠ℹ⟳⇢⇣⇄┌│└'
 
 
 def rel_lum(r, g, b):
@@ -89,11 +101,16 @@ def contrast(a, b):
 
 class Ctx:
     def __init__(self):
-        self.fg, self.bold = None, False
+        self.fg, self.bold, self.faint = None, False, False
+
+
+OSC = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
 
 
 def line_colors(line):
-    """Walk one raw line; return (plain_text, per-char (fg, bold) list)."""
+    """Walk one raw line; return (plain_text, per-char (fg, bold, faint) list).
+    OSC sequences (the background query) are invisible."""
+    line = OSC.sub('', line)
     ctx, chars, colors = Ctx(), [], []
     i = 0
     while i < len(line):
@@ -112,10 +129,16 @@ def line_colors(line):
             k = 0
             while k < len(parts):
                 p = parts[k]
-                if p == '0':
-                    ctx.fg, ctx.bold = None, False
+                if p in ('0', ''):
+                    ctx.fg, ctx.bold, ctx.faint = None, False, False
                 elif p == '1':
                     ctx.bold = True
+                elif p == '2':
+                    ctx.faint = True
+                elif p == '22':
+                    ctx.bold, ctx.faint = False, False
+                elif p == '39':
+                    ctx.fg = None
                 elif p == '38':
                     if k + 1 < len(parts) and parts[k + 1] == '2':
                         ctx.fg = '38;2;' + ';'.join(parts[k + 2:k + 5])
@@ -123,14 +146,14 @@ def line_colors(line):
                     elif k + 1 < len(parts) and parts[k + 1] == '5':
                         ctx.fg = '38;5;' + parts[k + 2]
                         k += 2
-                elif p in ('31', '32', '33', '34', '35', '36', '37',
-                           '90', '91', '92', '93', '94', '96', '97'):
+                elif p in ('30', '31', '32', '33', '34', '35', '36', '37',
+                           '90', '91', '92', '93', '94', '95', '96', '97'):
                     ctx.fg = p
                 k += 1
             i = j + 1
             continue
         chars.append(line[i])
-        colors.append((ctx.fg, ctx.bold))
+        colors.append((ctx.fg, ctx.bold, ctx.faint))
         i += 1
     return ''.join(chars), colors
 
@@ -141,8 +164,19 @@ def split_stream(stream):
     return stream.replace('\r\n', '\n').replace('\r', '\n').split('\n')
 
 
+def screen_lines(stream):
+    """What stays on screen: per \n-line, the last \r-frame (spinner and bar
+    redraws overwrite each other), with the plain text and colours."""
+    out = []
+    for raw in OSC.sub('', stream).replace('\r\n', '\n').split('\n'):
+        frames = [f for f in raw.split('\r') if line_colors(f)[0].strip()]
+        if frames:
+            out.append(line_colors(frames[-1]))
+    return out
+
+
 def probe(stream, context, needle):
-    """(fg, bold) set covering `needle` on the first plain line that
+    """(fg, bold, faint) set covering `needle` on the first plain line that
     contains `context` (None = any line). None when not found."""
     for line in split_stream(stream):
         plain, colors = line_colors(line)
@@ -160,18 +194,21 @@ def probe(stream, context, needle):
 RESULTS = []
 
 
-def check(sc, label, stream, context, needle, expect_fg, expect_bold=None):
+def check(sc, label, stream, context, needle, expect_fg, expect_bold=None, expect_faint=None):
     got = probe(stream, context, needle)
     if got is None:
         RESULTS.append((sc, label, 'NOT FOUND', False))
         return
-    fgs = {fg for fg, _ in got}
-    bolds = {b for _, b in got}
+    fgs = {fg for fg, _, _ in got}
+    bolds = {b for _, b, _ in got}
+    faints = {f for _, _, f in got}
     ok = fgs == ({expect_fg} if expect_fg else {None})
     if expect_bold is not None:
         ok = ok and bolds == {expect_bold}
+    if expect_faint is not None:
+        ok = ok and faints == {expect_faint}
     RESULTS.append((sc, label,
-                    f'fg={sorted(fgs, key=str)} bold={sorted(bolds, key=str)}', ok))
+                    f'fg={sorted(fgs, key=str)} bold={sorted(bolds, key=str)} faint={sorted(faints, key=str)}', ok))
 
 
 def glob_ok(sc, label, ok, got=None):
@@ -190,11 +227,12 @@ def lacks_text(sc, label, stream, needle):
 
 
 SGR_FG = re.compile(r'\x1b\[(?:[0-9;]*;)?38;2;(\d+);(\d+);(\d+)m')
+SGR_ANY = re.compile(r'\x1b\[([0-9;]*)m')
 
 
-def contrast_ok(sc, stream, theme='both'):
+def contrast_ok(sc, stream, theme):
     """Every truecolour foreground in stream clears 4.5:1 on the theme's
-    background(s) — the WCAG AA bar the palette promises."""
+    usual backgrounds — the WCAG AA bar the palette promises."""
     worst = None
     for m in SGR_FG.finditer(stream):
         fg = tuple(int(x) for x in m.groups())
@@ -207,13 +245,51 @@ def contrast_ok(sc, stream, theme='both'):
     glob_ok(sc, f'every colour ≥ 4.5:1 ({theme})', ok, got)
 
 
+def ansi_only(sc, stream):
+    """With the background unknown, only SGR 30-37 / 90-97 colours, plus
+    bold, faint and their resets — the terminal's own palette."""
+    allowed = {'', '0', '1', '2', '22', '39', '30', '31', '32', '33', '34', '35', '36', '37',
+               '90', '91', '92', '93', '94', '95', '96', '97'}
+    bad = sorted({m.group(1) for m in SGR_ANY.finditer(stream)
+                  if not set(m.group(1).split(';')) <= allowed})
+    glob_ok(sc, 'unknown background: ANSI colours only', not bad, repr(bad[:3]) if bad else None)
+
+
+def grid_ok(sc, stream, label=''):
+    """The grid on what stays on screen: a line starts with a glyph (then a
+    space) in column 0, or with 2, 4 or 6 spaces; green only on ✓; no glyph
+    outside the small set every monospace font carries."""
+    off, green, old = [], [], []
+    for plain, colors in screen_lines(stream):
+        lead = len(plain) - len(plain.lstrip(' '))
+        if lead == 0:
+            if not (plain[0] in GLYPHS + SPINNER and plain[1:2] == ' '):
+                off.append(plain)
+        elif lead not in (2, 4, 6):
+            off.append(plain)
+        for ch, (fg, _, _) in zip(plain, colors):
+            if fg == GREEN and ch != '✓':
+                green.append(plain)
+                break
+        if any(g in plain for g in OLD_GLYPHS):
+            old.append(plain)
+    pre = f'{label}: ' if label else ''
+    glob_ok(sc, pre + 'glyphs in column 0, text from column 2', not off, repr(off[:2]) if off else None)
+    glob_ok(sc, pre + 'green only on ✓', not green, repr(green[:1]) if green else None)
+    glob_ok(sc, pre + 'only ✓ ✗ ! ? → ← and the spinner', not old, repr(old[:1]) if old else None)
+
+
 class PtyRun(threading.Thread):
     """Runs argv in a pty; captures raw output while feeds fire on schedule."""
 
-    def __init__(self, argv, cwd, feed=None, runtime=30, env=None, cols=100):
+    def __init__(self, argv, cwd, feed=None, runtime=30, env=None, cols=100, bg=None):
         super().__init__(daemon=True)
         self.argv, self.cwd, self.feed, self.runtime, self.env = argv, cwd, feed, runtime, env
         self.cols = cols
+        # bg: an "rgb:RRRR/GGGG/BBBB" the fake terminal answers the OSC 11
+        # query with (then DA1), as a real emulator would. None: silence.
+        self.bg = bg
+        self.answered = False
         self.out = b''
         self.pid = None
         self.fd = None
@@ -256,6 +332,9 @@ class PtyRun(threading.Thread):
                 if not data:
                     break
                 self.out += data
+                if self.bg and not self.answered and b'\x1b]11;?' in self.out:
+                    os.write(fd, f'\x1b]11;{self.bg}\x1b\\\x1b[?62;22c'.encode())
+                    self.answered = True
             while self.feed and fi < len(self.feed) and time.time() - start > self.feed[fi][0]:
                 os.write(fd, self.feed[fi][1])
                 fi += 1
@@ -420,9 +499,9 @@ def fresh(name):
     return d
 
 
-def pair(sc, d, sender_args, recv_args, recv_feed, sender_runtime=40, env=None, cols=100):
+def pair(sc, d, sender_args, recv_args, recv_feed, sender_runtime=40, env=None, cols=100, bg=None):
     """Concurrent sender (pty) + receiver (pty). Returns (sender, receiver)."""
-    snd = PtyRun([H.bin] + sender_args, d, runtime=sender_runtime, env=env, cols=cols)
+    snd = PtyRun([H.bin] + sender_args, d, runtime=sender_runtime, env=env, cols=cols, bg=bg)
     snd.start()
     m = snd.wait_for(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
     if not m:
@@ -431,7 +510,7 @@ def pair(sc, d, sender_args, recv_args, recv_feed, sender_runtime=40, env=None, 
         return snd, None
     code = m.group(1)
     time.sleep(0.5)
-    rcv = PtyRun([H.bin, code] + recv_args, d, feed=recv_feed, runtime=25, env=env, cols=cols)
+    rcv = PtyRun([H.bin, code] + recv_args, d, feed=recv_feed, runtime=25, env=env, cols=cols, bg=bg)
     rcv.start()
     rcv.join()
     snd.join(timeout=8)
@@ -447,22 +526,23 @@ def s1_single_file():
     sp, rv = snd.text, rcv.text if rcv else ''
     m = re.search(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b', sp)
     code = m.group(1) if m else 'zzz-zzzz-zzz'
-    check(s, 'arrow accent', sp, 'Sending', '⇢', ORANGE)
-    check(s, 'artifact name green', sp, 'Sending', 'small.txt', GREEN)
-    check(s, 'box border accent', sp, None, '┌', ORANGE)
+    check(s, 'arrow accent', sp, 'Sending', '→', ORANGE)
+    check(s, 'subject bold default', sp, 'Sending', 'small.txt', DEFAULT, True)
+    check(s, 'size detail faint', sp, '1 file', '1 file · 52 B', DEFAULT, False, True)
     check(s, 'share code accent+bold', sp, None, code, ORANGE, True)
+    check(s, '"fsend" bold default', sp, code, 'fsend', DEFAULT, True)
+    lacks_text(s, 'no box around the command', sp, '│')
+    has_text(s, 'command line is runnable as is', sp, '      fsend ' + code + '\n')
+    check(s, 'tagline faint', sp, 'One receiver', 'One receiver', DEFAULT, False, True)
     check(s, 'spinner accent', sp, 'Waiting for receiver', '⠋', ORANGE)
-    check(s, 'summary ✓ success', sp, None, '✓', GREEN)
-    check(s, 'summary name green', sp, 'Sent', 'small.txt', GREEN)
-    check(s, 'summary size default', sp, None, '52 B', DEFAULT, False)
-    check(s, 'recv arrow accent', rv, 'Incoming from', '⇣', ORANGE)
-    check(s, 'recv artifact name green', rv, None, 'small.txt', GREEN)
-    check(s, 'question primary', rv, 'Save to', 'Save to', VIOLET)
-    check(s, 'destination green+bold', rv, 'Save to', 'recv_out/', GREEN, True)
-    check(s, 'recv summary name green', rv, 'Saved', 'small.txt', GREEN)
-    check(s, 'recv summary dest green', rv, 'Saved', 'recv_out', GREEN)
-    check(s, 'bar chip green', rv, None, 'small.txt', GREEN)
-    glob_ok(s, 'no dim attribute', '\x1b[2m' not in sp and '\x1b[2m' not in rv)
+    check(s, 'summary ✓ success', sp, 'Sent', '✓', GREEN)
+    check(s, 'summary subject bold', sp, 'Sent', 'small.txt', DEFAULT, True)
+    check(s, 'summary detail faint', sp, '52 B ·', '52 B', DEFAULT, False, True)
+    check(s, 'recv arrow accent', rv, 'Incoming', '←', ORANGE)
+    check(s, 'recv subject bold', rv, 'Incoming', 'small.txt', DEFAULT, True)
+    check(s, 'prompt ? primary+bold', rv, 'Save to', '?', VIOLET, True)
+    check(s, 'destination bold', rv, 'Save to', './recv_out/', DEFAULT, True)
+    check(s, 'recv summary subject bold', rv, 'Saved', './recv_out/small.txt', DEFAULT, True)
     glob_ok(s, 'no grey 244', '38;5;244' not in sp and '38;5;244' not in rv)
     # What the user reads: who connected, what went where.
     has_text(s, 'sender names who accepted', sp, ' accepted')
@@ -470,7 +550,8 @@ def s1_single_file():
     has_text(s, 'receiver names the saved file', rv, 'Saved ./recv_out/small.txt')
     lacks_text(s, 'no progress bar under 1 MB', rv, '100%')
     glob_ok(s, 'no notification for a short run', '\x1b]9;' not in sp and '\x07' not in sp)
-    contrast_ok(s, sp + rv)
+    ansi_only(s, sp + rv)
+    grid_ok(s, sp + rv)
 
 
 def s2_folder():
@@ -479,17 +560,17 @@ def s2_folder():
     snd, rcv = pair(s, d, ['--exclude', 'node_modules', 'myproj'],
                     ['--out', 'recv_out'], [(4.0, b'y\n')])
     sp, rv = snd.text, rcv.text if rcv else ''
-    check(s, 'sender header dir green', sp, 'Sending', 'myproj/', GREEN)
-    check(s, 'sender listing name green', sp, 'video1.bin', 'assets/video1.bin', GREEN)
-    check(s, 'sender size default', sp, 'video1.bin', '20 MB', DEFAULT, False)
-    check(s, 'recv artifact dir green', rv, 'files', 'myproj/', GREEN)
-    check(s, 'recv listing name green', rv, 'video1.bin', 'assets/video1.bin', GREEN)
-    check(s, 'recv bar chip green', rv, None, 'video1.bin', GREEN)
-    check(s, 'recv summary dest green', rv, 'Saved', 'recv_out', GREEN)
-    glob_ok(s, 'no dim attribute', '\x1b[2m' not in sp and '\x1b[2m' not in rv)
+    check(s, 'sender subject bold', sp, 'Sending', 'myproj/', DEFAULT, True)
+    check(s, 'listing name default', sp, 'video1.bin', 'assets/video1.bin', DEFAULT, False, False)
+    check(s, 'listing size faint', sp, 'video1.bin', '20 MB', DEFAULT, False, True)
+    has_text(s, 'listing rows in column 4', sp, '\n    assets/video1.bin')
+    check(s, 'recv subject bold', rv, 'Incoming', 'myproj/', DEFAULT, True)
+    check(s, 'recv listing name default', rv, 'video1.bin', 'assets/video1.bin', DEFAULT, False, False)
+    check(s, 'filled bar accent', rv, '%', '━', ORANGE)
     has_text(s, 'sender summary names the folder', sp, 'Sent myproj/ to ')
     has_text(s, 'receiver names folder and place', rv, 'Saved myproj/ to ./recv_out/')
-    contrast_ok(s, sp + rv)
+    ansi_only(s, sp + rv)
+    grid_ok(s, sp + rv)
 
 
 def s3_conflict():
@@ -500,21 +581,20 @@ def s3_conflict():
     # One question covers the accept and the existing file; "s" skips it.
     snd, rcv = pair(s, d, ['small.txt'], ['--out', 'recv_out'], [(4.0, b's\n')])
     sp, rv = snd.text, rcv.text if rcv else ''
-    check(s, 'conflict header primary', rv, 'already exists',
-          '1 file here already exists and differs:', VIOLET)
+    check(s, 'conflict question ? primary', rv, 'already exists', '?', VIOLET, True)
+    has_text(s, 'conflict question', rv, '1 file here already exists and differs')
     check(s, 'delete consequence warning', rv, '[r]eplace', '(deletes yours)', YELLOW)
-    check(s, 'conflict name green', rv, '→', 'small.txt', GREEN)
-    check(s, 'local size diff-removed', rv, '→', '12 B', RED)
-    check(s, 'incoming size diff-added', rv, '→', '52 B', GREEN)
-    check(s, 'question primary', rv, '[K]eep both', 'Save to', VIOLET)
-    check(s, 'kept clause warning', rv, 'kept', '1 file kept', YELLOW)
-    check(s, 'sender warn glyph', sp, 'Nothing sent', '⚠', YELLOW)
-    check(s, 'Nothing sent default', sp, 'Nothing sent', 'Nothing sent', DEFAULT, False)
-    glob_ok(s, 'no dim attribute', '\x1b[2m' not in sp and '\x1b[2m' not in rv)
+    check(s, 'conflict name default', rv, '→', 'small.txt', DEFAULT, False, False)
+    check(s, 'size change faint', rv, '→', '12 B → 52 B', DEFAULT, False, True)
+    check(s, 'kept-by-choice: no glyph', rv, 'Saved 0 of 1', 'Saved', DEFAULT)
+    has_text(s, 'kept count in the detail', rv, '1 kept')
+    has_text(s, 'sender: nothing sent, the receiver kept it', sp, '1 kept by the receiver')
+    lacks_text(s, 'sender does not warn about the receiver\'s choice', sp, '! Nothing sent')
     # Skipping is a choice, not a failure.
     glob_ok(s, 'kept-by-choice exits 0', rcv is not None and rcv.status == 0,
             f'exit {rcv.status if rcv else None}')
-    contrast_ok(s, sp + rv)
+    ansi_only(s, sp + rv)
+    grid_ok(s, sp + rv)
 
 
 def s4_password():
@@ -539,14 +619,14 @@ def s4_password():
           'Press Enter to use it, or type your own:', VIOLET)
     check(s, 'receiver prompt primary', rv, 'Enter the password',
           'Enter the password the sender shared:', VIOLET)
-    check(s, 'password context warning', rv, 'password-protected', '⚠', YELLOW)
+    check(s, 'password context ! warning', rv, 'password-protected', '!', YELLOW, True)
     check(s, 'retry prompt primary', rv, 'Wrong password', 'Wrong password — try again', VIOLET)
-    check(s, 'chip warning glyph', rv, 'password required', '⚠', YELLOW)
-    check(s, 'chip text default', rv, 'password required', 'password required', DEFAULT, False)
+    check(s, 'chip warning colour', rv, 'password required', 'password required', YELLOW)
     check(s, 'transfer succeeded', rv, 'Saved', '✓', GREEN)
+    has_text(s, 'sender waits on the password, naming the device', sp, ' to enter the password')
     glob_ok(s, 'suggestion is four words', re.fullmatch(r'[a-z]+(-[a-z]+){3}', pw) is not None, pw)
-    has_text(s, 'code box says a password is needed', sp, 'password required')
-    contrast_ok(s, sp + rv)
+    has_text(s, 'code block says a password is needed', sp, 'they need the password too')
+    ansi_only(s, sp + rv)
 
 
 def s5_decline():
@@ -555,7 +635,7 @@ def s5_decline():
     snd, rcv = pair(s, d, ['small.txt'], ['--out', 'recv_out'], [(4.0, b'n\n')])
     rv = rcv.text if rcv else ''
     sp = snd.text if snd else ''
-    check(s, 'decline info glyph', rv, 'Declined', 'ℹ', CYAN)
+    has_text(s, 'decline: no glyph, text in column 2', rv, '\n  Declined.')
     lacks_text(s, "the receiver's own choice carries no code", rv, '[E006]')
     # U1: the HELLO reply is not consent — the sender waits, naming the
     # device, and a decline never prints "accepted".
@@ -572,8 +652,8 @@ def s6_text():
     d = fresh('s6')
     snd, rcv = pair(s, d, ['--text', 'wifi: hunter2'], [], [(3.0, b'\n')])
     sp, rv = snd.text, rcv.text if rcv else ''
-    check(s, 'arrow accent', sp, 'Sending text', '⇢', ORANGE)
-    check(s, '"text" NOT path-green', sp, 'Sending text', 'Sending text', DEFAULT, False)
+    check(s, 'arrow accent', sp, 'Sending text', '→', ORANGE)
+    check(s, '"Sending text" default', sp, 'Sending text', 'Sending text', DEFAULT, False)
     # Short text is sanitized and printed, never saved: no question first.
     lacks_text(s, 'short text needs no prompt', rv, 'Show the text?')
     has_text(s, 'text printed', rv, 'wifi: hunter2')
@@ -610,7 +690,8 @@ def s7_errors():
             f'exit {out5.status}')
     for o in (out, out2, out3, out4, out5):
         lacks_text(s, 'no E099 on an error path', o.text, 'E099')
-    contrast_ok(s, out.text + out2.text + out3.text)
+    check(s, 'catalog code faint, after the sentence', out.text, 'nope.txt', '[E025]', DEFAULT, False, True)
+    ansi_only(s, out.text + out2.text + out3.text)
 
 
 def s8_no_color():
@@ -620,7 +701,7 @@ def s8_no_color():
     sp.start(); sp.join()
     glob_ok(s, 'sender zero colour SGR',
             not re.search(r'\x1b\[(3[0-9]|38;|1;38|9[0-7])m', sp.text))
-    glob_ok(s, 'plain block fallback', 'On the other machine, run:' in sp.text)
+    glob_ok(s, 'command block', 'On the other machine, run' in sp.text)
 
 
 def s9_help():
@@ -638,7 +719,7 @@ def s9_help():
     glob_ok(s, 'everyday help fits ~35 lines', n <= 36, f'{n} lines')
     adv = H.run_client(['help', 'advanced'], capture_output=True)
     glob_ok(s, 'help advanced lists the environment', b'FSEND_CODE' in adv.stdout and adv.returncode == 0)
-    contrast_ok(s, t)
+    ansi_only(s, t)
 
 
 def s10_piped():
@@ -655,7 +736,8 @@ def s10_piped():
     glob_ok(s, 'piped sender zero colour SGR',
             not re.search(r'\x1b\[(3[0-9]|38;|1;38|9[0-7])m', err))
     glob_ok(s, 'ASCII glyph fallback', '[*] Waiting for receiver' in err)
-    glob_ok(s, 'plain block fallback', 'On the other machine, run:' in err)
+    glob_ok(s, 'command block', 'On the other machine, run' in err)
+    glob_ok(s, 'piped stderr has no query or escape', '\x1b' not in err)
     glob_ok(s, 'no Ctrl-C hint in logs', 'Ctrl-C' not in err)
     glob_ok(s, 'piped stdout carries the bare code',
             re.fullmatch(r'[a-z]{3}-[a-z]{4}-[a-z]{3}\n', out) is not None, repr(out))
@@ -676,8 +758,9 @@ def s11_themes():
         acc, pri, suc, _, _, _ = tokens(theme)
         m = re.search(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b', sp)
         check(s, f'{theme}: share code accent', sp, None, m.group(1) if m else 'zzz', acc, True)
-        check(s, f'{theme}: question primary', rv, 'Save to', 'Save to', pri)
+        check(s, f'{theme}: prompt ? primary', rv, 'Save to', '?', pri, True)
         check(s, f'{theme}: summary ✓ success', sp, None, '✓', suc)
+        glob_ok(s, f'{theme}: declared background skips the query', '\x1b]11;?' not in sp + rv)
         contrast_ok(s, sp + rv, theme)
 
 
@@ -690,7 +773,7 @@ def s12_narrow():
     glob_ok(s, 'progress frames rendered', bool(bars), f'{len(bars)} frames')
     cut = [b for b in bars if re.search(r'\d…|…\d', b)]
     glob_ok(s, 'no number cut mid-digit', not cut, repr(cut[:1]) if cut else None)
-    wide = [b for b in bars if len(b) > 40]
+    wide = [b for b in bars if len(b) > 39]
     glob_ok(s, 'frames fit the width', not wide, repr(wide[:1]) if wide else None)
 
 
@@ -797,15 +880,110 @@ def s18_spinner_width():
         glob_ok(s, f'{cols} cols: frames fit', bool(frames) and not wide and not orphans,
                 repr((wide or orphans)[:1]) if (wide or orphans) else f'{len(frames)} frames')
         glob_ok(s, f'{cols} cols: elapsed time kept', any(re.search(r'1[45] s', x) for x in frames))
+        grid_ok(s, p.text, f'{cols} cols')
         broken = [x for x in segs if re.search(r'\w-$', x.rstrip())]
         glob_ok(s, f'{cols} cols: tagline breaks between words', not broken, repr(broken[:1]) if broken else None)
         has_text(s, f'{cols} cols: share code still shown', p.text, 'fsend ')
 
 
+def s19_detected_background():
+    """V1: with nothing declared, fsend asks the terminal (OSC 11, then DA1)
+    and picks the palette for the answer; a silent terminal gets ANSI."""
+    s = 'S19 detected background'
+    for name, bg in (('dark', 'rgb:2828/2c2c/3434'), ('light', 'rgb:fdfd/f6f6/e3e3')):
+        d = fresh('s19' + name)
+        p = PtyRun([H.bin, 'small.txt'], d, runtime=4, bg=bg)
+        p.start(); p.join()
+        acc = tokens(name)[0]
+        m = re.search(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b', p.text)
+        check(s, f'{name} answer: accent from the {name} palette', p.text, None,
+              m.group(1) if m else 'zzz', acc, True)
+        contrast_ok(s, p.text, name)
+        # The query is answered and consumed: nothing of it leaks as text.
+        lacks_text(s, f'{name}: no query residue on screen', p.text, '11;rgb')
+
+
+DEV_SND, DEV_RCV = 'sender-device-16', 'receiver-dev-16c'   # 16 characters each
+
+
+def s20_visual_system():
+    """V3-V8 at 60, 80 and 100 columns, background unknown / dark / light: a
+    folder send with an existing differing file, both summaries."""
+    s = 'S20 visual system'
+    for theme in ('unknown', 'dark', 'light'):
+        env = {} if theme == 'unknown' else {'FSEND_THEME': theme}
+        for cols in (60, 80, 100):
+            tag = f'{theme}/{cols}'
+            d = fresh(f's20-{theme}-{cols}')
+            os.makedirs(os.path.join(d, 'recv_out', 'myproj'))
+            with open(os.path.join(d, 'recv_out', 'myproj', 'README.md'), 'w') as f:
+                f.write('mine, edited\n')
+            snd, rcv = pair(s, d, ['--device-name', DEV_SND, 'myproj'],
+                            ['--device-name', DEV_RCV, '--out', 'recv_out'], [(4.0, b'k\n')],
+                            env=env, cols=cols)
+            sp, rv = snd.text, rcv.text if rcv else ''
+            grid_ok(s, sp + rv, tag)
+            if theme == 'unknown':
+                ansi_only(s, sp + rv)
+            else:
+                contrast_ok(s, sp + rv, theme)
+            # Summary block: the outcome line and the detail lines under it.
+            for side, text, head in (('sender', sp, 'Sent'), ('receiver', rv, 'Saved')):
+                lines = [pl for pl, _ in screen_lines(text)]
+                i = next((k for k, l in enumerate(lines) if l[2:].startswith(head)), None)
+                if i is None:
+                    glob_ok(s, f'{tag} {side}: summary found', False, 'missing')
+                    continue
+                block = lines[i:i + 3]
+                block = [block[0]] + [l for l in block[1:] if l.startswith('  ') and not l.startswith('   ')]
+                wide = [l for l in block if len(l) > cols - 1]
+                glob_ok(s, f'{tag} {side}: summary fits', not wide, repr(wide[:1]) if wide else None)
+            check(s, f'{tag}: route faint in the summary', sp, 'B ·', 'local network', DEFAULT, False, True)
+            check(s, f'{tag}: listing "differs" needs a decision', rv, 'README.md', 'differs', tokens(theme)[3])
+            check(s, f'{tag}: listing "up to date"-free row size faint', rv, 'video1.bin', '20 MB', DEFAULT, False, True)
+            has_text(s, f'{tag}: sender names the receiver', sp, 'Sent myproj/ to ' + DEV_RCV)
+
+
+def s21_cancel_resume():
+    """V5: Ctrl-C mid-transfer leaves the bar, then one block — the outcome,
+    where the data is, the command that resumes — on the grid."""
+    s = 'S21 Ctrl-C mid-transfer'
+    d = fresh('s21')
+    with open(os.path.join(d, 'big.bin'), 'wb') as f:
+        for _ in range(50):
+            f.write(os.urandom(10_000_000))
+    snd = PtyRun([H.bin, 'big.bin'], d, runtime=30, cols=80)
+    snd.start()
+    m = snd.wait_for(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
+    if not m:
+        snd.stop()
+        RESULTS.append((s, 'sender produced no code', 'TIMEOUT', False))
+        return
+    time.sleep(0.5)
+    rcv = PtyRun([H.bin, m.group(1), '--yes', '--out', 'recv_out'], d, cols=80, runtime=20)
+    rcv.start()
+    rcv.wait_for(r'\d+%')
+    time.sleep(0.6)
+    if rcv.fd:
+        os.write(rcv.fd, b'\x03')
+    rcv.join(); snd.stop()
+    rv = rcv.text
+    has_text(s, 'outcome says where it stopped', rv, 'Cancelled at ')
+    has_text(s, 'partial data named', rv, '  Partial data kept in ')
+    has_text(s, 'resume command given', rv, '  Resume while the sender waits: fsend ')
+    lacks_text(s, 'a Ctrl-C carries no code', rv, '[E026]')
+    grid_ok(s, rv)
+    lines = [pl for pl, _ in screen_lines(rv)]
+    k = next((i for i, l in enumerate(lines) if 'Cancelled at' in l), None)
+    glob_ok(s, 'the bar stays above the block', k is not None and '%' in lines[k - 1],
+            repr(lines[k - 1:k + 1]) if k else None)
+
+
 SCENARIOS = (s1_single_file, s2_folder, s3_conflict, s4_password, s5_decline,
              s6_text, s7_errors, s8_no_color, s9_help, s10_piped, s11_themes,
              s12_narrow, s13_cancel, s14_late_arriver, s15_completion, s16_notify,
-             s17_plain, s18_spinner_width)
+             s17_plain, s18_spinner_width, s19_detected_background, s20_visual_system,
+             s21_cancel_resume)
 
 
 def main():

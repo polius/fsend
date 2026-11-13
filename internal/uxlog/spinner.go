@@ -53,7 +53,7 @@ const spinnerInterval = 100 * time.Millisecond
 
 // StartSpinner begins drawing an animated spinner to stderr with the given
 // message. An optional hint renders as a static trailer after the elapsed
-// chip — "⠋ Waiting for receiver  ·  4s  ·  Ctrl-C to cancel" — so a long
+// chip — "⠋ Waiting for receiver · 4 s · Ctrl-C to cancel" — so a long
 // wait always advertises its escape hatch. The returned Spinner must be
 // Stop'd before the caller writes anything else to stderr, otherwise the
 // spinner's redraw will fight the caller's output.
@@ -157,6 +157,11 @@ func (s *Spinner) draw(frame string) {
 	// Clip to the live width every frame: a line that wraps turns each
 	// \r redraw into a new row, flooding the screen ten times a second.
 	text := fitSpinner(msg, elapsed, hint, terminalWidth(80))
+	// The message is the sentence; the elapsed time and the hint after it
+	// are faint detail.
+	if i := strings.Index(text, spinnerSep); i >= 0 {
+		text = text[:i] + Muted(text[i:])
+	}
 	// Stderr write failures inside the UX layer are non-actionable —
 	// the caller has bigger problems than an unrendered spinner.
 	ttyMu.Lock()
@@ -169,7 +174,7 @@ func (s *Spinner) draw(frame string) {
 }
 
 // spinnerSep joins the spinner's message, elapsed time and hint.
-const spinnerSep = "  ·  "
+const spinnerSep = Sep
 
 // fitSpinner lays out the text after the spinner frame so the whole line
 // stays inside width-1 columns (the last column would trigger an
