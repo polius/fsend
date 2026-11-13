@@ -527,6 +527,38 @@ func onLinkSubnet(ip net.IP) bool {
 	return false
 }
 
+// LocalPeer reports whether addr could be a peer that found this machine
+// through mDNS: loopback, link-local, a private range, or inside the
+// subnet of an interface discovery uses. The sender's LAN listener admits
+// only these, so a host across the internet cannot reach it even when this
+// machine has a public address.
+func LocalPeer(addr net.Addr) bool {
+	var ip net.IP
+	switch a := addr.(type) {
+	case *net.UDPAddr:
+		ip = a.IP
+	case *net.TCPAddr:
+		ip = a.IP
+	default:
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsPrivate() {
+		return true
+	}
+	for _, ifc := range discoveryInterfaces() {
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && ipnet.Contains(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // PreferredLocalIP returns the best IPv4 address to publish for LAN
 // discovery, or a global-unicast IPv6 on IPv6-only networks.
 //

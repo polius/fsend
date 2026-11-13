@@ -19,6 +19,7 @@ import (
 	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/signaling"
 	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
@@ -152,6 +153,9 @@ func runDoctor(serverFlag string) (failed int) {
 	default:
 		serverUp = true
 		sayf(true, "server", "reachable in %s", time.Since(start).Round(time.Millisecond))
+		if c, ok := clockCheck(resp.Header, start); ok {
+			say(c)
+		}
 	}
 	if resp != nil {
 		_ = resp.Body.Close()
@@ -210,6 +214,23 @@ func runDoctor(serverFlag string) (failed int) {
 		sayf(true, "mDNS", "answered on the LAN in %s", time.Since(lanStart).Round(time.Millisecond))
 	}
 	return failed
+}
+
+// clockCheck compares this device's clock with the server's Date header,
+// read at sentAt. Codes are salted with the UTC day, so a clock that is
+// hours off finds no sender on the local network, and an older fsend on
+// the other side finds none through the server either. ok is false when
+// the server sent no usable Date.
+func clockCheck(h http.Header, sentAt time.Time) (doctorCheck, bool) {
+	skew, ok := signaling.ServerSkew(h, sentAt)
+	if !ok {
+		return doctorCheck{}, false
+	}
+	if skew > signaling.ClockTolerance || skew < -signaling.ClockTolerance {
+		return doctorCheck{false, "clock", signaling.ClockSkewPhrase(skew) +
+			" the server's — codes may not be found on the local network until the date and time are fixed"}, true
+	}
+	return doctorCheck{true, "clock", "matches the server's"}, true
 }
 
 // relayChecks tests the two ways a relayed transfer reaches the server:
@@ -304,6 +325,8 @@ loopback, then the physical interface — as separate rows:
 
   config    which pairing server is configured (never prints the password)
   server    HTTPS reachability of that server's /health
+  clock     this device's clock against the server's (codes are salted
+            with the date, so a wrong clock can make a code unfindable)
   UDP       the server's relay answers over UDP (needed unless the TCP
             fallback below works)
   TCP       the relay's TCP fallback (a WebSocket on the server's port),

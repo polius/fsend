@@ -5,9 +5,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
@@ -75,5 +77,24 @@ func TestRelayChecks(t *testing.T) {
 				t.Errorf("TCP = %v %q, want %v containing %q", tcp.ok, tcp.msg, tc.tcpOK, tc.tcpMsg)
 			}
 		})
+	}
+}
+
+// The clock row warns when this device is more than the tolerance off the
+// server's Date header, and is absent when the server sends none.
+func TestClockCheck(t *testing.T) {
+	now := time.Now()
+	h := func(t time.Time) http.Header {
+		return http.Header{"Date": []string{t.UTC().Format(http.TimeFormat)}}
+	}
+	if c, ok := clockCheck(h(now.Add(time.Minute)), now); !ok || !c.ok {
+		t.Errorf("a 1-minute skew: got %+v, %v; want a passing row", c, ok)
+	}
+	c, ok := clockCheck(h(now.Add(-3*time.Hour)), now)
+	if !ok || c.ok || !strings.Contains(c.msg, "3 h ahead of the server's") {
+		t.Errorf("a clock 3 h ahead: got %+v, %v; want a warning naming it", c, ok)
+	}
+	if _, ok := clockCheck(http.Header{}, now); ok {
+		t.Error("a row without a Date header")
 	}
 }
