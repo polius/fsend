@@ -25,16 +25,25 @@
   Version to install, e.g. 1.2.3 or v1.2.3 (default: latest). Env: FSEND_VERSION.
 
 .PARAMETER NoModifyPath
-  Don't add the install dir to your user PATH.
+  Don't add the install dir to your user PATH. Env: FSEND_NO_MODIFY_PATH=1.
 
 .LINK
   https://github.com/polius/fsend/blob/main/scripts/install.ps1
 #>
+
+# The whole installer runs inside one script block. The one-liner pipes
+# this file to Invoke-Expression, which runs it in the caller's own scope:
+# without the block, strict mode, $ErrorActionPreference = 'Stop', the
+# silenced progress bar and every helper below (Info, Ok, Fetch...) would
+# stay behind in the user's session. @args (at the end) carries -Prefix
+# and the rest through when the file is run with -File. The body is not
+# indented, to keep its history readable.
+& {
 [CmdletBinding()]
 param(
     [string]$Prefix  = $env:FSEND_PREFIX,
     [string]$Version = $env:FSEND_VERSION,
-    [switch]$NoModifyPath,
+    [switch]$NoModifyPath = ($env:FSEND_NO_MODIFY_PATH -eq '1'),
     [switch]$Help
 )
 
@@ -81,8 +90,8 @@ function Warn($m) { Write-Host "$($mark.warn) $m" -ForegroundColor Yellow }
 # it flips $VerbosePreference, which is exactly the opt-in we want.
 function VInfo($m) { if ($VerbosePreference -eq 'Continue') { Info $m } }
 
-# throw, not exit: the install one-liner runs via `irm ... | iex` *in the
-# user's own session*, so `exit` would close their terminal. throw halts,
+# throw, not exit: the install one-liner runs via `irm ... | iex` in the
+# user's own PowerShell process, so `exit` would close their terminal. throw halts,
 # shows the message in red, leaves an interactive window open, and still
 # yields a non-zero exit code under `powershell -File install.ps1`.
 function Err($m) { Write-Host "$($mark.err) $m" -ForegroundColor Red; throw $m }
@@ -98,7 +107,7 @@ Usage:
 Parameters (or matching env var):
   -Prefix DIR        Install location    (default: %LOCALAPPDATA%\Programs\fsend; env FSEND_PREFIX)
   -Version VERSION   Version to install  (default: latest; env FSEND_VERSION)
-  -NoModifyPath      Don't add the install dir to your user PATH
+  -NoModifyPath      Don't add the install dir to your user PATH (env FSEND_NO_MODIFY_PATH=1)
   -Verbose           Show the individual install steps
   -Help              Show this help and exit
 
@@ -297,7 +306,11 @@ try {
                 $envKey.SetValue('Path', ($userPath.TrimEnd(';') + ';' + $Prefix).TrimStart(';'), $kind)
                 Broadcast-EnvChange
                 $env:PATH = $env:PATH + ';' + $Prefix
-                Ok "PATH updated - open a new terminal"
+                # Run as a file, the installer is a child process: only new
+                # terminals see the change. Through the one-liner it shares
+                # the user's process, whose PATH was just patched above.
+                if ($PSCommandPath) { Ok 'PATH updated - open a new terminal to use fsend' }
+                else { Ok 'PATH updated - fsend works in this window and new ones' }
             }
         } finally {
             $envKey.Close()
@@ -339,3 +352,4 @@ try {
 finally {
     Remove-Item -Recurse -Force -Path $tmp -ErrorAction SilentlyContinue
 }
+} @args

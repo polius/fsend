@@ -178,6 +178,34 @@ try {
         ($null -ne ($out | Where-Object { $_ -like '*publishes no signature*' })))
     $env:PATH = $savedPath
 
+    # 8. the documented one-liner, `irm <url> | iex`, runs in the caller's
+    # own session. It must install and leave that session as it found it:
+    # no strict mode, no $ErrorActionPreference = 'Stop', no silenced
+    # progress, none of the installer's functions or variables.
+    Copy-Item $installer "$work/fixture/install.ps1"
+    $p8 = Join-Path $work 'bin-iex'
+    $session = @"
+`$ErrorActionPreference = 'Continue'; `$ProgressPreference = 'Continue'
+`$env:FSEND_VERSION = '$ver'; `$env:FSEND_PREFIX = '$p8'; `$env:FSEND_NO_MODIFY_PATH = '1'
+irm '$($env:FSEND_RELEASE_BASE_URL)/install.ps1' | iex
+`$leaks = @()
+if (`$ErrorActionPreference -ne 'Continue') { `$leaks += 'ErrorActionPreference' }
+if (`$ProgressPreference -ne 'Continue') { `$leaks += 'ProgressPreference' }
+foreach (`$n in 'Info', 'Ok', 'Warn', 'Err', 'Fetch', 'Download', 'Get-Arch', 'Verify-Signature') {
+    if (Get-Command `$n -CommandType Function -ErrorAction SilentlyContinue) { `$leaks += `$n }
+}
+foreach (`$v in 'Repo', 'Binary', 'mark', 'tmp', 'arch', 'Prefix', 'Version') {
+    if (Get-Variable `$v -Scope Global -ErrorAction SilentlyContinue) { `$leaks += ('`$' + `$v) }
+}
+try { `$null = `$notSetAnywhere } catch { `$leaks += 'StrictMode' }
+'LEAKS:' + (`$leaks -join ',')
+"@
+    $out = @(& $ps -NoProfile -Command $session 2>&1)
+    Check "one-liner installs" (Test-Path (Join-Path $p8 'fsend.exe'))
+    $leakLine = $out | Where-Object { "$_" -like 'LEAKS:*' } | Select-Object -First 1
+    Check "one-liner leaves the session unchanged ($leakLine)" ("$leakLine" -eq 'LEAKS:')
+    $env:FSEND_VERSION = $null; $env:FSEND_PREFIX = $null; $env:FSEND_NO_MODIFY_PATH = $null
+
     # 6. a corrupted archive is rejected by the checksum. Runs last: it
     # poisons the shared fixture archive.
     $bytes = [System.IO.File]::ReadAllBytes("$work/fixture/download/v$ver/$archive")
