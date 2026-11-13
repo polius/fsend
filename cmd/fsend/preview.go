@@ -52,6 +52,10 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 
 	pad := strings.Repeat(" ", indent)
 	shown := min(len(items), previewRows)
+	if len(items) == previewRows+1 {
+		// "… and 1 more" costs the row it hides: print it instead.
+		shown = len(items)
+	}
 	sizeWidth := 0
 	for _, it := range items[:shown] {
 		if n := len(sizeCell(it)); n > sizeWidth {

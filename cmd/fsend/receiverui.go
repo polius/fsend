@@ -231,6 +231,12 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		summary.BytesToRecv == 0 && len(summary.Conflicts) == 0 && summary.Refused == 0 && summary.Identical > 0 && !ui.sink {
 		return true
 	}
+	// Text is sanitized and printed, never saved: asking before showing a
+	// short note only adds a step. The hello carries no size, so a long
+	// payload is asked about once it has arrived (finishReceive).
+	if h.Mode == wire.ModeStream && h.IsText && !ui.sink && stdoutIsTTY() {
+		return true
+	}
 	_, flagged := ui.flagPolicy()
 	if f.yes {
 		fmt.Fprintln(os.Stderr, uxlog.Info(), "Accepting (--yes)")
@@ -574,11 +580,12 @@ func printCancelKeptHint(f *flags, ui *receiverUI) {
 		return
 	}
 	if _, moved := ui.bytes(); moved > 0 {
-		// Via uxlog.Println: the aborted bar is still live here (ui.close
-		// runs on a defer), and its next refresh frame would erase a raw
-		// stderr write.
-		uxlog.Println(fmt.Sprintf("%s Partial data kept in %s. While the sender waits, resume with: %s",
-			uxlog.Info(), displayPath(transfer.PartialDir(ui.outDir)), uxlog.Code(receiveResume)))
+		// Close the bar first: its final frame is the record of where the
+		// transfer stopped, and the hint belongs under it — printed above
+		// a live bar, the bar would redraw beneath the hint.
+		ui.close()
+		fmt.Fprintf(os.Stderr, "%s Partial data kept in %s. While the sender waits, resume with: %s\n",
+			uxlog.Info(), displayPath(transfer.PartialDir(ui.outDir)), uxlog.Code(receiveResume))
 	}
 }
 
@@ -658,7 +665,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		text = payload
 		// Under --json the payload rides in the done event instead of
 		// raw stdout, which must stay pure NDJSON.
-		if !jsonEnabled() {
+		if !jsonEnabled() && ui.showText(text) {
 			if err := printTextPayload(text); err != nil {
 				return err
 			}
@@ -712,6 +719,44 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	}
 	jsonEmitDone(ev)
 	return retErr
+}
+
+// Text longer than this many bytes or lines is asked about before it is
+// printed to a terminal; anything shorter shows straight away.
+const (
+	shortTextBytes = 4000
+	shortTextLines = 40
+)
+
+// showText decides whether a received text payload is printed. Short text
+// on a terminal always is (promptAccept skipped the question for it); a
+// long payload gets the question it skipped, now that its size is known.
+func (ui *receiverUI) showText(text string) bool {
+	if ui.f.yes || ui.f.quiet || !stdoutIsTTY() {
+		return true
+	}
+	lines := strings.Count(text, "\n") + 1
+	if len(text) <= shortTextBytes && lines <= shortTextLines {
+		return true
+	}
+	q := fmt.Sprintf("Show the text (%s, %s)?", uxlog.HumanBytes(int64(len(text))), uxlog.CountNoun(lines, "line"))
+	for {
+		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", uxlog.Prompt(q))
+		line, eof, ok := readLineCtx(ui.ctx)
+		if !ok || eof {
+			if eof {
+				fmt.Fprintln(os.Stderr)
+			}
+			return false
+		}
+		switch line {
+		case "", "y", "yes":
+			return true
+		case "n", "no":
+			return false
+		}
+		fmt.Fprintln(os.Stderr, "  Please answer y or n.")
+	}
 }
 
 // errKeptByChoice is ErrTargetExists rendered as the user's decision (ℹ, no

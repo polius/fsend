@@ -124,7 +124,7 @@ func TestCurrentTheme(t *testing.T) {
 func TestTokenPicksBackgroundSibling(t *testing.T) {
 	t.Setenv("COLORFGBG", "")
 	for _, c := range []struct{ theme, want string }{
-		{"dark", "#ff9e64"}, {"light", "#b15c00"}, {"", "#c85000"},
+		{"dark", "#e0805a"}, {"light", "#bd4f23"}, {"", "#c85000"},
 	} {
 		t.Setenv("FSEND_THEME", c.theme)
 		resetThemeForTesting()
@@ -165,21 +165,32 @@ func TestPaletteContrast(t *testing.T) {
 		check(name, "both", r, g, b, white, black)
 		if tok.both256 != "" {
 			r, g, b = cube256(atoiOrDie(t, tok.both256))
+			if name == "accent" || name == "warning" {
+				// No orange or amber cell clears 4.5:1 on white as well:
+				// these accept the miss on white rather than no colour.
+				check(name, "both/256", r, g, b, black)
+				continue
+			}
 			check(name, "both/256", r, g, b, white, black)
 		}
 	}
 }
 
-func TestUnknownTheme256FallsBackToDefaultForeground(t *testing.T) {
+func TestUnknownTheme256KeepsBrandColour(t *testing.T) {
 	t.Setenv("FSEND_THEME", "")
 	t.Setenv("COLORFGBG", "")
 	t.Setenv("COLORTERM", "")
 	resetThemeForTesting()
-	if got := fg(tokenAccent); got != "" {
-		t.Errorf("accent under 256/unknown = %q, want default fg", got)
+	// Without COLORTERM (every SSH session) the accent and warning still
+	// carry a colour: the share code and spinner must not go plain.
+	if got := fg(tokenAccent); got != "\x1b[38;5;208m" {
+		t.Errorf("accent under 256/unknown = %q", got)
 	}
-	if got := fgBold(tokenAccent); got != colorBold {
-		t.Errorf("bold accent under 256/unknown = %q, want plain bold", got)
+	if got := fgBold(tokenAccent); got != "\x1b[1;38;5;208m" {
+		t.Errorf("bold accent under 256/unknown = %q", got)
+	}
+	if got := fg(tokenWarning); got != "\x1b[38;5;178m" {
+		t.Errorf("warning under 256/unknown = %q", got)
 	}
 	if got := fg(tokenInfo); got != "\x1b[38;5;63m" {
 		t.Errorf("info under 256/unknown = %q", got)

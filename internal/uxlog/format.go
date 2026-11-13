@@ -33,28 +33,28 @@ func HumanBytes(n int64) string {
 	return fmt.Sprintf("%s %cB", s, "KMGTPE"[exp])
 }
 
-// HumanDuration renders elapsed in compact form. Sub-second durations
-// show with milliseconds; longer durations switch to seconds with one
-// decimal, then minutes-and-seconds, then hours-minutes-seconds.
+// HumanDuration renders elapsed in compact form, with a space before the
+// unit like every size ("300 MB in 4.8 s"). Sub-second durations show
+// milliseconds; then seconds with one decimal, whole seconds, minutes and
+// seconds, and past an hour hours and minutes.
 func HumanDuration(d time.Duration) string {
 	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
+		return fmt.Sprintf("%d ms", d.Milliseconds())
 	}
 	if d < 10*time.Second {
-		return fmt.Sprintf("%.1fs", d.Seconds())
+		return fmt.Sprintf("%.1f s", d.Seconds())
 	}
 	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf("%d s", int(d.Seconds()))
 	}
 	if d < time.Hour {
 		m := int(d / time.Minute)
 		s := int((d % time.Minute) / time.Second)
-		return fmt.Sprintf("%dm%02ds", m, s)
+		return fmt.Sprintf("%d min %02d s", m, s)
 	}
 	h := int(d / time.Hour)
 	m := int((d % time.Hour) / time.Minute)
-	s := int((d % time.Minute) / time.Second)
-	return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
+	return fmt.Sprintf("%d h %02d min", h, m)
 }
 
 // HumanRate renders a bytes-per-second figure in compact form. Returns
@@ -77,8 +77,41 @@ func HumanRate(bytes int64, elapsed time.Duration) string {
 	if bytes < rateNoiseFloor {
 		return ""
 	}
-	rate := float64(bytes) / elapsed.Seconds()
-	return HumanBytes(int64(rate)) + "/s"
+	return RateLabel(float64(bytes) / elapsed.Seconds())
+}
+
+// RateLabel renders a bytes-per-second figure with a fixed single decimal
+// ("61.0 MB/s", never "61 MB/s" then "60.1 MB/s"), so a live rate keeps
+// its shape while it is being read. Sizes elsewhere drop a ".0"; a rate
+// changes every frame, so it must not.
+func RateLabel(bytesPerSec float64) string {
+	const unit = 1000
+	n := int64(bytesPerSec)
+	if n < unit {
+		return fmt.Sprintf("%d B/s", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB/s", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// Percent is the one rounding every percentage on screen uses — the bar,
+// plain-mode lines, "stopped at 62%" and "Resuming from … (62%)" — so two
+// lines about the same moment never disagree by a point. Rounds to the
+// nearest whole percent, but never shows 100 before the end or 0 after
+// the start.
+func Percent(current, total int64) int {
+	if total <= 0 || current <= 0 {
+		return 0
+	}
+	if current >= total {
+		return 100
+	}
+	p := int((current*200 + total) / (total * 2))
+	return max(1, min(99, p))
 }
 
 // CountNoun renders "<n> <noun>" with naive pluralisation ("1 file",

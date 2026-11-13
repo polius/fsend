@@ -17,7 +17,7 @@ func TestRenderError_UsageHeadline(t *testing.T) {
 	err := fmt.Errorf("%w: nothing to send — the folder is empty", fserrors.ErrUsage)
 	var code int
 	got := captureStderr(t, func() { code = renderError(err, false) })
-	if !strings.Contains(got, "[E024] Nothing to send — the folder is empty") {
+	if !strings.Contains(got, "Nothing to send — the folder is empty [E024]") {
 		t.Errorf("specific reason should be the headline:\n%s", got)
 	}
 	for _, unwanted := range []string{"Invalid usage", "fsend --help"} {
@@ -179,5 +179,23 @@ func TestCollectPlan_As(t *testing.T) {
 		if _, err := collectPlan(&flags{as: bad}, []string{"-"}); err == nil {
 			t.Errorf("--as %q accepted", bad)
 		}
+	}
+}
+
+// A line the user caused — Ctrl-C, their own "n" — carries no catalog
+// code; the sender's view of a decline names the device and keeps it.
+func TestRenderError_UserCausedLinesCarryNoCode(t *testing.T) {
+	t.Cleanup(func() { errorRole = ""; sendState = sessionState{} })
+	errorRole = "receiver"
+	for _, err := range []error{fserrors.ErrReceiverDeclined, fserrors.ErrUserCancelled, errKeptByChoice} {
+		if got := captureStderr(t, func() { renderError(err, false) }); strings.Contains(got, "[E0") {
+			t.Errorf("%v rendered a code: %q", err, got)
+		}
+	}
+	errorRole = "sender"
+	sendState.setPeer("bobs-laptop")
+	got := captureStderr(t, func() { renderError(fserrors.ErrReceiverDeclined, false) })
+	if !strings.Contains(got, "bobs-laptop declined the transfer. [E006]") {
+		t.Errorf("sender decline = %q", got)
 	}
 }

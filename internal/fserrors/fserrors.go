@@ -214,18 +214,19 @@ func (e Entry) Format() string {
 	return e.Message + "\n  " + e.Action
 }
 
-// Render is the user-facing form: "[Exxx] <message>\n  <action>".
-// The catalog code is included as a stable identifier users can quote in
-// bug reports or scripts (exit codes are unique per entry, but a textual
-// tag is easier to refer to in chat).
+// Render is the user-facing form: "<message> [Exxx]\n  <action>". The
+// sentence leads; the catalog code follows it as a stable identifier users
+// can quote in bug reports or scripts (exit codes are unique per entry,
+// but a textual tag is easier to refer to in chat).
 func (e Entry) Render() string {
 	if e.Code == "" {
 		return e.Format()
 	}
+	head := e.Message + " [" + e.Code + "]"
 	if e.Action == "" {
-		return "[" + e.Code + "] " + e.Message
+		return head
 	}
-	return "[" + e.Code + "] " + e.Message + "\n  " + e.Action
+	return head + "\n  " + e.Action
 }
 
 // catalog maps each sentinel to its presentation.

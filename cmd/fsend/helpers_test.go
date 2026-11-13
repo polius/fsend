@@ -494,7 +494,7 @@ func TestRenderError_UnsendableSymlink(t *testing.T) {
 	var code int
 	got := captureStderr(t, func() { code = renderError(err, false) })
 	for _, want := range []string{
-		"[E036] Cannot follow this symlink: broken link proj/dangling → ../gone (target does not exist)",
+		"Cannot follow this symlink: broken link proj/dangling → ../gone (target does not exist) [E036]",
 		"Fix the link, or skip it with --exclude.",
 	} {
 		if !strings.Contains(got, want) {
@@ -516,7 +516,7 @@ func TestRenderError_HomebrewManaged(t *testing.T) {
 		t.Errorf("exit code = %d, want 39", code)
 	}
 	for _, want := range []string{
-		"[E039] This fsend is managed by a package manager.",
+		"This fsend is managed by a package manager. [E039]",
 		"uninstall it with: brew uninstall fsend",
 	} {
 		if !strings.Contains(got, want) {
@@ -540,7 +540,7 @@ func TestRenderError_UpdateRootRefused(t *testing.T) {
 		t.Errorf("exit code = %d, want 40", code)
 	}
 	for _, want := range []string{
-		"[E040] Refusing to update as root — fsend installs per-user.",
+		"Refusing to update as root — fsend installs per-user. [E040]",
 		"to update anyway, run:",
 		"FSEND_ALLOW_ROOT=1 fsend --update",
 	} {
@@ -1254,12 +1254,12 @@ func TestSummaryLine_ResumeShowsMovedAndHonestRate(t *testing.T) {
 	if !strings.Contains(line, "200 MB (50 MB sent)") {
 		t.Errorf("missing moved clause: %s", line)
 	}
-	if !strings.Contains(line, "50 MB/s") {
+	if !strings.Contains(line, "50.0 MB/s") {
 		t.Errorf("rate must derive from moved bytes: %s", line)
 	}
 	// Non-resumed: no annotation, rate from the full size.
 	line = summaryLine(total, total, "sent", time.Second, mustLANInfo())
-	if strings.Contains(line, "sent") || !strings.Contains(line, "200 MB/s") {
+	if strings.Contains(line, "sent") || !strings.Contains(line, "200.0 MB/s") {
 		t.Errorf("non-resumed summary changed shape: %s", line)
 	}
 }

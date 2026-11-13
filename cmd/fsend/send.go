@@ -293,7 +293,8 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 	fmt.Fprintln(os.Stderr)
 	renderCodeBlock(os.Stderr, c, f.passArg != "")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  The code works for one receiver, while this stays open.")
+	// Wrapped at word boundaries: a narrow pane must not break it mid-word.
+	fmt.Fprintln(os.Stderr, uxlog.Wrap("The code works for one receiver, while this stays open.", 2))
 	fmt.Fprintln(os.Stderr)
 	return uxlog.StartSpinner("Waiting for receiver", uxlog.HintCancel)
 }
@@ -460,7 +461,7 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 	advance := func(d int64) {
 		pos += d
 		if plan.totalBytes > 0 {
-			sendState.setPct(int(min(100, pos*100/int64(plan.totalBytes))))
+			sendState.setPct(uxlog.Percent(pos, int64(plan.totalBytes)))
 		}
 	}
 	return func() { bar.Done() },
@@ -515,7 +516,7 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 func resumeNotice(offset, total uint64) string {
 	s := "Resuming from " + uxlog.HumanBytes(int64(offset))
 	if total > 0 {
-		s += fmt.Sprintf(" (%d%%)", offset*100/total)
+		s += fmt.Sprintf(" (%d%%)", uxlog.Percent(int64(offset), int64(total)))
 	}
 	return s
 }
@@ -563,7 +564,9 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 	}
 	clauses := ""
 	if n := s.skippedFiles - s.keptFiles; n > 0 {
-		clauses += "  ·  " + uxlog.Good(uxlog.CountNoun(n, "file")+" skipped")
+		// The receiver's word for these is "up to date"; "skipped" reads
+		// like a failure on the side that did nothing wrong.
+		clauses += "  ·  " + uxlog.Good(uxlog.CountNoun(n, "file")+" already there")
 	}
 	if s.keptFiles > 0 {
 		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver")
@@ -603,9 +606,10 @@ func wantsBar(total int64, unknownSize bool) bool {
 var sendState sessionState
 
 type sessionState struct {
-	mu   sync.Mutex
-	peer string // sanitized device name; "" until the first HELLO_ACK
-	pct  int    // bar position of the latest round, 0..100
+	mu       sync.Mutex
+	peer     string // sanitized device name; "" until the first HELLO_ACK
+	accepted string // the peer that last accepted; "" until one has
+	pct      int    // bar position of the latest round, 0..100
 }
 
 func (s *sessionState) setPeer(name string) (changed bool) {
@@ -622,6 +626,23 @@ func (s *sessionState) peerName() string {
 	return s.peer
 }
 
+// markAccepted records that the current peer accepted, reporting whether
+// that is news (a retry round re-accepts silently).
+func (s *sessionState) markAccepted() (changed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed = s.accepted != s.peer
+	s.accepted = s.peer
+	return changed
+}
+
+// acceptedBy reports whether name has already accepted this send.
+func (s *sessionState) acceptedBy(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return name != "" && s.accepted == name
+}
+
 func (s *sessionState) setPct(p int) {
 	s.mu.Lock()
 	s.pct = p
@@ -634,13 +655,19 @@ func (s *sessionState) percent() int {
 	return s.pct
 }
 
-// onPeer is the sender's transfer.SendOptions.OnPeer: on an accepting
-// receiver it prints "✓ bobs-laptop accepted" (once per receiver, so a
-// retry round doesn't repeat it) — the sender's view of who connected.
-func onPeer(f *flags, hostname string, accepted bool) {
-	name := sanitizeRemote(hostname)
-	if changed := sendState.setPeer(name); changed && accepted && !f.quiet {
-		fmt.Fprintf(os.Stderr, "%s %s accepted\n", uxlog.Check(), name)
+// onPeer is the sender's transfer.SendOptions.OnPeer: it records the
+// receiver's self-reported device name for the lines that name it. The
+// HELLO reply is not consent — see onAccepted.
+func onPeer(hostname string) {
+	sendState.setPeer(sanitizeRemote(hostname))
+}
+
+// onAccepted prints "✓ bobs-laptop accepted" once the receiver has really
+// agreed (transfer.SendOptions.OnAccepted) — once per receiver, so a retry
+// round doesn't repeat it.
+func onAccepted(f *flags) {
+	if sendState.markAccepted() && !f.quiet {
+		fmt.Fprintf(os.Stderr, "%s %s accepted\n", uxlog.Check(), sendState.peerName())
 	}
 }
 
