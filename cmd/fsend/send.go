@@ -17,7 +17,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/connpath"
@@ -91,6 +90,11 @@ func runSend(f *flags, paths []string) error {
 	cfg := loadConfig(f.quiet)
 	startUpdateCheck(f)
 
+	if !f.quiet {
+		// Settle the terminal's background before anything draws (see
+		// uxlog.DetectTheme).
+		uxlog.DetectTheme()
+	}
 	waitSpin := printSendArtifact(f, c, plan)
 	return runSendParallel(ctx, f, plan, c, cfg, waitSpin)
 }
@@ -265,97 +269,58 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 	if !jsonEnabled() && !stdoutIsTTY() && !sameSink(os.Stdout, os.Stderr) {
 		_, _ = fmt.Fprintln(os.Stdout, c)
 	}
-	arrow := sendArrow()
+	// The grid: the arrow in the gutter, the subject in bold, the counts
+	// and size as faint detail beneath it.
 	fmt.Fprintln(os.Stderr)
+	head, detail := "Sending text", uxlog.HumanBytes(int64(plan.totalBytes))
 	switch {
 	case plan.mode == wire.ModeStream && plan.isText:
-		fmt.Fprintf(os.Stderr, "  %sSending text  ·  %s\n", arrow, uxlog.HumanBytes(int64(plan.totalBytes)))
 	case plan.mode == wire.ModeStream && f.as != "":
-		fmt.Fprintf(os.Stderr, "  %sSending stdin as %s  ·  size unknown\n", arrow, uxlog.Path(f.as))
+		head, detail = "Sending stdin as "+uxlog.Subject(f.as), "size unknown"
 	case plan.mode == wire.ModeStream:
-		fmt.Fprintf(os.Stderr, "  %sSending stdin stream  ·  size unknown\n", arrow)
+		head, detail = "Sending stdin", "size unknown"
 	default:
-		name := ""
+		head = "Sending " + uxlog.CountNoun(plan.totalFiles, "file")
 		if plan.label != "" {
-			name = uxlog.Path(plan.label) + "  ·  "
+			head = "Sending " + uxlog.Subject(plan.label)
 		}
-		fmt.Fprintf(os.Stderr, "  %sSending %s%s  ·  %s\n",
-			arrow, name, uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))
+		detail = uxlog.Join(uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))
+	}
+	fmt.Fprintln(os.Stderr, uxlog.SendArrow(), head)
+	fmt.Fprintln(os.Stderr, uxlog.Detail(detail))
+	if plan.mode == wire.ModeFiles {
 		// Directory-only sends (an empty folder) survive collectPlan's
 		// nothing-to-send guard because the dir entry itself is a source.
 		// Sending it is legitimate — but "0 files" is usually a mistake,
 		// so say what will actually happen.
 		if plan.totalFiles == 0 {
-			fmt.Fprintf(os.Stderr, "  %s No files here — only the empty directory will be created on the other side.\n", uxlog.Warn())
+			fmt.Fprintln(os.Stderr, uxlog.Warn(), "No files here — only the empty directory will be created on the other side.")
 		}
-		renderPreview(os.Stderr, senderPreview(plan.sources), 6)
+		renderPreview(os.Stderr, senderPreview(plan.sources), 4)
 	}
 	fmt.Fprintln(os.Stderr)
 	renderCodeBlock(os.Stderr, c, f.passArg != "")
 	fmt.Fprintln(os.Stderr)
-	// Wrapped at word boundaries: a narrow pane must not break it mid-word.
-	fmt.Fprintln(os.Stderr, uxlog.Wrap("The code works for one receiver, while this stays open.", 2))
-	fmt.Fprintln(os.Stderr)
 	return uxlog.StartSpinner("Waiting for receiver", uxlog.HintCancel)
 }
 
-// sendArrow renders the ⇢ direction marker prefixed to the send header
-// on color-capable terminals; "" on pipes/files so the plain-text form
-// scripts may scrape stays byte-stable. Brand orange: it marks the
-// interactive hero flow.
-func sendArrow() string {
-	if !uxlog.ColorFor(os.Stderr) {
-		return ""
-	}
-	return uxlog.Brand("⇢") + "  "
-}
-
-// codeBoxInner is the content width between the box borders. Both
-// content lines are constants — the instruction sentence and the run
-// command (codes are always 11 chars) — so a fixed box renders the same
-// for every transfer; 34 leaves comfortable padding around the
-// 28-character instruction row.
-const codeBoxInner = 34
-
-// codeBoxMinWidth is the narrowest terminal the box fits in: 2 leading
-// spaces + 2 border columns + the 36-column interior. Below that (and on
-// non-TTYs) the plain indented block renders instead — a wrapped box
-// looks broken, and piped stderr must stay byte-stable anyway.
-const codeBoxMinWidth = 42
-
-// renderCodeBlock draws the "run this on the other machine" block. On a
-// terminal wide enough to hold it, a light box frames the share code —
-// the one thing on screen the user must read back or dictate — so it
-// survives scrollback and busy terminals as a single visual object.
-// The frame and the code share the brand orange (with the code bolded):
-// the box is the hero, not structure to dim past. Fallback keeps the
-// historical plain block for pipes, narrow terminals, and NO_COLOR.
+// renderCodeBlock prints the "run this on the other machine" block: the
+// command alone on its line, set off by indentation and blank lines rather
+// than a frame, so a triple-click copies a runnable command and one layout
+// works at every width. "fsend" is bold default and the code the one orange
+// thing on screen: the part the user reads back or dictates. The faint
+// line under it says what the code is good for.
 func renderCodeBlock(w io.Writer, c string, password bool) {
-	if !uxlog.ColorFor(w) || uxlog.TerminalWidth(0) < codeBoxMinWidth {
-		_, _ = fmt.Fprintln(w, "  On the other machine, run:")
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintf(w, "      fsend %s\n", uxlog.Code(c))
-		if password {
-			_, _ = fmt.Fprintln(w, "      (they'll need the password too)")
-		}
-		return
-	}
-	edge := uxlog.Brand("  │")
-	row := func(content string, plainLen int) {
-		// pad is computed off the plain length; content may carry ANSI
-		// (the code) that must not count toward the width.
-		_, _ = fmt.Fprintf(w, "%s %s%s %s\n", edge, content,
-			strings.Repeat(" ", max(0, codeBoxInner-plainLen)), uxlog.Brand("│"))
-	}
-	_, _ = fmt.Fprintln(w, uxlog.Brand("  ┌"+strings.Repeat("─", codeBoxInner+2)+"┐"))
-	row("  On the other machine, run:", len("  On the other machine, run:"))
-	row("", 0)
-	row("      "+uxlog.Accent("fsend")+" "+uxlog.Code(c), len("      fsend ")+len(c))
+	_, _ = fmt.Fprintln(w, "  On the other machine, run")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "      %s %s\n", uxlog.Subject("fsend"), uxlog.Code(c))
+	_, _ = fmt.Fprintln(w)
+	note := uxlog.Join("One receiver", "valid while this runs")
 	if password {
-		row("", 0)
-		row("  "+uxlog.PasswordChip()+" too", utf8.RuneCountInString("  ⚠ password required too"))
+		note = uxlog.Join(note, "they need the password too")
 	}
-	_, _ = fmt.Fprintln(w, uxlog.Brand("  └"+strings.Repeat("─", codeBoxInner+2)+"┘"))
+	// Wrapped at word boundaries: a narrow pane must not break it mid-word.
+	_, _ = fmt.Fprintln(w, uxlog.Muted(uxlog.Wrap(note, 2)))
 }
 
 // senderPreview projects the walked sources into preview rows, dropping
@@ -492,7 +457,7 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 				advance(d)
 			}
 			if !f.quiet {
-				uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
+				uxlog.Note(resumeNotice(offset, total))
 			}
 		},
 		func(_ uint32, kept bool) {
@@ -521,14 +486,20 @@ func resumeNotice(offset, total uint64) string {
 	return s
 }
 
-// printSendSummary renders the post-transfer outcome line. subject names
-// what was sent when there is a single path (plan.label) — rendered green
-// like every file reference — so the summary mirrors the receiver's
-// "Saved X to Y" shape. Files the receiver kept (differing, no
-// --overwrite there) make it a warning, not a success — the sender must
-// not read "✓ Sent" when nothing was delivered. Partial skips without the
-// kept flag stay the neutral "skipped": an old receiver doesn't report
-// the distinction (wire.Decision.Kept), so "up to date" would overclaim.
+// printSendSummary renders the post-transfer outcome: the outcome line,
+// then the numbers, then the exceptions, each detail line faint and short
+// enough for 60 columns whatever the device name —
+//
+//	✓ Sent report.pdf to bobs-laptop
+//	  2.4 MB · 0.3 s · 7.0 MB/s · local network
+//	  8 already there · 3 kept by the receiver
+//
+// subject names what was sent when there is a single path (plan.label), so
+// the summary mirrors the receiver's "Saved X to Y" shape. Files the
+// receiver kept are its choice, not a fault of the send: the tick stays
+// when anything arrived, and "Nothing sent" carries no glyph at all.
+// Partial skips without the kept flag stay neutral: an old receiver
+// doesn't report the distinction (wire.Decision.Kept).
 func printSendSummary(f *flags, subject string, total int64, s senderStats, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
@@ -537,41 +508,36 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 	// says "Already up to date" — "Sent · (0 B sent)" would contradict
 	// itself. Mirror the receiver's headline.
 	if s.moved == 0 && s.keptFiles == 0 && s.skippedFiles > 0 {
-		fmt.Fprintf(os.Stderr, "%s Already up to date  ·  %s unchanged  ·  %s\n",
-			uxlog.Check(), uxlog.CountNoun(s.skippedFiles, "file"), path.Tag())
+		fmt.Fprintln(os.Stderr, uxlog.Check(), "Already up to date")
+		fmt.Fprintln(os.Stderr, uxlog.Detail(uxlog.Join(uxlog.CountNoun(s.skippedFiles, "file")+" unchanged", path.Tag())))
 		printUpdateNotice(f)
 		return
 	}
-	glyph, verb := uxlog.Check(), "Sent"
-	if s.keptFiles > 0 {
-		glyph = uxlog.Warn()
-		if s.moved == 0 {
-			// "Sent — 2.1 MB" would contradict itself; name the outcome and
-			// mark the size as the offer, not what crossed the wire.
-			verb = "Nothing sent"
-		}
+	glyph, headline := uxlog.Check(), "Sent"
+	if subject != "" {
+		headline += " " + subject
 	}
-	// "Sent report.pdf to bobs-laptop": the subject says what, the peer
-	// says to whom — the last check that the code reached the right person.
-	headline := verb
-	if verb == "Sent" {
-		if subject != "" {
-			headline += " " + subject
-		}
-		if peer := sendState.peerName(); peer != "" {
-			headline += " to " + peer
-		}
+	if peer := sendState.peerName(); peer != "" {
+		headline += " to " + peer
 	}
-	clauses := ""
+	if s.keptFiles > 0 && s.moved == 0 {
+		// "Sent — 2.1 MB" would contradict itself; name the outcome.
+		glyph, headline = uxlog.Info(), "Nothing sent"
+	}
+	fmt.Fprintln(os.Stderr, glyph, headline)
+	fmt.Fprintln(os.Stderr, uxlog.Detail(summaryDetail(total, s.moved, "sent", elapsed, path)))
+	var exceptions []string
 	if n := s.skippedFiles - s.keptFiles; n > 0 {
 		// The receiver's word for these is "up to date"; "skipped" reads
 		// like a failure on the side that did nothing wrong.
-		clauses += "  ·  " + uxlog.Good(uxlog.CountNoun(n, "file")+" already there")
+		exceptions = append(exceptions, fmt.Sprintf("%d already there", n))
 	}
 	if s.keptFiles > 0 {
-		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(s.keptFiles, "file")+" kept by receiver")
+		exceptions = append(exceptions, fmt.Sprintf("%d kept by the receiver", s.keptFiles))
 	}
-	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, s.moved, "sent", elapsed, path), clauses)
+	if len(exceptions) > 0 {
+		fmt.Fprintln(os.Stderr, uxlog.Detail(uxlog.Join(exceptions...)))
+	}
 	if s.keptFiles == 0 && s.moved > 0 {
 		uxlog.Notify("Sent "+uxlog.HumanBytes(max(total, s.moved)), time.Since(runStart))
 	}
@@ -587,7 +553,7 @@ func sendSubject(plan *sendPlan) string {
 	case plan.mode == wire.ModeStream:
 		return "stdin"
 	case plan.label != "":
-		return uxlog.Path(plan.label)
+		return uxlog.Subject(plan.label)
 	}
 	return uxlog.CountNoun(plan.totalFiles, "file")
 }
@@ -688,8 +654,9 @@ func passwordMissNotice(err error) string {
 	return "Wrong password from " + who
 }
 
-// dropNotice is the line a sender sees when its receiver goes away
-// mid-transfer, naming who, how far it got and the code that still works.
+// dropNotice is what a sender sees when its receiver goes away
+// mid-transfer: who, and how far it got, then — on a faint line of its own
+// so the code is never split by a wrap — the command that still works.
 func dropNotice(deliberate bool, code string) string {
 	who := sendState.peerName()
 	at := ""
@@ -701,40 +668,36 @@ func dropNotice(deliberate bool, code string) string {
 		if who == "" {
 			who = "The receiver"
 		}
-		return fmt.Sprintf("%s stopped%s — to resume, rerun on that device: %s", who, at, again)
+		return fmt.Sprintf("%s stopped%s\n%s%s", who, at, uxlog.Detail("To resume, rerun on that device: "), again)
 	}
 	if who == "" {
 		who = "the receiver"
 	}
-	return fmt.Sprintf("Lost contact with %s%s — waiting; to resume, rerun on that device: %s", who, at, again)
+	return fmt.Sprintf("Lost contact with %s%s — waiting\n%s%s", who, at, uxlog.Detail("To resume, rerun on that device: "), again)
 }
 
-// summaryLine renders the size/duration/rate/route tail shared by both
-// summaries: "209.7 MB in 4.5s (46.1 MB/s)  ·  local network". The size
-// stays in the default colour; elapsed, rate, and the route chip are
-// dimmed — secondary detail after the sentence's subject. moved below
-// total adds a "(X sent)" clause and bases the rate on moved alone.
-func summaryLine(total, moved int64, verb string, elapsed time.Duration, path connpath.Info) string {
+// summaryDetail renders the numbers line shared by both summaries:
+// "209.7 MB · 4.5 s · 46.1 MB/s · local network". moved below total says
+// so ("50 MB of 200 MB sent") and bases the rate on moved alone — unless
+// the two round to the same figure, where the clause would only repeat it.
+func summaryDetail(total, moved int64, verb string, elapsed time.Duration, path connpath.Info) string {
 	// A stream's total is unknown up front (0); by summary time the moved
-	// count is the size — "Sent — 0 B" for a 15 MB pipe would be a lie.
+	// count is the size — "0 B" for a 15 MB pipe would be a lie.
 	if moved > total {
 		total = moved
 	}
 	size := uxlog.HumanBytes(total)
-	if moved < total && moved > 0 {
-		size += " (" + uxlog.HumanBytes(moved) + " " + verb + ")"
+	if moved < total && moved > 0 && uxlog.HumanBytes(moved) != size {
+		size = uxlog.HumanBytes(moved) + " of " + size + " " + verb
 	}
-	line := size
 	// With zero bytes moved, elapsed is prompt dwell or connection wall
-	// time, not a transfer duration — "0 B · 5.8s" reads as a slow
+	// time, not a transfer duration — "0 B · 5.8 s" reads as a slow
 	// transfer. Omit it (HumanRate already suppresses the rate).
+	dur := ""
 	if moved > 0 {
-		line += " in " + uxlog.HumanDuration(elapsed)
+		dur = uxlog.HumanDuration(elapsed)
 	}
-	if r := uxlog.HumanRate(moved, elapsed); r != "" {
-		line += " (" + r + ")"
-	}
-	return line + "  ·  " + path.Tag()
+	return uxlog.Join(size, dur, uxlog.HumanRate(moved, elapsed), path.Tag())
 }
 
 // displayPath renders an absolute path as short as it stays unambiguous:
@@ -784,7 +747,9 @@ func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 		// spinner's line first, and a live progress bar's next refresh
 		// would erase a raw stderr write; cancel() races the bar's teardown.
 		if !quiet {
-			uxlog.Println(fmt.Sprintf("%s Cancelling…", uxlog.Info()))
+			// The leading \r: the terminal has just echoed "^C", leaving the
+			// cursor two columns in; the line belongs in column 0.
+			uxlog.Println(fmt.Sprintf("\r%s Cancelling…", uxlog.Info()))
 			mu.Lock()
 			if !done {
 				hint = time.AfterFunc(time.Second, func() {

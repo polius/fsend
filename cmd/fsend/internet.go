@@ -733,11 +733,11 @@ func retryNoticeFor(f *flags) func(attempt int, wait time.Duration, lastErr erro
 		// on a user-facing line.
 		wait = wait.Round(100 * time.Millisecond)
 		if f.debug {
-			uxlog.Println(fmt.Sprintf("  %s Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
+			uxlog.Println(fmt.Sprintf("%s Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
 				uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts))
 			return
 		}
-		uxlog.Println(fmt.Sprintf("  %s Connection interrupted — retrying in %s (attempt %d/%d)",
+		uxlog.Println(fmt.Sprintf("%s Connection interrupted — retrying in %s (attempt %d/%d)",
 			uxlog.Retry(), wait, attempt, retry.DefaultAttempts))
 	}
 }

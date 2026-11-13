@@ -462,7 +462,7 @@ func startHere() {
 		}
 		return render(s)
 	}
-	_, _ = fmt.Fprintf(os.Stdout, `  %s  %s — send files straight to another computer
+	_, _ = fmt.Fprintf(os.Stdout, `  %s — send files straight to another computer
 
   %s
     fsend %s
@@ -473,10 +473,9 @@ func startHere() {
   More: fsend %s   everything
         fsend %s   check your setup
 `,
-		paint(uxlog.Brand, "⇄"),
 		paint(uxlog.Bold, "fsend"),
 		paint(uxlog.Bold, "Send a file"),
-		paint(uxlog.Path, "report.pdf"),
+		"report.pdf",
 		paint(uxlog.Bold, "Then, on the other machine"),
 		paint(uxlog.Code, "xqp-wjyc-zxk"),
 		paint(uxlog.Accent, "--help"),

@@ -2,6 +2,7 @@ package uxlog
 
 import (
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -12,15 +13,21 @@ import (
 // Glyph kinds for status lines. Each maps to a unicode + ASCII fallback
 // pair and a colour. Centralising them here keeps every CLI surface
 // (send, receive, connect, uninstall, errors) consistent.
+//
+// The set is deliberately small and limited to symbols every monospace
+// font carries: ✓ ✗ ! ? → ← and the spinner. A glyph missing from the
+// user's font is drawn from a fallback (often the colour-emoji font) with
+// a different width and baseline, so ⚠ ℹ ⟳ ⇢ ⇣ are not used.
 type glyphKind int
 
 const (
 	gCheck glyphKind = iota // ✓ / [OK]
-	gCross                  // ✗ / FAIL
-	gWarn                   // ⚠ / [!]
-	gInfo                   // ℹ / [i]
+	gCross                  // ✗ / [FAIL]
+	gWarn                   // ! (bold) / [!]
+	gInfo                   // no glyph — a blank gutter / [i]
 	gStep                   // › / >  (narration marker, as the install scripts print)
-	gRetry                  // ⟳ / [~]
+	gRetry                  // ! (bold) / [~]
+	gAsk                    // ? (bold) / [?]
 	gSpin                   // … / [*]  ("waiting" — non-animated; deliberately not a
 	//                                   single-frame braille spinner)
 )
@@ -28,16 +35,24 @@ const (
 // Marker returns the leading status glyph appropriate for stderr's TTY
 // state. Caller appends the rest of the line.
 //
+// Every glyph is one column wide and sits in column 0, so the text after
+// "<glyph> " starts in column 2 — the grid every line follows (see Line).
 // When stderr is a real terminal we render the unicode glyph and (when
 // allowed) apply colour. When stderr is a pipe/file we render the ASCII
 // fallback with no colour so log files stay readable.
 func Marker(kind glyphKind) string {
-	utf8, ascii, token := glyphForKind(kind)
+	utf8, ascii, token, bold := glyphForKind(kind)
 	if !renderTTY(os.Stderr) {
 		return ascii
 	}
 	if !colorEnabled() {
+		if bold && utf8 != " " {
+			return colorBold + utf8 + colorReset
+		}
 		return utf8
+	}
+	if bold {
+		return fgBold(token) + utf8 + colorReset
 	}
 	if c := fg(token); c != "" {
 		return c + utf8 + colorReset
@@ -51,10 +66,12 @@ func Check() string { return Marker(gCheck) }
 // Cross returns the failure glyph (✗ or [FAIL]).
 func Cross() string { return Marker(gCross) }
 
-// Warn returns the warning glyph (⚠ or [!]).
+// Warn returns the warning glyph (a bold ! or [!]).
 func Warn() string { return Marker(gWarn) }
 
-// Info returns the informational glyph (ℹ or [i]).
+// Info returns the gutter for a neutral notice: blank on a terminal, so the
+// notice's text lines up in column 2 with no symbol of its own; "[i]" in
+// logs, where a marker keeps lines greppable.
 func Info() string { return Marker(gInfo) }
 
 // Step returns the step glyph (› or >) — the marker the install scripts
@@ -63,111 +80,136 @@ func Info() string { return Marker(gInfo) }
 // (--update) so the two outputs read as one continuous block.
 func Step() string { return Marker(gStep) }
 
-// Retry returns the retry glyph (⟳ or [~]).
+// Retry returns the retry glyph: the warning ! on a terminal (a dropped
+// connection is a soft warning; the spinner that follows shows the wait),
+// "[~]" in logs.
 func Retry() string { return Marker(gRetry) }
 
-// PasswordChip renders the "password required" artifact chip, degrading
-// to plain text on pipes/files like every other glyph here. ⚠ (warning)
-// keeps the chip inside the app's glyph family — an emoji would be the
-// odd one out and renders double-width in some terminals.
+// Ask returns the prompt glyph (a bold ? or [?]) for lines that want an
+// answer, so a scan down the gutter finds every question.
+func Ask() string { return Marker(gAsk) }
+
+// SendArrow and RecvArrow mark the direction of a transfer in the gutter of
+// its opening line (→ sending, ← receiving). Pipes get a blank gutter: the
+// words say it, and scraped output stays ASCII.
+func SendArrow() string { return arrow("→") }
+
+// RecvArrow is SendArrow's receiving counterpart.
+func RecvArrow() string { return arrow("←") }
+
+func arrow(a string) string {
+	if !renderTTY(os.Stderr) {
+		return " " // a blank gutter keeps the text in column 2
+	}
+	if colorEnabled() {
+		if c := fg(tokenAccent); c != "" {
+			return c + a + colorReset
+		}
+	}
+	return a
+}
+
+// PasswordChip renders the "password required" chip on an artifact line:
+// text in the warning colour, no glyph (glyphs live only in the gutter).
+// Plain text on pipes/files like every other marker here.
 func PasswordChip() string {
 	if !renderTTY(os.Stderr) {
 		return "[password required]"
 	}
 	if colorEnabled() {
-		return fg(tokenWarning) + "⚠" + colorReset + " password required"
+		if c := fg(tokenWarning); c != "" {
+			return c + "password required" + colorReset
+		}
 	}
-	return "⚠ password required"
+	return "password required"
 }
 
-func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken) {
+func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken, bold bool) {
 	switch k {
 	case gCheck:
-		return "✓", "[OK]", tokenSuccess
+		// Green means "it worked" and nothing else: the tick is the only
+		// element that wears it.
+		return "✓", "[OK]", tokenSuccess, false
 	case gCross:
-		return "✗", "[FAIL]", tokenError
+		return "✗", "[FAIL]", tokenError, false
 	case gWarn:
-		return "⚠", "[!]", tokenWarning
+		return "!", "[!]", tokenWarning, true
 	case gInfo:
-		// Cyan reads as "neutral status update" — distinct from green
-		// (success) and yellow (warning).
-		return "ℹ", "[i]", tokenInfo
+		// Neutral notices carry no symbol: an empty gutter, text in
+		// column 2 like every other line.
+		return " ", "[i]", colourToken{}, false
 	case gStep:
 		// Default foreground: narration, not information. The › is the
 		// same glyph the install scripts print for every step, so
 		// --update's lines and the installer output that follows them
-		// match. Reserving cyan for the ℹ glyph, --help syntax and links
-		// keeps that hue for the things worth noticing — a narration
-		// marker competing in cyan only added noise.
-		return "›", ">", colourToken{}
+		// match.
+		return "›", ">", colourToken{}, false
 	case gRetry:
-		// Yellow signals "in-flight recovery" — same family as warn,
-		// so the retry line catches the eye without crying error.
-		return "⟳", "[~]", tokenWarning
+		return "!", "[~]", tokenWarning, true
+	case gAsk:
+		return "?", "[?]", tokenPrimary, true
 	case gSpin:
 		// The animated spinner glyph (Spinner type) carries its own
 		// rendering; this static fallback is only used in the rare
-		// non-animated paths (e.g. tests). Info cyan to match ℹ.
-		return "…", "[*]", tokenInfo
+		// non-animated paths (e.g. tests).
+		return "…", "[*]", tokenAccent, false
 	}
-	return "", "", colourToken{}
+	return "", "", colourToken{}, false
 }
 
 // ---------------------------------------------------------------------
 // Colour handling
 // ---------------------------------------------------------------------
 
-// colourToken is one semantic colour role, holding a truecolour hex for
-// each background the terminal might have. The roles mirror the theme
-// keys opencode's theme system defines (primary / accent / success /
-// warning / error / info), so the CLI vocabulary and the TUI vocabulary
-// stay parallel:
+// colourToken is one semantic colour role. The roles mirror the theme keys
+// opencode's theme system defines (primary / accent / success / warning /
+// error / info), so the CLI vocabulary and the TUI vocabulary stay
+// parallel:
 //
-//	accent   — act: the share code, code box, spinner, direction arrows
-//	primary  — decide: question lines, overwrite prompts, password prompts
-//	success  — reassurance and file references (✓, paths — the green the
-//	           eye learns to read as "a file on disk")
-//	warning  — caution (⚠, "differs", stalled bar)
+//	accent   — act: the share code, the spinner, the filled bar, arrows
+//	primary  — decide: the ? gutter and the questions it leads
+//	success  — the ✓ tick, and nothing else
+//	warning  — caution (!, "differs", "deletes yours", a stall)
 //	error    — failure (✗)
-//	info     — neutral status (ℹ, --help flags, links)
+//	info     — --help flags and links
 //
-// Three siblings per role, each at least WCAG AA (4.5:1):
+// Which colour a role gets depends on what fsend knows about the
+// background:
 //
-//	dark  — the pastel family (Tokyo Night), against black.
-//	light — the same hues darkened, against white.
-//	both  — mid-tones that clear 4.5:1 against white AND black. Used when
-//	        the background is unknown, the common case: most terminals
-//	        (macOS Terminal included) export nothing that reveals it.
+//   - Unknown (the usual case): the terminal's own ANSI colours, SGR 31
+//     to 36. The user's theme has already tuned those for its background
+//     and for their eyes — the reason gh, cargo, git and docker use them.
+//   - Dark or light, declared (FSEND_THEME, COLORFGBG) or detected (an
+//     OSC 11 query, see bgquery_*.go): a truecolour palette that clears
+//     WCAG AA (4.5:1) on that theme's usual backgrounds, or the nearest
+//     xterm-256 cell when the terminal lacks truecolour.
 //
-// Rendering uses truecolour when the terminal reports it
-// (COLORTERM=truecolor/24bit), else a 256-colour cell. For dark/light
-// that is the nearest cell; for both it is both256, hand-picked. The cube
-// holds no orange or amber inside the 4.5:1-on-both band, so accent and
-// warning take 208 and 178 and accept a small miss on white: a brand
-// colour that misses by a little beats one that disappears (SSH sessions
-// drop COLORTERM, so this is a common case). The zero token means "no
-// colour".
-//
-// The dark accent is the logo orange (#E0805A) and the light one is the
-// same hue darkened to clear 4.5:1 on white; warning sits towards yellow
-// so it never reads as a second accent.
+// The dark accent is the logo orange (#E0805A); the light one is the same
+// hue darkened to clear 4.5:1 on common light backgrounds. Warning sits
+// towards yellow so it never reads as a second accent. The zero token
+// means "no colour".
 type colourToken struct {
-	dark, light, both string // "#rrggbb"
-	both256           string // xterm-256 index for both; "" = default fg
+	dark, light string // "#rrggbb"
+	ansi        string // SGR foreground parameter when the background is unknown
 }
 
 var (
-	tokenAccent  = colourToken{"#e0805a", "#bd4f23", "#c85000", "208"}
-	tokenPrimary = colourToken{"#bb9af7", "#7847bd", "#8f58dc", "98"}
-	tokenSuccess = colourToken{"#9ece6a", "#587539", "#47851b", "29"}
-	tokenWarning = colourToken{"#e5c07b", "#7d6500", "#a06b00", "178"}
-	tokenError   = colourToken{"#f7768e", "#b3261e", "#da3644", "131"}
-	tokenInfo    = colourToken{"#7dcfff", "#007197", "#007fa9", "63"}
+	tokenAccent  = colourToken{"#e0805a", "#b54c22", "36"}
+	tokenPrimary = colourToken{"#bb9af7", "#7847bd", "35"}
+	tokenSuccess = colourToken{"#9ece6a", "#587539", "32"}
+	tokenWarning = colourToken{"#e5c07b", "#7d6500", "33"}
+	tokenError   = colourToken{"#f7768e", "#b3261e", "31"}
+	tokenInfo    = colourToken{"#7dcfff", "#007197", "36"}
 )
 
 const (
 	colorReset = "\x1b[0m"
 	colorBold  = "\x1b[1m"
+	// colorFaint is SGR 2. The terminal derives faint from the user's own
+	// foreground, so it stays readable wherever that is — unlike a fixed
+	// grey, or bright-black, which some themes map close to the
+	// background. Terminals that ignore it show default text.
+	colorFaint = "\x1b[2m"
 )
 
 // truecolorEnabled reports whether the terminal advertised 24-bit colour
@@ -189,11 +231,14 @@ func truecolorEnabled() bool {
 	return tcOK
 }
 
-// sgr returns the SGR foreground parameters for the token at the
-// terminal's best fidelity: "38;2;r;g;b" under truecolour, else
-// "38;5;<idx>". "" means the default foreground.
+// sgr returns the SGR foreground parameters for the token: the ANSI
+// colour when the background is unknown, else "38;2;r;g;b" under
+// truecolour or "38;5;<idx>". "" means the default foreground.
 func sgr(t colourToken) string {
 	th := currentTheme()
+	if th == themeUnknown {
+		return t.ansi
+	}
 	hex := t.hexFor(th)
 	if hex == "" {
 		return ""
@@ -202,16 +247,11 @@ func sgr(t colourToken) string {
 		r, g, b := parseHex(hex)
 		return "38;2;" + r + ";" + g + ";" + b
 	}
-	if th == themeUnknown {
-		if t.both256 == "" {
-			return ""
-		}
-		return "38;5;" + t.both256
-	}
 	return "38;5;" + nearest256(hex)
 }
 
-// hex is the token's truecolour for the terminal's background.
+// hex is the token's truecolour for the terminal's background ("" when
+// the background is unknown).
 func (t colourToken) hex() string { return t.hexFor(currentTheme()) }
 
 func (t colourToken) hexFor(th theme) string {
@@ -221,7 +261,7 @@ func (t colourToken) hexFor(th theme) string {
 	case themeLight:
 		return t.light
 	}
-	return t.both
+	return ""
 }
 
 type theme int
@@ -238,10 +278,9 @@ const (
 //  2. COLORFGBG — the de-facto var iTerm2/Konsole/rxvt export as
 //     "<fg>;<bg>"; the last field is the background's ANSI colour index.
 //     Index 7 (white) and 9..15 (bright) are the light end.
-//  3. unknown → the "both" palette, readable on either.
-//
-// No OSC 11 query: it needs raw mode on the tty and can swallow or leak
-// typed input, a poor trade when the both palette already reads fine.
+//  3. An OSC 11 query to the terminal, when stderr is a colour terminal
+//     (queryBackground; bounded, and answered or abandoned in a blink).
+//  4. unknown → the terminal's own ANSI colours.
 var (
 	bgOnce  sync.Once
 	bgTheme theme
@@ -264,11 +303,73 @@ func currentTheme() theme {
 							bgTheme = themeLight
 						}
 					}
+					return
 				}
+			}
+			if queryAllowed() {
+				bgTheme = queryBackground()
 			}
 		}
 	})
 	return bgTheme
+}
+
+// DetectTheme settles the background question up front. Callers run it
+// before starting goroutines that draw (a spinner), so the one-off
+// terminal query never races a redraw or a prompt's read. Idempotent.
+func DetectTheme() { currentTheme() }
+
+// queryAllowed gates the OSC 11 query: only for a colour-capable stderr
+// terminal — the answer only picks colours — and never in plain mode
+// (renderTTY covers it, and TERM=dumb).
+func queryAllowed() bool {
+	return colorEnabled() && renderTTY(os.Stderr)
+}
+
+// themeFromRGB classifies a background by its relative luminance: above
+// the midpoint is a light theme. Channels are 0..1.
+func themeFromRGB(r, g, b float64) theme {
+	lin := func(c float64) float64 {
+		if c <= 0.04045 {
+			return c / 12.92
+		}
+		return math.Pow((c+0.055)/1.055, 2.4)
+	}
+	if 0.2126*lin(r)+0.7152*lin(g)+0.0722*lin(b) > 0.18 {
+		return themeLight
+	}
+	return themeDark
+}
+
+// parseOSC11 extracts the background colour from a terminal's reply to
+// "OSC 11 ; ?" — "\x1b]11;rgb:RRRR/GGGG/BBBB" ended by BEL or ST, with 1 to
+// 4 hex digits per channel. ok=false when the reply holds no such colour.
+func parseOSC11(reply []byte) (th theme, ok bool) {
+	s := string(reply)
+	i := strings.Index(s, "]11;rgb:")
+	if i < 0 {
+		return themeUnknown, false
+	}
+	s = s[i+len("]11;rgb:"):]
+	if j := strings.IndexAny(s, "\x07\x1b"); j >= 0 {
+		s = s[:j]
+	}
+	parts := strings.Split(s, "/")
+	if len(parts) != 3 {
+		return themeUnknown, false
+	}
+	var ch [3]float64
+	for k, p := range parts {
+		if len(p) < 1 || len(p) > 4 {
+			return themeUnknown, false
+		}
+		v, err := strconv.ParseUint(p, 16, 16)
+		if err != nil {
+			return themeUnknown, false
+		}
+		ch[k] = float64(v) / float64(uint64(1)<<(4*len(p))-1)
+	}
+	return themeFromRGB(ch[0], ch[1], ch[2]), true
 }
 
 // nearest256 returns the xterm-256 palette index closest to hex (plain

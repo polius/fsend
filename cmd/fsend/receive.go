@@ -148,6 +148,9 @@ func runReceive(f *flags, c string) error {
 	// both — its message changes in place, so a fast LAN hit never flashes.
 	var spin *uxlog.Spinner
 	if !f.quiet {
+		// Settle the terminal's background before the spinner's goroutine
+		// draws: the one-off query must not race a redraw or a prompt.
+		uxlog.DetectTheme()
 		spin = uxlog.StartSpinner("Looking for sender on the local network", uxlog.HintCancel)
 	}
 	var ui *receiverUI
@@ -202,7 +205,7 @@ func runReceive(f *flags, c string) error {
 		dropErr = err
 		spin.Stop()
 		if !f.quiet {
-			uxlog.Println(fmt.Sprintf("  %s Connection lost — looking for the sender again", uxlog.Retry()))
+			uxlog.Status(uxlog.Retry(), "Connection lost — looking for the sender again")
 			spin = uxlog.StartSpinner("Reconnecting to the sender", uxlog.HintCancel)
 		}
 	}
@@ -396,56 +399,85 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func(attempt int) (st
 		// One line of context. The password is protocol-required before the
 		// peer's HELLO can be decrypted, so the ordering is forced — but the
 		// prompt can still say why it is asking.
-		fmt.Fprintf(os.Stderr, "  %s This transfer is password-protected.\n", uxlog.Warn())
-		return readPasswordHiddenCtx(ctx, "  "+uxlog.Prompt("Enter the password the sender shared: "), f.quiet)
+		fmt.Fprintf(os.Stderr, "%s This transfer is password-protected.\n", uxlog.Warn())
+		return readPasswordHiddenCtx(ctx, uxlog.Ask()+" "+uxlog.Prompt("Enter the password the sender shared: "), f.quiet)
 	}
 }
 
-// renderArtifact prints the indented artifact line and the classification
-// breakdown. The breakdown is how the user learns, before consenting, that
-// most files are already up to date and only a few will move.
-func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySummary, sink bool) {
-	pwChip := ""
+// renderArtifact prints the incoming block: the arrow and the subject on
+// the first line, the facts as faint detail beneath, then the file list.
+// The breakdown is how the user learns, before consenting, that most files
+// are already up to date and only a few will move. peer is the sanitized
+// device name; route the connection chip ("" when unknown).
+//
+//	← Incoming myproj/ from bobs-laptop
+//	  12 files · 300 MB · 3 differ · local network
+func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySummary, sink bool, peer, route string) {
+	pw := ""
 	if h.HasPassword {
-		pwChip = "  " + uxlog.PasswordChip()
+		pw = uxlog.PasswordChip()
+	}
+	from := ""
+	if peer != "" {
+		from = " from " + peer
 	}
 	if h.Mode == wire.ModeStream {
+		var head, detail string
 		switch {
 		case h.IsText:
-			_, _ = fmt.Fprintf(w, "      text%s\n", pwChip)
+			head = "Incoming text" + from
 		case sink:
-			_, _ = fmt.Fprintf(w, "      stdin stream  ·  size unknown%s\n", pwChip)
+			head, detail = "Incoming stdin stream"+from, "size unknown"
 		default:
 			// The name is peer-supplied; show exactly what will land on disk
 			// (same derivation as the engine) so consent covers the filename.
 			name := sanitizeForDisplay(transfer.StreamFileName(h.DisplayName), 128)
-			_, _ = fmt.Fprintf(w, "      stdin stream  ·  saves as %s  ·  size unknown%s\n", uxlog.Path(name), pwChip)
+			head, detail = "Incoming "+uxlog.Subject(name)+from, uxlog.Join("stdin stream", "size unknown")
 		}
+		_, _ = fmt.Fprintln(w, uxlog.RecvArrow(), head)
+		writeDetail(w, uxlog.Join(detail, route), pw)
 		return
 	}
 	// DisplayName is peer-supplied; sanitize so a crafted name can't inject
 	// ANSI/bidi into the prompt.
 	name := sanitizeForDisplay(h.DisplayName, 128)
-	if name == "" {
-		name = "files"
-	}
 	// File count (not summary.Total) so it matches the sender and the rows
 	// below — Total includes directories, which neither shows. For a contents
 	// or multi-path send the peer's display name *is* the count (e.g.
 	// "2 files"), so don't print it twice.
 	fileCount := uxlog.CountNoun(len(summary.Files), "file")
-	lead := fileCount
-	if name != fileCount {
-		// The wrapping folder/file name is a path — green, opencode-style.
-		lead = uxlog.Path(name) + "  ·  " + fileCount
+	head := "Incoming " + fileCount + from
+	if name != "" && name != fileCount {
+		head = "Incoming " + uxlog.Subject(name) + from
 	}
 	diff := ""
 	if summary.Differing > 0 {
-		diff = fmt.Sprintf("  ·  %d %s", summary.Differing, differVerb(summary.Differing))
+		diff = fmt.Sprintf("%d %s", summary.Differing, differVerb(summary.Differing))
 	}
-	_, _ = fmt.Fprintf(w, "      %s  ·  %s%s%s\n",
-		lead, receiverSizeClause(summary), diff, pwChip)
-	renderPreview(w, receiverPreview(summary.Files), 8)
+	resume := ""
+	for _, f := range summary.Files {
+		if f.Status == "resume" {
+			resume = "resuming"
+			break
+		}
+	}
+	_, _ = fmt.Fprintln(w, uxlog.RecvArrow(), head)
+	writeDetail(w, uxlog.Join(fileCount, receiverSizeClause(summary), diff, resume, route), pw)
+	renderPreview(w, receiverPreview(summary.Files), 4)
+}
+
+// writeDetail prints a faint detail line, with the (coloured) password chip
+// after it when there is one.
+func writeDetail(w io.Writer, detail, chip string) {
+	switch {
+	case detail == "" && chip == "":
+	case chip == "":
+		_, _ = fmt.Fprintln(w, uxlog.Detail(detail))
+	case detail == "":
+		_, _ = fmt.Fprintln(w, "  "+chip)
+	default:
+		_, _ = fmt.Fprintln(w, uxlog.Detail(detail+uxlog.Sep)+chip)
+	}
 }
 
 // differVerb conjugates the "N differ(s)" clauses used by the incoming
@@ -477,7 +509,7 @@ func receiverSizeClause(s transfer.ClassifySummary) string {
 	if net == offered {
 		return offered // any skipping is negligible at display resolution
 	}
-	return net + " of " + offered
+	return net + " left of " + offered
 }
 
 // receiverPreview projects the classified files into preview rows. Names and

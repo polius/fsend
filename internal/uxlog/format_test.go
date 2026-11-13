@@ -127,3 +127,33 @@ func TestHumanBytes_DisplayRoundDropsDecimal(t *testing.T) {
 		t.Errorf("HumanBytes(2400000) = %q, want \"2.4 MB\"", got)
 	}
 }
+
+// Join keeps one separator, one space each side, and skips empty parts.
+func TestJoin(t *testing.T) {
+	if got := Join("300 MB", "", "4.8 s", "local network"); got != "300 MB · 4.8 s · local network" {
+		t.Errorf("Join = %q", got)
+	}
+	if got := Join("", ""); got != "" {
+		t.Errorf("Join of nothing = %q", got)
+	}
+}
+
+// Muted and Subject are faint and bold on a colour terminal, and plain off
+// one (go test's stderr is not a terminal).
+func TestMutedAndSubjectPlainOffTerminal(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("FORCE_COLOR", "")
+	resetColorForTesting()
+	if Muted("x") != "x" || Subject("x") != "x" {
+		t.Error("Muted/Subject must be plain when colour is off")
+	}
+	t.Setenv("FORCE_COLOR", "1")
+	resetColorForTesting()
+	t.Cleanup(resetColorForTesting)
+	if got := Muted("x"); got != "\x1b[2mx\x1b[22m" {
+		t.Errorf("Muted = %q", got)
+	}
+	if got := Subject("x"); got != "\x1b[1mx\x1b[22m" {
+		t.Errorf("Subject = %q", got)
+	}
+}

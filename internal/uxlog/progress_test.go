@@ -161,7 +161,7 @@ func TestProgress_PlainModeLabelInLine(t *testing.T) {
 	p.setLabel("docs/report.pdf")
 	p.add(400)
 	out := buf.String()
-	if !strings.Contains(out, "  ·  docs/report.pdf") {
+	if !strings.Contains(out, " · docs/report.pdf") {
 		t.Errorf("plain line missing current-file chip: %q", out)
 	}
 	if bytes.ContainsRune(buf.Bytes(), 0x1b) {
@@ -179,7 +179,7 @@ func TestProgress_PlainModeRouteInLine(t *testing.T) {
 	p := &plainProgress{w: &buf, total: 1000, start: time.Now().Add(-2 * time.Second), lastLine: time.Now().Add(-2 * time.Second), route: "relay"}
 	p.add(400)
 	out := buf.String()
-	if !strings.Contains(out, "  ·  relay") {
+	if !strings.Contains(out, " · relay") {
 		t.Errorf("plain line missing route chip: %q", out)
 	}
 	if bytes.ContainsRune(buf.Bytes(), 0x1b) {
@@ -195,7 +195,7 @@ func TestProgress_PlainModeRateAndETA(t *testing.T) {
 	p.win.observe(past, 0)
 	p.add(50_000_000)
 	out := buf.String()
-	if !strings.Contains(out, "MB/s") || !strings.Contains(out, "ETA ") {
+	if !strings.Contains(out, "MB/s") || !strings.Contains(out, " left") {
 		t.Errorf("plain line missing rate/ETA: %q", out)
 	}
 }
@@ -241,7 +241,7 @@ func TestProgress_PlainModeFileCounter(t *testing.T) {
 	p.setLabel("data.bin")
 	p.setFilePos(1, 3)
 	p.add(500)
-	if out := buf.String(); !strings.Contains(out, "data.bin  ·  file 1/3") {
+	if out := buf.String(); !strings.Contains(out, "data.bin · file 1/3") {
 		t.Errorf("plain line missing label + counter: %q", out)
 	}
 }
@@ -268,43 +268,46 @@ func TestLayout(t *testing.T) {
 		width     int
 		total     int64
 		showNames bool
-		route     string
 		want      barLayout
 	}{
-		{"40 cols keeps % and ETA, rate no longer fits", 40, big, true, "LAN",
-			barLayout{bar: 10, eta: true}},
-		{"60 cols adds the rate and a name, no counter", 60, big, true, "LAN",
-			barLayout{eta: true, rate: true, nameCap: 12}},
-		{"80 cols adds the counter before the bar", 80, big, true, "LAN",
+		{"40 cols keeps % and ETA", 40, big, true,
+			barLayout{eta: true}},
+		{"60 cols adds the rate and a name, no counter yet", 60, big, true,
+			barLayout{eta: true, rate: true, nameCap: 13}},
+		{"80 cols adds the counter before the bar", 80, big, true,
 			barLayout{eta: true, rate: true, counter: true, nameCap: 13}},
-		{"100 cols: bar and name share the spare", 100, big, true, "LAN",
-			barLayout{bar: 19, eta: true, rate: true, counter: true, nameCap: 12}},
-		{"140 cols books the route", 140, big, true, "LAN",
-			barLayout{bar: 33, eta: true, rate: true, counter: true, nameCap: 30, route: true}},
-		{"200 cols: bar capped, name takes the rest", 200, big, true, "LAN",
-			barLayout{bar: 40, eta: true, rate: true, counter: true, nameCap: 83, route: true}},
-		{"no names means no chip", 200, big, false, "LAN",
-			barLayout{bar: 40, eta: true, rate: true, counter: true, route: true}},
-		{"no rate/ETA below the threshold", 100, 900_000, true, "LAN",
-			barLayout{bar: 28, counter: true, nameCap: 30, route: true}},
-		{"stream: rate and counter, no track", 80, 0, false, "LAN",
-			barLayout{rate: true, counter: true, route: true}},
+		{"100 cols: bar and name share the spare", 100, big, true,
+			barLayout{bar: 20, eta: true, rate: true, counter: true, nameCap: 13}},
+		{"140 cols: bar capped, name grown", 140, big, true,
+			barLayout{bar: 40, eta: true, rate: true, counter: true, nameCap: 33}},
+		{"200 cols: bar capped, name takes the rest", 200, big, true,
+			barLayout{bar: 40, eta: true, rate: true, counter: true, nameCap: 93}},
+		{"no names means no chip", 200, big, false,
+			barLayout{bar: 40, eta: true, rate: true, counter: true}},
+		{"no rate/ETA below the threshold", 100, 900_000, true,
+			barLayout{bar: 38, counter: true, nameCap: 30}},
+		{"stream: rate and counter, no track", 80, 0, false,
+			barLayout{rate: true, counter: true}},
 	}
 	for _, c := range cases {
-		if got := layout(c.width, c.total, c.showNames, c.route); got != c.want {
-			t.Errorf("%s: layout(%d, %d, %v, %q) = %+v, want %+v",
-				c.name, c.width, c.total, c.showNames, c.route, got, c.want)
+		if got := layout(c.width, c.total, c.showNames); got != c.want {
+			t.Errorf("%s: layout(%d, %d, %v) = %+v, want %+v",
+				c.name, c.width, c.total, c.showNames, got, c.want)
 		}
 	}
 }
 
-// Whatever the width, the booked elements fit the row: mpb never has to
-// truncate a decorator (and with it a number).
+// Whatever the width, the booked elements fit the row and leave the last
+// column free: mpb never has to truncate a decorator (and with it a
+// number), and the terminal never wraps.
 func TestLayoutNeverOverflows(t *testing.T) {
 	for _, total := range []int64{0, 900_000, 100_000_000, 23_456_789_000} {
 		for w := 20; w <= 220; w++ {
-			l := layout(w, total, true, "local network")
-			used := pctFurniture
+			l := layout(w, total, true)
+			used := gutter
+			if total > 0 {
+				used += pctFurniture
+			}
 			if l.eta {
 				used += etaFurniture
 			}
@@ -315,15 +318,10 @@ func TestLayoutNeverOverflows(t *testing.T) {
 				used += counterFurniture(total)
 			}
 			if l.nameCap > 0 {
-				used += 5 + l.nameCap
+				used += 3 + l.nameCap
 			}
-			if l.bar > 0 {
-				used += barFurniture + l.bar
-			}
-			if l.route {
-				used += len("local network") + 5
-			}
-			if used > max(w, pctFurniture) {
+			used += l.bar
+			if used > max(w-1, gutter+pctFurniture) {
 				t.Fatalf("width %d total %d: layout %+v uses %d columns", w, total, l, used)
 			}
 		}

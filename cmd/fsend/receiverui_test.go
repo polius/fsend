@@ -8,15 +8,15 @@ import (
 	"github.com/polius/fsend/internal/transfer"
 )
 
-// The overwrite row must never read as a no-op: the −/+ prefixes carry the
-// direction in plain text, and when two rounded sizes collide the row says
-// what actually differs.
+// The overwrite row must never read as a no-op: yours → theirs reads in
+// plain text, and when two rounded sizes collide the row says what
+// actually differs.
 func TestConflictLabel_DiffDirectionInPlainText(t *testing.T) {
 	got := conflictLabel(transfer.Conflict{
 		Kind: "differs", LocalSize: 12, IncomingSize: 52,
-	}, "small.txt")
-	if !strings.Contains(got, "− 12 B") || !strings.Contains(got, "+ 52 B") {
-		t.Errorf("row must carry −/+ prefixes: %q", got)
+	})
+	if got != "12 B → 52 B" {
+		t.Errorf("row = %q, want local → incoming", got)
 	}
 	if strings.Contains(got, "(") {
 		t.Errorf("distinct sizes need no tiebreaker: %q", got)
@@ -28,7 +28,7 @@ func TestConflictLabel_ByteDeltaTiebreaker(t *testing.T) {
 	// delta is the only honest signal.
 	got := conflictLabel(transfer.Conflict{
 		Kind: "differs", LocalSize: 3_300_000, IncomingSize: 3_300_001,
-	}, "data.bin")
+	})
 	if !strings.Contains(got, "(+1 B)") {
 		t.Errorf("colliding rounded sizes need a byte delta: %q", got)
 	}
@@ -40,15 +40,15 @@ func TestConflictLabel_MtimeTiebreaker(t *testing.T) {
 	got := conflictLabel(transfer.Conflict{
 		Kind: "differs", LocalSize: 100, IncomingSize: 100,
 		LocalModTime: time.Now().Add(-4 * time.Minute),
-	}, "data.bin")
+	})
 	if !strings.Contains(got, "local copy modified 4m ago") {
 		t.Errorf("equal bytes need the mtime tiebreaker: %q", got)
 	}
 }
 
 func TestConflictLabel_TypeClashKeepsKind(t *testing.T) {
-	got := conflictLabel(transfer.Conflict{Kind: "file vs folder"}, "data.bin")
-	if !strings.Contains(got, "(file vs folder)") || strings.Contains(got, "→") {
+	got := conflictLabel(transfer.Conflict{Kind: "file vs folder"})
+	if got != "file vs folder" {
 		t.Errorf("type clash row = %q", got)
 	}
 }

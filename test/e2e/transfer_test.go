@@ -440,7 +440,7 @@ func TestReceive_DifferingFileKept_ReceiverSeesE013(t *testing.T) {
 	if strings.Contains(r.senderErr, "[OK] Sent") {
 		t.Errorf("sender must not claim success when the receiver kept everything:\nstderr:\n%s", r.senderErr)
 	}
-	if !strings.Contains(r.senderErr, "Nothing sent") || !strings.Contains(r.senderErr, "1 file kept by receiver") {
+	if !strings.Contains(r.senderErr, "Nothing sent") || !strings.Contains(r.senderErr, "1 kept by the receiver") {
 		t.Errorf("sender summary should say nothing was delivered and why:\nstderr:\n%s", r.senderErr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {

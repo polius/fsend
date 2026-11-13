@@ -298,7 +298,7 @@ func plainNetErr(err error) string {
 
 const doctorHelpTemplate = `fsend doctor — check what a transfer depends on
 
-Runs read-only checks and reports each as ✓ (working) or ⚠
+Runs read-only checks and reports each as ✓ (working) or !
 (degraded, with the consequence). mDNS reports its two tiers —
 loopback, then the physical interface — as separate rows:
 

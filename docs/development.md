@@ -66,56 +66,73 @@ script for the current total.
 
 ## Design tokens
 
-The terminal UI speaks one semantic palette, defined in
-`internal/uxlog/glyphs.go`. Six roles, borrowed from the family
-opencode's themes use so the CLI vocabulary and the TUI vocabulary stay
-parallel:
+The terminal UI is built from a small system in `internal/uxlog`: one
+grid, three weights, a few hues and six glyphs. Changes to stderr output
+go through it.
 
-| role | dark | light | both (default) | means |
+**Grid.** Every line has a one-column gutter: the status glyph sits in
+column 0 (or nothing, for a neutral line), the text starts in column 2,
+and nested lists start in column 4. The share command is the one line
+indented further (column 6), alone, so a triple-click copies a runnable
+command. `uxlog.Status`, `uxlog.Note` and `uxlog.Detail` print on the
+grid; new messages should use them rather than choose an indent.
+
+**Weights.** Bold for the subject of a line (the file a summary is
+about, the destination a prompt names), default text for the sentence,
+faint (`uxlog.Muted`, SGR 2) for the detail: sizes, counts, the route,
+timings, hints, rows that need no attention. Faint is derived from the
+user's own foreground, so it stays readable on any theme — unlike a fixed
+grey or bright-black. Terminals that ignore SGR 2 show default text.
+
+**Glyphs.** `✓` success, `✗` failure, a bold `!` warning, a bold `?` for a
+line that wants an answer, `→` / `←` for the direction of a transfer, and
+the braille spinner. Every monospace font carries these; ⚠ ℹ ⟳ ⇢ ⇣ are
+missing from common ones and get drawn from a fallback font, so they are
+not used. Neutral notices have no glyph. Pipes and plain mode get ASCII
+markers (`[OK]`, `[FAIL]`, `[!]`, `[?]`, `[i]`) and no escapes.
+
+**Colour roles.** Six, borrowed from the family opencode's themes use:
+
+| role | dark | light | unknown (ANSI) | means |
 | --- | --- | --- | --- | --- |
-| accent | `#e0805a` | `#bd4f23` | `#c85000` | act — share code, code box, spinner, direction arrows |
-| primary | `#bb9af7` | `#7847bd` | `#8f58dc` | decide — questions, prompts |
-| success | `#9ece6a` | `#587539` | `#47851b` | reassure / file references — ✓, paths |
-| warning | `#e5c07b` | `#7d6500` | `#a06b00` | caution — ⚠, "differs" |
-| error | `#f7768e` | `#b3261e` | `#da3644` | failure — ✗ |
-| info | `#7dcfff` | `#007197` | `#007fa9` | status — ℹ, `--help` flags, links |
+| accent | `#e0805a` | `#b54c22` | 36 | act — the share code, spinner, filled bar, arrows |
+| primary | `#bb9af7` | `#7847bd` | 35 | decide — the `?` gutter and its question |
+| success | `#9ece6a` | `#587539` | 32 | the `✓` tick, and nothing else |
+| warning | `#e5c07b` | `#7d6500` | 33 | caution — `!`, "differs", "deletes yours", a stall |
+| error | `#f7768e` | `#b3261e` | 31 | failure — `✗` |
+| info | `#7dcfff` | `#007197` | 36 | `--help` flags and links |
 
-Every sibling clears at least WCAG AA (4.5:1) against its background:
-**dark** is the pastel family against black, **light** the same hues
-darkened against white, and **both** mid-tones that clear 4.5:1 against
-white *and* black. One column is chosen per process:
+Green means "it worked": file names are default text, not green. One
+column is chosen per process:
 
 1. `FSEND_THEME=light|dark` — the explicit override.
 2. `COLORFGBG` — the `<fg>;<bg>` var iTerm2/Konsole/rxvt export; a light
    background index (7, or 9–15) selects the light column, any other the
    dark one.
-3. Otherwise **both** — the common case, since most terminals (macOS
-   Terminal included) don't reveal their background.
+3. An OSC 11 query for the background colour, followed by a DA1 request
+   (`bgquery_unix.go`). Every terminal answers DA1, in order, so its reply
+   marks the end of the exchange; a terminal that stays silent for 0.3 s
+   (a pty with no emulator) is given up on. Only for a foreground job with
+   a colour terminal on stderr.
+4. Otherwise **unknown**: the terminal's own ANSI colours (SGR 31–36).
+   The user's theme has tuned those for its background and their eyes,
+   which is why gh, cargo, git and docker use them.
 
-Truecolour is used when the terminal advertises it
-(`COLORTERM=truecolor`/`24bit`). Otherwise dark and light map each hex to
-its nearest xterm-256 cell at render time, so the fallback can never
-drift from the palette it approximates; the both column uses hand-picked
-256-colour cells. The cube has no orange or amber that clears 4.5:1 on
-both backgrounds, so accent and warning use 208 and 178 there and accept
-a small miss on white rather than losing the brand colour (SSH does not
-forward `COLORTERM`, so this is the usual remote case). `FSEND_PLAIN=1` (or a non-UTF-8 locale) drops colour,
-animation and Unicode symbols altogether.
+With a known background, truecolour is used when the terminal advertises
+it (`COLORTERM=truecolor`/`24bit`); otherwise each hex maps to its nearest
+xterm-256 cell. Every dark value clears WCAG AA (4.5:1) on black, VS Code,
+One Dark, Solarized dark and Tokyo Night; every light value on white,
+Solarized light, `#fafafa`, Catppuccin Latte and Gruvbox light
+(`TestPaletteContrast`). `FSEND_PLAIN=1` (or a non-UTF-8 locale) drops
+colour, animation and Unicode symbols altogether.
 
-There is deliberately no dim/muted renderer. Secondary text renders in
-the terminal's default foreground — the one colour guaranteed readable on
-the user's theme — and hierarchy comes from emphasising the primary
-elements, never from darkening the rest.
-
-**`brand/logo-orange` is a fixed token: `#E0805A`.** The wordmark and the
-README icon use it, and the dark column's accent is the same value
-(7.4:1 on black, 4.9:1 on One Dark's `#282c34`), so the brand has one
-orange. The light accent `#bd4f23` is that hue darkened to clear 4.5:1 on
-white. Do not change the logo — `docs/assets/icon*.svg` is the
-reference. Warning sits towards yellow so it never reads as a second
-accent. The README demo
+**`brand/logo-orange` is `#E0805A`**, and the dark accent is the same
+value, so the brand has one orange. The light accent `#b54c22` is that
+hue darkened to clear 4.5:1 on the light backgrounds above. Do not change
+the logo — `docs/assets/icon*.svg` is the reference. Warning sits towards
+yellow so it never reads as a second accent. The README demo
 (`docs/assets/demo.svg` and `demo-light.svg`, produced by `scripts/preview`)
-is rendered in the dark and light columns above; a new token needs its
+is rendered in the dark and light columns; a new token needs its
 dark → light pair added to `TOKENS` in `scripts/preview/svg-postprocess.py`.
 
 ## UX colour audit
@@ -127,10 +144,13 @@ python3 scripts/validate-ux.py
 Empirical audit of the terminal UI: builds the CLI, starts an isolated
 pairing server on loopback (isolated `HOME` — your real config is never
 touched), and runs every user-facing scenario as concurrent pty
-sessions. Each element's rendered colour is parsed from the raw SGR
-stream and asserted against the design tokens in
-`internal/uxlog/glyphs.go`; degradation contracts (NO_COLOR, piped
-stderr, ASCII fallbacks) must hold byte-clean. Unix only. Run it before
+sessions. Each element's rendered colour and weight is parsed from the
+raw SGR stream and asserted against the design tokens in
+`internal/uxlog/glyphs.go`; the grid, the glyph set and the
+green-means-success rule are checked at 60, 80 and 100 columns for an
+unknown, dark and light background (the fake terminal can answer the
+OSC 11 query); degradation contracts (NO_COLOR, piped stderr, ASCII
+fallbacks) must hold byte-clean. Unix only. Run it before
 merging any change that touches `internal/uxlog` or the CLI's stderr
 surfaces — it is a manual gate, not wired into CI, because its
 assertions are design choices (exact hues) that are meant to evolve.

@@ -143,11 +143,12 @@ func TestFitSpinner(t *testing.T) {
 		width              int
 		want               string
 	}{
-		{"Waiting for receiver", "4 s", HintCancel, 100, "Waiting for receiver  ·  4 s  ·  Ctrl-C to cancel"},
-		{"Waiting for receiver", "4 s", HintCancel, 40, "Waiting for receiver  ·  4 s"},
+		{"Waiting for receiver", "4 s", HintCancel, 100, "Waiting for receiver · 4 s · Ctrl-C to cancel"},
+		{"Waiting for receiver", "4 s", HintCancel, 40, "Waiting for receiver · 4 s"},
 		{"Waiting for receiver", "", HintCancel, 40, "Waiting for receiver"},
-		{pw, "11 s", HintCancel, 80, pw + "  ·  11 s"},
-		{pw, "11 s", HintCancel, 44, "Waiting for Pols-MacBook-Pro to…  ·  11 s"},
+		{pw, "11 s", HintCancel, 80, pw + " · 11 s · Ctrl-C to cancel"},
+		{pw, "11 s", HintCancel, 76, pw + " · 11 s"},
+		{pw, "11 s", HintCancel, 44, "Waiting for Pols-MacBook-Pro to e… · 11 s"},
 		{"Waiting for receiver", "4 s", HintCancel, 12, "Waiting…"},
 	}
 	for _, c := range cases {

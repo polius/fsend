@@ -845,7 +845,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	// runSenderTransferLoop.
 	if !f.quiet {
 		fmt.Fprintf(os.Stderr, "%s Receiver connected%s\n",
-			uxlog.Check(), "  ·  "+pathInfo.Chip())
+			uxlog.Check(), uxlog.Muted(uxlog.Sep+pathInfo.Chip()))
 	}
 
 	if winner.lan != nil {
