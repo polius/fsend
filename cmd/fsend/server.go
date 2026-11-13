@@ -117,15 +117,6 @@ func runServer() error {
 		TrustedProxies:       cfg.trustedProxies,
 	})
 
-	if cfg.stateFile != "" {
-		n, err := s.LoadState(cfg.stateFile)
-		if err != nil {
-			logger.Warn("discarding saved sessions", "err", err)
-		} else if n > 0 {
-			logger.Info("restored pending sessions", "count", n)
-		}
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go s.StartJanitor(ctx)
@@ -146,6 +137,16 @@ func runServer() error {
 		return fmt.Errorf("%w: FSEND_RELAY_ADDR %q: %v", fserrors.ErrServerStartup, cfg.udpAddr, err)
 	}
 	s.WithRelay(relaySrv, udpPort)
+	// After the relay is attached: the snapshot also carries its daily
+	// byte count.
+	if cfg.stateFile != "" {
+		n, err := s.LoadState(cfg.stateFile)
+		if err != nil {
+			logger.Warn("discarding saved sessions", "err", err)
+		} else if n > 0 {
+			logger.Info("restored pending sessions", "count", n)
+		}
+	}
 	relayCtx, relayCancel := context.WithCancel(ctx)
 	defer relayCancel()
 	relayErr := make(chan error, 1)
@@ -722,11 +723,13 @@ CONFIGURATION (environment variables — all optional)
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
                                       Only debug logs client IPs and slots.
     FSEND_LOG_FORMAT                  Default text; json for log shippers.
-    FSEND_STATE_FILE                  Save pending (unpaired) codes here on
+    FSEND_STATE_FILE                  Save pending (unpaired) codes and the
+                                      relay's bytes forwarded today here on
                                       shutdown and restore them on start, so
-                                      a redeploy doesn't kill them. No IPs
-                                      are saved; the file is deleted once
-                                      read. Default off.
+                                      a redeploy neither kills the codes nor
+                                      resets FSEND_RELAY_MAX_BYTES_PER_DAY.
+                                      No IPs are saved; the file is deleted
+                                      once read. Default off.
     FSEND_METRICS_ADDR                Serve /metrics (Prometheus) and
                                       /metrics.json on this extra listener,
                                       e.g. 127.0.0.1:9090. Default off. Keep

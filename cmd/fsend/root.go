@@ -52,6 +52,8 @@ type flags struct {
 	// Forces a specific data path instead of the default LAN+pairing-server
 	// race with ICE-then-relay fallback. Hidden from --help, undocumented.
 	mode string
+	// local is --local: the documented way to set mode to "local".
+	local bool
 
 	// Misc
 	quiet     bool
@@ -180,6 +182,9 @@ Examples:
 
 	c.Flags().StringVar(&f.mode, "mode", "", "")
 	_ = c.Flags().MarkHidden("mode")
+	// --local is the public face of --mode=local: no pairing server at all,
+	// for when it is down or must not be used.
+	c.Flags().BoolVar(&f.local, "local", false, "local network only; never contact the pairing server")
 
 	c.AddCommand(serverCmd())
 	c.AddCommand(doctorCmd())
@@ -326,6 +331,7 @@ SERVER
                          HTTPS unless you write http://host
   --connect default      Back to the built-in server
   --server <host>        Use a server for this run only (or FSEND_SERVER)
+  --local                Local network only: never contact the server
 
 MAINTENANCE
   --update               Update fsend to the latest release
@@ -571,7 +577,7 @@ const connectShowSentinel = ":show:"
 // line would silently not run. allowYes exempts --yes, which --uninstall
 // documents as skipping its confirmation prompt.
 func maintenanceGuard(cmd *cobra.Command, f *flags, name string, allowYes bool) error {
-	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "rename", "device-name", "exclude", "mode", "checksum", "manifest", "preview", "json", "server", "as"} {
+	for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "rename", "device-name", "exclude", "mode", "local", "checksum", "manifest", "preview", "json", "server", "as"} {
 		if conflict == "yes" && allowYes {
 			continue
 		}
@@ -596,7 +602,7 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 	// surprised by "I asked for both --connect and --send and only the
 	// first ran."
 	if cmd.Flags().Changed("connect") {
-		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "rename", "device-name", "exclude", "mode", "update", "check", "uninstall", "checksum", "manifest", "preview", "json", "server", "as"} {
+		for _, conflict := range []string{"send", "receive", "text", "password", "yes", "out", "overwrite", "rename", "device-name", "exclude", "mode", "local", "update", "check", "uninstall", "checksum", "manifest", "preview", "json", "server", "as"} {
 			if cmd.Flags().Changed(conflict) {
 				return fmt.Errorf("%w: --connect cannot be combined with --%s", fserrors.ErrUsage, conflict)
 			}
@@ -645,6 +651,12 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 
 	if !validMode(f.mode) {
 		return fmt.Errorf("%w: invalid --mode %q (expected: local, direct, or relay)", fserrors.ErrUsage, f.mode)
+	}
+	if f.local {
+		if f.mode != "" && f.mode != modeLocal {
+			return fmt.Errorf("%w: --local cannot be combined with --mode=%s", fserrors.ErrUsage, f.mode)
+		}
+		f.mode = modeLocal
 	}
 	if f.forceSend && f.forceReceive {
 		return fmt.Errorf("%w: --send and --receive are mutually exclusive", fserrors.ErrUsage)

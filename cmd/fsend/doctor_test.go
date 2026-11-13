@@ -65,7 +65,7 @@ func TestRelayChecks(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			checks := relayChecks(doctorServer(t, tc.port, tc.withWS), "")
+			checks, _ := relayChecks(doctorServer(t, tc.port, tc.withWS), "")
 			if len(checks) != 2 {
 				t.Fatalf("got %d checks, want 2", len(checks))
 			}
@@ -96,5 +96,26 @@ func TestClockCheck(t *testing.T) {
 	}
 	if _, ok := clockCheck(http.Header{}, now); ok {
 		t.Error("a row without a Date header")
+	}
+}
+
+func TestNATAndIPv6Checks(t *testing.T) {
+	local := []net.IP{net.ParseIP("192.168.1.20"), net.ParseIP("fe80::1"), net.ParseIP("fd00::7"), net.ParseIP("198.51.100.4")}
+	if c, ok := natCheck(&net.UDPAddr{IP: net.ParseIP("203.0.113.9")}, local); !ok || !c.ok || !strings.Contains(c.msg, "behind NAT, public address 203.0.113.9") {
+		t.Errorf("NAT: %+v", c)
+	}
+	if c, ok := natCheck(&net.UDPAddr{IP: net.ParseIP("198.51.100.4")}, local); !ok || !strings.Contains(c.msg, "none") {
+		t.Errorf("no NAT: %+v", c)
+	}
+	for _, mapped := range []*net.UDPAddr{nil, {IP: net.ParseIP("127.0.0.1")}, {IP: net.ParseIP("192.168.1.20")}} {
+		if _, ok := natCheck(mapped, local); ok {
+			t.Errorf("a NAT row for %v, which says nothing about the internet", mapped)
+		}
+	}
+	if c := ipv6Check(local); !c.ok || !strings.Contains(c.msg, "IPv4 only") {
+		t.Errorf("link-local and ULA only: %+v", c)
+	}
+	if c := ipv6Check(append(local, net.ParseIP("2001:db8::5"))); !strings.Contains(c.msg, "global address 2001:db8::5") {
+		t.Errorf("global IPv6: %+v", c)
 	}
 }

@@ -128,3 +128,37 @@ func TestRelayAllocate_DrainingIs503(t *testing.T) {
 		t.Errorf("status = %d, want 503", code)
 	}
 }
+
+// fakeKeeper is a relay that keeps a daily byte count.
+type fakeKeeper struct {
+	RelayAllocator
+	day, used uint64
+	restored  []uint64
+}
+
+func (k *fakeKeeper) BudgetUsage(time.Time) (int64, uint64) { return int64(k.day), k.used }
+func (k *fakeKeeper) RestoreBudget(_ time.Time, day int64, used uint64) bool {
+	if uint64(day) != k.day {
+		return false
+	}
+	k.restored = append(k.restored, used)
+	return true
+}
+
+// A redeploy keeps the relay's spend for the day: the daily cap would
+// otherwise start over on every restart.
+func TestState_CarriesRelayBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	day := uint64(time.Now().UTC().Truncate(24 * time.Hour).Unix())
+	old := New(Config{}).WithRelay(&fakeKeeper{day: day, used: 12345}, 443)
+	if _, err := old.SaveState(path); err != nil {
+		t.Fatal(err)
+	}
+	keeper := &fakeKeeper{day: day}
+	if _, err := New(Config{}).WithRelay(keeper, 443).LoadState(path); err != nil {
+		t.Fatal(err)
+	}
+	if len(keeper.restored) != 1 || keeper.restored[0] != 12345 {
+		t.Fatalf("restored %v, want [12345]", keeper.restored)
+	}
+}

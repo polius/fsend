@@ -63,3 +63,28 @@ func (b *dayBudget) usedToday(now time.Time) uint64 {
 	b.roll(now)
 	return b.used
 }
+
+// BudgetUsage returns the current day's window (its UTC midnight, unix
+// seconds) and the bytes forwarded in it, for saving across a restart.
+func (s *Server) BudgetUsage(now time.Time) (day int64, used uint64) {
+	b := &s.budget
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.roll(now)
+	return b.day, b.used
+}
+
+// RestoreBudget adds bytes saved by BudgetUsage before a restart, if they
+// were counted today: otherwise every redeploy handed out a fresh daily
+// allowance. Reports whether they applied.
+func (s *Server) RestoreBudget(now time.Time, day int64, used uint64) bool {
+	b := &s.budget
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.roll(now)
+	if day != b.day {
+		return false
+	}
+	b.used += used
+	return true
+}

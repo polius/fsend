@@ -686,7 +686,6 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	sess := &session{
 		ID:            sid,
 		Slot:          slot,
-		SenderAddr:    clientIP,
 		SenderRateKey: rateKey,
 		SenderICE:     senderICE,
 		SenderToken:   senderTok,
@@ -704,7 +703,6 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, CreateSessionResponse{
 		SessionID:               sid,
-		YourObservedAddr:        r.RemoteAddr,
 		IceCredentials:          sess.SenderICE,
 		TTLSeconds:              int(s.cfg.UnpairedTTL.Seconds()),
 		ServerVersion:           s.cfg.ServerVersion,
@@ -785,7 +783,6 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	sess.ReceiverAddr = clientIP
 	sess.ReceiverRateKey = rateKey
 	sess.ReceiverICE = recvICE
 	sess.ReceiverToken = recvTok
@@ -806,8 +803,6 @@ func (s *Server) joinSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) joinResponse(r *http.Request, sess *session) JoinSessionResponse {
 	return JoinSessionResponse{
 		SessionID:               sess.ID,
-		YourObservedAddr:        r.RemoteAddr,
-		PeerObservedAddr:        sess.SenderAddr,
 		PeerIceCredentials:      sess.SenderICE,
 		YourIceCredentials:      sess.ReceiverICE,
 		RoleToken:               sess.ReceiverToken,
@@ -847,21 +842,18 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	// Each /wait poll doubles as the sender's liveness heartbeat.
 	sess.LastSeen = time.Now()
 	if sess.SenderRateKey == "" { // restored from a snapshot, which holds no IPs
-		sess.SenderAddr = s.clientIP(r)
-		sess.SenderRateKey = rateLimitKey(sess.SenderAddr)
+		sess.SenderRateKey = rateLimitKey(s.clientIP(r))
 		s.ipCounts[sess.SenderRateKey]++
 	}
 	// Snapshot what we need under the lock so concurrent joinSession
 	// writes don't race the reads below.
 	state := sess.State
 	sessID := sess.ID
-	receiverAddr := sess.ReceiverAddr
 	receiverICE := sess.ReceiverICE
 	waiters := sess.waiters
 	s.mu.Unlock()
 	if state == "paired" {
 		writeJSON(w, http.StatusOK, WaitResponse{
-			PeerObservedAddr:   receiverAddr,
 			PeerIceCredentials: receiverICE,
 		})
 		return
@@ -881,10 +873,8 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 		// address to this sender would pair it with the wrong session.
 		s.mu.Lock()
 		final, ok := s.bySlot[slot]
-		var finalAddr string
 		var finalICE IceCreds
 		if ok && final.ID == sessID {
-			finalAddr = final.ReceiverAddr
 			finalICE = final.ReceiverICE
 		} else {
 			ok = false
@@ -896,7 +886,6 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, WaitResponse{
-			PeerObservedAddr:   finalAddr,
 			PeerIceCredentials: finalICE,
 		})
 	}

@@ -225,6 +225,21 @@ func discoverSender(ctx context.Context, f *flags, rs *recvSession, spin *uxlog.
 		lanCh <- lanResult{q, err}
 	}()
 
+	if f.mode == modeLocal {
+		// --local: the local network only, never the pairing server.
+		select {
+		case r := <-lanCh:
+			if r.err == nil {
+				if link := dialLAN(ctx, f, rs, r.q, spin); link != nil {
+					return link, nil
+				}
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: not found on the local network (--local)", fserrors.ErrCodeNotFound)
+	}
+
 	head := time.NewTimer(lanHeadStart)
 	defer head.Stop()
 	race := (<-chan lanResult)(lanCh)

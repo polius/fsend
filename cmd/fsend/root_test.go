@@ -46,6 +46,16 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 			`invalid --mode "garbage"`,
 		},
 		{
+			"local_with_other_mode",
+			[]string{"--local", "--mode=relay", "file.txt"},
+			"--local cannot be combined with --mode=relay",
+		},
+		{
+			"connect_with_local",
+			[]string{"--connect=host:443", "--local"},
+			"--connect cannot be combined with --local",
+		},
+		{
 			// No code, no FSEND_CODE, no terminal to ask on.
 			"force_receive_zero_args",
 			[]string{"--receive"},

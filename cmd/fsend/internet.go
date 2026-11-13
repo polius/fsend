@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -78,11 +79,33 @@ func signalingClient(cfg *config.Config) (*signaling.Client, string, error) {
 // file); FSEND_SERVER_PASSWORD is the non-argv fallback for scripts, the
 // client-side mirror of the server's env of the same name, with
 // FSEND_SERVER_PASSWORD_FILE as the mounted-file alternative.
+//
+// The environment's password is for a self-hosted server, so it is never
+// sent to the public default: a shell that exports it for one server
+// would otherwise hand it to fsend.alzina.dev whenever the config points
+// there.
 func effectiveServerPassword(cfg *config.Config) (string, error) {
 	if cfg.ServerPassword != "" {
 		return cfg.ServerPassword, nil
 	}
+	if isDefaultServerHost(cfg.EffectiveServer()) {
+		return "", nil
+	}
 	return passwordFromEnv("FSEND_SERVER_PASSWORD")
+}
+
+// isDefaultServerHost reports whether addr (host, host:port or URL) names
+// the compiled-in public server's host.
+func isDefaultServerHost(addr string) bool {
+	return strings.EqualFold(serverHostname(addr), serverHostname(config.DefaultServer))
+}
+
+// serverHostname extracts the host from a server address or URL.
+func serverHostname(addr string) string {
+	if u, err := url.Parse(serverBaseURL(addr)); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return addr
 }
 
 // serverBaseURL maps a configured server address to an http(s) base URL:
