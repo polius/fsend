@@ -58,6 +58,59 @@ type Client struct {
 	pinMu     sync.Mutex
 	pinned    map[string]string
 	senderTok map[string]string
+
+	// skew is the server's clock minus ours, from the Date header of the
+	// latest response; skewKnown says whether any response carried one.
+	clockMu   sync.Mutex
+	skew      time.Duration
+	skewKnown bool
+	clock     func() time.Time // this device's clock; tests skew it
+}
+
+// ClockTolerance is how far this device's clock may drift from the
+// server's before slots are derived from the server's time instead. Below
+// it the two agree on the UTC day except within minutes of midnight, which
+// code.EpochsFor already covers.
+const ClockTolerance = 5 * time.Minute
+
+// ClockSkew returns how far this device's clock is behind the server's
+// (negative: ahead), as of the latest response; ok is false before any
+// response carried a Date header.
+func (c *Client) ClockSkew() (skew time.Duration, ok bool) {
+	c.clockMu.Lock()
+	defer c.clockMu.Unlock()
+	return c.skew, c.skewKnown
+}
+
+// recordDate notes the server's clock from a response's Date header.
+func (c *Client) recordDate(h http.Header) {
+	if d, ok := ServerSkew(h, c.clock()); ok {
+		c.clockMu.Lock()
+		c.skew, c.skewKnown = d, true
+		c.clockMu.Unlock()
+	}
+}
+
+// ServerSkew returns the server's clock (from h's Date header) minus now,
+// rounded to the second the header carries.
+func ServerSkew(h http.Header, now time.Time) (time.Duration, bool) {
+	t, err := http.ParseTime(h.Get("Date"))
+	if err != nil {
+		return 0, false
+	}
+	return t.Sub(now).Round(time.Second), true
+}
+
+// now is the clock slots are derived from: this device's, unless it is
+// more than ClockTolerance away from the server's. A device with a wrong
+// clock (a dual-boot machine, a board with no clock battery) would
+// otherwise salt its slot with a different UTC day than its peer and find
+// no sender.
+func (c *Client) now() time.Time {
+	if d, ok := c.ClockSkew(); ok && (d > ClockTolerance || d < -ClockTolerance) {
+		return c.clock().Add(d)
+	}
+	return c.clock()
 }
 
 // slotFor returns the slot pinned at Create, or the current one.
@@ -67,7 +120,7 @@ func (c *Client) slotFor(codeStr string) string {
 	if s, ok := c.pinned[codeStr]; ok {
 		return s
 	}
-	return code.Slot(codeStr)
+	return code.SlotAt(codeStr, code.Epoch(c.now()))
 }
 
 // New builds a client for the given http(s) base URL.
@@ -82,6 +135,7 @@ func New(baseURL, clientVersion string) *Client {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		hc:      &http.Client{Timeout: DefaultRequestTimeout, Transport: tr},
 		version: clientVersion,
+		clock:   time.Now,
 	}
 }
 
@@ -144,6 +198,16 @@ func (c *Client) Create(ctx context.Context, codeStr string) (*CreateResult, err
 		slot := c.slotFor(codeStr)
 		err := c.do(ctx, http.MethodPost, "/v1/session",
 			server.CreateSessionRequest{ClientVersion: c.version, Slot: slot}, &out, nil)
+		if err == nil && slot != c.slotFor(codeStr) {
+			// That response showed our clock is on a different UTC day
+			// than the server's: receivers will look for the server's day.
+			// Move the session there.
+			_ = c.Delete(ctx, out.SessionID, out.RoleToken)
+			slot = c.slotFor(codeStr)
+			out = server.CreateSessionResponse{}
+			err = c.do(ctx, http.MethodPost, "/v1/session",
+				server.CreateSessionRequest{ClientVersion: c.version, Slot: slot}, &out, nil)
+		}
 		if err == nil {
 			c.pinMu.Lock()
 			if c.pinned == nil {
@@ -166,19 +230,77 @@ func (c *Client) Create(ctx context.Context, codeStr string) (*CreateResult, err
 // address and ICE credentials. The session is addressed by the code's
 // slot; the code itself stays on this machine. Near a UTC day boundary
 // the sender may have used the neighbouring epoch, so a not-found there
-// retries with it.
+// retries with it. A not-found that reveals this device's clock is off
+// retries with the server's day, and otherwise comes back as a
+// *ClockSkewError so the user hears about the clock.
 func (c *Client) Join(ctx context.Context, codeStr string) (*server.JoinSessionResponse, error) {
 	var out server.JoinSessionResponse
 	var err error
-	for _, epoch := range code.EpochsFor(time.Now()) {
-		out = server.JoinSessionResponse{}
-		err = c.do(ctx, http.MethodPost, "/v1/session/"+code.SlotAt(codeStr, epoch)+"/join",
-			server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
-		if !errors.Is(err, fserrors.ErrCodeNotFound) {
-			break
+	tried := map[int64]bool{}
+	for range 2 {
+		for _, epoch := range code.EpochsFor(c.now()) {
+			if tried[epoch] {
+				continue
+			}
+			tried[epoch] = true
+			out = server.JoinSessionResponse{}
+			err = c.do(ctx, http.MethodPost, "/v1/session/"+code.SlotAt(codeStr, epoch)+"/join",
+				server.JoinSessionRequest{ClientVersion: c.version}, &out, nil)
+			if !errors.Is(err, fserrors.ErrCodeNotFound) {
+				return &out, err
+			}
 		}
 	}
+	if d, ok := c.ClockSkew(); ok && (d > ClockTolerance || d < -ClockTolerance) {
+		err = &ClockSkewError{Skew: d, Err: err}
+	}
 	return &out, err
+}
+
+// ClockSkewError is a not-found from a device whose clock is more than
+// ClockTolerance off the server's. errors.Is still matches the wrapped
+// error (fserrors.ErrCodeNotFound).
+type ClockSkewError struct {
+	Skew time.Duration // the server's clock minus this device's
+	Err  error
+}
+
+func (e *ClockSkewError) Error() string { return e.Err.Error() + ": " + e.Detail() }
+func (e *ClockSkewError) Unwrap() error { return e.Err }
+
+// Detail says how far off this device's clock is, for the error's second
+// line.
+func (e *ClockSkewError) Detail() string { return ClockSkewDetail(e.Skew) }
+
+// ClockSkewDetail describes a clock skew (the server's clock minus this
+// device's) in words.
+func ClockSkewDetail(skew time.Duration) string {
+	return "This device's clock is " + ClockSkewPhrase(skew) + " the server's: set the correct date and time."
+}
+
+// ClockSkewPhrase is "30 h behind" or "7 min ahead of", to precede "the
+// server's".
+func ClockSkewPhrase(skew time.Duration) string {
+	if skew < 0 {
+		return roughDuration(-skew) + " ahead of"
+	}
+	return roughDuration(skew) + " behind"
+}
+
+// roughDuration renders a clock skew at the precision that matters.
+func roughDuration(d time.Duration) string {
+	d = d.Round(time.Minute) // the Date header carries whole seconds
+	switch {
+	case d >= 48*time.Hour:
+		return strconv.Itoa(int(d/(24*time.Hour))) + " days"
+	case d >= time.Hour:
+		h, m := int(d/time.Hour), int(d%time.Hour/time.Minute)
+		if m == 0 {
+			return strconv.Itoa(h) + " h"
+		}
+		return strconv.Itoa(h) + " h " + strconv.Itoa(m) + " min"
+	}
+	return strconv.Itoa(int(d/time.Minute)) + " min"
 }
 
 // Wait long-polls until a receiver pairs with this session. Addressed
@@ -350,6 +472,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, opt *
 		return mapNetworkErr(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	c.recordDate(resp.Header)
 
 	if resp.StatusCode == http.StatusNoContent {
 		if opt != nil && opt.noContentOK {

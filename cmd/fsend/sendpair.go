@@ -54,14 +54,15 @@ type sendSession struct {
 	mu      sync.Mutex
 	key     pairKey
 	resumed bool
-
-	authFails atomic.Int32
 }
 
-// maxAuthFailures caps failed PAKE handshakes per session. Online guessing
-// of a 45-bit code is hopeless anyway; the cap makes it impossible and
-// tells the sender someone is trying.
-const maxAuthFailures = 10
+// maxLANAuthFailures is how many failed handshakes the LAN listener takes
+// in one round before it closes, leaving the server path to pair. Guessing
+// a 45-bit code online is hopeless anyway, and the listener already slows
+// down after each failure (see quicconn); the cap only stops a host on the
+// network from keeping the sender busy. It never ends the send: with no
+// working server path the listener stays open, still slowed down.
+const maxLANAuthFailures = 10
 
 func (s *sendSession) current() (pairKey, bool) {
 	s.mu.Lock()
@@ -80,17 +81,17 @@ func (s *sendSession) paired(binding []byte) pairKey {
 	return s.key
 }
 
-// authFailed counts a failed handshake and reports whether the cap is hit.
-func (s *sendSession) authFailed(err error) error {
-	if errors.Is(err, fserrors.ErrPeerAuthFailed) && s.authFails.Add(1) >= maxAuthFailures {
-		return fmt.Errorf("%w: %v", fserrors.ErrTooManyPairingFailures, err)
-	}
-	return nil
+// accepter is the part of quicconn.Listener acceptCounting uses.
+type accepter interface {
+	Accept(ctx context.Context) (*quicconn.AcceptResult, error)
 }
 
 // acceptCounting accepts the next authenticated connection, absorbing
-// failed handshakes (impostors, a wrong code) into the session's cap.
-func (s *sendSession) acceptCounting(ctx context.Context, ln *quicconn.Listener) (*quicconn.AcceptResult, error) {
+// failed handshakes (impostors, a wrong code). From the maxLANAuthFailures-th
+// failure on, it asks closeAtCap whether to give up; a nil closeAtCap, or
+// one that says no, keeps accepting.
+func acceptCounting(ctx context.Context, ln accepter, closeAtCap func() bool) (*quicconn.AcceptResult, error) {
+	fails := 0
 	for {
 		res, err := ln.Accept(ctx)
 		if err == nil {
@@ -99,11 +100,14 @@ func (s *sendSession) acceptCounting(ctx context.Context, ln *quicconn.Listener)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if capErr := s.authFailed(err); capErr != nil {
-			return nil, capErr
-		}
 		if !errors.Is(err, quicconn.ErrHandshakeFailed) {
 			return nil, err // the listener itself failed
+		}
+		if errors.Is(err, fserrors.ErrPeerAuthFailed) {
+			fails++
+			if fails >= maxLANAuthFailures && closeAtCap != nil && closeAtCap() {
+				return nil, fmt.Errorf("%w: %v", fserrors.ErrTooManyPairingFailures, err)
+			}
 		}
 	}
 }
@@ -173,14 +177,15 @@ func (o sendPairOutcome) firstRes() *quicconn.AcceptResult {
 
 // pairOverLAN binds the deterministic LAN port for the round's key,
 // announces it via mDNS, and blocks until the first receiver
-// authenticates. On success it stops the mDNS announcement (late
+// authenticates. closeAtCap says whether the listener may close after
+// maxLANAuthFailures failed handshakes (see acceptCounting). On success it stops the mDNS announcement (late
 // receivers should fall through to the server) and returns the paired
 // connection plus the listener for retry re-Accepts.
 //
 // Errors: setup failure (port conflict, no interface) is returned
 // immediately. Context cancellation while waiting surfaces as ctx.Err()
 // — the coordinator treats that as "loser, no-op".
-func pairOverLAN(ctx context.Context, sess *sendSession, key pairKey) (*lanSenderPairing, error) {
+func pairOverLAN(ctx context.Context, key pairKey, closeAtCap func() bool) (*lanSenderPairing, error) {
 	epoch := codepkg.Epoch(time.Now())
 	port := landisc.PortForCode(key.rendezvous, epoch)
 	ln, err := listenLANWithRetry(ctx, port, key.secret)
@@ -203,9 +208,9 @@ func pairOverLAN(ctx context.Context, sess *sendSession, key pairKey) (*lanSende
 	// pairing window closes. A malicious LAN host can reach the deterministic
 	// port and complete TLS but fail the PAKE (it lacks the code);
 	// surrendering the LAN fast path to the first such impostor would be a
-	// trivial, repeatable denial of the same-LAN shortcut. Failures count
-	// toward the session's cap instead.
-	res, err := sess.acceptCounting(ctx, ln)
+	// trivial, repeatable denial of the same-LAN shortcut. Failures slow the
+	// listener down and, past the cap, hand pairing to the server path.
+	res, err := acceptCounting(ctx, ln, closeAtCap)
 	stopMDNS()
 	if err != nil {
 		_ = ln.Close()
@@ -324,11 +329,11 @@ func pairOverInternet(ctx context.Context, f *flags, sess *sendSession, round *s
 		// Bring up QUIC on the established PacketConn and authenticate the
 		// first peer. Retries re-Accept on the same listener.
 		acceptCtx, cancelAccept := context.WithTimeout(ctx, firstAcceptTimeout)
-		ln, res, teardown, err := senderQUICAccept(acceptCtx, sess, pc, round.key.secret)
+		ln, res, teardown, err := senderQUICAccept(acceptCtx, pc, round.key.secret)
 		cancelAccept()
 		if err != nil {
 			endSession()
-			if ctx.Err() == nil && !errors.Is(err, fserrors.ErrTooManyPairingFailures) {
+			if ctx.Err() == nil {
 				err = fmt.Errorf("%w: %v", errPairedGone, err)
 			}
 			return nil, err
@@ -384,10 +389,14 @@ func createWithRetry(ctx context.Context, client *signaling.Client, rendezvous s
 // on a re-pair round the previous listener's socket is only released once
 // its dead QUIC connection finishes draining, so an immediate re-bind can
 // lose that race and needlessly surrender the LAN path to the server.
+//
+// The socket binds every interface (mDNS answers each query with the
+// address of the interface it arrived on), but only peers that could have
+// found it through mDNS are admitted: see landisc.LocalPeer.
 func listenLANWithRetry(ctx context.Context, port int, secret string) (*quicconn.Listener, error) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		ln, err := quicconn.ListenAddr(":"+strconv.Itoa(port), secret)
+		ln, err := quicconn.ListenAddr(":"+strconv.Itoa(port), secret, quicconn.WithPeerFilter(landisc.LocalPeer))
 		if err == nil || time.Now().After(deadline) {
 			return ln, err
 		}
@@ -528,7 +537,7 @@ func allocAndDialRelay(ctx context.Context, client *signaling.Client, sessionID,
 // PacketConn, authenticates the first inbound QUIC connection, and
 // returns the listener (for retries), the first AcceptResult, and a
 // teardown closure.
-func senderQUICAccept(ctx context.Context, sess *sendSession, pc net.PacketConn, secret string) (*quicconn.Listener, *quicconn.AcceptResult, func(), error) {
+func senderQUICAccept(ctx context.Context, pc net.PacketConn, secret string) (*quicconn.Listener, *quicconn.AcceptResult, func(), error) {
 	tlsCfg, err := quicconn.SenderTLSConfig()
 	if err != nil {
 		_ = pc.Close()
@@ -551,9 +560,6 @@ func senderQUICAccept(ctx context.Context, sess *sendSession, pc net.PacketConn,
 	// not going to start passing it.
 	res, err := ln.Accept(ctx)
 	if err != nil {
-		if capErr := sess.authFailed(err); capErr != nil {
-			err = capErr
-		}
 		teardown()
 		return nil, nil, nil, fmt.Errorf("QUIC accept: %w", err)
 	}
@@ -645,8 +651,9 @@ func isReceiverClose(err error) bool {
 //     receivers can connect for now.
 //   - Both fail: return the most informative error (E001 if the server
 //     was unreachable, otherwise the LAN error).
-//   - Too many failed PAKEs, or a receiver that paired and vanished:
-//     abort the round.
+//   - Too many failed PAKEs on the LAN listener: close it and keep
+//     waiting via the server (only while the server path is up).
+//   - A receiver that paired and vanished: abort the round.
 func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSession, cfg *config.Config, waitSpin *uxlog.Spinner) error {
 	pairCtx, cancelPair := context.WithCancel(ctx)
 	defer cancelPair()
@@ -670,9 +677,14 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	lanDisabled := f.mode == modeDirect || f.mode == modeRelay
 	serverDisabled := f.mode == modeLocal
 
+	// serverUp tells the LAN path whether it may close after too many
+	// failed handshakes: only while the server can still pair.
+	var serverUp atomic.Bool
+	serverUp.Store(!serverDisabled)
+
 	if !lanDisabled {
 		go func() {
-			p, err := pairOverLAN(pairCtx, sess, key)
+			p, err := pairOverLAN(pairCtx, key, serverUp.Load)
 			lanCh <- sendPairOutcome{lan: p, err: err}
 		}()
 	}
@@ -681,6 +693,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 		var onDown func(error)
 		if !lanDisabled {
 			onDown = func(err error) {
+				serverUp.Store(false)
 				select {
 				case serverDownCh <- err:
 				default:
@@ -761,8 +774,16 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 			if errors.Is(lanErr, context.Canceled) {
 				continue
 			}
-			if errors.Is(lanErr, fserrors.ErrTooManyPairingFailures) {
-				return abort(lanErr)
+			if errors.Is(lanErr, fserrors.ErrTooManyPairingFailures) && serverDownErr == nil {
+				// Someone on the network keeps failing the handshake. The
+				// server path is up, so pairing carries on there.
+				if !f.quiet {
+					waitSpin.Stop()
+					fmt.Fprintln(os.Stderr, uxlog.Warn(), "Stopped taking local-network connections after", maxLANAuthFailures, "failed attempts. Still waiting via the server.")
+					waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
+				}
+				lanDownNoticed = true
+				continue
 			}
 			if serverDownErr != nil {
 				return abort(pickFinalSendError(lanErr, serverDownErr))
@@ -788,13 +809,14 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				continue
 			}
 			serverErr = res.err
+			serverUp.Store(false)
 			if errors.Is(serverErr, context.Canceled) {
 				continue
 			}
 			// A receiver claimed the code and then the connection died.
 			// That receiver already failed LAN discovery, so waiting on
 			// the LAN listener can never pair — abort the race.
-			if errors.Is(serverErr, errPairedGone) || errors.Is(serverErr, fserrors.ErrTooManyPairingFailures) {
+			if errors.Is(serverErr, errPairedGone) {
 				return abort(serverErr)
 			}
 			// Any other server-path failure (auth, retired) leaves the code
@@ -880,7 +902,7 @@ func runSenderTransferOverLAN(ctx context.Context, f *flags, plan *sendPlan, ses
 	return runSenderTransferLoop(ctx, f, plan, connpath.FromLAN(), pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		acceptCtx, cancel := context.WithTimeout(ctx, reacceptTimeout)
 		defer cancel()
-		res, err := sess.acceptCounting(acceptCtx, pair.listener)
+		res, err := acceptCounting(acceptCtx, pair.listener, nil)
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
 		}
@@ -897,7 +919,7 @@ func runSenderTransferOverInternet(ctx context.Context, f *flags, plan *sendPlan
 	err := runSenderTransferLoop(ctx, f, plan, pair.pathInfo, pair.firstRes, func(ctx context.Context) (*quicconn.AcceptResult, error) {
 		acceptCtx, cancel := context.WithTimeout(ctx, reacceptTimeout)
 		defer cancel()
-		res, err := sess.acceptCounting(acceptCtx, pair.listener)
+		res, err := acceptCounting(acceptCtx, pair.listener, nil)
 		if err != nil {
 			return nil, fmt.Errorf("QUIC accept: %w", err)
 		}

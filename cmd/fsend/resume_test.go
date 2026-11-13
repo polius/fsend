@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/quicconn"
 )
 
 func TestResumeKey_DerivedFromBinding(t *testing.T) {
@@ -109,19 +111,46 @@ func TestSessions_SwitchToResumeKeyOnce(t *testing.T) {
 	}
 }
 
-// Failed PAKEs count toward a per-session cap; other errors don't.
-func TestSendSession_AuthFailureCap(t *testing.T) {
-	s := &sendSession{}
-	authErr := fmt.Errorf("handshake: %w", fserrors.ErrPeerAuthFailed)
-	for i := 1; i < maxAuthFailures; i++ {
-		if err := s.authFailed(authErr); err != nil {
-			t.Fatalf("cap hit after %d failures", i)
+// fakeAccepter replays a script of Accept outcomes.
+type fakeAccepter struct{ errs []error }
+
+func (f *fakeAccepter) Accept(context.Context) (*quicconn.AcceptResult, error) {
+	if len(f.errs) == 0 {
+		return &quicconn.AcceptResult{}, nil
+	}
+	err := f.errs[0]
+	f.errs = f.errs[1:]
+	return nil, err
+}
+
+// Failed PAKEs on the LAN listener close it only when the server path can
+// take over; anything short of that keeps accepting. Peers that gave up
+// without failing the PAKE don't count.
+func TestAcceptCounting_LANCap(t *testing.T) {
+	authErr := fmt.Errorf("%w: %w", quicconn.ErrHandshakeFailed, fserrors.ErrPeerAuthFailed)
+	gaveUp := fmt.Errorf("%w: timeout", quicconn.ErrHandshakeFailed)
+	script := func(auth int) *fakeAccepter {
+		f := &fakeAccepter{}
+		for range auth {
+			f.errs = append(f.errs, authErr, gaveUp)
 		}
-		if err := s.authFailed(errors.New("timeout")); err != nil {
-			t.Fatal("a non-auth error counted toward the cap")
+		return f
+	}
+	yes := func() bool { return true }
+	no := func() bool { return false }
+
+	if _, err := acceptCounting(context.Background(), script(maxLANAuthFailures-1), yes); err != nil {
+		t.Fatalf("closed before the cap: %v", err)
+	}
+	if _, err := acceptCounting(context.Background(), script(maxLANAuthFailures), yes); !errors.Is(err, fserrors.ErrTooManyPairingFailures) {
+		t.Fatalf("at the cap with the server up: got %v, want ErrTooManyPairingFailures", err)
+	}
+	for name, closeAtCap := range map[string]func() bool{"server down": no, "re-accept": nil} {
+		if _, err := acceptCounting(context.Background(), script(3*maxLANAuthFailures), closeAtCap); err != nil {
+			t.Fatalf("%s: the cap ended accepting: %v", name, err)
 		}
 	}
-	if err := s.authFailed(authErr); !errors.Is(err, fserrors.ErrTooManyPairingFailures) {
-		t.Fatalf("got %v at the cap, want ErrTooManyPairingFailures", err)
+	if _, err := acceptCounting(context.Background(), &fakeAccepter{errs: []error{errors.New("listener closed")}}, yes); err == nil {
+		t.Fatal("a failed listener was retried")
 	}
 }

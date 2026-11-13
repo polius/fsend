@@ -300,3 +300,22 @@ func TestOnLinkSubnet(t *testing.T) {
 		t.Error("onLinkSubnet(nil) = true, want false")
 	}
 }
+
+// The LAN listener admits peers that could have found it through mDNS and
+// refuses public addresses that are not on this machine's own links.
+func TestLocalPeer(t *testing.T) {
+	udp := func(s string) net.Addr { return &net.UDPAddr{IP: net.ParseIP(s), Port: 50000} }
+	for _, ip := range []string{"127.0.0.1", "::1", "192.168.1.20", "10.0.0.7", "172.16.4.4", "fe80::1", "fd00::5", "::ffff:192.168.1.20"} {
+		if !LocalPeer(udp(ip)) {
+			t.Errorf("LocalPeer(%s) = false, want true", ip)
+		}
+	}
+	for _, ip := range []string{"8.8.8.8", "2001:4860:4860::8888"} {
+		if LocalPeer(udp(ip)) && !onLinkSubnet(net.ParseIP(ip)) {
+			t.Errorf("LocalPeer(%s) = true for an off-link public address", ip)
+		}
+	}
+	if LocalPeer(&net.UnixAddr{Name: "x"}) {
+		t.Error("LocalPeer accepted a non-IP address")
+	}
+}

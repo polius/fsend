@@ -147,6 +147,12 @@ func renderError(err error, debug bool) int {
 			detail += " (" + ne.Reason + ")"
 		}
 	}
+	// A wrong clock derives a different slot: name it, or "no sender"
+	// sends the user checking the code instead.
+	var skewErr *signaling.ClockSkewError
+	if errors.As(err, &skewErr) {
+		detail = skewErr.Detail()
+	}
 	if known && (errors.Is(err, fserrors.ErrUsage) ||
 		errors.Is(err, fserrors.ErrSourceNotFound) ||
 		errors.Is(err, fserrors.ErrUnsendableSymlink) ||
