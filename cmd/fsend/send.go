@@ -299,7 +299,8 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 		renderPreview(os.Stderr, senderPreview(plan.sources), 4)
 	}
 	fmt.Fprintln(os.Stderr)
-	renderCodeBlock(os.Stderr, c, f.passArg != "")
+	copied := copyCommand(f, "fsend "+c)
+	renderCodeBlock(os.Stderr, c, f.passArg != "", copied)
 	fmt.Fprintln(os.Stderr)
 	return uxlog.StartSpinner("Waiting for receiver", uxlog.HintCancel)
 }
@@ -309,13 +310,17 @@ func printSendArtifact(f *flags, c string, plan *sendPlan) *uxlog.Spinner {
 // than a frame, so a triple-click copies a runnable command and one layout
 // works at every width. "fsend" is bold default and the code the one orange
 // thing on screen: the part the user reads back or dictates. The faint
-// line under it says what the code is good for.
-func renderCodeBlock(w io.Writer, c string, password bool) {
+// line under it says what the code is good for, and that it is on the
+// clipboard when a helper confirmed the copy.
+func renderCodeBlock(w io.Writer, c string, password, copied bool) {
 	_, _ = fmt.Fprintln(w, "  On the other machine, run")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintf(w, "      %s %s\n", uxlog.Subject("fsend"), uxlog.Code(c))
 	_, _ = fmt.Fprintln(w)
 	note := uxlog.Join("One receiver", "valid while this runs")
+	if copied {
+		note = uxlog.Join("Copied to clipboard", "one receiver", "valid while this runs")
+	}
 	if password {
 		note = uxlog.Join(note, "they need the password too")
 	}
@@ -423,11 +428,17 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 	// pos is the bar's position (resumed prefixes included), for the
 	// "stopped at 52%" line a dropped receiver gets.
 	var pos int64
+	var jp jsonProgress
 	advance := func(d int64) {
 		pos += d
 		if plan.totalBytes > 0 {
 			sendState.setPct(uxlog.Percent(pos, int64(plan.totalBytes)))
 		}
+		file := ""
+		if names != nil && curFile != ^uint32(0) {
+			file = names[curFile]
+		}
+		jp.emit(pos, int64(plan.totalBytes), file)
 	}
 	return func() { bar.Done() },
 		func(fi uint32, b uint64) {
@@ -622,17 +633,25 @@ func (s *sessionState) percent() int {
 }
 
 // onPeer is the sender's transfer.SendOptions.OnPeer: it records the
-// receiver's self-reported device name for the lines that name it. The
-// HELLO reply is not consent — see onAccepted.
-func onPeer(hostname string) {
-	sendState.setPeer(sanitizeRemote(hostname))
+// receiver's self-reported device name for the lines that name it, and
+// tells --json who it is (once per receiver). The HELLO reply is not
+// consent — see onAccepted.
+func onPeer(hostname string, path connpath.Info) {
+	name := sanitizeRemote(hostname)
+	if sendState.setPeer(name) {
+		jsonEmitPeer(name, jsonRoute(path.Kind))
+	}
 }
 
 // onAccepted prints "✓ bobs-laptop accepted" once the receiver has really
 // agreed (transfer.SendOptions.OnAccepted) — once per receiver, so a retry
 // round doesn't repeat it.
 func onAccepted(f *flags) {
-	if sendState.markAccepted() && !f.quiet {
+	if !sendState.markAccepted() {
+		return
+	}
+	jsonEmitAccepted()
+	if !f.quiet {
 		fmt.Fprintf(os.Stderr, "%s %s accepted\n", uxlog.Check(), sendState.peerName())
 	}
 }

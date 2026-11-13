@@ -27,6 +27,20 @@ func jsonLines(t *testing.T, stdout string) []map[string]any {
 	return out
 }
 
+// eventNames joins the events' names in order, a run of progress events
+// counting once (how many arrive depends on the machine's speed).
+func eventNames(evs []map[string]any) string {
+	var names []string
+	for _, e := range evs {
+		n, _ := e["event"].(string)
+		if n == "progress" && len(names) > 0 && names[len(names)-1] == n {
+			continue
+		}
+		names = append(names, n)
+	}
+	return strings.Join(names, ",")
+}
+
 func TestJSON_SendReceiveHappyPath(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()
@@ -41,23 +55,28 @@ func TestJSON_SendReceiveHappyPath(t *testing.T) {
 			r.senderExitCode, r.receiverExitCode, r.senderErr, r.receiverErr)
 	}
 
+	// The schema is additive: between code and done come peer, accepted
+	// and throttled progress events.
 	sev := jsonLines(t, r.senderOut)
-	if len(sev) != 2 || sev[0]["event"] != "code" || sev[1]["event"] != "done" {
-		t.Fatalf("sender events = %v, want [code done]", sev)
+	if got := eventNames(sev); got != "code,peer,accepted,progress,done" {
+		t.Fatalf("sender events = %s, want code,peer,accepted,progress,done\n%v", got, sev)
 	}
 	if sev[0]["code"] != r.code {
 		t.Errorf("code event carries %v, harness paired on %q", sev[0]["code"], r.code)
 	}
-	done := sev[1]
+	if sev[1]["route"] != "local" || sev[1]["name"] == "" {
+		t.Errorf("peer event: %v", sev[1])
+	}
+	done := sev[len(sev)-1]
 	if done["ok"] != true || done["role"] != "sender" || done["files_sent"] != float64(1) || done["exit"] != float64(0) {
 		t.Errorf("sender done event: %v", done)
 	}
 
 	rev := jsonLines(t, r.receiverOut)
-	if len(rev) != 1 || rev[0]["event"] != "done" {
-		t.Fatalf("receiver events = %v, want [done]", rev)
+	if got := eventNames(rev); got != "peer,accepted,progress,done" {
+		t.Fatalf("receiver events = %s, want peer,accepted,progress,done\n%v", got, rev)
 	}
-	rd := rev[0]
+	rd := rev[len(rev)-1]
 	if rd["ok"] != true || rd["role"] != "receiver" || rd["files_saved"] != float64(1) || rd["dir"] == nil {
 		t.Errorf("receiver done event: %v", rd)
 	}
