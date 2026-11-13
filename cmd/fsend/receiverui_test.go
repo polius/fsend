@@ -34,15 +34,55 @@ func TestConflictLabel_ByteDeltaTiebreaker(t *testing.T) {
 	}
 }
 
-func TestConflictLabel_MtimeTiebreaker(t *testing.T) {
-	// Bytes equal too: the classification rested on mtime, so show the
-	// local copy's age.
+// Every differing row says which copy is newer — the deciding fact for two
+// edits of one document, since "replace" deletes yours.
+func TestConflictLabel_SaysWhichIsNewer(t *testing.T) {
+	now := time.Now()
+	for _, c := range []struct {
+		local, incoming time.Time
+		want            string
+	}{
+		{now, now.Add(-3 * time.Hour), "yours is newer by 3 h"},
+		{now.Add(-48 * time.Hour), now, "theirs is newer by 2 d"},
+		{now, now.Add(-time.Second), "same age"}, // inside timestamp precision
+	} {
+		got := conflictLabel(transfer.Conflict{
+			Kind: "differs", LocalSize: 16, IncomingSize: 7,
+			LocalModTime: c.local, IncomingModTime: c.incoming,
+		})
+		if !strings.HasSuffix(got, c.want) {
+			t.Errorf("row = %q, want it to end %q", got, c.want)
+		}
+	}
+	// No incoming time (an old sender): the local copy's age still shows.
 	got := conflictLabel(transfer.Conflict{
 		Kind: "differs", LocalSize: 100, IncomingSize: 100,
 		LocalModTime: time.Now().Add(-4 * time.Minute),
 	})
-	if !strings.Contains(got, "local copy modified 4m ago") {
-		t.Errorf("equal bytes need the mtime tiebreaker: %q", got)
+	if !strings.Contains(got, "yours modified 4 min ago") {
+		t.Errorf("row without the sender's time = %q", got)
+	}
+}
+
+// The warning above the options fires only when every differing local copy
+// is newer — the case where "replace" loses work.
+func TestAllLocalNewer(t *testing.T) {
+	now := time.Now()
+	newerMine := transfer.Conflict{Kind: "differs", LocalModTime: now, IncomingModTime: now.Add(-time.Hour)}
+	newerTheirs := transfer.Conflict{Kind: "differs", LocalModTime: now.Add(-time.Hour), IncomingModTime: now}
+	clash := transfer.Conflict{Kind: "file vs folder"}
+	for _, c := range []struct {
+		cs   []transfer.Conflict
+		want bool
+	}{
+		{[]transfer.Conflict{newerMine}, true},
+		{[]transfer.Conflict{newerMine, clash}, true},
+		{[]transfer.Conflict{newerMine, newerTheirs}, false},
+		{[]transfer.Conflict{clash}, false},
+	} {
+		if got := allLocalNewer(c.cs); got != c.want {
+			t.Errorf("allLocalNewer(%d rows) = %v, want %v", len(c.cs), got, c.want)
+		}
 	}
 }
 
@@ -59,10 +99,10 @@ func TestCompactAgo(t *testing.T) {
 		d    time.Duration
 		want string
 	}{
-		{30 * time.Second, "30s"},
-		{4 * time.Minute, "4m"},
-		{3 * time.Hour, "3h"},
-		{50 * time.Hour, "2d"},
+		{30 * time.Second, "30 s"},
+		{4 * time.Minute, "4 min"},
+		{3 * time.Hour, "3 h"},
+		{50 * time.Hour, "2 d"},
 	} {
 		if got := compactAgo(c.d); got != c.want {
 			t.Errorf("compactAgo(%v) = %q, want %q", c.d, got, c.want)

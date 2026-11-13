@@ -96,6 +96,9 @@ type Conflict struct {
 	LocalSize    int64
 	LocalModTime time.Time // local copy's mtime; the tiebreaker when sizes read equal
 	IncomingSize uint64
+	// IncomingModTime is the sender's mtime for the entry (whole seconds),
+	// so the prompt can say which copy is newer.
+	IncomingModTime time.Time
 	// NonEmptyDir: a folder with contents is in the way. Replace keeps it
 	// (fsend never deletes a folder's contents); keep both still works.
 	NonEmptyDir bool
@@ -455,7 +458,8 @@ func conflicts(plans []entryPlan) []Conflict {
 		if p.entry.Type == wire.EntryDir {
 			dirs = append(dirs, p.rel)
 		}
-		c := Conflict{RelativePath: p.entry.RelativePath, IncomingSize: p.entry.Size, Kind: "differs", NonEmptyDir: p.nonEmptyDir}
+		c := Conflict{RelativePath: p.entry.RelativePath, IncomingSize: p.entry.Size, Kind: "differs", NonEmptyDir: p.nonEmptyDir,
+			IncomingModTime: time.Unix(p.entry.ModTimeSec, 0)}
 		if st, err := os.Lstat(p.target); err == nil {
 			c.LocalSize = st.Size()
 			c.LocalModTime = st.ModTime()

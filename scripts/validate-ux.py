@@ -305,8 +305,10 @@ class PtyRun(threading.Thread):
         # the palette, plain mode, the server or a code.
         for k in ('NO_COLOR', 'FORCE_COLOR', 'FSEND_THEME', 'COLORFGBG', 'FSEND_PLAIN',
                   'LC_ALL', 'LC_CTYPE', 'FSEND_NO_NOTIFY', 'FSEND_CODE', 'FSEND_SERVER',
-                  'FSEND_PASSWORD'):
+                  'FSEND_PASSWORD', 'FSEND_NO_CLIPBOARD', 'SSH_CONNECTION', 'SSH_TTY'):
             e.pop(k, None)
+        # Never the user's real clipboard: S22 opts back in with a fake helper.
+        e['FSEND_NO_CLIPBOARD'] = '1'
         if self.env:
             e.update(self.env)
         return e
@@ -916,8 +918,11 @@ def s20_visual_system():
             tag = f'{theme}/{cols}'
             d = fresh(f's20-{theme}-{cols}')
             os.makedirs(os.path.join(d, 'recv_out', 'myproj'))
-            with open(os.path.join(d, 'recv_out', 'myproj', 'README.md'), 'w') as f:
+            mine = os.path.join(d, 'recv_out', 'myproj', 'README.md')
+            with open(mine, 'w') as f:
                 f.write('mine, edited\n')
+            later = time.time() + 3600
+            os.utime(mine, (later, later))  # edited after the sender's copy
             snd, rcv = pair(s, d, ['--device-name', DEV_SND, 'myproj'],
                             ['--device-name', DEV_RCV, '--out', 'recv_out'], [(4.0, b'k\n')],
                             env=env, cols=cols)
@@ -942,6 +947,9 @@ def s20_visual_system():
             check(s, f'{tag}: listing "differs" needs a decision', rv, 'README.md', 'differs', tokens(theme)[3])
             check(s, f'{tag}: listing "up to date"-free row size faint', rv, 'video1.bin', '20 MB', DEFAULT, False, True)
             has_text(s, f'{tag}: sender names the receiver', sp, 'Sent myproj/ to ' + DEV_RCV)
+            # U5: the edited local copy is the newer one, and the prompt says so.
+            has_text(s, f'{tag}: conflict row says which is newer', rv, 'yours is newer by')
+            has_text(s, f'{tag}: warns that replace would lose work', rv, 'replace would lose your changes')
 
 
 def s21_cancel_resume():
@@ -979,11 +987,41 @@ def s21_cancel_resume():
             repr(lines[k - 1:k + 1]) if k else None)
 
 
+def s22_clipboard():
+    """U6: the sender copies "fsend <code>" through the platform helper and
+    says so only when the helper confirmed; never for --password sends."""
+    s = 'S22 clipboard'
+    fake = os.path.join(H.tmp, 'fakeclip')
+    os.makedirs(fake, exist_ok=True)
+    sink = os.path.join(H.tmp, 'clipboard.txt')
+    for name in ('pbcopy', 'wl-copy', 'clip.exe'):
+        with open(os.path.join(fake, name), 'w') as f:
+            f.write(f'#!/bin/sh\ncat > {sink}\n')
+        os.chmod(os.path.join(fake, name), 0o755)
+    env = {'FSEND_NO_CLIPBOARD': '', 'PATH': fake + os.pathsep + os.environ.get('PATH', ''),
+           'WAYLAND_DISPLAY': 'wayland-0'}
+    for args, want in ((['small.txt'], True), (['small.txt', '--password=abc'], False)):
+        if os.path.exists(sink):
+            os.remove(sink)
+        d = fresh('s22')
+        p = PtyRun([H.bin] + args, d, runtime=4, env=env)
+        p.start(); p.join()
+        m = re.search(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b', p.text)
+        got = open(sink).read() if os.path.exists(sink) else ''
+        tag = 'password send' if '--password=abc' in args else 'plain send'
+        if want:
+            glob_ok(s, f'{tag}: the command is on the clipboard', m is not None and got == f'fsend {m.group(1)}', repr(got))
+            has_text(s, f'{tag}: says it was copied', p.text, 'Copied to clipboard')
+        else:
+            glob_ok(s, f'{tag}: clipboard untouched', got == '', repr(got))
+            lacks_text(s, f'{tag}: says nothing about copying', p.text, 'Copied')
+
+
 SCENARIOS = (s1_single_file, s2_folder, s3_conflict, s4_password, s5_decline,
              s6_text, s7_errors, s8_no_color, s9_help, s10_piped, s11_themes,
              s12_narrow, s13_cancel, s14_late_arriver, s15_completion, s16_notify,
              s17_plain, s18_spinner_width, s19_detected_background, s20_visual_system,
-             s21_cancel_resume)
+             s21_cancel_resume, s22_clipboard)
 
 
 def main():

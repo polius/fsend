@@ -284,13 +284,26 @@ FSEND_PASSWORD=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
 else. Human output (progress, prompts, summaries) stays on stderr, so
 `--json` composes with or without `--quiet`. Exit codes are unchanged.
 
-Two events exist. The **sender** emits the share code as soon as it is
-issued, then a final summary; the **receiver** emits only the summary:
+The **sender** emits the share code as soon as it is issued, then the
+transfer's progress and a final summary; the **receiver** emits the same
+minus the code:
 
 ```json
 {"v":1,"event":"code","code":"abc-defg-jkm"}
+{"v":1,"event":"peer","name":"mbp","route":"local"}
+{"v":1,"event":"accepted"}
+{"v":1,"event":"progress","bytes":1048576,"total":2100000}
 {"v":1,"event":"done","ok":true,"role":"sender","exit":0,"bytes_total":2100000,"bytes_moved":2100000,"files_sent":1,"files_skipped":0,"files_kept":0,"duration_ms":312,"route":"local"}
 ```
+
+| Event | When | Fields |
+| --- | --- | --- |
+| `code` | Sender: the code is issued | `code` |
+| `peer` | The other side connected; once per peer | `name` (its device name), `route` |
+| `accepted` | The receiver agreed: on the sender when the receiver's decisions arrive, on the receiver when it says yes | — |
+| `retry` | A dropped connection is retried | `attempt`, `of` (the cap), `wait_ms` |
+| `progress` | While data moves, at most once a second | `bytes` (so far, resumed data included), `total` (omitted for a stdin stream), `file` (when several files move) |
+| `done` | Once, at the end | below |
 
 Fields of `done`:
 
@@ -383,9 +396,10 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | `FSEND_SERVER_PASSWORD_FILE` | `--connect <host:port>,<password>` | Read the server password from this file instead. Used only when `FSEND_SERVER_PASSWORD` is unset. |
 | `FSEND_CODE` | `fsend <code>` | The code to receive, kept out of `ps` on shared machines. Used when no path or code is given (`FSEND_CODE=… fsend`), and by bare `--receive`. |
 | `FSEND_SERVER` | `--server` | Pairing server for this run, without saving it. |
-| `FSEND_THEME` | — | `light` or `dark`: tune colors to your terminal background. Unset, fsend uses colors that read on both. |
+| `FSEND_THEME` | — | `light` or `dark`: tune colors to your terminal background. Unset, fsend asks the terminal for its background and, without an answer, uses the terminal's own ANSI colors. |
 | `FSEND_PLAIN` | — | Set to `1` for plain output — no colors, animation or Unicode symbols, one line per update — for screen readers and logs. Automatic when the locale isn't UTF-8. |
 | `FSEND_NO_NOTIFY` | — | Set to `1` to silence the bell and desktop notification fsend sends when a transfer that took 10 s or more succeeds. |
+| `FSEND_NO_CLIPBOARD` | — | Set to `1` to stop the sender copying `fsend <code>` to the clipboard. Password-protected sends never copy it. |
 | `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
 | `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
 | `NO_COLOR` | — | Set to any non-empty value to disable ANSI colors ([no-color.org](https://no-color.org)). |

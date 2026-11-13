@@ -19,6 +19,7 @@ import (
 	"github.com/polius/fsend/internal/atomicfile"
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
@@ -60,6 +61,9 @@ type receiverUI struct {
 
 	// choice is the answer to "what about files that already exist",
 	// asked together with the accept prompt and handed to the engine.
+	announced bool // the peer and accepted events went out (once per receive)
+	jp        jsonProgress
+
 	choice   transfer.ConflictPolicy
 	notSaved []string // entries not saved for other reasons (unreadable, unplaceable)
 	changed  []string // files the sender saw change while reading them
@@ -200,8 +204,17 @@ func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummar
 			ui.ordinal[e.Index] = i + 1
 		}
 	}
+	first := !ui.announced
+	ui.announced = true
 	ui.mu.Unlock()
-	return ui.promptAccept(h, summary)
+	if first {
+		jsonEmitPeer(sanitizeRemote(h.Hostname), jsonRoute(ui.pathInfo.Kind))
+	}
+	ok := ui.promptAccept(h, summary)
+	if ok && first {
+		jsonEmitAccepted()
+	}
+	return ok
 }
 
 // promptAccept renders the incoming-transfer block and asks whether to save.
@@ -298,6 +311,10 @@ func (ui *receiverUI) askWithConflicts(question string, conflicts []transfer.Con
 	if len(conflicts) > shown {
 		fmt.Fprintf(os.Stderr, "    %s\n", uxlog.Muted(fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts))))
 	}
+	if allLocalNewer(conflicts) {
+		mine := pick(len(conflicts) == 1, "Yours is newer", "All of yours are newer")
+		fmt.Fprintf(os.Stderr, "%s %s — replace would lose your changes\n", uxlog.Warn(), mine)
+	}
 	options := "[K]eep both · [r]eplace " + uxlog.Alert("(deletes yours)") + " · [s]kip them · [n]o"
 	for {
 		fmt.Fprintf(os.Stderr, "%s %s  %s ", uxlog.Ask(), question, options)
@@ -361,41 +378,82 @@ func (ui *receiverUI) conflictNames(conflicts []transfer.Conflict) []string {
 	return names
 }
 
-// compactAgo renders an age in the shortest honest unit — "30s", "4m",
-// "3h", "2d" — for the overwrite row's tiebreaker.
+// compactAgo renders an age in the shortest honest unit — "30 s", "4 min",
+// "3 h", "2 d" — for the conflict rows.
 func compactAgo(d time.Duration) string {
 	switch {
 	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf("%d s", int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
+		return fmt.Sprintf("%d min", int(d.Minutes()))
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
+		return fmt.Sprintf("%d h", int(d.Hours()))
 	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
+		return fmt.Sprintf("%d d", int(d.Hours()/24))
 	}
 }
 
+// sameAgeSlack absorbs filesystem timestamp precision (FAT keeps 2 s, the
+// listing whole seconds) when deciding which copy is newer.
+const sameAgeSlack = 2 * time.Second
+
+// newer reports which copy of a differing file is newer: > 0 yours, < 0
+// theirs, 0 the same age or unknown.
+func newer(c transfer.Conflict) time.Duration {
+	if c.LocalModTime.IsZero() || c.IncomingModTime.IsZero() {
+		return 0
+	}
+	d := c.LocalModTime.Sub(c.IncomingModTime)
+	if d.Abs() < sameAgeSlack {
+		return 0
+	}
+	return d
+}
+
 // conflictLabel renders one conflict's facts, after its name: a type clash
-// names its kind; a "differs" row the size change, old → new, and — when
-// the rounded sizes collide and would read as a no-op — what actually
-// differs: the byte delta, or (sizes equal, the classification rested on
-// mtime) the local copy's age. No colour: the name is the subject and the
-// question above the rows carries the attention.
+// names its kind; a "differs" row the size change, old → new, and which
+// copy is newer — for two edits of one document the deciding fact, since
+// "replace" deletes yours. When the rounded sizes collide and would read as
+// a no-op, it also says what actually differs: the byte delta. No colour:
+// the name is the subject and the question above the rows carries the
+// attention.
 func conflictLabel(c transfer.Conflict) string {
 	if c.Kind != "differs" {
 		return c.Kind
 	}
 	row := uxlog.HumanBytes(c.LocalSize) + " → " + uxlog.HumanBytes(int64(c.IncomingSize))
 	if uxlog.HumanBytes(c.LocalSize) == uxlog.HumanBytes(int64(c.IncomingSize)) {
-		switch d := int64(c.IncomingSize) - c.LocalSize; {
-		case d != 0:
+		if d := int64(c.IncomingSize) - c.LocalSize; d != 0 {
 			row += fmt.Sprintf(" (%+d B)", d)
-		case !c.LocalModTime.IsZero():
-			row += " (local copy modified " + compactAgo(time.Since(c.LocalModTime)) + " ago)"
 		}
 	}
+	switch d := newer(c); {
+	case d > 0:
+		row += "   yours is newer by " + compactAgo(d)
+	case d < 0:
+		row += "   theirs is newer by " + compactAgo(-d)
+	case !c.IncomingModTime.IsZero() && !c.LocalModTime.IsZero():
+		row += "   same age"
+	case !c.LocalModTime.IsZero():
+		row += "   yours modified " + compactAgo(time.Since(c.LocalModTime)) + " ago"
+	}
 	return row
+}
+
+// allLocalNewer reports whether every differing local copy is newer than
+// the incoming one — the case where "replace" loses work.
+func allLocalNewer(conflicts []transfer.Conflict) bool {
+	n := 0
+	for _, c := range conflicts {
+		if c.Kind != "differs" {
+			continue
+		}
+		if newer(c) <= 0 {
+			return false
+		}
+		n++
+	}
+	return n > 0
 }
 
 // conflictRows aligns the conflict list: names padded to one column (up to
@@ -537,6 +595,7 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	ui.prev[fileIndex] = bytesWritten
 	ui.total += int64(d)
 	ui.bar.Add(int64(d))
+	ui.jp.emit(ui.total+ui.skipped, ui.bytesHint, ui.names[fileIndex])
 }
 
 // onFileDone records each saved file's path for the summary headline and
@@ -633,12 +692,12 @@ func (ui *receiverUI) close() {
 // before a notice prints — otherwise the spinner's redraw garbles the line.
 func (ui *receiverUI) retryNotice() func(int, time.Duration, error) {
 	notice := retryNoticeFor(ui.f)
-	if notice == nil {
-		return nil
-	}
 	return func(attempt int, wait time.Duration, lastErr error) {
 		ui.spin.Stop()
-		notice(attempt, wait, lastErr)
+		jsonEmitRetry(attempt, retry.DefaultAttempts, wait)
+		if notice != nil {
+			notice(attempt, wait, lastErr)
+		}
 	}
 }
 

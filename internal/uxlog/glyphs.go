@@ -506,6 +506,11 @@ func renderTTY(w io.Writer) bool {
 	return ansiOK && IsTTY(w)
 }
 
+// CanEscape reports whether w is a terminal that interprets escape
+// sequences (not TERM=dumb, not plain mode, VT enabled on Windows) — for
+// callers that write one of their own, such as OSC 52.
+func CanEscape(w io.Writer) bool { return renderTTY(w) }
+
 // Plain reports plain mode: FSEND_PLAIN set (non-empty, not "0"/"false"),
 // or a locale that isn't UTF-8. Every renderer then takes its pipe form —
 // whole lines, no redraws, ASCII glyphs, no colour — which is what screen

@@ -937,7 +937,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	}
 	peer := func(host string, accepted bool) {
 		spin.Stop()
-		onPeer(host)
+		onPeer(host, pathInfo)
 		switch {
 		case !accepted || stream:
 			// A declined or stream reply needs no wait line: the error
@@ -986,13 +986,14 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	}
 	unreadable, onUnreadable, onChanged := sourceIssueHooks(f, plan)
 	current := firstRes
-	opts := retry.Options{OnRetry: retryNoticeFor(f)}
-	if notice := opts.OnRetry; notice != nil {
-		opts.OnRetry = func(attempt int, wait time.Duration, lastErr error) {
-			spin.Stop()
+	notice := retryNoticeFor(f)
+	opts := retry.Options{OnRetry: func(attempt int, wait time.Duration, lastErr error) {
+		spin.Stop()
+		jsonEmitRetry(attempt, retry.DefaultAttempts, wait)
+		if notice != nil {
 			notice(attempt, wait, lastErr)
 		}
-	}
+	}}
 	classify := retry.IsTransient
 	if plan.consumable() {
 		// A partially-consumed stdin/--text reader would resend from an
