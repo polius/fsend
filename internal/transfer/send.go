@@ -538,6 +538,9 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 // a receiver blocked mid-chunk unblocks and reads the reason. Bounded so a
 // wedged peer can't hold the sender hostage.
 func notifyPeer(s *Streams, code wire.ErrorCode, msg string) {
+	// A cancel set a past write deadline on the control stream; give the
+	// notice its own short window.
+	setWriteDeadline(s.Control, time.Now().Add(time.Second))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

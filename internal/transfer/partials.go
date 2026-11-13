@@ -197,12 +197,6 @@ func (ps *partialStore) sweep() {
 // tidy removes the state dir when nothing is left in it.
 func (ps *partialStore) tidy() { _ = os.Remove(ps.dir) }
 
-// hasPartials reports whether any partial data is kept.
-func (ps *partialStore) hasPartials() bool {
-	m, _ := filepath.Glob(filepath.Join(ps.dir, "*.partial"))
-	return len(m) > 0
-}
-
 // isReserved reports whether rel would land inside the state dir.
 func isReserved(rel string) bool {
 	first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")

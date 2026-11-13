@@ -203,10 +203,3 @@ func hashFileRoot(path string, progress func(int64)) ([32]byte, error) {
 	}
 	return foldRoot(blocks, uint64(st.Size())), nil
 }
-
-// bytesRoot is the tree root of an in-memory buffer (tests, small inputs).
-func bytesRoot(b []byte) [32]byte {
-	h := newFileHasher()
-	_, _ = h.Write(b)
-	return h.Sum()
-}

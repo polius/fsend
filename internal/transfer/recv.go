@@ -17,6 +17,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/polius/fsend/internal/atomicfile"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/wire"
@@ -286,7 +287,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 		return err
 	}
 	r.dirs.restore()
-	restoreDirModes(plans)
+	restoreDirMeta(plans)
 	if err := finishRecv(s); err != nil {
 		return err
 	}
@@ -933,7 +934,21 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return false, r.refuseName(p, err)
 	}
-	if err := moveFile(pf.partial, target); err != nil {
+	// A target that was absent at classification must still be absent: a
+	// file the user created meanwhile is theirs, not ours to replace.
+	place := moveFile
+	if !p.needsConsent() && !p.replaceResume {
+		place = placeNew
+	}
+	if err := place(pf.partial, target); err != nil {
+		if errors.Is(err, errTargetAppeared) {
+			r.ps.remove(p.rel)
+			p.disp, p.skipReason = dispRefused, "a file appeared here during the transfer; yours was kept"
+			if r.opts.OnEntrySkipped != nil {
+				r.opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
+			}
+			return false, nil
+		}
 		return false, r.refuseName(p, err)
 	}
 	if canResume(p.entry.Size) {
@@ -1093,10 +1108,11 @@ func (r *receiver) materialize(p *entryPlan) error {
 	}
 }
 
-// restoreDirModes sets each received directory to the sender's mode, after
-// its children are written. Applied last, deepest first. dirMode keeps the
-// owner's rwx, so a later run can still write into the folder.
-func restoreDirModes(plans []entryPlan) {
+// restoreDirMeta gives each received directory the sender's mode and
+// modification time, after its children are written (which bump it).
+// Applied last, deepest first. dirMode keeps the owner's rwx, so a later run
+// can still write into the folder.
+func restoreDirMeta(plans []entryPlan) {
 	for i := len(plans) - 1; i >= 0; i-- {
 		p := &plans[i]
 		if p.entry.Type != wire.EntryDir || p.blockedAncestor || p.disp == dispRefused {
@@ -1106,9 +1122,17 @@ func restoreDirModes(plans []entryPlan) {
 		// Lstat, not Stat: if a receiver-side symlink sits in the slot (a kept
 		// dir↔symlink conflict), Stat would follow it and chmod the link's
 		// target anywhere on disk. Lstat reports the link itself, so IsDir is
-		// false and we skip it — we only ever chmod a real directory we own.
-		if st, err := os.Lstat(p.target); err == nil && st.IsDir() && st.Mode()&os.ModePerm != want {
+		// false and we skip it — we only ever touch a real directory we own.
+		st, err := os.Lstat(p.target)
+		if err != nil || !st.IsDir() {
+			continue
+		}
+		if st.Mode()&os.ModePerm != want {
 			_ = os.Chmod(p.target, want)
+		}
+		if p.entry.ModTimeSec != 0 {
+			t := time.Unix(p.entry.ModTimeSec, 0)
+			_ = os.Chtimes(p.target, t, t)
 		}
 	}
 }
@@ -1281,7 +1305,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 		}
 		ps.dropMeta(rel)
 		ps.tidy()
-		fsyncDir(filepath.Dir(target)) // make the rename itself durable
+		atomicfile.SyncDir(filepath.Dir(target)) // make the rename itself durable
 		if opts.OnFileDone != nil {
 			opts.OnFileDone(target, hex.EncodeToString(sha.Sum(nil)))
 		}

@@ -38,6 +38,10 @@ type sendPlan struct {
 	label       string // local UX label for the "Sending …" line
 	totalFiles  int
 	totalBytes  uint64
+	// walkSkips are entries the walk left out (a broken link inside a
+	// folder): warned about before the code, listed with the files that
+	// could not be read at the end, and the exit is E050.
+	walkSkips []transfer.WalkSkip
 }
 
 func (p *sendPlan) consumable() bool { return p.mode == wire.ModeStream }
@@ -94,6 +98,9 @@ func runSend(f *flags, paths []string) error {
 		// Settle the terminal's background before anything draws (see
 		// uxlog.DetectTheme).
 		uxlog.DetectTheme()
+		for _, sk := range plan.walkSkips {
+			fmt.Fprintf(os.Stderr, "%s Skipping %s: %s\n", uxlog.Warn(), sk.Path, sk.Reason)
+		}
 	}
 	// A receiver that installs fresh pairs through the default server, so
 	// the install-and-receive hint only holds when this send uses it too.
@@ -146,7 +153,7 @@ func collectPlan(f *flags, paths []string) (*sendPlan, error) {
 		return nil, errExcludeMisuse()
 	}
 
-	sources, err := transfer.Walk(paths, f.excludes)
+	sources, skips, err := transfer.WalkReport(paths, f.excludes)
 	if err != nil {
 		return nil, mapLocalReadErr(err)
 	}
@@ -157,6 +164,7 @@ func collectPlan(f *flags, paths []string) (*sendPlan, error) {
 	}
 	plan := &sendPlan{
 		mode:       wire.ModeFiles,
+		walkSkips:  skips,
 		sources:    sources,
 		totalFiles: transfer.CountFiles(sources),
 		totalBytes: transfer.TotalBytes(sources),
@@ -823,6 +831,11 @@ func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 func sourceIssueHooks(f *flags, plan *sendPlan) (skipped func() []string, onSkipped func(uint32, error), onChanged func(uint32)) {
 	var mu sync.Mutex
 	paths := map[uint32]string{}
+	// Entries the walk already left out, keyed from the top of the index
+	// space so they never meet a real file index.
+	for i, sk := range plan.walkSkips {
+		paths[^uint32(i)] = sk.Path + " — " + sk.Reason
+	}
 	name := func(i uint32) string {
 		if int(i) < len(plan.sources) {
 			return displayPath(plan.sources[i].AbsPath)

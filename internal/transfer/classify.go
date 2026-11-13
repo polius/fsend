@@ -198,13 +198,6 @@ func (c *classifier) memoWalk(memo *map[string]bool, target string, decide func(
 	return verdict
 }
 
-// classify resolves every listing entry against targetDir with the probed
-// filesystem semantics. Kept as the simple entry point for tests.
-func classify(entries []wire.ListingEntry, targetDir string, checksum bool) ([]entryPlan, error) {
-	c := &classifier{targetDir: targetDir, checksum: checksum, sem: probeFS(targetDir), ps: newPartialStore(targetDir)}
-	return c.run(entries)
-}
-
 // run returns the per-entry plans (in listing order) or an error if any path
 // is unsafe or the listing names one path twice.
 func (c *classifier) run(entries []wire.ListingEntry) ([]entryPlan, error) {

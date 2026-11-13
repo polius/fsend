@@ -1,12 +1,14 @@
 package transfer
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
@@ -110,5 +112,88 @@ func TestEngine_NameTheFilesystemRefuses(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, ".fsend")); err == nil {
 		t.Error(".fsend was left behind")
+	}
+}
+
+// A file the user creates at a target after it was classified as absent is
+// theirs: the incoming file is not placed over it; the entry is skipped with
+// a reason and the rest arrive.
+func TestEngine_FileAppearedDuringTransferIsKept(t *testing.T) {
+	dst := t.TempDir()
+	var skipped []string
+	_, re := runTransfer(t,
+		SendOptions{Mode: wire.ModeFiles, Sources: sourcesFor(t, []string{"a.txt", "b.txt"})},
+		RecvOptions{TargetDir: dst,
+			// Runs after classification, before any byte lands.
+			Accept: func(wire.SenderHello, ClassifySummary) bool {
+				writeFile(t, filepath.Join(dst, "b.txt"), []byte("made meanwhile"))
+				return true
+			},
+			OnEntrySkipped: func(rel, _ string) { skipped = append(skipped, rel) }})
+	if re != nil {
+		t.Fatalf("recv = %v", re)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dst, "b.txt")); string(b) != "made meanwhile" {
+		t.Errorf("b.txt = %q: the file made during the transfer was replaced", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dst, "a.txt")); string(b) != "content of 000" {
+		t.Errorf("a.txt = %q, want it delivered", b)
+	}
+	if len(skipped) != 1 || skipped[0] != "b.txt" {
+		t.Errorf("skipped = %v, want [b.txt]", skipped)
+	}
+}
+
+// A Ctrl-C reaches a control write blocked on a peer that stopped reading
+// (a large listing upload), not just reads.
+func TestBindCtx_CancelUnblocksControlWrite(t *testing.T) {
+	a, b := tcpPair(t)
+	defer func() { _ = a.Close(); _ = b.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	s, stop := bindCtx(ctx, &Streams{Control: a, Data: a})
+	defer stop()
+	errc := make(chan error, 1)
+	go func() {
+		_, err := s.Control.Write(make([]byte, 256<<20)) // far past the socket buffers
+		errc <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-errc:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("write err = %v, want context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a cancelled context left the control write blocked")
+	}
+}
+
+// A broken link inside a folder is skipped and reported; one named on the
+// command line is still refused (E036).
+func TestWalkReport_SkipsDanglingLinksInsideFolders(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "app")
+	writeFile(t, filepath.Join(root, "src", "index.js"), []byte("x"))
+	if err := os.MkdirAll(filepath.Join(root, "node_modules", ".bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "node_modules", ".bin", "cli")
+	if err := os.Symlink("../gone/cli.js", link); err != nil {
+		t.Fatal(err)
+	}
+	srcs, skips, err := WalkReport([]string{root}, nil)
+	if err != nil {
+		t.Fatalf("WalkReport = %v", err)
+	}
+	if len(skips) != 1 || skips[0].Path != "app/node_modules/.bin/cli" || !strings.Contains(skips[0].Reason, "../gone/cli.js") {
+		t.Errorf("skips = %+v", skips)
+	}
+	for _, s := range srcs {
+		if strings.HasSuffix(s.Entry.RelativePath, "/cli") {
+			t.Errorf("the broken link is still in the listing")
+		}
+	}
+	if _, _, err := WalkReport([]string{link}, nil); !errors.Is(err, fserrors.ErrUnsendableSymlink) {
+		t.Errorf("a broken link named directly = %v, want E036", err)
 	}
 }

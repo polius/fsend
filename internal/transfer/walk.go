@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/polius/fsend/internal/fserrors"
@@ -29,53 +28,67 @@ type Source struct {
 // Walk expands CLI arguments into an ordered Source list — files and
 // directories (recursively). Symlinks are followed to their target content:
 // fsend is a send tool, so the recipient receives the pointed-to file/dir, not
-// a dangling link. A symlink whose target is missing, unreadable, or cyclic is
-// a hard error (ErrUnsendableSymlink). No file contents are read here; the
+// a dangling link. A symlink whose target is unreadable or cyclic is a hard
+// error (ErrUnsendableSymlink); so is a missing target named on the command
+// line, while one inside a folder is skipped (WalkReport lists it). No file contents are read here; the
 // BLAKE3 root is computed inline at send time.
 //
 // RelativePath is rooted at each argument's base name, so `~/proj/foo` lands
 // as `foo/...`. Duplicate roots are rejected up front; case-only pairs are
 // sent, and the receiver decides by its own filesystem whether they collide.
 func Walk(paths []string, excludes []string) ([]Source, error) {
+	out, _, err := WalkReport(paths, excludes)
+	return out, err
+}
+
+// WalkSkip is an entry WalkReport left out of the transfer, with why.
+type WalkSkip struct {
+	Path   string // forward-slash path inside the transfer
+	Reason string
+}
+
+// WalkReport is Walk that also returns what it skipped: a dangling symlink
+// inside a folder (node_modules/.bin is full of them) costs that entry, as
+// an unreadable file does, instead of stopping the send. One named on the
+// command line is still an error (E036): the user pointed at it.
+func WalkReport(paths []string, excludes []string) (out []Source, skips []WalkSkip, err error) {
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("walk: no paths provided")
+		return nil, nil, fmt.Errorf("walk: no paths provided")
 	}
 	m, err := newExcludeMatcher(excludes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	var out []Source
 	seen := make(map[string]string) // relpath → argument (duplicate check)
 	roots := make(map[string]string, len(paths))
 	for _, raw := range paths {
 		abs, err := filepath.Abs(raw)
 		if err != nil {
-			return nil, fmt.Errorf("walk: %s: %w", raw, err)
+			return nil, nil, fmt.Errorf("walk: %s: %w", raw, err)
 		}
 		st, err := os.Lstat(abs)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil, fmt.Errorf("%w: %s", fserrors.ErrSourceNotFound, raw)
+				return nil, nil, fmt.Errorf("%w: %s", fserrors.ErrSourceNotFound, raw)
 			}
-			return nil, fmt.Errorf("walk: %s: %w", raw, err)
+			return nil, nil, fmt.Errorf("walk: %s: %w", raw, err)
 		}
 		// `.` / `./` / `foo/.` means "send this directory's contents", so its
 		// children land at the top level instead of inside a wrapper folder.
 		if IsContentsRef(raw) && st.IsDir() {
 			children, err := os.ReadDir(abs)
 			if err != nil {
-				return nil, fmt.Errorf("walk: readdir %s: %w", abs, err)
+				return nil, nil, fmt.Errorf("walk: readdir %s: %w", abs, err)
 			}
-			sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
 			for _, c := range children {
 				cAbs := filepath.Join(abs, c.Name())
 				cst, err := os.Lstat(cAbs)
 				if err != nil {
-					return nil, fmt.Errorf("walk: lstat %s: %w", cAbs, err)
+					return nil, nil, fmt.Errorf("walk: lstat %s: %w", cAbs, err)
 				}
-				if err := addEntry(&out, seen, nil, "", cAbs, c.Name(), cst, m); err != nil {
-					return nil, err
+				if err := addEntry(&out, &skips, seen, nil, "", cAbs, c.Name(), cst, m); err != nil {
+					return nil, nil, err
 				}
 			}
 			continue
@@ -87,7 +100,7 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 		// resolved by addEntry, which already errors if its target is
 		// unsendable.
 		if mode := st.Mode(); !mode.IsDir() && !mode.IsRegular() && mode&os.ModeSymlink == 0 {
-			return nil, fmt.Errorf("%w: cannot send %s — not a regular file (%s)", fserrors.ErrUsage, raw, fileKind(mode))
+			return nil, nil, fmt.Errorf("%w: cannot send %s — not a regular file (%s)", fserrors.ErrUsage, raw, fileKind(mode))
 		}
 		// Preflight an unreadable file now, before a code is issued —
 		// otherwise the E010 fires only after a receiver accepts, wasting
@@ -97,24 +110,24 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 		if st.Mode().IsRegular() {
 			f, err := os.Open(abs)
 			if err != nil {
-				return nil, fmt.Errorf("walk: %s: %w", raw, err)
+				return nil, nil, fmt.Errorf("walk: %s: %w", raw, err)
 			}
 			_ = f.Close()
 		}
 		root := filepath.Base(abs)
 		if prev, ok := roots[root]; ok {
-			return nil, fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, raw, root)
+			return nil, nil, fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, raw, root)
 		}
 		roots[root] = raw
-		if err := addEntry(&out, seen, nil, "", abs, root, st, m); err != nil {
-			return nil, err
+		if err := addEntry(&out, &skips, seen, nil, "", abs, root, st, m); err != nil {
+			return nil, nil, err
 		}
 	}
 	// Assign indices in final order.
 	for i := range out {
 		out[i].Entry.Index = uint32(i)
 	}
-	return out, nil
+	return out, skips, nil
 }
 
 // addEntry appends one filesystem entry and recurses into directories. rel is
@@ -124,14 +137,19 @@ func Walk(paths []string, excludes []string) ([]Source, error) {
 // forever. srcPrefix is the real-source path of the parent directory when we're
 // inside a followed symlink (empty in the user's real tree); it lets every
 // symlink-derived file carry its true origin for the preview annotation.
-func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, srcPrefix, abs, rel string, st os.FileInfo, m excludeMatcher) error {
+func addEntry(out *[]Source, skips *[]WalkSkip, seen map[string]string, stack []os.FileInfo, srcPrefix, abs, rel string, st os.FileInfo, m excludeMatcher) error {
 	if m.match(rel) {
 		return nil
 	}
-	if _, ok := seen[rel]; ok {
-		return fmt.Errorf("%w: %s is named twice in this transfer — rename one", fserrors.ErrUsage, rel)
+	// Only top-level names can repeat (two arguments, or a contents send
+	// beside one); below them, a folder's names are unique and every path
+	// carries its unique root.
+	if len(stack) == 0 {
+		if _, ok := seen[rel]; ok {
+			return fmt.Errorf("%w: %s is named twice in this transfer — rename one", fserrors.ErrUsage, rel)
+		}
+		seen[rel] = rel
 	}
-	seen[rel] = rel
 
 	// Follow symlinks to their target. os.Stat resolves the whole chain (and
 	// reports ELOOP for a self-referential one); a missing or unreadable
@@ -142,6 +160,10 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, srcPre
 		linkTarget = target
 		resolved, err := os.Stat(abs)
 		if err != nil {
+			if len(stack) > 0 && errors.Is(err, fs.ErrNotExist) {
+				*skips = append(*skips, WalkSkip{Path: filepath.ToSlash(rel), Reason: "broken link to " + target})
+				return nil
+			}
 			return symlinkError(rel, target, err)
 		}
 		st = resolved
@@ -186,8 +208,7 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, srcPre
 		if err != nil {
 			return fmt.Errorf("walk: readdir %s: %w", abs, err)
 		}
-		sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
-		stack = append(stack, st)
+		stack = append(stack, st) // os.ReadDir returns names sorted
 		for _, c := range children {
 			cAbs := filepath.Join(abs, c.Name())
 			cRel := rel + "/" + c.Name()
@@ -195,7 +216,7 @@ func addEntry(out *[]Source, seen map[string]string, stack []os.FileInfo, srcPre
 			if err != nil {
 				return fmt.Errorf("walk: lstat %s: %w", cAbs, err)
 			}
-			if err := addEntry(out, seen, stack, src, cAbs, cRel, cst, m); err != nil {
+			if err := addEntry(out, skips, seen, stack, src, cAbs, cRel, cst, m); err != nil {
 				return err
 			}
 		}

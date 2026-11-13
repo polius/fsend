@@ -17,20 +17,23 @@ import (
 // On cancel the watcher sets a past deadline on the data stream (both
 // directions) and the control read side, unblocking the parked call with a
 // deadline error; the returned ctxConn then reports it as ctx.Err() so the
-// loops surface a clean cancellation. The control *write* side is left alone
-// so the sender's best-effort terminal notification (notifyPeer) still
-// reaches the peer.
+// loops surface a clean cancellation — writes included, so a Ctrl-C parked
+// in a control write (a large listing upload) unblocks too. notifyPeer
+// lifts the control write deadline again for its best-effort notice.
 //
 // Streams that don't expose deadlines (the io.Pipe pair used in tests) are
 // simply not interrupted — behavior there is unchanged from the per-loop
 // ctx.Err() checks. The returned stop func ends the watcher; callers defer it.
 func bindCtx(ctx context.Context, s *Streams) (*Streams, func()) {
 	done := make(chan struct{})
+	exited := make(chan struct{})
 	go func() {
+		defer close(exited)
 		select {
 		case <-ctx.Done():
 			past := time.Now()
 			setReadDeadline(s.Control, past)
+			setWriteDeadline(s.Control, past)
 			setReadDeadline(s.Data, past)
 			setWriteDeadline(s.Data, past)
 		case <-done:
@@ -40,7 +43,9 @@ func bindCtx(ctx context.Context, s *Streams) (*Streams, func()) {
 		Control: &ctxConn{inner: s.Control, ctx: ctx},
 		Data:    &ctxConn{inner: s.Data, ctx: ctx},
 	}
-	return wrapped, func() { close(done) }
+	// stop waits for the watcher, so a caller that writes afterwards
+	// (notifyPeer resets the control write deadline) never races it.
+	return wrapped, func() { close(done); <-exited }
 }
 
 // ctxConn delegates to an underlying stream but reports ctx.Err() in place of
