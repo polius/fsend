@@ -647,6 +647,7 @@ type recvFile struct {
 	unsynced uint64
 	tailHole bool
 	closed   bool
+	modeSet  bool // created with the entry's final mode (no chmod needed)
 }
 
 // guardRegular fails closed when a non-regular file (a planted symlink or
@@ -704,11 +705,11 @@ func (r *receiver) openFile(p *entryPlan, restart bool) (*recvFile, error) {
 		p.disp = dispNew
 		p.prefixBlocks = nil
 	}
-	f, path, err := r.ps.create(p.rel, p.entry)
+	f, path, fresh, err := r.ps.create(p.rel, p.entry)
 	if err != nil {
 		return nil, r.writeFail("create partial", p.rel, err)
 	}
-	rf.f, rf.partial = f, path
+	rf.f, rf.partial, rf.modeSet = f, path, fresh
 	return rf, nil
 }
 
@@ -816,7 +817,9 @@ func (rf *recvFile) finalize(root [32]byte) error {
 	}
 	// Mode and mtime go on before the sync, so a crash can't leave a
 	// committed file with today's date (which a later run would distrust).
-	_ = rf.f.Chmod(fileMode(p.entry.Mode))
+	if !rf.modeSet {
+		_ = rf.f.Chmod(fileMode(p.entry.Mode))
+	}
 	t := time.Unix(p.entry.ModTimeSec, 0)
 	_ = os.Chtimes(rf.partial, t, t)
 	return r.commit.add(pendingFile{f: rf.f, partial: rf.partial, plan: p, size: p.entry.Size})
@@ -862,9 +865,14 @@ func (c *committer) flush() error {
 		return nil
 	}
 	r := c.r
-	syncErr := parallelSync(batch)
-	if syncErr == nil {
-		syncErr = syncBarrier(batch[len(batch)-1].f)
+	// Linux: one syncfs flushes the whole batch (and the filesystem's
+	// metadata) for the price of one call, instead of an fsync per file.
+	synced, syncErr := syncWholeFS(batch[0].f)
+	if !synced {
+		syncErr = parallelSync(batch)
+		if syncErr == nil {
+			syncErr = syncBarrier(batch[len(batch)-1].f)
+		}
 	}
 	for _, pf := range batch {
 		_ = pf.f.Close()
@@ -926,7 +934,9 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 	if err := moveFile(pf.partial, target); err != nil {
 		return false, r.refuseName(p, err)
 	}
-	r.ps.dropMeta(p.rel)
+	if canResume(p.entry.Size) {
+		r.ps.dropMeta(p.rel) // small files never had one
+	}
 	if runtime.GOOS == "windows" {
 		// NTFS may stamp the write time again when the handle closes.
 		t := time.Unix(p.entry.ModTimeSec, 0)
@@ -1067,12 +1077,14 @@ func (r *receiver) materialize(p *entryPlan) error {
 		// Empty regular file: same partial → sync → rename path as any other,
 		// so an approved replace never truncates the old inode (or its
 		// hardlinks) in place.
-		f, path, err := r.ps.create(p.rel, p.entry)
+		f, path, fresh, err := r.ps.create(p.rel, p.entry)
 		if err != nil {
 			return r.writeFail("create", p.rel, err)
 		}
 		p.sha256 = emptySHA256
-		_ = f.Chmod(fileMode(p.entry.Mode))
+		if !fresh {
+			_ = f.Chmod(fileMode(p.entry.Mode))
+		}
 		t := time.Unix(p.entry.ModTimeSec, 0)
 		_ = os.Chtimes(path, t, t)
 		return r.commit.add(pendingFile{f: f, partial: path, plan: p})
@@ -1227,7 +1239,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 			}
 		}
 		var err error
-		f, partial, err = ps.create(rel, wire.ListingEntry{})
+		f, partial, _, err = ps.create(rel, wire.ListingEntry{})
 		if err != nil {
 			declineTransfer(s, wire.ErrCodeWriteFailed, peerSafe("create", rel, err))
 			return fmt.Errorf("%w: create stream file: %v", fserrors.ErrWriteFailed, err)

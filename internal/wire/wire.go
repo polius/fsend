@@ -38,9 +38,12 @@ const (
 	// CapSkipReasons: the sender reads Decision.Reason, so the receiver
 	// says why it refused an entry (a name its system can't create).
 	CapSkipReasons Capability = 1 << 0
+	// CapCompressedListing: the receiver accepts TypeListingBatchZ, the
+	// listing batch compressed with zstd.
+	CapCompressedListing Capability = 1 << 1
 
 	// CapsSupported is the bitmap this build advertises.
-	CapsSupported = CapSkipReasons
+	CapsSupported = CapSkipReasons | CapCompressedListing
 )
 
 // Has reports whether c includes every bit of want.
@@ -86,6 +89,7 @@ const (
 	TypeTransferAck       FrameType = 0x0B // receiver → sender
 	TypeVerifyRequest     FrameType = 0x0C // receiver → sender: gob []uint32 (--checksum)
 	TypeVerifyResponse    FrameType = 0x0D // sender → receiver: gob []FileHash
+	TypeListingBatchZ     FrameType = 0x0E // sender → receiver: zstd(gob []ListingEntry); only with CapCompressedListing
 	TypeError             FrameType = 0xFE
 )
 
