@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -432,10 +433,16 @@ func TestPartialStore_SmallFilesSkipSidecar(t *testing.T) {
 			t.Errorf("size %d: sidecar present=%v, want %v", c.size, err == nil, c.wantMeta)
 		}
 		st, _ := os.Stat(path)
-		if !fresh || st.Mode().Perm() != fileMode(0o640) {
+		// Windows keeps only the read-only bit, so there is no mode to compare.
+		if !fresh || (runtime.GOOS != "windows" && st.Mode().Perm() != fileMode(0o640)) {
 			t.Errorf("size %d: fresh=%v mode=%v, want final mode %v", c.size, fresh, st.Mode().Perm(), fileMode(0o640))
 		}
-		if _, _, fresh, _ := ps.create(rel, wire.ListingEntry{Size: c.size, Mode: 0o640}); fresh {
+		f, _, fresh, err = ps.create(rel, wire.ListingEntry{Size: c.size, Mode: 0o640})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+		if fresh {
 			t.Errorf("size %d: a reused partial must report it needs a chmod", c.size)
 		}
 	}

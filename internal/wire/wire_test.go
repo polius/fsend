@@ -396,3 +396,41 @@ func TestStampFollowsNegotiation(t *testing.T) {
 		t.Errorf("a frame from a newer version must be refused, got %v", err)
 	}
 }
+
+// Once a session has a version, a frame stamped with another one is
+// refused: a peer can't switch versions mid-session. The hellos and an
+// early ERROR at the minimum are the exceptions Stamp allows for.
+func TestReadControl_RequiresSessionVersion(t *testing.T) {
+	frame := func(ft FrameType) []byte {
+		var b bytes.Buffer
+		if err := WriteControl(&b, ft, nil); err != nil { // stamped MinProtocolVersion
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	session := uint8(MinProtocolVersion + 1) // a session two newer builds negotiated
+	for _, c := range []struct {
+		ft FrameType
+		ok bool
+	}{
+		{TypeListingEnd, false},
+		{TypeTransferComplete, false},
+		{TypeHello, true},
+		{TypeHelloAck, true},
+		{TypeError, true},
+	} {
+		r := &versioned{v: session}
+		r.Write(frame(c.ft))
+		_, _, err := ReadControlRaw(r)
+		if c.ok && err != nil {
+			t.Errorf("%v stamped %d in a version %d session: %v, want it read", c.ft, MinProtocolVersion, session, err)
+		}
+		if !c.ok && !errors.Is(err, ErrUnsupportedVersion) {
+			t.Errorf("%v stamped %d in a version %d session: err = %v, want ErrUnsupportedVersion", c.ft, MinProtocolVersion, session, err)
+		}
+	}
+	// Without a session version (before the hellos) the minimum is fine.
+	if _, _, err := ReadControlRaw(bytes.NewReader(frame(TypeListingEnd))); err != nil {
+		t.Errorf("an unversioned stream refused a minimum-version frame: %v", err)
+	}
+}

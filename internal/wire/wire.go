@@ -25,6 +25,8 @@ package wire
 // MinProtocolVersion in their header so any supported peer can parse them;
 // every later frame carries the negotiated version (see Stamp; the transfer
 // layer marks its control stream Versioned once the hellos are exchanged).
+// When raising it, cap the receiver in transfer's
+// TestSend_NewerBuildTalksToV3Peer at the old version.
 const ProtocolVersion = 0x03
 
 // MinProtocolVersion is the oldest wire protocol version this build speaks.

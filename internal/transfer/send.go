@@ -75,20 +75,23 @@ func (o SendOptions) maxVersion() uint8 {
 
 // Send executes the full sender-side protocol over the supplied streams.
 func Send(ctx context.Context, s *Streams, opts SendOptions) error {
-	err := send(ctx, s, opts)
+	var negotiated uint8
+	err := send(ctx, s, opts, &negotiated)
 	switch {
 	case errors.Is(err, context.Canceled):
-		notifyPeer(s, wire.ErrCodeCancelled, "sender cancelled")
+		notifyPeer(s, negotiated, wire.ErrCodeCancelled, "sender cancelled")
 	case errors.Is(err, fserrors.ErrReadFailed):
 		// A local source failure otherwise surfaces on the receiver as a bare
 		// stream close — a "network" error it would burn retries on. Post the
 		// reason, without the sender's local paths.
-		notifyPeer(s, wire.ErrCodeReadFailed, "the sender could not read its source")
+		notifyPeer(s, negotiated, wire.ErrCodeReadFailed, "the sender could not read its source")
 	}
 	return err
 }
 
-func send(ctx context.Context, s *Streams, opts SendOptions) error {
+// send runs the protocol; *negotiated receives the session's version once
+// the hellos are exchanged, so Send's closing notice can carry it too.
+func send(ctx context.Context, s *Streams, opts SendOptions, negotiated *uint8) error {
 	// Bind the streams to ctx so a Ctrl-C parked in a blocked QUIC write
 	// unblocks promptly instead of waiting out the idle timeout. notifyPeer
 	// (called by the outer Send with the raw, unwrapped streams) is unaffected.
@@ -127,6 +130,7 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 		return fserrors.ErrIncompatibleVersion
 	}
 	setVersion(s, v)
+	*negotiated = v
 	if opts.OnPeer != nil {
 		opts.OnPeer(ack.Hostname, ack.Accepts)
 	}
@@ -537,10 +541,16 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 // (cancel, unreadable source, …) from a network drop. Data closes first so
 // a receiver blocked mid-chunk unblocks and reads the reason. Bounded so a
 // wedged peer can't hold the sender hostage.
-func notifyPeer(s *Streams, code wire.ErrorCode, msg string) {
+// v is the negotiated version (0 before the hellos), stamped on the notice
+// like every other post-hello frame.
+func notifyPeer(s *Streams, v uint8, code wire.ErrorCode, msg string) {
 	// A cancel set a past write deadline on the control stream; give the
-	// notice its own short window.
+	// notice its own short window. (Set it on the raw stream: the versioned
+	// wrapper below doesn't expose deadlines.)
 	setWriteDeadline(s.Control, time.Now().Add(time.Second))
+	if v != 0 {
+		s = &Streams{Control: versionedConn{ReadWriteCloser: s.Control, v: v}, Data: s.Data}
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

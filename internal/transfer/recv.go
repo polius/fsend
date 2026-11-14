@@ -122,8 +122,8 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	if err != nil {
 		if errors.Is(err, wire.ErrUnsupportedVersion) {
 			// The peer speaks a different wire protocol (a breaking release).
-			// Reply with our own version-stamped frame so the sender's read
-			// trips the same check and both sides report it clearly.
+			// Reply with a HELLO_ACK carrying our version range so the
+			// sender's negotiation fails too and both sides report it clearly.
 			ackProceed(s, opts, false)
 			drainControl(s)
 			return fserrors.ErrIncompatibleVersion

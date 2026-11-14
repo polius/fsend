@@ -154,8 +154,15 @@ func TestBindCtx_CancelUnblocksControlWrite(t *testing.T) {
 	defer stop()
 	errc := make(chan error, 1)
 	go func() {
-		_, err := s.Control.Write(make([]byte, 256<<20)) // far past the socket buffers
-		errc <- err
+		// Keep writing until a write fails: Windows loopback accepts very
+		// large writes into its buffers, so one write may not block.
+		buf := make([]byte, 16<<20)
+		for {
+			if _, err := s.Control.Write(buf); err != nil {
+				errc <- err
+				return
+			}
+		}
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -185,7 +192,7 @@ func TestWalkReport_SkipsDanglingLinksInsideFolders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WalkReport = %v", err)
 	}
-	if len(skips) != 1 || skips[0].Path != "app/node_modules/.bin/cli" || !strings.Contains(skips[0].Reason, "../gone/cli.js") {
+	if len(skips) != 1 || skips[0].Path != "app/node_modules/.bin/cli" || !strings.Contains(skips[0].Reason, filepath.FromSlash("../gone/cli.js")) {
 		t.Errorf("skips = %+v", skips)
 	}
 	for _, s := range srcs {

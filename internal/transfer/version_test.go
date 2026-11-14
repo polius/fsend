@@ -43,11 +43,16 @@ func frameVersions(t *testing.T, b []byte) [][2]byte {
 	return out
 }
 
-// A newer build — one that also speaks version 4 — must still talk to
-// today's v3 peers: the HELLOs carry MinProtocolVersion in their header,
-// both sides settle on 3, and every later frame is stamped 3. Before, every
-// frame carried the build's own constant, so raising it would have made
-// current clients reject the HELLO: a flag day.
+// A sender that advertises a newer version (4) must still settle on 3 with
+// a receiver that speaks only 3: the HELLOs carry MinProtocolVersion in
+// their header, the sender records 3 as the session's version, and every
+// later frame on both sides is stamped 3.
+//
+// While MinProtocolVersion == ProtocolVersion this can't tell a stamp of
+// the negotiated version from a stamp of the build's constant;
+// TestStampFollowsNegotiation and wire's TestReadControl_RequiresSessionVersion
+// pin that rule. When ProtocolVersion is raised, cap this receiver at 3 so
+// it keeps standing in for a released v3 peer.
 func TestSend_NewerBuildTalksToV3Peer(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(src, "a.txt"), []byte("hello across versions"))
@@ -62,11 +67,12 @@ func TestSend_NewerBuildTalksToV3Peer(t *testing.T) {
 	defer cancel()
 	var wg sync.WaitGroup
 	var se, re error
+	var negotiated uint8
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		se = Send(ctx, &Streams{Control: sTap, Data: dataA},
-			SendOptions{Mode: wire.ModeFiles, Sources: sources, advertiseMax: wire.ProtocolVersion + 1})
+		se = send(ctx, &Streams{Control: sTap, Data: dataA},
+			SendOptions{Mode: wire.ModeFiles, Sources: sources, advertiseMax: wire.ProtocolVersion + 1}, &negotiated)
 		_ = ctrlA.Close()
 		_ = dataA.Close()
 	}()
@@ -82,6 +88,9 @@ func TestSend_NewerBuildTalksToV3Peer(t *testing.T) {
 	}
 	if got := string(mustRead(t, filepath.Join(dst, "a.txt"))); got != "hello across versions" {
 		t.Fatalf("content = %q", got)
+	}
+	if negotiated != wire.ProtocolVersion {
+		t.Errorf("the sender recorded version %d for the session, want %d", negotiated, wire.ProtocolVersion)
 	}
 	for side, rec := range map[string][]byte{"sender": sTap.out.Bytes(), "receiver": rTap.out.Bytes()} {
 		frames := frameVersions(t, rec)

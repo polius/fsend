@@ -61,7 +61,8 @@ func WriteControl(w io.Writer, ft FrameType, payload any) error {
 }
 
 // Versioned is a control stream that knows the protocol version the two
-// peers negotiated; WriteControl stamps that version on its frames.
+// peers negotiated; WriteControl stamps that version on its frames and
+// ReadControlRaw requires it on the peer's.
 type Versioned interface{ WireVersion() uint8 }
 
 // Stamp is the version byte for a frame of type ft written to w, following
@@ -120,6 +121,13 @@ func ReadControlRaw(r io.Reader) (FrameType, []byte, error) {
 
 	if ver < MinProtocolVersion || ver > ProtocolVersion {
 		return ft, nil, fmt.Errorf("%w: peer sent version %d, we speak %d-%d", ErrUnsupportedVersion, ver, MinProtocolVersion, ProtocolVersion)
+	}
+	// Once a version is negotiated, every later frame must carry it (see
+	// Stamp), so a peer can't switch versions mid-session. An ERROR may still
+	// carry the minimum: the peer can post one before its own negotiation.
+	if v, ok := r.(Versioned); ok && ft != TypeHello && ft != TypeHelloAck && ver != v.WireVersion() &&
+		(ft != TypeError || ver != MinProtocolVersion) {
+		return ft, nil, fmt.Errorf("%w: peer sent a version %d frame in a version %d session", ErrUnsupportedVersion, ver, v.WireVersion())
 	}
 	if length > MaxControlFrameSize {
 		return ft, nil, fmt.Errorf("%w: declared %d bytes exceeds limit %d", ErrFrameTooLarge, length, MaxControlFrameSize)
