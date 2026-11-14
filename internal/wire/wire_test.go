@@ -79,7 +79,6 @@ func TestControl_ListingBatchRoundtrip(t *testing.T) {
 	want := []ListingEntry{
 		{Index: 0, RelativePath: "项目/子目录/文件 名.txt", Size: 1234567, ModTimeSec: 1717414800, Mode: 0o644, Type: EntryFile},
 		{Index: 1, RelativePath: "sub", Type: EntryDir, Mode: 0o755, ModTimeSec: 1717414800},
-		{Index: 2, RelativePath: "link", Type: EntrySymlink, SymlinkTarget: "../target"},
 	}
 	var buf bytes.Buffer
 	if err := WriteControl(&buf, TypeListingBatch, want); err != nil {

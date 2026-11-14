@@ -88,12 +88,11 @@ type classifySummary struct {
 // SummaryEntry is one regular file (or symlink) the receiver is offered, with
 // the per-entry status the preview annotates rows with.
 type SummaryEntry struct {
-	Index         uint32 // wire file index, keys the progress callbacks
-	RelativePath  string
-	Size          uint64
-	Status        string // "new" | "identical" | "differs" | "resume" | "refused"
-	Type          wire.EntryType
-	SymlinkTarget string // EntrySymlink only
+	Index        uint32 // wire file index, keys the progress callbacks
+	RelativePath string
+	Size         uint64
+	Status       string // "new" | "identical" | "differs" | "resume" | "refused"
+	Type         wire.EntryType
 	// KeptAs names an earlier keep-both copy ("src/f1 (1).go") that already
 	// holds this exact version (same size and mtime). Under keep-both the
 	// file counts as up to date instead of gaining another copy.
@@ -209,12 +208,13 @@ func (c *classifier) run(entries []wire.ListingEntry) ([]entryPlan, error) {
 		return nil, err
 	}
 	for _, e := range entries {
-		// Reject peer symlinks: the honest sender dereferences them and never
-		// emits one (walk.go), so a symlink on the wire is a malicious sender
-		// planting a link that a later write traverses to escape targetDir —
-		// which the lexical path checks here can't see through.
-		if e.Type == wire.EntrySymlink {
-			return nil, fmt.Errorf("%w: peer sent a symlink (%q); fsend does not accept symlink entries", fserrors.ErrPathTraversal, e.RelativePath)
+		// Only files and folders: the honest sender dereferences symlinks
+		// and never emits anything else (walk.go). A symlink entry (type 2)
+		// would be a malicious sender planting a link that a later write
+		// traverses to escape targetDir, which the lexical path checks here
+		// can't see through; any other type is just as unknown.
+		if !e.Type.Valid() {
+			return nil, fmt.Errorf("%w: peer sent an entry of type %d (%q); fsend accepts only files and folders", fserrors.ErrPathTraversal, e.Type, e.RelativePath)
 		}
 		rel, err := SanitizeRelativePath(e.RelativePath)
 		if err != nil {
@@ -351,9 +351,8 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 		}
 		return p
 
-	// No EntrySymlink case: classify() rejects peer symlinks outright before
-	// reaching here (a security boundary — the sender dereferences symlinks
-	// and never emits one).
+	// Only files reach here: classify() refuses every type but files and
+	// folders (wire.EntryType.Valid) before this point.
 
 	default: // EntryFile
 		// Precedence: identical/verify target → resume → differ/conflict → new.
@@ -469,13 +468,12 @@ func summarize(plans []entryPlan) classifySummary {
 		// so the preview's row count matches the headline's file count.
 		if p.entry.Type != wire.EntryDir {
 			s.Files = append(s.Files, SummaryEntry{
-				Index:         p.entry.Index,
-				RelativePath:  p.entry.RelativePath,
-				Size:          p.entry.Size,
-				Status:        dispStatus(p.disp),
-				Type:          p.entry.Type,
-				SymlinkTarget: p.entry.SymlinkTarget,
-				KeptAs:        filepath.ToSlash(p.keptAs),
+				Index:        p.entry.Index,
+				RelativePath: p.entry.RelativePath,
+				Size:         p.entry.Size,
+				Status:       dispStatus(p.disp),
+				Type:         p.entry.Type,
+				KeptAs:       filepath.ToSlash(p.keptAs),
 			})
 		}
 	}

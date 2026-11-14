@@ -115,12 +115,17 @@ const (
 // EntryType classifies one listing entry.
 type EntryType uint8
 
-// EntryType values.
+// EntryType values. 2 was a symlink entry: no release ever sent one and
+// every receiver since 1.10 refuses it as an attack. Never reuse it.
 const (
-	EntryFile    EntryType = 0
-	EntryDir     EntryType = 1
-	EntrySymlink EntryType = 2
+	EntryFile EntryType = 0
+	EntryDir  EntryType = 1
 )
+
+// Valid reports whether t is an entry type this protocol defines. A
+// receiver refuses a listing with any other (Valid is the security check
+// that used to reject symlink entries, and now rejects every unknown type).
+func (t EntryType) Valid() bool { return t == EntryFile || t == EntryDir }
 
 // DecisionAction is the receiver's per-entry verdict in the classify phase.
 // The sender only learns what to do (send / skip / resume), never why.

@@ -1084,13 +1084,7 @@ func (r *receiver) materialize(p *entryPlan) error {
 			return r.writeFail("mkdir", p.rel, err)
 		}
 		return nil
-	case wire.EntrySymlink:
-		// Defense in depth: classify already rejects peer symlinks. Never
-		// create one from peer input — a planted link lets a later write
-		// traverse out of the receive dir. Fail closed.
-		declineTransfer(r.s, wire.ErrCodeProtocolError, "symlink entries are not accepted")
-		return fmt.Errorf("%w: symlink entry %q", fserrors.ErrPathTraversal, p.entry.RelativePath)
-	default:
+	case wire.EntryFile:
 		// Empty regular file: same partial → sync → rename path as any other,
 		// so an approved replace never truncates the old inode (or its
 		// hardlinks) in place.
@@ -1105,6 +1099,13 @@ func (r *receiver) materialize(p *entryPlan) error {
 		t := time.Unix(p.entry.ModTimeSec, 0)
 		_ = os.Chtimes(path, t, t)
 		return r.commit.add(pendingFile{f: f, partial: path, plan: p})
+	default:
+		// Defense in depth: classify already refuses every other type (a
+		// symlink entry among them). Never create anything else from peer
+		// input — a planted link lets a later write traverse out of the
+		// receive dir. Fail closed.
+		declineTransfer(r.s, wire.ErrCodeProtocolError, "only files and folders are accepted")
+		return fmt.Errorf("%w: entry of type %d %q", fserrors.ErrPathTraversal, p.entry.Type, p.entry.RelativePath)
 	}
 }
 

@@ -20,16 +20,12 @@ const previewRows = 10
 //   - note is a status annotation ("up to date", "differs", "resume"); ""
 //     omits it. "differs" is the one that warrants attention, so it's the
 //     only one rendered in colour rather than dimmed.
-//   - link is a *preserved* symlink target (from an older sender); non-empty
-//     renders "name → target" with "→" in the size column (no byte size).
 //   - from is a *followed* symlink's origin (a sender-side annotation); the row
-//     has a real size and renders "name (→ target)". link and from are mutually
-//     exclusive.
+//     has a real size and renders "name (→ target)".
 type previewItem struct {
 	name string
 	size uint64
 	note string
-	link string
 	from string
 }
 
@@ -87,25 +83,17 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 // nameColumnCap bounds the padded name column of a file list.
 const nameColumnCap = 40
 
-// rowName is a row's name cell, with any symlink annotation (path material
-// too): "name → target" for a preserved link, "name (→ target)" for a
-// followed one.
+// rowName is a row's name cell, with a followed symlink's origin (path
+// material too): "name (→ target)".
 func rowName(it previewItem) string {
-	switch {
-	case it.link != "":
-		return it.name + " → " + it.link
-	case it.from != "":
+	if it.from != "" {
 		return it.name + " (→ " + it.from + ")"
 	}
 	return it.name
 }
 
-// sizeCell renders the size column for one row: a byte count, or "→" for a
-// symlink (which is a pointer, not a zero-byte file).
+// sizeCell renders the size column for one row.
 func sizeCell(it previewItem) string {
-	if it.link != "" {
-		return "→"
-	}
 	return uxlog.HumanBytes(int64(it.size))
 }
 

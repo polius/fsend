@@ -214,15 +214,6 @@ func TestReceiverPreview_StatusMapping(t *testing.T) {
 	}
 }
 
-func TestReceiverPreview_Symlink(t *testing.T) {
-	items := receiverPreview([]transfer.SummaryEntry{
-		{RelativePath: "link", Status: "new", Type: wire.EntrySymlink, SymlinkTarget: "target.bin"},
-	})
-	if items[0].link != "target.bin" {
-		t.Errorf("symlink target not carried: %+v", items[0])
-	}
-}
-
 func TestRenderPreview_StripsCommonDir(t *testing.T) {
 	got := render([]previewItem{
 		{name: "proj/sub/a.bin", size: 30},
@@ -247,19 +238,6 @@ func TestRenderPreview_NoCommonDirNoOp(t *testing.T) {
 	})
 	if !strings.Contains(got, "alpha/a.bin") || !strings.Contains(got, "beta/b.bin") {
 		t.Errorf("unrelated roots must be preserved:\n%s", got)
-	}
-}
-
-func TestRenderPreview_SymlinkRow(t *testing.T) {
-	got := render([]previewItem{
-		{name: "big.bin", size: 1000},
-		{name: "latest", link: "big.bin"},
-	})
-	if !strings.Contains(got, "latest → big.bin") {
-		t.Errorf("symlink should render as 'name → target':\n%s", got)
-	}
-	if strings.Contains(got, "0 B   latest") {
-		t.Errorf("symlink must not render a byte size:\n%s", got)
 	}
 }
 

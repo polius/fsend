@@ -572,9 +572,6 @@ func receiverPreview(files []transfer.SummaryEntry) []previewItem {
 			size: f.Size,
 			note: note,
 		}
-		if f.Type == wire.EntrySymlink {
-			it.link = sanitizeForDisplay(f.SymlinkTarget, 128)
-		}
 		items = append(items, it)
 	}
 	return items

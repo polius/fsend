@@ -51,7 +51,7 @@ func sendListing(w io.Writer, sources []Source, compressed bool) error {
 		return err
 	}
 	for _, s := range sources {
-		est := len(s.Entry.RelativePath) + len(s.Entry.SymlinkTarget) + 48
+		est := len(s.Entry.RelativePath) + 48
 		if len(batch) > 0 && size+est > limit {
 			if err := flush(); err != nil {
 				return err

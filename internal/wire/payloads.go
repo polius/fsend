@@ -65,13 +65,14 @@ type PasswordVerified struct {
 // this value on finalize, so second-granularity is what makes the
 // size+mtime skip check survive a round-trip.
 type ListingEntry struct {
-	Index         uint32
-	RelativePath  string // forward-slash; no leading slash, drive, UNC, or .. segments
-	Size          uint64 // bytes (0 for dirs/symlinks/empty files)
-	ModTimeSec    int64  // unix seconds
-	Mode          uint32 // unix perm bits
-	Type          EntryType
-	SymlinkTarget string // EntrySymlink only
+	Index        uint32
+	RelativePath string // forward-slash; no leading slash, drive, UNC, or .. segments
+	Size         uint64 // bytes (0 for dirs and empty files)
+	ModTimeSec   int64  // unix seconds
+	Mode         uint32 // unix perm bits
+	Type         EntryType
+	// SymlinkTarget (gob field) is gone with the symlink entry type; gob
+	// skips it if an old peer ever sends one.
 }
 
 // Decision is the receiver's per-entry verdict, batched into

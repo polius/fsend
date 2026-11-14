@@ -23,9 +23,9 @@ func recvFilesToSink(ctx context.Context, s *Streams, hello *wire.SenderHello, e
 	seen := make(map[string]struct{}, len(entries))
 	summary := ClassifySummary{Total: len(entries)}
 	for i, e := range entries {
-		if e.Type == wire.EntrySymlink {
-			declineTransfer(s, wire.ErrCodeListingInvalid, "symlink entries are not accepted")
-			return fmt.Errorf("%w: peer sent a symlink (%q)", fserrors.ErrPathTraversal, e.RelativePath)
+		if !e.Type.Valid() {
+			declineTransfer(s, wire.ErrCodeListingInvalid, "only files and folders are accepted")
+			return fmt.Errorf("%w: peer sent an entry of type %d (%q)", fserrors.ErrPathTraversal, e.Type, e.RelativePath)
 		}
 		rel, err := SanitizeRelativePath(e.RelativePath)
 		if err != nil {
