@@ -76,8 +76,11 @@ curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hjk
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code abc-defg-hjk
+iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code abc-defg-hjk"
 ```
+
+A sender on the default server sees both lines, with the real code,
+under the receive command.
 
 The installers check every archive against the release's checksum file,
 whose Sigstore signature they also verify when `cosign` is installed. The

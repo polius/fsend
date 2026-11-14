@@ -298,7 +298,7 @@ minus the code:
 
 | Event | When | Fields |
 | --- | --- | --- |
-| `code` | Sender: the code is issued | `code`; `install`, the one-liner that installs fsend and receives with the code (omitted when the send uses a server of its own) |
+| `code` | Sender: the code is issued | `code`; `install`, the one-liner that installs fsend and receives with the code, for `sh`; `install_powershell`, the same for a Windows receiver, to run in PowerShell (both omitted when the send uses a server of its own) |
 | `peer` | The other side connected; once per peer | `name` (its device name), `route` |
 | `accepted` | The receiver agreed: on the sender when the receiver's decisions arrive, on the receiver when it says yes | — |
 | `retry` | A dropped connection is retried | `attempt`, `of` (the cap), `wait_ms` |
@@ -375,7 +375,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 
 | Flag | Purpose |
 |---|---|
-| `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
+| `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. `--receive` takes the code in any of its forgiving spellings, its three words included (`fsend --receive abc defg jkm`), and never reads them as files. |
 | `--device-name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming from …` line, the receiver's name in the sender's `… accepted` and summary lines. (`--name` still works.) |
 | `--server <host[:port]>` | Use this pairing server for this run only; the config file is untouched. Also `FSEND_SERVER`. |
 | `--local` | Local network only: never contact the pairing server, on either side. For when the server is down or must not be used; a receiver that finds no sender on the network gets `E002`. |
@@ -411,10 +411,13 @@ Flags always win when both are set.
 
 While a transfer runs, fsend checks GitHub in the background at most once a
 day for a newer release (never delaying the exit) and, if one exists, prints
-a one-line hint after the summary with the release
-link so you can see what changed — and the command that actually works for
-this install (`brew upgrade fsend` on a Homebrew-managed binary, instead of
-an `fsend --update` that would only refuse with [E039](#exit-codes)). The
+a two-line hint after the summary with the release
+link so you can see what changed — and the action that actually works for
+this install: `fsend --update`, or `brew upgrade fsend` on a
+Homebrew-managed binary, or "Install the new .deb" (`.rpm`, `.apk`) with
+the release page on a packaged install — never an `fsend --update` that
+would only refuse with [E039](#exit-codes). `fsend --update --check`
+prints the same two lines. The
 check is skipped when stderr isn't a terminal (so piped or scripted runs
 never trigger it) or `--quiet` is set, and can be turned off entirely with
 `FSEND_NO_UPDATE_CHECK=1`.
