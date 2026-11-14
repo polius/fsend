@@ -3,6 +3,7 @@
 /fsend-server
 /dist/
 /completions/
+/manpages/
 /build/
 *.exe
 *.test
