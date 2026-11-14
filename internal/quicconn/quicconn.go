@@ -96,11 +96,13 @@ func (r *AcceptResult) Close() { r.closeWith(0, "") }
 //
 // The close goes out in a single packet, and on a busy path (a receiver
 // whose socket buffer is full of data) it can be lost. quic-go resends it
-// whenever the peer's next packet arrives, but only while this endpoint
-// still exists, and a cancel is usually followed by the process exiting.
-// The linger keeps it alive long enough for that: a peer mid-transfer
-// sends within milliseconds. Without it the peer learns only at its idle
-// timeout, as a drop to retry rather than a cancel.
+// when the peer's next packets arrive, for 3·PTO after the close (a few
+// milliseconds on loopback, longer on slow paths), but only while this
+// endpoint still exists, and a cancel is usually followed by the process
+// exiting. The linger keeps the endpoint up through that window, capped
+// at cancelLinger; a peer mid-transfer sends within it. Without it the
+// peer learns only at its idle timeout, as a drop to retry rather than a
+// cancel.
 func (r *AcceptResult) Cancel() {
 	r.closeWith(CloseCancelled, "cancelled")
 	if r != nil && r.Conn != nil {

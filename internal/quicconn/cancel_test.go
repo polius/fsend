@@ -71,7 +71,7 @@ func TestAcceptResult_CancelSurvivesALostClose(t *testing.T) {
 	go func() {
 		for r.Conn.Context().Err() == nil {
 			_, _ = r.Streams.Control.Write([]byte{0})
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(time.Millisecond) // well inside quic-go's 3·PTO resend window
 		}
 	}()
 
