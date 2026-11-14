@@ -97,6 +97,38 @@ func TestSend_Directory(t *testing.T) {
 	}
 }
 
+// A broken link at the top level of a contents send (`fsend .`) is skipped
+// and reported like one deeper in the tree, instead of stopping the send
+// with E036: the rest arrives, the sender lists the link and exits E050.
+// Named directly, the same link is still E036.
+func TestSend_BrokenLinkAtTopOfContentsSend(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("gone.txt", filepath.Join(src, "latest")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	r := h.runPair(t, []string{src + string(os.PathSeparator) + "."}, dst, []string{"--yes"}, "")
+	if r.senderExitCode != 50 || r.receiverExitCode != 0 {
+		t.Fatalf("exits: sender=%d receiver=%d, want 50 (E050) and 0\n--- sender stderr ---\n%s\n--- receiver stderr ---\n%s",
+			r.senderExitCode, r.receiverExitCode, r.senderErr, r.receiverErr)
+	}
+	if !strings.Contains(r.senderErr, "Skipping latest: broken link to gone.txt") || !strings.Contains(r.senderErr, "latest — broken link to gone.txt") {
+		t.Errorf("the sender should warn about the link up front and list it at the end:\n%s", r.senderErr)
+	}
+	assertFilesEqual(t, filepath.Join(src, "a.txt"), filepath.Join(dst, "a.txt"))
+	if _, err := os.Lstat(filepath.Join(dst, "latest")); err == nil {
+		t.Error("the broken link arrived as something")
+	}
+
+	_, stderr, code := h.runFsend(t, h.newXDG(t), filepath.Join(src, "latest"))
+	if code != 36 || !strings.Contains(stderr, "E036") {
+		t.Errorf("a broken link named directly: exit %d, want 36 (E036)\n%s", code, stderr)
+	}
+}
+
 func TestSend_MultipleFiles(t *testing.T) {
 	requireE2E(t)
 	src, dst := t.TempDir(), t.TempDir()

@@ -156,6 +156,56 @@ func TestWalk_DanglingSymlinkArgErrors(t *testing.T) {
 	}
 }
 
+// A contents send (`fsend .`) treats the links at its top level as
+// `fsend dir` treats those inside dir: a broken one is skipped and
+// reported, and everything else is sent. Named on the command line — alone
+// or beside other arguments — the same link is still an error.
+func TestWalk_BrokenSymlinkAtTopOfContentsSendSkipped(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.txt"), []byte("a"))
+	writeFile(t, filepath.Join(dir, "sub", "b.txt"), []byte("b"))
+	mkSymlink(t, "does-not-exist", filepath.Join(dir, "dangling"))
+	mkSymlink(t, "also-gone", filepath.Join(dir, "sub", "inner"))
+	contents := dir + string(os.PathSeparator) + "."
+
+	srcs, skips, err := WalkReport([]string{contents}, nil)
+	if err != nil {
+		t.Fatalf("a broken link at the top of a contents send must not stop it: %v", err)
+	}
+	got := map[string]string{}
+	for _, s := range skips {
+		got[s.Path] = s.Reason
+	}
+	if len(got) != 2 || !strings.Contains(got["dangling"], "does-not-exist") || !strings.Contains(got["sub/inner"], "also-gone") {
+		t.Errorf("skips = %+v, want dangling and sub/inner with their targets", skips)
+	}
+	var names []string
+	for _, s := range srcs {
+		names = append(names, s.Entry.RelativePath)
+	}
+	if strings.Join(names, " ") != "a.txt sub sub/b.txt" {
+		t.Errorf("sources = %v, want a.txt, sub and sub/b.txt", names)
+	}
+
+	for _, args := range [][]string{
+		{filepath.Join(dir, "dangling")},
+		{filepath.Join(dir, "a.txt"), filepath.Join(dir, "dangling")},
+		{contents, filepath.Join(dir, "sub", "inner")},
+	} {
+		if _, _, err := WalkReport(args, nil); !errors.Is(err, fserrors.ErrUnsendableSymlink) {
+			t.Errorf("WalkReport(%v) = %v, want E036 for the link named directly", args, err)
+		}
+	}
+
+	// Nothing but broken links: nothing to list, and both are reported.
+	only := t.TempDir()
+	mkSymlink(t, "gone", filepath.Join(only, "x"))
+	srcs, skips, err = WalkReport([]string{only + string(os.PathSeparator) + "."}, nil)
+	if err != nil || len(srcs) != 0 || len(skips) != 1 {
+		t.Errorf("a folder of broken links: sources=%d skips=%d err=%v, want 0, 1, nil", len(srcs), len(skips), err)
+	}
+}
+
 // A symlink that points back into an ancestor directory must be reported as a
 // cycle rather than recursing forever.
 func TestWalk_CycleErrors(t *testing.T) {

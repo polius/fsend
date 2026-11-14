@@ -191,7 +191,10 @@ func collectPlan(f *flags, paths []string) (*sendPlan, error) {
 	// instead of generating a code and waiting on a receiver for a no-op.
 	if len(sources) == 0 {
 		msg := "nothing to send — the folder is empty"
-		if len(f.excludes) > 0 {
+		switch {
+		case len(skips) > 0:
+			msg = "nothing to send — the folder holds only broken links"
+		case len(f.excludes) > 0:
 			msg = "nothing to send — every file matched --exclude"
 		}
 		return nil, fmt.Errorf("%w: %s", fserrors.ErrUsage, msg)

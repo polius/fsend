@@ -224,15 +224,26 @@ rest of the transfer completed.
 ```
 
 The transfer finished, but some entries didn't make it. Both sides list
-them with a reason:
+them with a reason (a broken link is listed by the sender, which is the
+side that left it out):
 
 - **The sender couldn't read the file** — permissions, or it vanished
   or shrank while being sent. Fix it on the sender and send again.
+- **A broken link in a folder being sent** — its target is missing, so
+  there is nothing to send for it. Fix or remove the link, or leave it
+  out with `--exclude`.
 - **The name can't be placed on the receiver** — two incoming names
   that your filesystem treats as the same (`Report.pdf` and
   `report.pdf` on a case-insensitive disk, or the NFC and NFD spellings
   of an accented name), or a name reserved for fsend (`.fsend`). Rename
   one on the sender, or receive onto a case-sensitive filesystem.
+- **The receiving system can't create the name** — a name Windows
+  doesn't allow (`aux.c`, `notes:draft`), or one the filesystem refuses
+  when the file is written (longer than 255 bytes, invalid UTF-8 on
+  macOS; a keep-both copy `name (1).ext` can cross the length limit when
+  the original just fits). Rename it on the sender, or receive with
+  `--out -` (`fsend <code> --out - | tar x` elsewhere), which creates
+  nothing under these names.
 
 Re-sending is cheap: files that already arrived are skipped as up to
 date.
@@ -262,11 +273,16 @@ protecting you.
 
 ### Sending stopped on a symlink (`E036`, sender side)
 
-fsend follows symlinks to send their target's content, so a link it can't
-resolve halts the send before any code is generated. The message names the
-offending link — fix it, or skip it with `--exclude`:
+fsend follows symlinks to send their target's content. A link it can't
+resolve halts the send before any code is generated when you named the
+link yourself, or when skipping it could not be right. The message names
+the offending link — fix it, or skip it with `--exclude`:
 
-- **Broken** (the target doesn't exist) or **unreadable** (permissions).
+- **Broken** (the target doesn't exist) and named on the command line.
+  A broken link found in a folder you send — at any depth, including
+  the top level of `fsend .` — is skipped and listed instead, and the
+  sender exits `E050`.
+- **Unreadable** (permissions on the target).
 - **Cyclic** — a link that loops back into the folder (`a → b → a`, or a
   link to a parent directory), which would otherwise recurse forever.
 
