@@ -455,6 +455,11 @@ func parseTrustedProxies(v string) ([]netip.Prefix, error) {
 			continue
 		}
 		if p, err := netip.ParsePrefix(f); err == nil {
+			// Peers are matched unmapped, so a range written IPv4-mapped
+			// (::ffff:172.16.0.0/108) must be too, or it never matches.
+			if p.Addr().Is4In6() && p.Bits() >= 96 {
+				p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+			}
 			out = append(out, p.Masked())
 			continue
 		}

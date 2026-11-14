@@ -361,7 +361,10 @@ func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *conf
 		cancelAccept()
 		if err != nil {
 			endSession()
-			if waitAgain() {
+			// A failed PAKE is not a vanished receiver: the slot comes from
+			// the whole code, so whoever joined holds the slot but not the
+			// code. Going back to waiting would hand them another guess.
+			if !errors.Is(err, fserrors.ErrPeerAuthFailed) && waitAgain() {
 				continue
 			}
 			if ctx.Err() == nil {
@@ -591,8 +594,9 @@ func senderQUICAccept(ctx context.Context, pc net.PacketConn, secret string) (*q
 		_ = tr.Close()
 		_ = pc.Close()
 	}
-	// One attempt: a peer that joined this session and failed the PAKE is
-	// not going to start passing it.
+	// One round: the first failed PAKE ends it (the listener runs at most
+	// maxPendingHandshakes at once). A peer that joined this session and
+	// failed the PAKE is not going to start passing it.
 	res, err := ln.Accept(ctx)
 	if err != nil {
 		teardown()

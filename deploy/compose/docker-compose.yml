@@ -34,7 +34,10 @@ services:
       # :8080 is published nowhere else, so only Caddy connects from these
       # ranges. Trusting them gives each client its own per-IP limits
       # (Caddy replaces any X-Forwarded-For a client sends). Remove this
-      # line if you publish :8080 or attach other containers.
+      # line if you publish :8080 or attach other containers. If your
+      # clients reach Caddy from private addresses (LAN or VPN), or you put
+      # a proxy in front that appends to X-Forwarded-For, list only this
+      # stack's Docker subnet (`docker network inspect`) instead.
       FSEND_SERVER_TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
     #   FSEND_SERVER_PASSWORD: "change-me"     # restrict access (unset = open)
     # Caps, unset = unlimited. Recommended on a public server: uncomment
