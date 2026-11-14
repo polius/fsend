@@ -91,7 +91,7 @@ leading spaces:
 | `Line(text)` | a neutral line: text from column 2 |
 | `Note(text)`, `NoteWrapped(text)` | faint detail from column 2; the second breaks between words on a narrow terminal |
 | `Item(text)` | a list row, from column 4 |
-| `Command(text)` | the command to copy, from column 6 |
+| `On(w).Command(text)` | the command to copy, from column 6 |
 | `Question(text, options)` | a prompt with choices: `? Save to ./?  [Y/n] `, cursor left on the line |
 | `Entry(label)` | a prompt for typed text: `? Enter the password the sender shared: ` |
 | `Blank()`, `Debug(text)` | an empty line; a `--debug` line (`  DEBUG: …`) |
