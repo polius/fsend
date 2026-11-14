@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/polius/fsend/internal/conv"
 )
 
 // Data-stream chunk frame layout:
@@ -97,8 +99,8 @@ func WriteChunk(w io.Writer, c *Chunk) error {
 	header := (*bp)[:chunkFixedHeader]
 	header[0] = byte(TypeChunk)
 	header[1] = flags
-	binary.BigEndian.PutUint32(header[2:6], uint32(len(c.Payload)))
-	binary.BigEndian.PutUint16(header[6:8], uint16(len(c.Segments)))
+	binary.BigEndian.PutUint32(header[2:6], uint32(len(c.Payload)))  //nolint:gosec // ≤ MaxChunkSize, checked on entry
+	binary.BigEndian.PutUint16(header[6:8], uint16(len(c.Segments))) //nolint:gosec // ≤ 0xFFFF, checked on entry
 
 	for i := range c.Segments {
 		s := &c.Segments[i]
@@ -190,7 +192,7 @@ func ReadChunkBuf(r io.Reader, buf []byte) (*Chunk, error) {
 	}
 
 	if payloadLen > 0 {
-		if uint32(cap(buf)) >= payloadLen {
+		if conv.Uint64(int64(cap(buf))) >= uint64(payloadLen) {
 			c.Payload = buf[:payloadLen]
 		} else {
 			c.Payload = make([]byte, payloadLen)

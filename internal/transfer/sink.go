@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/wire"
@@ -95,7 +96,7 @@ func streamTar(ctx context.Context, s *Streams, entries []wire.ListingEntry, nam
 	header := func(i int) error {
 		e := entries[i]
 		h := &tar.Header{Name: names[i], Mode: int64(e.Mode & 0o7777), ModTime: time.Unix(e.ModTimeSec, 0),
-			Typeflag: tar.TypeReg, Size: int64(e.Size), Format: tar.FormatPAX}
+			Typeflag: tar.TypeReg, Size: conv.Int64(e.Size), Format: tar.FormatPAX}
 		if e.Type == wire.EntryDir {
 			h.Typeflag, h.Name, h.Size = tar.TypeDir, names[i]+"/", 0
 		}

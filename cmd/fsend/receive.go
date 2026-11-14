@@ -17,6 +17,7 @@ import (
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/connpath"
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/quicconn"
@@ -524,7 +525,7 @@ func differVerb(n int) string {
 // agrees with the progress bar, which fills to X. When nothing transfers and
 // nothing conflicts it says so outright rather than printing a bare "0 B".
 func receiverSizeClause(s transfer.ClassifySummary) string {
-	offered := uxlog.HumanBytes(int64(s.OfferedBytes))
+	offered := uxlog.HumanBytes(conv.Int64(s.OfferedBytes))
 	if s.BytesToRecv == 0 {
 		// Nothing auto-downloads. Distinguish "you already have it all" from
 		// "everything here conflicts" (the latter keeps the offered size, and
@@ -534,7 +535,7 @@ func receiverSizeClause(s transfer.ClassifySummary) string {
 		}
 		return offered
 	}
-	net := uxlog.HumanBytes(int64(s.BytesToRecv))
+	net := uxlog.HumanBytes(conv.Int64(s.BytesToRecv))
 	if net == offered {
 		return offered // any skipping is negligible at display resolution
 	}

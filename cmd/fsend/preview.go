@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/polius/fsend/internal/uxlog"
+
+	"github.com/polius/fsend/internal/conv"
 )
 
 // previewRows is how many files the pre-transfer preview lists before
@@ -94,7 +96,7 @@ func rowName(it previewItem) string {
 
 // sizeCell renders the size column for one row.
 func sizeCell(it previewItem) string {
-	return uxlog.HumanBytes(int64(it.size))
+	return uxlog.HumanBytes(conv.Int64(it.size))
 }
 
 // noteText colours a status tag: "differs" needs a decision, so it wears

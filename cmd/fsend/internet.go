@@ -17,6 +17,7 @@ import (
 
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/iceconn"
 	"github.com/polius/fsend/internal/landisc"
@@ -180,7 +181,7 @@ func classifyRelayDrop(ctx context.Context, client *signaling.Client, sessionID,
 	case relay.ReasonCapHit:
 		if status.LimitBytes > 0 {
 			return fmt.Errorf("%w: Server limit: %s on the wire (after compression)",
-				fserrors.ErrRelayCapHit, uxlog.HumanBytes(int64(status.LimitBytes)))
+				fserrors.ErrRelayCapHit, uxlog.HumanBytes(conv.Int64(status.LimitBytes)))
 		}
 		return fserrors.ErrRelayCapHit
 	case relay.ReasonBudgetHit:

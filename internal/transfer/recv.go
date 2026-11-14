@@ -18,6 +18,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/polius/fsend/internal/atomicfile"
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/wire"
@@ -684,7 +685,7 @@ func (r *receiver) openFile(p *entryPlan, restart bool) (*recvFile, error) {
 			return nil, r.writeFail("open partial", p.rel, err)
 		}
 		rf.f, rf.partial = f, p.partial
-		off := int64(p.resumeOffset)
+		off := conv.Int64(p.resumeOffset)
 		if err := f.Truncate(off); err != nil {
 			rf.abandon(false)
 			return nil, r.writeFail("truncate", p.rel, err)
@@ -767,7 +768,7 @@ func (rf *recvFile) write(data []byte) error {
 // writeSparse writes data at the current offset, leaving aligned all-zero
 // blocks as holes so sparse images stay sparse.
 func (rf *recvFile) writeSparse(data []byte) error {
-	pos := int64(rf.written)
+	pos := conv.Int64(rf.written)
 	start := 0 // first byte of the pending non-zero run
 	flush := func(end int) error {
 		if end > start {
@@ -810,7 +811,7 @@ func (rf *recvFile) finalize(root [32]byte) error {
 		return fserrors.ErrHashMismatch
 	}
 	if rf.tailHole {
-		if err := rf.f.Truncate(int64(p.entry.Size)); err != nil {
+		if err := rf.f.Truncate(conv.Int64(p.entry.Size)); err != nil {
 			rf.abandon(true)
 			return r.writeFail("extend", p.rel, err)
 		}

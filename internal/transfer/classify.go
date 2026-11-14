@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -295,7 +296,7 @@ func (c *classifier) hashResumePrefixes(plans []entryPlan) error {
 		sem <- struct{}{}
 		go func(p *entryPlan) {
 			defer func() { <-sem; wg.Done() }()
-			blocks, err := hashPartialPrefix(p.partial, int64(p.resumeOffset), prog.add)
+			blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), prog.add)
 			if err != nil {
 				c.ps.remove(p.rel)
 				p.disp, p.resumeOffset, p.partial = dispNew, 0, ""
@@ -356,7 +357,7 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 
 	default: // EntryFile
 		// Precedence: identical/verify target → resume → differ/conflict → new.
-		if exists && st.Mode().IsRegular() && uint64(st.Size()) == e.Size {
+		if exists && st.Mode().IsRegular() && conv.Uint64(st.Size()) == e.Size {
 			if c.checksum {
 				// Same size — defer the skip/differ verdict to a content hash.
 				p.disp = dispVerify
@@ -422,7 +423,7 @@ func (c *classifier) resumeCandidate(p *entryPlan) {
 	if !ok {
 		return
 	}
-	limit := min(uint64(size), p.entry.Size-1)
+	limit := min(conv.Uint64(size), p.entry.Size-1)
 	aligned := limit / hashBlockSize * hashBlockSize
 	if aligned == 0 {
 		return
@@ -558,7 +559,7 @@ func applyPolicy(plans []entryPlan, policy ConflictPolicy, c *classifier) {
 			// partial (the same check keep-both runs in retarget). The
 			// commit renames over the user's file, which they agreed to.
 			if p.replaceResume && p.disp == dispDiffers && !p.blockedAncestor {
-				if blocks, err := hashPartialPrefix(p.partial, int64(p.resumeOffset), func(int64) {}); err == nil {
+				if blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), func(int64) {}); err == nil {
 					p.disp, p.prefixBlocks = dispResume, blocks
 				} else {
 					c.ps.remove(p.rel)
@@ -616,7 +617,7 @@ func (c *classifier) retarget(p *entryPlan, rel string) {
 		// An earlier interrupted keep-both run may have left a partial.
 		c.resumeCandidate(p)
 		if p.disp == dispResume {
-			if blocks, err := hashPartialPrefix(p.partial, int64(p.resumeOffset), func(int64) {}); err == nil {
+			if blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), func(int64) {}); err == nil {
 				p.prefixBlocks = blocks
 			} else {
 				c.ps.remove(p.rel)
@@ -643,7 +644,7 @@ func (c *classifier) keptCopy(rel string, e wire.ListingEntry) string {
 		if err != nil {
 			return ""
 		}
-		if st.Mode().IsRegular() && uint64(st.Size()) == e.Size && c.sem.sameMtime(st.ModTime(), e.ModTimeSec) {
+		if st.Mode().IsRegular() && conv.Uint64(st.Size()) == e.Size && c.sem.sameMtime(st.ModTime(), e.ModTimeSec) {
 			return cand
 		}
 	}

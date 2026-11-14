@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
@@ -550,7 +551,7 @@ func capBytes(n uint64) string {
 	if n == 0 {
 		return "0 (unlimited)"
 	}
-	return uxlog.HumanBytes(int64(n))
+	return uxlog.HumanBytes(conv.Int64(n))
 }
 
 // logLevelName maps the parsed level back to the lowercase form operators

@@ -29,7 +29,6 @@ linters:
       # globally and are waived per reviewed file below, so new code is
       # checked.
       excludes:
-        - G115
         - G301
         - G402
         - G404 # weak RNG: math/rand/v2 is used only for retry jitter, not for any secret

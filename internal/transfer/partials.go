@@ -12,6 +12,8 @@ import (
 	"github.com/zeebo/blake3"
 
 	"github.com/polius/fsend/internal/wire"
+
+	"github.com/polius/fsend/internal/conv"
 )
 
 // stateDirName is the hidden folder under the receive directory that holds
@@ -94,7 +96,7 @@ func (ps *partialStore) lookup(rel string, e wire.ListingEntry) (string, int64, 
 	b, err := os.ReadFile(meta)
 	if err != nil || json.Unmarshal(b, &m) != nil ||
 		m.Path != filepath.ToSlash(rel) || m.Size != e.Size || m.ModTime != e.ModTimeSec ||
-		uint64(st.Size()) > e.Size {
+		conv.Uint64(st.Size()) > e.Size {
 		ps.remove(rel)
 		return "", 0, false
 	}

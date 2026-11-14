@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"errors"
+	"math"
 	"os"
 	"testing"
 
@@ -96,6 +97,24 @@ func TestClassify_RefusesUnknownEntryTypes(t *testing.T) {
 		}
 		if ents, _ := os.ReadDir(dir); len(ents) != 0 {
 			t.Errorf("type %d: the receive dir is not empty: %v", typ, ents)
+		}
+	}
+}
+
+// A listing whose sizes don't fit int64 — one entry, or the sum — is a
+// protocol error: the receiver's offsets, truncates and totals are int64.
+func TestValidateListing_SizesFitInt64(t *testing.T) {
+	ok := []wire.ListingEntry{{Index: 0, Size: math.MaxInt64}}
+	if err := validateListing(ok); err != nil {
+		t.Errorf("one MaxInt64 entry: %v", err)
+	}
+	for name, es := range map[string][]wire.ListingEntry{
+		"entry": {{Index: 0, Size: math.MaxInt64 + 1}},
+		"sum":   {{Index: 0, Size: math.MaxInt64}, {Index: 1, Size: 1}},
+		"wraps": {{Index: 0, Size: math.MaxUint64}, {Index: 1, Size: 2}},
+	} {
+		if err := validateListing(es); !errors.Is(err, fserrors.ErrProtocolError) {
+			t.Errorf("%s: err = %v, want ErrProtocolError", name, err)
 		}
 	}
 }

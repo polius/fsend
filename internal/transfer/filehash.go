@@ -10,6 +10,8 @@ import (
 	"github.com/zeebo/blake3"
 
 	"github.com/polius/fsend/internal/wire"
+
+	"github.com/polius/fsend/internal/conv"
 )
 
 // File hash tree. A file's root is
@@ -97,7 +99,7 @@ func (h *fileHasher) Write(p []byte) (int, error) {
 		take := min(len(p), hashBlockSize-len(h.cur))
 		h.cur = append(h.cur, p[:take]...)
 		p = p[take:]
-		h.n += uint64(take)
+		h.n += conv.Uint64(int64(take))
 		if len(h.cur) == hashBlockSize {
 			h.dispatch(h.cur, true)
 			h.cur = nil
@@ -201,5 +203,5 @@ func hashFileRoot(path string, progress func(int64)) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	return foldRoot(blocks, uint64(st.Size())), nil
+	return foldRoot(blocks, conv.Uint64(st.Size())), nil
 }

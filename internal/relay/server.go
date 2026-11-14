@@ -620,7 +620,7 @@ func (s *Server) cookie(tok Token, src *net.UDPAddr, epoch uint64) [cookieSize]b
 	m.Write(b[:])
 	m.Write(tok[:])
 	m.Write(src.IP.To16())
-	binary.BigEndian.PutUint16(b[:2], uint16(src.Port))
+	binary.BigEndian.PutUint16(b[:2], uint16(src.Port)) //nolint:gosec // a UDP port, 0..65535
 	m.Write(b[:2])
 	var out [cookieSize]byte
 	copy(out[:], m.Sum(nil))
