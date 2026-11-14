@@ -21,6 +21,7 @@ import (
 
 	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/iceconn"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/update"
@@ -127,6 +128,9 @@ func runServer() error {
 		return fmt.Errorf("%w: relay UDP listen on %s: %v", fserrors.ErrServerStartup, cfg.udpAddr, err)
 	}
 	defer func() { _ = udpListener.Close() }()
+	// Every relayed byte crosses this one socket twice; the OS default
+	// (208 KiB on Linux) drops bursts long before the link is full.
+	iceconn.SizeBuffers(udpListener)
 	relaySrv := relay.NewServer(udpListener, relay.ServerConfig{
 		MaxBytesPerSession: cfg.maxBytesPerSession,
 		MaxBytesPerDay:     cfg.maxBytesPerDay,

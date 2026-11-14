@@ -338,6 +338,11 @@ func (n bufferedNet) ListenPacket(network, address string) (net.PacketConn, erro
 	return c, err
 }
 
+// SizeBuffers gives a UDP socket the buffers quic-go asks for on its own
+// sockets, for the ones fsend opens itself (the relay's, on both ends).
+// Best effort: the OS may cap or refuse the size.
+func SizeBuffers(c any) { sizeBuffers(c) }
+
 // sizeBuffers is best effort: the OS may cap or refuse the size.
 func sizeBuffers(c any) {
 	if b, ok := c.(interface {

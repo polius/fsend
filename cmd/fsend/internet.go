@@ -642,6 +642,7 @@ func dialRelayUDP(ctx context.Context, relayAddr, serverHost string, tok relay.T
 	if err != nil {
 		return nil, fmt.Errorf("local UDP: %w", err)
 	}
+	iceconn.SizeBuffers(myUDP) // bursts at relay speed overflow the OS default
 	rc := relay.NewClient(myUDP, relayUDPAddr, tok).WithPeerID(id)
 	regCtx, cancel := context.WithTimeout(ctx, relayUDPWait)
 	defer cancel()
