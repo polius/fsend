@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
+
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -55,8 +57,8 @@ func TestNegotiatesPostQuantum(t *testing.T) {
 	defer acc.res.Close()
 
 	for _, got := range []tls.CurveID{
-		acc.res.Conn.ConnectionState().TLS.CurveID,
-		dialRes.Conn.ConnectionState().TLS.CurveID,
+		acc.res.Conn.(*quic.Conn).ConnectionState().TLS.CurveID,
+		dialRes.Conn.(*quic.Conn).ConnectionState().TLS.CurveID,
 	} {
 		if got != tls.X25519MLKEM768 {
 			t.Errorf("negotiated curve = %v, want X25519MLKEM768 (post-quantum downgrade!)", got)

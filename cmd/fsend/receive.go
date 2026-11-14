@@ -296,7 +296,7 @@ func dialLAN(ctx context.Context, f *flags, rs *recvSession, q *landisc.QueryRes
 	if !f.quiet {
 		spin.SetMessage("Connecting to the sender")
 	}
-	first, err := quicconn.DialTimeout(ctx, addr, rs.key.secret, lanFirstDialTimeout)
+	first, err := dialLANRoute(ctx, f, addr, rs.key.secret, lanFirstDialTimeout)
 	if err != nil {
 		// Debug-only: the transfer may still end up "Direct on local
 		// network" via ICE, so this notice by default reads as the tool
@@ -311,10 +311,40 @@ func dialLAN(ctx context.Context, f *flags, rs *recvSession, q *landisc.QueryRes
 		lan:   true,
 		first: first,
 		dial: func(ctx context.Context, secret string) (*quicconn.AcceptResult, error) {
-			return quicconn.Dial(ctx, addr, secret)
+			return dialLANRoute(ctx, f, addr, secret, quicconn.HandshakeTimeout)
 		},
 		close: func() {},
 	}
+}
+
+// tcpConnectTimeout bounds the connect of the local-network TCP route. A
+// sender without it (a release before the route) refuses at once; one
+// behind a firewall that drops TCP costs this much before QUIC.
+const tcpConnectTimeout = 300 * time.Millisecond
+
+// dialLANRoute connects to a sender on the local network: the TCP route
+// first (kernel TCP fills a wired link; QUIC's user-space datagrams
+// didn't), then QUIC as before, with quicConnect bounding its connect.
+func dialLANRoute(ctx context.Context, f *flags, addr, secret string, quicConnect time.Duration) (*quicconn.AcceptResult, error) {
+	res, err := quicconn.DialTCP(ctx, addr, secret, tcpConnectTimeout)
+	if err == nil {
+		if f.debug && !f.quiet {
+			fmt.Fprintln(os.Stderr, "    route: TCP")
+		}
+		return res, nil
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	// The sender answered and judged the code (or the version): QUIC would
+	// only spend a second attempt, and a second failure, on the same answer.
+	if errors.Is(err, fserrors.ErrPeerAuthFailed) || errors.Is(err, fserrors.ErrIncompatibleVersion) {
+		return nil, err
+	}
+	if f.debug && !f.quiet {
+		fmt.Fprintln(os.Stderr, "    route: QUIC (no TCP route:", err, ")")
+	}
+	return quicconn.DialTimeout(ctx, addr, secret, quicConnect)
 }
 
 // errRouteGone marks a failed re-dial that should go straight to
