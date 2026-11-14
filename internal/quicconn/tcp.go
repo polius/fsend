@@ -127,8 +127,10 @@ type tcpConn struct {
 	in    ctrlIn
 	out   chan outFrame // control frames to send, in order
 	wdone chan struct{} // the writer stopped
+	rdone chan struct{} // the reader stopped: the peer's end, or a failure
 
-	closeOnce sync.Once
+	closeOnce    sync.Once // CloseWithError
+	shutdownOnce sync.Once // shutdown, from a close or a failure
 }
 
 type outFrame struct {
@@ -144,6 +146,7 @@ func newTCPConn(ctrl *tls.Conn) *tcpConn {
 		cancel: cancel,
 		out:    make(chan outFrame, 16),
 		wdone:  make(chan struct{}),
+		rdone:  make(chan struct{}),
 	}
 	c.in.init()
 	go c.writeLoop()
@@ -187,7 +190,18 @@ func (c *tcpConn) CloseWithError(code quic.ApplicationErrorCode, msg string) err
 		cause := &quic.ApplicationError{ErrorCode: code, ErrorMessage: msg}
 		c.in.setErr(cause) // a pending control Read returns, as on QUIC
 		c.cancel(cause)
-		c.shutdown()
+		c.shutdownOnce.Do(c.shutdown)
+		// Wait for the peer's end before the full close. Closing a socket
+		// with unread bytes (the peer's last pings or frames) sends a
+		// reset, and a reset can discard our close and FIN before the
+		// peer reads them, turning a finished transfer into "connection
+		// interrupted" on its side (seen on Linux). The read loop drains
+		// until the peer's EOF, which follows its reading our close.
+		select {
+		case <-c.rdone:
+		case <-time.After(time.Second):
+		}
+		_ = c.ctrl.Close()
 	})
 	return nil
 }
@@ -219,7 +233,7 @@ func (c *tcpConn) shutdown() {
 func (c *tcpConn) fail(cause error) {
 	c.in.setErr(cause)
 	c.cancel(cause)
-	c.closeOnce.Do(c.shutdown)
+	c.shutdownOnce.Do(c.shutdown)
 }
 
 func frame(kind byte, p []byte) []byte {
@@ -286,6 +300,7 @@ func (c *tcpConn) send(b []byte, deadline time.Time) error {
 // readLoop parses the peer's control frames into c.in. A connection the
 // peer stops pinging for the idle timeout is dead, as QUIC's would be.
 func (c *tcpConn) readLoop() {
+	defer close(c.rdone)
 	idle := QuicConfig().MaxIdleTimeout
 	br := bufio.NewReader(c.ctrl)
 	for {
@@ -309,8 +324,11 @@ func (c *tcpConn) readLoop() {
 		}
 		switch hdr[0] {
 		case frameData:
-			if !c.in.push(p, c.ctx.Done()) {
-				return
+			// After this side's close, keep reading and drop the bytes: a
+			// socket closed with unread data sends a reset, which on some
+			// systems discards what the peer has yet to read.
+			if c.ctx.Err() != nil || !c.in.push(p, c.ctx.Done()) {
+				continue
 			}
 		case frameFIN:
 			c.in.setErr(io.EOF)

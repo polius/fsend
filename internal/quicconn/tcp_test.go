@@ -404,3 +404,22 @@ func TestTCP_FullDataSlotsAreNotAWrongCode(t *testing.T) {
 		t.Fatalf("err = %v, want a data connection failure, not a failed PAKE", err)
 	}
 }
+
+// A close between two live peers is quick: it waits for the peer's end
+// (so no reset can eat our last frames), which takes a round trip, not
+// the one-second bound.
+func TestTCP_CloseIsQuickWithALivePeer(t *testing.T) {
+	const secret = "abc-defg-hjk"
+	ln, addr := tcpListener(t, secret)
+	snd, rcv := pairTCP(t, ln, addr, secret)
+	start := time.Now()
+	_ = snd.Conn.CloseWithError(0, "")
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Fatalf("closing took %v", d)
+	}
+	select {
+	case <-rcv.Conn.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("the peer never saw the close")
+	}
+}
