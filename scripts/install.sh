@@ -348,7 +348,9 @@ on_path() {
 # receive_now runs the fresh binary on CODE. Its prompt reads the
 # terminal: stdin is this script, piped from curl.
 receive_now() {
-    if ! { : </dev/tty; } 2>/dev/null; then
+    # The probe runs in a subshell: in dash (Debian's sh) a failed
+    # redirect on a special builtin like : ends the whole script.
+    if ! ( : </dev/tty ) 2>/dev/null; then
         warn "no terminal to answer fsend's prompt — to receive, run:"
         printf '    %s%s %s%s\n' "$C_ORG" "$1" "$CODE" "$C_RST" >&2
         return 0

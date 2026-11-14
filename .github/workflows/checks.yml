@@ -35,6 +35,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Linux brings lo up without the multicast flag, so the loopback
+      # mDNS tests could never run here.
+      - if: runner.os == 'Linux'
+        run: sudo ip link set lo multicast on
       - run: go build ./...
       - run: go vet ./...
       - run: go test -count=1 -timeout 600s ./...
@@ -55,6 +59,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - run: sudo ip link set lo multicast on
       - run: go vet ./...
       - run: go test -count=1 -timeout 600s ./...
 
@@ -71,10 +76,11 @@ jobs:
       - uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1.6.0
         env:
           GOTOOLCHAIN: auto
+          FSEND_TEST_REQUIRE_MULTICAST: "1"
         with:
           release: "15.1"
           usesh: true
-          envs: GOTOOLCHAIN
+          envs: GOTOOLCHAIN FSEND_TEST_REQUIRE_MULTICAST
           prepare: pkg install -y go
           run: |
             go version

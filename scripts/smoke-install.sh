@@ -248,7 +248,7 @@ mkdir -p "$H13"
 run_installer "$H13" -p "$H13/bin" -v "$VER" abc-defg-hjk >"$WORK/out13" 2>&1 \
     || { cat "$WORK/out13" >&2; fail "scenario13: install with a code failed"; }
 [ -x "$H13/bin/fsend" ] || fail "scenario13: binary not installed"
-if { : </dev/tty; } 2>/dev/null; then
+if ( : </dev/tty ) 2>/dev/null; then
     grep -q "stub receiving abc-defg-hjk" "$WORK/out13" || { cat "$WORK/out13" >&2; fail "scenario13: the code was not received"; }
 else
     grep -q "fsend abc-defg-hjk" "$WORK/out13" || { cat "$WORK/out13" >&2; fail "scenario13: no command to receive"; }
