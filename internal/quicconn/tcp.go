@@ -38,6 +38,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -267,8 +268,8 @@ func (c *tcpConn) writeLoop() {
 		select {
 		case f := <-c.out:
 			_, err := c.ctrl.Write(f.b)
-			if writeDoneDelay > 0 {
-				time.Sleep(writeDoneDelay)
+			if d := writeDoneDelay.Load(); d > 0 {
+				time.Sleep(time.Duration(d))
 			}
 			if f.done != nil {
 				f.done <- err
@@ -285,7 +286,7 @@ func (c *tcpConn) writeLoop() {
 
 // writeDoneDelay, for tests, stretches the moment between a frame's write
 // and its report, where a peer that reads it and closes at once can win.
-var writeDoneDelay time.Duration
+var writeDoneDelay atomic.Int64 // nanoseconds
 
 // closedGrace is how long a send whose connection just closed still waits
 // for its frame's report: the peer may have read it and closed at once

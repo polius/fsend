@@ -430,8 +430,8 @@ func TestTCP_CloseIsQuickWithALivePeer(t *testing.T) {
 func TestTCP_WriteThePeerReadIsNotAnError(t *testing.T) {
 	// Hold each report back long enough for the peer's read and close to
 	// arrive first, as a loaded CI runner did by descheduling the writer.
-	writeDoneDelay = 20 * time.Millisecond
-	t.Cleanup(func() { writeDoneDelay = 0 })
+	writeDoneDelay.Store(int64(20 * time.Millisecond))
+	t.Cleanup(func() { writeDoneDelay.Store(0) })
 	const secret = "abc-defg-hjk"
 	ln, addr := tcpListener(t, secret)
 	for i := range 20 {
