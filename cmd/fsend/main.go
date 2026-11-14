@@ -213,6 +213,12 @@ func renderError(err error, debug bool) int {
 		// decision, not a failure, and skip the "Use --overwrite" advice
 		// they just declined.
 		add("Kept your local copies — nothing was overwritten.")
+	case errors.Is(err, errReceivingHere):
+		// E003's "another receiver" and "ask for a fresh code" would both
+		// mislead: the other receiver is this device, and its transfer is
+		// under way.
+		add("That code is already being received on this device.")
+		add("  Wait for the other fsend to finish, or stop it and run this again.")
 	case errorRole == "sender" && errors.Is(err, fserrors.ErrReceiverDeclined):
 		// Not a fault on either side: the receiver said no. Name who.
 		who := sendState.peerName()

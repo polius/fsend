@@ -72,6 +72,7 @@ exiting.
 | `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. Case, spaces and a missing hyphen are fine. |
 | `E002` | No sender is waiting on that code (after about 6 seconds of trying) | It was mistyped, the sender stopped, or it was used more than ten minutes ago. Have the sender run again for a fresh code. If a second line says this device's clock is off, fix the date and time: codes are salted with the UTC day. A sender and receiver on either side of 1.16 can't find each other either: run `fsend --version` on both ([compatibility](compatibility.md)). |
 | `E003` | Another receiver already connected with this code | Each code works for one receiver. (A receiver resuming its own dropped transfer on the same device doesn't hit this.) Have the sender run again and share the new code. |
+| `E003`, "already being received on this device" | Another `fsend` on this device is receiving that code right now | Wait for it to finish, or stop it and run the command again. Nothing is wrong with the code. |
 
 Codes can't be reused — a new send always produces a new code to share.
 After a receiver connects, the server remembers the code as used for ten

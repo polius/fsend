@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
@@ -69,12 +70,16 @@ var (
 // layer: TLS certificates are ephemeral and unverified.
 //
 // The confirmation tags are direction-separated so a peer that never
-// learned the code can't echo the honest tag back.
+// learned the code can't echo the honest tag back, and ordered: the
+// receiver's goes first and the sender answers only a correct one.
 //
 // Returns the session binding (a secret both peers share only after a
-// successful run) for later in-session PAKEs such as --password. Any
-// failure — wrong code, MITM, reflection, malformed input — returns
+// successful run) for later in-session PAKEs such as --password. A failed
+// PAKE — wrong code, MITM, reflection, malformed input — returns
 // fserrors.ErrPeerAuthFailed; a v2 peer returns ErrIncompatibleVersion.
+// A sender whose peer leaves or stalls before its tag gets the plain I/O
+// error: that peer learned nothing about the code, so it is not a failed
+// attempt. A receiver left without an answer gets ErrUnconfirmed.
 func authenticatePeer(tlsState tls.ConnectionState, control io.ReadWriter, code string, r role) (binding []byte, err error) {
 	// Defense in depth: no peer-controlled input may crash the process.
 	defer func() {
@@ -124,26 +129,70 @@ func authenticatePeer(tlsState tls.ConnectionState, control io.ReadWriter, code 
 	myTag := confirmTag(key, exporter, r, senderMsg, receiverMsg)
 	wantTag := confirmTag(key, exporter, otherRole(r), senderMsg, receiverMsg)
 
+	// The receiver confirms first; the sender answers only a correct tag.
+	// A tag lets its reader test one guess of the code, so whoever sends
+	// first hands the peer that test before the peer has committed to
+	// anything. Receivers come to a waiting sender, and anyone on the
+	// network (or the pairing server) can pose as one, so the sender is
+	// the side that must not go first: it shows its tag only to a peer
+	// that already proved the code, and a wrong tag is a failed PAKE it
+	// counts. Releases up to 1.16 wrote their tag before reading on both
+	// sides; that order is still valid here in either role, so they
+	// interoperate (a 1.16 sender still answers before it has verified).
+	if r == roleSender {
+		// A read error here, whatever the close code, is a peer that left
+		// before committing to a guess: it has our share and nothing more.
+		if err := readPeerTag(control, wantTag); err != nil {
+			return nil, err
+		}
+		if _, err := control.Write(myTag); err != nil {
+			return nil, fmt.Errorf("auth: send tag: %w", err)
+		}
+		return sessionBinding(key, exporter), nil
+	}
 	if _, err := control.Write(myTag); err != nil {
-		// The peer may have judged the code from our share already and
-		// closed before our tag went out (seen on the TCP route): that is
-		// a failed PAKE, as when its close overtakes its own tag below.
+		// The sender judged our tag and closed while this write was still
+		// in flight (seen on the TCP route): a failed PAKE, as when its
+		// close overtakes the read below.
 		if peerRejected(err) {
 			return nil, fmt.Errorf("%w: auth: send tag: %v", fserrors.ErrPeerAuthFailed, err)
 		}
 		return nil, fmt.Errorf("auth: send tag: %w", err)
 	}
-	var peerTag [tagLen]byte
-	if _, err := io.ReadFull(control, peerTag[:]); err != nil {
-		if peerRejected(err) {
-			return nil, fmt.Errorf("%w: auth: recv tag: %v", fserrors.ErrPeerAuthFailed, err)
+	if err := readPeerTag(control, wantTag); err != nil {
+		switch {
+		case errors.Is(err, fserrors.ErrPeerAuthFailed):
+			return nil, err
+		case peerRejected(err):
+			// The sender read our tag, found it wrong and closed.
+			return nil, fmt.Errorf("%w: %v", fserrors.ErrPeerAuthFailed, err)
 		}
-		return nil, fmt.Errorf("auth: recv tag: %w", err)
-	}
-	if subtle.ConstantTimeCompare(wantTag, peerTag[:]) != 1 {
-		return nil, fserrors.ErrPeerAuthFailed
+		// Our tag is out and no answer came: the peer may have used it to
+		// test a guess. Not proof of a wrong code (a dropped link looks the
+		// same), so the error stays what it was, but marked for callers
+		// that would otherwise hand the same peer a second handshake.
+		return nil, fmt.Errorf("%w: %w", ErrUnconfirmed, err)
 	}
 	return sessionBinding(key, exporter), nil
+}
+
+// ErrUnconfirmed marks a receiver-side handshake that sent its
+// confirmation tag and got no answer: the peer vanished, stalled, or took
+// the tag to test a guess of the code and left. The cause is wrapped too.
+var ErrUnconfirmed = errors.New("quicconn: the peer did not confirm the code")
+
+// readPeerTag reads the peer's confirmation tag and compares it with want.
+// A wrong tag is a failed PAKE (fserrors.ErrPeerAuthFailed); a read error
+// is returned as it is.
+func readPeerTag(control io.Reader, want []byte) error {
+	var got [tagLen]byte
+	if _, err := io.ReadFull(control, got[:]); err != nil {
+		return fmt.Errorf("auth: recv tag: %w", err)
+	}
+	if subtle.ConstantTimeCompare(want, got[:]) != 1 {
+		return fserrors.ErrPeerAuthFailed
+	}
+	return nil
 }
 
 // parsePakeMsg validates the framed PAKE message and returns the share.

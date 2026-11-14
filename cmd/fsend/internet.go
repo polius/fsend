@@ -750,6 +750,19 @@ func linkViaInternet(ctx context.Context, f *flags, client *signaling.Client, jo
 	}, nil
 }
 
+// leaveSession ends the server session this receiver joined but never
+// authenticated on (it was cancelled, or found no working path). The
+// sender notices and opens the code again at once (see watchSessionGone);
+// without this the session stays claimed until the sender's own timeout,
+// and a rerun of the same command in that minute is told the code belongs
+// to another receiver. Best effort, bounded, on a fresh context: ours is
+// usually the one that was just cancelled.
+func leaveSession(client *signaling.Client, joined *server.JoinSessionResponse) {
+	ctx, cancel := context.WithTimeout(context.Background(), sessionDeleteTimeout)
+	defer cancel()
+	_ = client.Delete(ctx, joined.SessionID, joined.RoleToken)
+}
+
 // relayPrep is a relay allocation and dial running in the background while
 // ICE tries for a direct path. Waiting for ICE to fail before even asking
 // for the relay cost the worst networks most: the allocation, and on a
