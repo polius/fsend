@@ -3,9 +3,14 @@ package e2e
 import (
 	"bytes"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,8 +67,13 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 	}
 	defer landisc.StopAnnounce(mdnsConn)
 
+	// The receiver tries the local network and the server at once. Hold
+	// its join at the server for a while so discovery always wins the
+	// race: on a slow runner the server path used to win first (it found
+	// a direct route over a real interface), and the doomed dial never ran.
+	recvXDG := h.newXDGVia(t, delayJoins(t, h.httpPort, 3*time.Second))
 	recvDir := t.TempDir()
-	recvCmd := h.fsendCmd(xdg, code, "--yes", "--debug", "--out", recvDir)
+	recvCmd := h.fsendCmd(recvXDG, code, "--yes", "--debug", "--out", recvDir)
 	var out, errb bytes.Buffer
 	recvCmd.Stdout = &out
 	recvCmd.Stderr = &errb
@@ -83,8 +93,9 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 	if !strings.Contains(stderr, "Local sender unreachable") {
 		t.Fatalf("expected the LAN-dial fallback notice\n%s", stderr)
 	}
-	// Post-fix this completes in ~2-3 s; pre-fix the dial alone was 10 s.
-	if elapsed > 8*time.Second {
+	// Post-fix this completes in ~2-3 s plus the 3 s held join; pre-fix the
+	// dial alone was 10 s.
+	if elapsed > 11*time.Second {
 		t.Fatalf("receive took %v; the first LAN dial must stay RTT-scale", elapsed)
 	}
 	if _, err := os.Stat(filepath.Join(recvDir, "payload.bin")); err != nil {
@@ -101,4 +112,24 @@ func skipNoMulticast(t *testing.T, format string, args ...any) {
 		t.Fatalf("FSEND_TEST_REQUIRE_MULTICAST is set, but: "+format, args...)
 	}
 	t.Skipf(format, args...)
+}
+
+// delayJoins is a proxy to the harness server on port that holds every
+// join for d. It returns the proxy's host:port.
+func delayJoins(t *testing.T, port int, d time.Duration) string {
+	t.Helper()
+	target, _ := url.Parse("http://127.0.0.1:" + strconv.Itoa(port))
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/join") {
+			select {
+			case <-time.After(d):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	return strings.TrimPrefix(ts.URL, "http://")
 }

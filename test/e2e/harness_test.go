@@ -259,12 +259,19 @@ func requireE2E(t *testing.T) {
 // the public pairing server.
 func (hh *harness) newXDG(t *testing.T) string {
 	t.Helper()
+	return hh.newXDGVia(t, "127.0.0.1:"+strconv.Itoa(hh.httpPort))
+}
+
+// newXDGVia is newXDG with the pairing server at addr (host:port), e.g. a
+// proxy in front of the harness server.
+func (hh *harness) newXDGVia(t *testing.T, addr string) string {
+	t.Helper()
 	dir := t.TempDir()
 	cfgDir := filepath.Join(dir, "fsend")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatalf("mkdir xdg: %v", err)
 	}
-	cfg := fmt.Sprintf(`{"schema_version":1,"server":"127.0.0.1:%d"}`, hh.httpPort)
+	cfg := fmt.Sprintf(`{"schema_version":1,"server":%q}`, addr)
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
