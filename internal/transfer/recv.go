@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -89,7 +90,14 @@ type RecvOptions struct {
 	// TargetDir: raw bytes for a single file or stream, a tar archive for a
 	// folder or several files.
 	Sink io.Writer
+
+	// withoutCaps drops capability bits from what this receiver advertises
+	// and uses — tests stand in for an older build with it.
+	withoutCaps wire.Capability
 }
+
+// caps is the capability bitmap this receiver advertises and honours.
+func (o *RecvOptions) caps() wire.Capability { return wire.CapsSupported &^ o.withoutCaps }
 
 func (o *RecvOptions) policy() ConflictPolicy {
 	if o.Overwrite {
@@ -191,6 +199,10 @@ type receiver struct {
 	ready   map[string]struct{} // folders readyDir has prepared
 	wantSHA bool
 	plans   []entryPlan
+	// late: entries refused only once they were written (the first
+	// wire.MaxWriteRefusals) and how many there were, for the final ack.
+	late      []wire.WriteRefusal
+	lateCount uint32
 }
 
 func newReceiver(s *Streams, opts RecvOptions) *receiver {
@@ -246,7 +258,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	decisions := make([]wire.Decision, len(plans))
 	for i := range plans {
 		decisions[i] = planToDecision(&plans[i], policy == ConflictReplace, opts)
-		if !hello.Caps.Has(wire.CapSkipReasons) {
+		if !hello.Caps.Has(wire.CapSkipReasons) || !opts.caps().Has(wire.CapSkipReasons) {
 			decisions[i].Reason = ""
 		}
 	}
@@ -292,7 +304,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	}
 	r.dirs.restore()
 	restoreDirMeta(plans)
-	if err := finishRecv(s); err != nil {
+	if err := finishRecv(s, r.result(hello)); err != nil {
 		return err
 	}
 	if opts.OnManifest != nil {
@@ -314,19 +326,51 @@ func (r *receiver) checkSpace(need uint64) error {
 	return fmt.Errorf("%w: %s", fserrors.ErrDiskFull, msg)
 }
 
+// result is what the final ack carries: nothing (an empty ack, the only
+// form a v3 peer without CapWriteRefusals expects) unless entries were
+// refused at write time and the sender said it reads the report.
+func (r *receiver) result(hello *wire.SenderHello) *wire.TransferResult {
+	if r.lateCount == 0 || !hello.Caps.Has(wire.CapWriteRefusals) || !r.opts.caps().Has(wire.CapWriteRefusals) {
+		return nil
+	}
+	return &wire.TransferResult{Refused: r.lateCount, Entries: r.late}
+}
+
 // skipAtWrite records an entry that could not be saved once its bytes had
-// arrived: it is marked refused and reported through OnEntrySkipped under
-// name.
-func (r *receiver) skipAtWrite(p *entryPlan, name, reason string) {
+// arrived: it is marked refused, reported locally through OnEntrySkipped
+// under name, and kept for the final ack, so the sender lists it too
+// instead of reporting a clean send. forPeer is the reason as the sender's
+// user should read it, when the local wording ("yours") would mislead.
+func (r *receiver) skipAtWrite(p *entryPlan, name, reason, forPeer string) {
 	p.disp, p.skipReason = dispRefused, reason
+	r.lateCount++
+	if len(r.late) < wire.MaxWriteRefusals {
+		if forPeer == "" {
+			forPeer = reason
+		}
+		r.late = append(r.late, wire.WriteRefusal{Index: p.entry.Index, Reason: clipReason(forPeer)})
+	}
 	if r.opts.OnEntrySkipped != nil {
 		r.opts.OnEntrySkipped(name, reason)
 	}
 }
 
-// finishRecv reads the sender's TRANSFER_COMPLETE, acks it, and waits for the
-// sender's FIN so both sides finish before any transport close.
-func finishRecv(s *Streams) error {
+// clipReason cuts a reason to wire.MaxRefusalReason bytes on a rune boundary.
+func clipReason(s string) string {
+	if len(s) <= wire.MaxRefusalReason {
+		return s
+	}
+	n := wire.MaxRefusalReason
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// finishRecv reads the sender's TRANSFER_COMPLETE, acks it (with result,
+// when there is one to report), and waits for the sender's FIN so both
+// sides finish before any transport close.
+func finishRecv(s *Streams, result *wire.TransferResult) error {
 	ft, body, err := wire.ReadControlRaw(s.Control)
 	if err != nil {
 		return fmt.Errorf("recv: read complete: %w", err)
@@ -337,7 +381,13 @@ func finishRecv(s *Streams) error {
 	if ft != wire.TypeTransferComplete {
 		return fmt.Errorf("%w: expected TRANSFER_COMPLETE, got %v", fserrors.ErrProtocolError, ft)
 	}
-	if err := wire.WriteControl(s.Control, wire.TypeTransferAck, nil); err != nil {
+	// A nil *TransferResult must reach WriteControl as an untyped nil: the
+	// empty ack is the frame every v3 peer sends.
+	var payload any
+	if result != nil {
+		payload = result
+	}
+	if err := wire.WriteControl(s.Control, wire.TypeTransferAck, payload); err != nil {
 		return err
 	}
 	drainControl(s)
@@ -934,7 +984,7 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 				// Never RemoveAll: os.Remove only succeeds on an empty folder.
 				if err := os.Remove(target); err != nil {
 					r.ps.remove(p.rel)
-					r.skipAtWrite(p, filepath.ToSlash(p.rel), "a folder with files is in the way")
+					r.skipAtWrite(p, filepath.ToSlash(p.rel), "a folder with files is in the way", "")
 					return false, nil
 				}
 			case st.Mode()&os.ModeSymlink != 0:
@@ -964,7 +1014,8 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 	if err != nil {
 		if errors.Is(err, errTargetAppeared) {
 			r.ps.remove(p.rel)
-			r.skipAtWrite(p, filepath.ToSlash(p.rel), "a file appeared here during the transfer; yours was kept")
+			r.skipAtWrite(p, filepath.ToSlash(p.rel), "a file appeared here during the transfer; yours was kept",
+				"a file appeared there during the transfer; the receiver's was kept")
 			return false, nil
 		}
 		return false, r.refuseName(p, err)
@@ -1000,14 +1051,14 @@ func (r *receiver) readyDir(dir string) error {
 
 // refuseName turns a failure to create p into a per-entry refusal when the
 // filesystem rejected the name itself (isNameErr): the partial is dropped,
-// the entry is reported through OnEntrySkipped, and the transfer carries
-// on. Any other error is returned unchanged.
+// the entry is reported on both sides (skipAtWrite), and the transfer
+// carries on. Any other error is returned unchanged.
 func (r *receiver) refuseName(p *entryPlan, err error) error {
 	if !isNameErr(err) {
 		return err
 	}
 	r.ps.remove(p.rel)
-	r.skipAtWrite(p, p.entry.RelativePath, nameRefusedReason)
+	r.skipAtWrite(p, p.entry.RelativePath, nameRefusedReason, "")
 	return nil
 }
 
@@ -1344,7 +1395,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 			opts.OnFileDone(target, hex.EncodeToString(sha.Sum(nil)))
 		}
 	}
-	return finishRecv(s)
+	return finishRecv(s, nil)
 }
 
 // streamPayload reads chunks for a single file/stream and writes their bytes
@@ -1463,7 +1514,7 @@ func manifestStatus(p *entryPlan, a wire.DecisionAction) string {
 
 func ackProceed(s *Streams, opts RecvOptions, accepts bool) {
 	ack := &wire.ReceiverHello{
-		MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, Caps: wire.CapsSupported,
+		MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, Caps: opts.caps(),
 		Hostname: opts.Hostname, OS: opts.OS, ClientVersion: opts.ClientVersion, Accepts: accepts,
 	}
 	_ = wire.WriteControl(s.Control, wire.TypeHelloAck, ack)

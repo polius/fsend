@@ -1074,7 +1074,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		onSkip(fi, kept)
 	}
 	unreadable, onUnreadable, onChanged := sourceIssueHooks(f, plan)
-	refused, onRefused := refusalHooks(plan)
+	refused, onRefused, onRefusedMore := refusalHooks(plan)
 	current := firstRes
 	notice := retryNoticeFor(f)
 	opts := retry.Options{OnRetry: func(attempt int, wait time.Duration, lastErr error) {
@@ -1150,6 +1150,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 					spin.Stop()
 					onRefused(i, why)
 				},
+				OnRefusedMore: onRefusedMore,
 			})
 		})
 	if err != nil {
@@ -1168,6 +1169,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// dropping to the sent bytes. The skipped-file count explains the gap and
 	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
 	s := stats()
+	refusedRows, refusedMore := refused()
 	printSendSummary(f, sendSubject(plan), conv.Int64(plan.totalBytes), s, elapsed, pathInfo)
 	ev := jsonDoneEvent{Ok: true, Role: "sender",
 		BytesMoved: ptr64(s.moved), DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
@@ -1177,7 +1179,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		ev.BytesTotal = ptr64(conv.Int64(plan.totalBytes))
 	}
 	if plan.mode == wire.ModeFiles {
-		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles - len(refused()))
+		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles - len(refusedRows) - refusedMore)
 		ev.FilesSkipped = ptrInt(s.skippedFiles - s.keptFiles)
 		ev.FilesKept = ptrInt(s.keptFiles)
 	}
@@ -1185,13 +1187,14 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// exit E050 so scripts notice.
 	var retErr error
 	if n := len(unreadable()); n > 0 {
-		printSkippedList(f, "could not be read", unreadable())
+		printSkippedList(f, "could not be read", unreadable(), 0)
 		retErr = fmt.Errorf("%w: %d unreadable on the sender", fserrors.ErrFilesSkipped, n)
 	}
-	// Names the receiver's system cannot create: those files only, listed
+	// Names the receiver's system cannot create (refused up front, or by
+	// its filesystem when the file was written): those files only, listed
 	// with the receiver's reason; everything else arrived.
-	if n := len(refused()); n > 0 {
-		printSkippedList(f, "could not be created on the receiver", refused())
+	if n := len(refusedRows) + refusedMore; n > 0 {
+		printSkippedList(f, "could not be created on the receiver", refusedRows, refusedMore)
 		if retErr == nil {
 			retErr = fmt.Errorf("%w: %d refused by the receiver", fserrors.ErrFilesSkipped, n)
 		}

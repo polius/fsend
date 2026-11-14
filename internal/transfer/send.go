@@ -38,9 +38,15 @@ type SendOptions struct {
 	// "unknown" (old receivers don't send the flag).
 	OnSkip func(index uint32, kept bool)
 	// OnRefused fires per entry the receiver could not create (a name its
-	// system doesn't allow), with the receiver's reason. Without it such
-	// entries are reported through OnSkip as kept.
-	OnRefused      func(index uint32, reason string)
+	// system doesn't allow), with the receiver's reason: before the data
+	// for a name refused up front, after the last byte for one the
+	// receiver's filesystem refused only when the file was written.
+	// Without it an entry refused up front is reported through OnSkip as
+	// kept.
+	OnRefused func(index uint32, reason string)
+	// OnRefusedMore fires once, with how many more files the receiver
+	// refused at write time than its bounded report lists.
+	OnRefusedMore  func(n int)
 	OnStreamingEOF func(index uint32, finalBytes uint64)
 	// OnPeer fires when the receiver answers the HELLO: its self-reported
 	// device name (peer-supplied — sanitize before display) and whether it
@@ -65,6 +71,9 @@ type SendOptions struct {
 	// advertiseMax overrides the newest version the HELLO offers — tests
 	// stand in for a newer build with it. 0 means wire.ProtocolVersion.
 	advertiseMax uint8
+	// withoutCaps drops capability bits from the HELLO — tests stand in for
+	// an older build with it.
+	withoutCaps wire.Capability
 }
 
 func (o SendOptions) maxVersion() uint8 {
@@ -102,7 +111,7 @@ func send(ctx context.Context, s *Streams, opts SendOptions, negotiated *uint8) 
 	hello := &wire.SenderHello{
 		MinVersion:    wire.MinProtocolVersion,
 		MaxVersion:    opts.maxVersion(),
-		Caps:          wire.CapsSupported,
+		Caps:          wire.CapsSupported &^ opts.withoutCaps,
 		Hostname:      opts.Hostname,
 		OS:            opts.OS,
 		ClientVersion: opts.ClientVersion,
@@ -217,21 +226,74 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions, peerCaps wire.
 		return sendChunkErr(s, err)
 	}
 
+	result, err := finishSend(s)
+	if err != nil {
+		return err
+	}
+	reportWriteRefusals(result, decisions, opts)
+	return nil
+}
+
+// finishSend posts TRANSFER_COMPLETE and reads the receiver's ack. The ack
+// is empty unless the receiver has write-time refusals to report (which it
+// does only to a sender that advertised CapWriteRefusals); the result is
+// then non-nil.
+func finishSend(s *Streams) (*wire.TransferResult, error) {
 	if err := wire.WriteControl(s.Control, wire.TypeTransferComplete, nil); err != nil {
-		return fmt.Errorf("send: complete: %w", err)
+		return nil, fmt.Errorf("send: complete: %w", err)
 	}
 	ft, body, err := wire.ReadControlRaw(s.Control)
 	if err != nil {
-		return fmt.Errorf("send: read complete-ack: %w", err)
+		return nil, fmt.Errorf("send: read complete-ack: %w", err)
 	}
 	if ft == wire.TypeError {
-		return peerError(body)
+		return nil, peerError(body)
 	}
 	if ft != wire.TypeTransferAck {
-		return fmt.Errorf("%w: expected TRANSFER_ACK, got %v", fserrors.ErrProtocolError, ft)
+		return nil, fmt.Errorf("%w: expected TRANSFER_ACK, got %v", fserrors.ErrProtocolError, ft)
+	}
+	var result *wire.TransferResult
+	if len(body) > 0 {
+		result = new(wire.TransferResult)
+		if err := wire.Decode(body, result); err != nil {
+			return nil, fmt.Errorf("%w: transfer result: %v", fserrors.ErrProtocolError, err)
+		}
 	}
 	_ = s.Control.Close()
-	return nil
+	return result, nil
+}
+
+// reportWriteRefusals hands the receiver's write-time refusals to the
+// caller. The report is peer input: an entry counts only if it is a file
+// this sender was asked to send, and only once, and the unlisted remainder
+// is capped by the files sent, so a receiver can't invent or inflate
+// refusals. Folders are left out, as for a name refused up front: every
+// file under a refused folder is in the report itself.
+func reportWriteRefusals(result *wire.TransferResult, decisions map[uint32]wire.Decision, opts SendOptions) {
+	if result == nil {
+		return
+	}
+	sent := make(map[uint32]bool)
+	for i := range opts.Sources {
+		e := &opts.Sources[i].Entry
+		if d, ok := decisions[e.Index]; ok && d.Action != wire.DecisionSkip && e.Type == wire.EntryFile {
+			sent[e.Index] = true
+		}
+	}
+	listed := result.Entries[:min(len(result.Entries), wire.MaxWriteRefusals)]
+	for _, e := range listed {
+		if !sent[e.Index] {
+			continue
+		}
+		delete(sent, e.Index) // what is left are the files not yet reported
+		if opts.OnRefused != nil {
+			opts.OnRefused(e.Index, e.Reason)
+		}
+	}
+	more := min(conv.Int64(uint64(result.Refused))-int64(len(listed)), int64(len(sent)))
+	if more > 0 && opts.OnRefusedMore != nil {
+		opts.OnRefusedMore(int(more))
+	}
 }
 
 // maxVerifyRounds caps how many VERIFY_REQUESTs the sender will answer in one
@@ -521,21 +583,9 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 		opts.OnStreamingEOF(0, sent)
 	}
 
-	if err := wire.WriteControl(s.Control, wire.TypeTransferComplete, nil); err != nil {
-		return fmt.Errorf("send: complete: %w", err)
-	}
-	ft, body, err := wire.ReadControlRaw(s.Control)
-	if err != nil {
-		return fmt.Errorf("send: read complete-ack: %w", err)
-	}
-	if ft == wire.TypeError {
-		return peerError(body)
-	}
-	if ft != wire.TypeTransferAck {
-		return fmt.Errorf("%w: expected TRANSFER_ACK, got %v", fserrors.ErrProtocolError, ft)
-	}
-	_ = s.Control.Close()
-	return nil
+	// A stream has no entries for the receiver to refuse one by one.
+	_, err = finishSend(s)
+	return err
 }
 
 // notifyPeer posts a terminal ERROR so the peer can tell the real cause
