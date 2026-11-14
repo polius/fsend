@@ -35,6 +35,86 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 	}
 	requireE2E(t)
 
+	// Discovery on loopback is occasionally slower than the receiver's
+	// 1.5 s query window on a loaded runner (seen on macos-15-intel), and
+	// then the server path carries the transfer and the doomed dial never
+	// runs. That is the environment, not the fallback under test, so a
+	// miss gets a fresh sender and receiver, up to three tries.
+	var r blackholeRun
+	for try := 1; ; try++ {
+		r = blackholeAttempt(t)
+		if strings.Contains(r.stderr, "sender address:") || try == 3 {
+			break
+		}
+		t.Logf("try %d: mDNS discovery did not resolve; trying again", try)
+	}
+
+	stderr := r.stderr
+
+	// Without discovery the run never exercises the doomed dial and the
+	// test would pass vacuously.
+	if !strings.Contains(stderr, "sender address:") {
+		skipNoMulticast(t, "mDNS discovery did not resolve in this environment\n%s", stderr)
+	}
+	if code := exitCodeOf(t, r.err); code != 0 {
+		t.Fatalf("receiver exit %d\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "Local sender unreachable") {
+		t.Fatalf("expected the LAN-dial fallback notice\n%s", stderr)
+	}
+	// Post-fix this completes in ~2-3 s plus the 3 s held join; pre-fix the
+	// dial alone was 10 s.
+	if r.elapsed > 11*time.Second {
+		t.Fatalf("receive took %v; the first LAN dial must stay RTT-scale", r.elapsed)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "payload.bin")); err != nil {
+		t.Fatalf("payload not received: %v", err)
+	}
+}
+
+// skipNoMulticast skips a test that needs working multicast, unless
+// FSEND_TEST_REQUIRE_MULTICAST is set. CI sets it on the runners where
+// multicast works, so LAN discovery can't pass there by not running.
+func skipNoMulticast(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("FSEND_TEST_REQUIRE_MULTICAST") != "" {
+		t.Fatalf("FSEND_TEST_REQUIRE_MULTICAST is set, but: "+format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
+// delayJoins is a proxy to the harness server on port that holds every
+// join for d. It returns the proxy's host:port.
+func delayJoins(t *testing.T, port int, d time.Duration) string {
+	t.Helper()
+	target, _ := url.Parse("http://127.0.0.1:" + strconv.Itoa(port))
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/join") {
+			select {
+			case <-time.After(d):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	return strings.TrimPrefix(ts.URL, "http://")
+}
+
+// blackholeRun is what one attempt's receiver did.
+type blackholeRun struct {
+	stderr  string
+	err     error
+	elapsed time.Duration
+	dir     string
+}
+
+// blackholeAttempt runs one sender, one blackholed LAN port and one
+// receiver.
+func blackholeAttempt(t *testing.T) blackholeRun {
+	t.Helper()
 	xdg := h.newXDG(t)
 	src := t.TempDir()
 	payload := filepath.Join(src, "payload.bin")
@@ -80,56 +160,6 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 	start := time.Now()
 	recvErr := recvCmd.Run()
 	elapsed := time.Since(start)
-	stderr := errb.String()
+	return blackholeRun{stderr: errb.String(), err: recvErr, elapsed: elapsed, dir: recvDir}
 
-	// Without discovery the run never exercises the doomed dial and the
-	// test would pass vacuously.
-	if !strings.Contains(stderr, "sender address:") {
-		skipNoMulticast(t, "mDNS discovery did not resolve in this environment\n%s", stderr)
-	}
-	if code := exitCodeOf(t, recvErr); code != 0 {
-		t.Fatalf("receiver exit %d\n%s", code, stderr)
-	}
-	if !strings.Contains(stderr, "Local sender unreachable") {
-		t.Fatalf("expected the LAN-dial fallback notice\n%s", stderr)
-	}
-	// Post-fix this completes in ~2-3 s plus the 3 s held join; pre-fix the
-	// dial alone was 10 s.
-	if elapsed > 11*time.Second {
-		t.Fatalf("receive took %v; the first LAN dial must stay RTT-scale", elapsed)
-	}
-	if _, err := os.Stat(filepath.Join(recvDir, "payload.bin")); err != nil {
-		t.Fatalf("payload not received: %v", err)
-	}
-}
-
-// skipNoMulticast skips a test that needs working multicast, unless
-// FSEND_TEST_REQUIRE_MULTICAST is set. CI sets it on the runners where
-// multicast works, so LAN discovery can't pass there by not running.
-func skipNoMulticast(t *testing.T, format string, args ...any) {
-	t.Helper()
-	if os.Getenv("FSEND_TEST_REQUIRE_MULTICAST") != "" {
-		t.Fatalf("FSEND_TEST_REQUIRE_MULTICAST is set, but: "+format, args...)
-	}
-	t.Skipf(format, args...)
-}
-
-// delayJoins is a proxy to the harness server on port that holds every
-// join for d. It returns the proxy's host:port.
-func delayJoins(t *testing.T, port int, d time.Duration) string {
-	t.Helper()
-	target, _ := url.Parse("http://127.0.0.1:" + strconv.Itoa(port))
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/join") {
-			select {
-			case <-time.After(d):
-			case <-r.Context().Done():
-				return
-			}
-		}
-		proxy.ServeHTTP(w, r)
-	}))
-	t.Cleanup(ts.Close)
-	return strings.TrimPrefix(ts.URL, "http://")
 }
