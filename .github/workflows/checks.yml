@@ -43,9 +43,9 @@ jobs:
       - run: go vet ./...
       - run: go test -count=1 -timeout 600s ./...
 
-  # Four release targets are 32-bit and integer truncation lint (G115) is
-  # off project-wide, so 32-bit runs the suite too. A 386 binary runs
-  # natively on the x86-64 runner.
+  # Four release targets are 32-bit, so 32-bit runs the suite too: the
+  # integer conversion lint (G115) reads the code, it doesn't run it. A
+  # 386 binary runs natively on the x86-64 runner.
   test-386:
     runs-on: ubuntu-latest
     env:
