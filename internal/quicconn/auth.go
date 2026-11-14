@@ -189,8 +189,8 @@ func sessionBinding(key, exporter []byte) []byte {
 
 func writeLenPrefixed(w io.Writer, b []byte) {
 	var hdr [4]byte
-	binary.BigEndian.PutUint32(hdr[:], uint32(len(b)))
-	_, _ = w.Write(hdr[:]) // hash.Hash.Write never errors
+	binary.BigEndian.PutUint32(hdr[:], uint32(len(b))) //nolint:gosec // transcript parts: PAKE messages and exporters, a few dozen bytes
+	_, _ = w.Write(hdr[:])                             // hash.Hash.Write never errors
 	_, _ = w.Write(b)
 }
 
@@ -199,7 +199,7 @@ func writeFramed(w io.Writer, msg []byte) error {
 		return fmt.Errorf("auth: pake msg too large: %d", len(msg))
 	}
 	var hdr [2]byte
-	binary.BigEndian.PutUint16(hdr[:], uint16(len(msg)))
+	binary.BigEndian.PutUint16(hdr[:], uint16(len(msg))) //nolint:gosec // ≤ maxPakeMsgLen, checked above
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}

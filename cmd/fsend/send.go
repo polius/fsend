@@ -20,6 +20,7 @@ import (
 
 	"github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/connpath"
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
@@ -253,7 +254,7 @@ func shortRand() string {
 		// crypto/rand failing is effectively impossible, but the old constant
 		// "00000000" would let two runs share a default name; a timestamp at
 		// least keeps them distinct. Display-name only — never security-bearing.
-		return fmt.Sprintf("%08x", uint32(time.Now().UnixNano()))
+		return fmt.Sprintf("%08x", uint32(time.Now().UnixNano())) //nolint:gosec // truncation intended: an 8-hex-digit name suffix
 	}
 	for i := range b {
 		b[i] = alphabet[int(b[i])%len(alphabet)]
@@ -295,7 +296,7 @@ func printSendArtifact(f *flags, c string, plan *sendPlan, installHint bool) *ux
 	// The grid: the arrow in the gutter, the subject in bold, the counts
 	// and size as faint detail beneath it.
 	fmt.Fprintln(os.Stderr)
-	head, detail := "Sending text", uxlog.HumanBytes(int64(plan.totalBytes))
+	head, detail := "Sending text", uxlog.HumanBytes(conv.Int64(plan.totalBytes))
 	switch {
 	case plan.mode == wire.ModeStream && plan.isText:
 	case plan.mode == wire.ModeStream && f.as != "":
@@ -307,7 +308,7 @@ func printSendArtifact(f *flags, c string, plan *sendPlan, installHint bool) *ux
 		if plan.label != "" {
 			head = "Sending " + uxlog.Subject(plan.label)
 		}
-		detail = uxlog.Join(uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(int64(plan.totalBytes)))
+		detail = uxlog.Join(uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(conv.Int64(plan.totalBytes)))
 	}
 	fmt.Fprintln(os.Stderr, uxlog.SendArrow(), head)
 	fmt.Fprintln(os.Stderr, uxlog.Detail(detail))
@@ -451,8 +452,8 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 		bar.SetFilePos(ordinal[fi], plan.totalFiles)
 	}
 	ensureBar := func() {
-		if bar == nil && !f.quiet && wantsBar(int64(plan.totalBytes), plan.mode == wire.ModeStream && !plan.isText) {
-			bar = uxlog.New(int64(plan.totalBytes), names != nil, pathInfo.BarTag())
+		if bar == nil && !f.quiet && wantsBar(conv.Int64(plan.totalBytes), plan.mode == wire.ModeStream && !plan.isText) {
+			bar = uxlog.New(conv.Int64(plan.totalBytes), names != nil, pathInfo.BarTag())
 		}
 	}
 	// pos is the bar's position (resumed prefixes included), for the
@@ -462,13 +463,13 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 	advance := func(d int64) {
 		pos += d
 		if plan.totalBytes > 0 {
-			sendState.setPct(uxlog.Percent(pos, int64(plan.totalBytes)))
+			sendState.setPct(uxlog.Percent(pos, conv.Int64(plan.totalBytes)))
 		}
 		file := ""
 		if names != nil && curFile != ^uint32(0) {
 			file = names[curFile]
 		}
-		jp.emit(pos, int64(plan.totalBytes), file)
+		jp.emit(pos, conv.Int64(plan.totalBytes), file)
 	}
 	return func() { bar.Done() },
 		func(fi uint32, b uint64) {
@@ -491,7 +492,7 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 				// Reflect the resumed prefix in the bar so it shows true
 				// progress; the summary's total comes from the offered size,
 				// so no separate byte counter is needed here.
-				d := int64(offset - prev[fi])
+				d := conv.Int64(offset - prev[fi])
 				prev[fi] = offset
 				ensureBar()
 				bar.Add(d)
@@ -508,7 +509,7 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 			}
 		},
 		func() senderStats { return s },
-		func(_ uint32, finalBytes uint64) { bar.SetTotal(int64(finalBytes), true) },
+		func(_ uint32, finalBytes uint64) { bar.SetTotal(conv.Int64(finalBytes), true) },
 		func() {
 			// A retry reclassifies against the receiver and re-fires onSkip, so
 			// the file tallies must start fresh; moved bytes are keyed per file
@@ -520,9 +521,9 @@ func newSenderProgress(f *flags, plan *sendPlan, pathInfo connpath.Info) (closeF
 
 // resumeNotice renders the "Resuming from 141 MB (71%)" clause.
 func resumeNotice(offset, total uint64) string {
-	s := "Resuming from " + uxlog.HumanBytes(int64(offset))
+	s := "Resuming from " + uxlog.HumanBytes(conv.Int64(offset))
 	if total > 0 {
-		s += fmt.Sprintf(" (%d%%)", uxlog.Percent(int64(offset), int64(total)))
+		s += fmt.Sprintf(" (%d%%)", uxlog.Percent(conv.Int64(offset), conv.Int64(total)))
 	}
 	return s
 }

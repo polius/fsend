@@ -62,8 +62,8 @@ func TestWalk_FollowsSymlinkToFile(t *testing.T) {
 		t.Errorf("target file1.txt should still be sent under its own name (no dedup)")
 	}
 	for _, s := range srcs {
-		if s.Entry.Type == wire.EntrySymlink {
-			t.Errorf("walk must not emit symlink entries: %+v", s.Entry)
+		if !s.Entry.Type.Valid() {
+			t.Errorf("walk must emit only files and folders: %+v", s.Entry)
 		}
 	}
 }

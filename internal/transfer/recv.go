@@ -18,6 +18,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/polius/fsend/internal/atomicfile"
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/wire"
@@ -684,7 +685,7 @@ func (r *receiver) openFile(p *entryPlan, restart bool) (*recvFile, error) {
 			return nil, r.writeFail("open partial", p.rel, err)
 		}
 		rf.f, rf.partial = f, p.partial
-		off := int64(p.resumeOffset)
+		off := conv.Int64(p.resumeOffset)
 		if err := f.Truncate(off); err != nil {
 			rf.abandon(false)
 			return nil, r.writeFail("truncate", p.rel, err)
@@ -767,7 +768,7 @@ func (rf *recvFile) write(data []byte) error {
 // writeSparse writes data at the current offset, leaving aligned all-zero
 // blocks as holes so sparse images stay sparse.
 func (rf *recvFile) writeSparse(data []byte) error {
-	pos := int64(rf.written)
+	pos := conv.Int64(rf.written)
 	start := 0 // first byte of the pending non-zero run
 	flush := func(end int) error {
 		if end > start {
@@ -810,7 +811,7 @@ func (rf *recvFile) finalize(root [32]byte) error {
 		return fserrors.ErrHashMismatch
 	}
 	if rf.tailHole {
-		if err := rf.f.Truncate(int64(p.entry.Size)); err != nil {
+		if err := rf.f.Truncate(conv.Int64(p.entry.Size)); err != nil {
 			rf.abandon(true)
 			return r.writeFail("extend", p.rel, err)
 		}
@@ -1084,13 +1085,7 @@ func (r *receiver) materialize(p *entryPlan) error {
 			return r.writeFail("mkdir", p.rel, err)
 		}
 		return nil
-	case wire.EntrySymlink:
-		// Defense in depth: classify already rejects peer symlinks. Never
-		// create one from peer input — a planted link lets a later write
-		// traverse out of the receive dir. Fail closed.
-		declineTransfer(r.s, wire.ErrCodeProtocolError, "symlink entries are not accepted")
-		return fmt.Errorf("%w: symlink entry %q", fserrors.ErrPathTraversal, p.entry.RelativePath)
-	default:
+	case wire.EntryFile:
 		// Empty regular file: same partial → sync → rename path as any other,
 		// so an approved replace never truncates the old inode (or its
 		// hardlinks) in place.
@@ -1105,6 +1100,13 @@ func (r *receiver) materialize(p *entryPlan) error {
 		t := time.Unix(p.entry.ModTimeSec, 0)
 		_ = os.Chtimes(path, t, t)
 		return r.commit.add(pendingFile{f: f, partial: path, plan: p})
+	default:
+		// Defense in depth: classify already refuses every other type (a
+		// symlink entry among them). Never create anything else from peer
+		// input — a planted link lets a later write traverse out of the
+		// receive dir. Fail closed.
+		declineTransfer(r.s, wire.ErrCodeProtocolError, "only files and folders are accepted")
+		return fmt.Errorf("%w: entry of type %d %q", fserrors.ErrPathTraversal, p.entry.Type, p.entry.RelativePath)
 	}
 }
 

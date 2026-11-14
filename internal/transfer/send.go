@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -361,7 +362,7 @@ func startPrefixHashing(ctx context.Context, sources []Source, decisions map[uin
 				ch <- prefixResult{err: err}
 				continue
 			}
-			blocks, err := hashBlocks(f, int64(decisions[src.Entry.Index].ResumeOffset), nil)
+			blocks, err := hashBlocks(f, conv.Int64(decisions[src.Entry.Index].ResumeOffset), nil)
 			_ = f.Close()
 			ch <- prefixResult{blocks: blocks, err: err}
 		}
@@ -408,7 +409,7 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 		if root := foldRoot(pr.blocks, d.ResumeOffset); string(d.PrefixRoot) == string(root[:]) {
 			h.seed(pr.blocks)
 			offset = d.ResumeOffset
-			if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
+			if _, err := f.Seek(conv.Int64(offset), io.SeekStart); err != nil {
 				return skip(err)
 			}
 			if opts.OnResume != nil {
@@ -433,7 +434,7 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 			if errors.Is(rerr, io.ErrUnexpectedEOF) || errors.Is(rerr, io.EOF) {
 				// Shrank since the walk: what we'd send would be a truncated
 				// file that hashes clean. Drop it instead.
-				rerr = fmt.Errorf("shrank during send (%d of %d bytes)", sent+uint64(n), src.Entry.Size)
+				rerr = fmt.Errorf("shrank during send (%d of %d bytes)", sent+conv.Uint64(int64(n)), src.Entry.Size)
 			}
 			return skip(rerr)
 		}
@@ -442,13 +443,13 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 			return sendChunkErr(s, err)
 		}
 		h.addBlock(b) // hashed in parallel; the buffer returns to the pool
-		sent += uint64(n)
+		sent += conv.Uint64(int64(n))
 		if opts.ProgressFn != nil {
 			opts.ProgressFn(idx, sent)
 		}
 	}
 	changed := false
-	if st, err := f.Stat(); err == nil && (st.Size() != int64(src.Entry.Size) || st.ModTime().Unix() != src.Entry.ModTimeSec) {
+	if st, err := f.Stat(); err == nil && (st.Size() != conv.Int64(src.Entry.Size) || st.ModTime().Unix() != src.Entry.ModTimeSec) {
 		changed = true
 		if opts.OnSourceChanged != nil {
 			opts.OnSourceChanged(idx)
@@ -492,7 +493,7 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 			if err := packer.appendBytes(0, rbuf[:n]); err != nil {
 				return sendChunkErr(s, err)
 			}
-			sent += uint64(n)
+			sent += conv.Uint64(int64(n))
 			if opts.ProgressFn != nil {
 				opts.ProgressFn(0, sent)
 			}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
 )
@@ -224,7 +225,7 @@ func addEntry(out *[]Source, skips *[]WalkSkip, seen map[string]string, stack []
 
 	case mode.IsRegular():
 		e.Type = wire.EntryFile
-		e.Size = uint64(st.Size())
+		e.Size = conv.Uint64(st.Size())
 		*out = append(*out, Source{Entry: e, AbsPath: abs, LinkTarget: src})
 		return nil
 

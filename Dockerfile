@@ -1,7 +1,7 @@
 # Pinned by digest; Dependabot (docker ecosystem) keeps tag and digest current.
 # Builds on the runner's native platform and cross-compiles, so multi-arch
 # images don't run the Go toolchain under QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS builder
 ARG TARGETOS
 ARG TARGETARCH
 # Injected by docker.yml so released images don't report "fsend dev".
@@ -17,17 +17,13 @@ RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w \
     -X github.com/polius/fsend/internal/version.Version=${VERSION} \
     -X github.com/polius/fsend/internal/version.Commit=${COMMIT} \
     -X github.com/polius/fsend/internal/version.Date=${DATE}" \
-    -o /out/fsend ./cmd/fsend \
- && mkdir /out/state
+    -o /out/fsend ./cmd/fsend
 
 FROM scratch
 # CA bundle so the image also works as a client (sending/receiving needs
 # to verify the HTTPS pairing server) — server mode never dials out.
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /out/fsend /fsend
-# Writable home for FSEND_STATE_FILE. A fresh named volume mounted here
-# inherits this owner.
-COPY --from=builder --chown=65532:65532 /out/state /state
 # Non-root. Binding UDP/443 relies on net.ipv4.ip_unprivileged_port_start=0,
 # Docker's default for bridge-networked containers (compose sets it too).
 USER 65532:65532

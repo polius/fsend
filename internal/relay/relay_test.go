@@ -712,25 +712,3 @@ func TestAllowChallenge_PerAllocationCap(t *testing.T) {
 		t.Error("the next second must allow challenges again")
 	}
 }
-
-// The day's byte count survives a restart only within the same UTC day.
-func TestBudget_RestoreSameDayOnly(t *testing.T) {
-	s := NewServer(nil, ServerConfig{MaxBytesPerDay: 1000})
-	now := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
-	s.budget.charge(now, 300)
-	day, used := s.BudgetUsage(now)
-	if used != 300 {
-		t.Fatalf("used %d, want 300", used)
-	}
-	fresh := NewServer(nil, ServerConfig{MaxBytesPerDay: 1000})
-	if fresh.RestoreBudget(now.Add(24*time.Hour), day, used) {
-		t.Error("yesterday's bytes were restored")
-	}
-	fresh = NewServer(nil, ServerConfig{MaxBytesPerDay: 1000})
-	if !fresh.RestoreBudget(now.Add(time.Hour), day, used) {
-		t.Fatal("today's bytes were not restored")
-	}
-	if fresh.budget.charge(now.Add(time.Hour), 701) != true {
-		t.Error("the restored count did not count toward the cap")
-	}
-}

@@ -29,7 +29,6 @@ services:
       - "443:443/udp"
     # See `fsend server --help` for all settings.
     environment:
-      FSEND_STATE_FILE: /state/sessions.json   # pending codes survive a redeploy
       # Caddy reaches fsend over this stack's private Docker network, and
       # :8080 is published nowhere else, so only Caddy connects from these
       # ranges. Trusting them gives each client its own per-IP limits
@@ -47,8 +46,6 @@ services:
     #   FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE: "30"   # new per minute
     #   FSEND_RELAY_MAX_BYTES_PER_SESSION: "50GB"           # one relayed transfer
     #   FSEND_RELAY_MAX_BYTES_PER_DAY: "1TB"                # relay egress, per UTC day
-    volumes:
-      - fsend_state:/state
     healthcheck:
       test: ["CMD", "/fsend", "server", "--health-check"]
       interval: 30s
@@ -76,4 +73,3 @@ services:
 
 volumes:
   caddy_data:
-  fsend_state:

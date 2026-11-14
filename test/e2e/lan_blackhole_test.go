@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,19 +26,13 @@ import (
 // RTT-scale budget and fall back to the server path — not burn the full
 // 10 s HandshakeTimeout staring at a black hole.
 func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// Seen on the GitHub runners: loopback multicast gets no answer on
-		// Windows, and Go reports its loopback MTU as -1, which pion/mdns
-		// refuses. Discovery over a real interface is still tested there.
-		t.Skip("loopback mDNS does not work on Windows")
-	}
 	requireE2E(t)
 
-	// Discovery on loopback is occasionally slower than the receiver's
-	// 1.5 s query window on a loaded runner (seen on macos-15-intel), and
-	// then the server path carries the transfer and the doomed dial never
-	// runs. That is the environment, not the fallback under test, so a
-	// miss gets a fresh sender and receiver, up to three tries.
+	// The announce and the blackhole sit on this machine's LAN address,
+	// not loopback: loopback multicast is off on Linux by default, never
+	// answers on Windows, and on the macos-15-intel runner missed the
+	// receiver's 1.5 s query window three times in a row. A miss on the LAN
+	// address still gets a fresh sender and receiver, up to three tries.
 	var r blackholeRun
 	for try := 1; ; try++ {
 		r = blackholeAttempt(t)
@@ -126,9 +119,14 @@ func blackholeAttempt(t *testing.T) blackholeRun {
 	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
 	code := s.waitForCode(t, 5*time.Second)
 
-	// Blackhole the code-derived LAN port: bind it, read, drop.
+	// Blackhole the code-derived LAN port on the LAN address: bind it,
+	// read, drop.
+	ip := landisc.PreferredLocalIP()
+	if ip == nil || ip.IsLoopback() {
+		skipNoMulticast(t, "no LAN address to announce on (%v)", ip)
+	}
 	port := landisc.PortForCode(code, codepkg.Epoch(time.Now()))
-	pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: port})
 	if err != nil {
 		t.Skipf("cannot bind blackhole port %d: %v", port, err)
 	}
@@ -141,7 +139,7 @@ func blackholeAttempt(t *testing.T) blackholeRun {
 			}
 		}
 	}()
-	mdnsConn, err := landisc.Announce(code, codepkg.Epoch(time.Now()), net.IPv4(127, 0, 0, 1))
+	mdnsConn, err := landisc.Announce(code, codepkg.Epoch(time.Now()), ip)
 	if err != nil {
 		skipNoMulticast(t, "mDNS announce unavailable: %v", err)
 	}

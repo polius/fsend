@@ -17,6 +17,7 @@ import (
 	codepkg "github.com/polius/fsend/internal/code"
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/iceconn"
 	"github.com/polius/fsend/internal/landisc"
@@ -325,10 +326,12 @@ func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *conf
 		}
 
 		waitResp, err := waitForReceiver(ctx, client, created.Code, onDown)
-		if errors.Is(err, fserrors.ErrSessionExpired) && onDown != nil && ctx.Err() == nil {
+		if errors.Is(err, fserrors.ErrSessionExpired) && ctx.Err() == nil {
 			// The server lost the session (restart, deploy, TTL) while we
 			// still hold the code: the slot is client-derived, so simply
-			// re-create it.
+			// re-create it. In every mode, not only a persistent one: the
+			// server answered, so it is up, and the server keeps nothing
+			// across a restart. The round's pairTTL bounds the code's life.
 			continue
 		}
 		if err != nil {
@@ -1155,13 +1158,13 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// dropping to the sent bytes. The skipped-file count explains the gap and
 	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
 	s := stats()
-	printSendSummary(f, sendSubject(plan), int64(plan.totalBytes), s, elapsed, pathInfo)
+	printSendSummary(f, sendSubject(plan), conv.Int64(plan.totalBytes), s, elapsed, pathInfo)
 	ev := jsonDoneEvent{Ok: true, Role: "sender",
 		BytesMoved: ptr64(s.moved), DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
 	// A piped stdin stream has no known size; per the JSON contract an omitted
 	// bytes_total means "not known", so don't emit a bogus 0.
 	if plan.mode != wire.ModeStream || plan.isText {
-		ev.BytesTotal = ptr64(int64(plan.totalBytes))
+		ev.BytesTotal = ptr64(conv.Int64(plan.totalBytes))
 	}
 	if plan.mode == wire.ModeFiles {
 		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles - len(refused()))

@@ -92,8 +92,26 @@ type AcceptResult struct {
 func (r *AcceptResult) Close() { r.closeWith(0, "") }
 
 // Cancel closes the connection with CloseCancelled so the peer learns this
-// side quit on purpose. CloseWithError returns once the close is sent.
-func (r *AcceptResult) Cancel() { r.closeWith(CloseCancelled, "cancelled") }
+// side quit on purpose, then lingers for cancelLinger before returning.
+//
+// The close goes out in a single packet, and on a busy path (a receiver
+// whose socket buffer is full of data) it can be lost. quic-go resends it
+// when the peer's next packets arrive, for 3·PTO after the close (a few
+// milliseconds on loopback, longer on slow paths), but only while this
+// endpoint still exists, and a cancel is usually followed by the process
+// exiting. The linger keeps the endpoint up through that window, capped
+// at cancelLinger; a peer mid-transfer sends within it. Without it the
+// peer learns only at its idle timeout, as a drop to retry rather than a
+// cancel.
+func (r *AcceptResult) Cancel() {
+	r.closeWith(CloseCancelled, "cancelled")
+	if r != nil && r.Conn != nil {
+		time.Sleep(cancelLinger)
+	}
+}
+
+// cancelLinger is how long Cancel keeps the endpoint up after the close.
+const cancelLinger = 250 * time.Millisecond
 
 func (r *AcceptResult) closeWith(code quic.ApplicationErrorCode, msg string) {
 	if r == nil {

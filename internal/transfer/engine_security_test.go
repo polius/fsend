@@ -144,9 +144,22 @@ func TestHostile_SymlinkListingRejected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("hello: %v", err)
 	}
-	entries := []wire.ListingEntry{
-		{Index: 0, RelativePath: "p", Type: wire.EntrySymlink, SymlinkTarget: "."},
-		{Index: 1, RelativePath: "p/q", Type: wire.EntrySymlink, SymlinkTarget: "../outside"},
+	// The listing entry as 1.16 and older defined it, with the symlink
+	// type (2) and its target field, which this build no longer has: the
+	// receiver must still decode it and refuse it.
+	type oldListingEntry struct {
+		Index         uint32
+		RelativePath  string
+		Size          uint64
+		ModTimeSec    int64
+		Mode          uint32
+		Type          wire.EntryType
+		SymlinkTarget string
+	}
+	const oldSymlink = wire.EntryType(2)
+	entries := []oldListingEntry{
+		{Index: 0, RelativePath: "p", Type: oldSymlink, SymlinkTarget: "."},
+		{Index: 1, RelativePath: "p/q", Type: oldSymlink, SymlinkTarget: "../outside"},
 		{Index: 2, RelativePath: "p/q/evil", Size: 4, Type: wire.EntryFile},
 	}
 	if err := wire.WriteControl(sender.Control, wire.TypeListingBatch, entries); err != nil {

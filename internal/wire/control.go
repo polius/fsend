@@ -47,7 +47,7 @@ func WriteControl(w io.Writer, ft FrameType, payload any) error {
 	}
 
 	header := [controlHeaderSize]byte{Stamp(w, ft), byte(ft)}
-	binary.BigEndian.PutUint32(header[2:6], uint32(len(body)))
+	binary.BigEndian.PutUint32(header[2:6], uint32(len(body))) //nolint:gosec // ≤ MaxControlFrameSize, checked above
 
 	if _, err := w.Write(header[:]); err != nil {
 		return fmt.Errorf("wire: writing header: %w", err)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
@@ -51,7 +52,7 @@ func sendListing(w io.Writer, sources []Source, compressed bool) error {
 		return err
 	}
 	for _, s := range sources {
-		est := len(s.Entry.RelativePath) + len(s.Entry.SymlinkTarget) + 48
+		est := len(s.Entry.RelativePath) + 48
 		if len(batch) > 0 && size+est > limit {
 			if err := flush(); err != nil {
 				return err
@@ -120,14 +121,22 @@ func recvListing(r io.Reader) ([]wire.ListingEntry, error) {
 	}
 }
 
-// validateListing enforces contiguous 0..n-1 indices. Duplicate and colliding
-// names are judged later, against the receiving filesystem's own rules
-// (classify), so a case-only pair is fine between case-sensitive systems.
+// validateListing enforces contiguous 0..n-1 indices, and sizes that fit
+// the int64 offsets of the os and io APIs: each entry, and the listing's
+// total, so every sum the receiver derives from it (offered bytes, bytes to
+// receive) does too. Duplicate and colliding names are judged later,
+// against the receiving filesystem's own rules (classify), so a case-only
+// pair is fine between case-sensitive systems.
 func validateListing(entries []wire.ListingEntry) error {
+	var total uint64
 	for i, e := range entries {
 		if e.Index != uint32(i) {
 			return fmt.Errorf("%w: listing index %d out of order at position %d", fserrors.ErrProtocolError, e.Index, i)
 		}
+		if e.Size > math.MaxInt64-total {
+			return fmt.Errorf("%w: listing declares more than %d bytes (entry %d: %d bytes)", fserrors.ErrProtocolError, uint64(math.MaxInt64), i, e.Size)
+		}
+		total += e.Size
 	}
 	return nil
 }

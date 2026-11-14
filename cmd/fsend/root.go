@@ -195,9 +195,17 @@ Examples:
 	// the output is eval'd in a dotfile.
 	c.CompletionOptions.DisableDefaultCmd = true
 	c.AddCommand(completionCmd())
+	for _, mk := range buildTagCmds {
+		c.AddCommand(mk())
+	}
 
 	return c
 }
+
+// buildTagCmds holds commands that only exist in builds with a tag: the
+// man page generator (man.go, -tags fsend_man) keeps its dependency out
+// of release binaries.
+var buildTagCmds []func() *cobra.Command
 
 // completionCmd prints a completion script for one of the supported
 // shells, with a usage error (E024, nonzero exit) for anything else.

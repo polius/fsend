@@ -147,11 +147,8 @@ Very little:
 - **No database.** Pairing state lives in RAM. An unclaimed session
   expires after an hour (or five minutes after its sender stops polling),
   a paired one after ten minutes, and a used code's tombstone after ten
-  minutes. The one exception is a restart with `FSEND_STATE_FILE` set
-  (the bundled compose file sets it): pending, unpaired sessions are
-  saved at shutdown so their codes survive a redeploy. That file holds
-  slots, session IDs, sender tokens and ICE credentials — no IPs, no
-  codes — and is deleted as soon as the next process reads it.
+  minutes. Nothing is written to disk: a restart forgets every session,
+  and senders still waiting re-create theirs on the new process.
 - **Metrics, if enabled,** are aggregate counters on a separate listener
   (`FSEND_METRICS_ADDR`); nothing per IP, session or code.
 

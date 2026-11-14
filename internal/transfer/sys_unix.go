@@ -16,7 +16,7 @@ import (
 func readUmask() uint32 {
 	m := syscall.Umask(0)
 	syscall.Umask(m)
-	return uint32(m)
+	return uint32(m) //nolint:gosec // a umask is 0..0777
 }
 
 // freeSpace reports the bytes available to this user on dir's filesystem.
@@ -25,7 +25,7 @@ func freeSpace(dir string) (uint64, bool) {
 	if err := unix.Statfs(dir, &st); err != nil {
 		return 0, false
 	}
-	return uint64(st.Bavail) * uint64(st.Bsize), true
+	return uint64(st.Bavail) * uint64(st.Bsize), true //nolint:gosec // statfs counts, never negative (their types differ by OS)
 }
 
 // fsyncData pushes a file's data to the device. On darwin this is plain

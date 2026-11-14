@@ -18,6 +18,7 @@ import (
 
 	"github.com/polius/fsend/internal/atomicfile"
 	"github.com/polius/fsend/internal/connpath"
+	"github.com/polius/fsend/internal/conv"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/transfer"
@@ -181,8 +182,8 @@ func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummar
 	ui.mu.Lock()
 	cp := h
 	ui.hello = &cp
-	ui.bytesHint = int64(summary.BytesToRecv)
-	ui.diffBytes = int64(summary.DifferingBytes)
+	ui.bytesHint = conv.Int64(summary.BytesToRecv)
+	ui.diffBytes = conv.Int64(summary.DifferingBytes)
 	ui.choice, _ = ui.flagPolicy()
 	// Current-file chip data: multi-file only. Names are peer-supplied, so
 	// sanitize here — the only place they enter the UI state.
@@ -421,9 +422,9 @@ func conflictLabel(c transfer.Conflict) string {
 	if c.Kind != "differs" {
 		return c.Kind
 	}
-	row := uxlog.HumanBytes(c.LocalSize) + " → " + uxlog.HumanBytes(int64(c.IncomingSize))
-	if uxlog.HumanBytes(c.LocalSize) == uxlog.HumanBytes(int64(c.IncomingSize)) {
-		if d := int64(c.IncomingSize) - c.LocalSize; d != 0 {
+	row := uxlog.HumanBytes(c.LocalSize) + " → " + uxlog.HumanBytes(conv.Int64(c.IncomingSize))
+	if uxlog.HumanBytes(c.LocalSize) == uxlog.HumanBytes(conv.Int64(c.IncomingSize)) {
+		if d := conv.Int64(c.IncomingSize) - c.LocalSize; d != 0 {
 			row += fmt.Sprintf(" (%+d B)", d)
 		}
 	}
@@ -474,7 +475,7 @@ func conflictRows(conflicts []transfer.Conflict, names []string) []string {
 func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 	ui.mu.Lock()
 	if offset > ui.prev[fileIndex] {
-		d := int64(offset - ui.prev[fileIndex])
+		d := conv.Int64(offset - ui.prev[fileIndex])
 		ui.prev[fileIndex] = offset
 		ui.skipped += d
 		// bytesHint counts only bytes still to receive (classify deducts

@@ -93,8 +93,15 @@ func TestCreateWithRetry_FailsFastWhenNotPersistent(t *testing.T) {
 }
 
 // A server restart loses the session; the sender re-creates the same
-// client-derived slot rather than dropping to LAN-only.
+// client-derived slot rather than dropping to LAN-only — also with the
+// server path alone (--mode direct, no onDown), since the server keeps
+// nothing across a restart.
 func TestPairOverInternet_RecreatesLostSession(t *testing.T) {
+	t.Run("persistent", func(t *testing.T) { testRecreatesLostSession(t, func(error) {}) })
+	t.Run("server only", func(t *testing.T) { testRecreatesLostSession(t, nil) })
+}
+
+func testRecreatesLostSession(t *testing.T, onDown func(error)) {
 	_, baseURL := newSignalingTestServer(t)
 	var creates, waits int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +120,7 @@ func TestPairOverInternet_RecreatesLostSession(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := pairOverInternet(ctx, &flags{quiet: true}, &sendRound{key: codeKey("abc-defg-jkm")},
-			&config.Config{Server: ts.URL}, func(error) {}, nil)
+			&config.Config{Server: ts.URL}, onDown, nil)
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)

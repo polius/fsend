@@ -131,7 +131,8 @@ fsend completion powershell | Out-String | Invoke-Expression   # powershell
 ```
 
 The deb, rpm and apk packages install completions for bash, zsh and fish
-already. Release archives carry the same scripts in `completions/`.
+already, and the man pages (`man fsend`). Release archives carry the same
+scripts in `completions/` and the pages in `manpages/`.
 
 </details>
 

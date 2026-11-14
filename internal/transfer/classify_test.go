@@ -1,8 +1,12 @@
 package transfer
 
 import (
+	"errors"
+	"math"
+	"os"
 	"testing"
 
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/wire"
 )
 
@@ -16,17 +20,15 @@ func TestSummarize_PopulatesFiles(t *testing.T) {
 		{entry: wire.ListingEntry{RelativePath: "same.bin", Size: 200, Type: wire.EntryFile}, disp: dispIdentical},
 		{entry: wire.ListingEntry{RelativePath: "diff.bin", Size: 300, Type: wire.EntryFile}, disp: dispDiffers},
 		{entry: wire.ListingEntry{RelativePath: "part.bin", Size: 400, Type: wire.EntryFile}, disp: dispResume, resumeOffset: 150},
-		{entry: wire.ListingEntry{RelativePath: "link", Type: wire.EntrySymlink, SymlinkTarget: "new.bin"}, disp: dispNew},
 	}
 	s := summarize(plans)
 
-	// Directory excluded; everything else (incl. symlink) kept, in order.
+	// Directory excluded; every file kept, in order.
 	want := []SummaryEntry{
 		{RelativePath: "new.bin", Size: 100, Status: "new", Type: wire.EntryFile},
 		{RelativePath: "same.bin", Size: 200, Status: "identical", Type: wire.EntryFile},
 		{RelativePath: "diff.bin", Size: 300, Status: "differs", Type: wire.EntryFile},
 		{RelativePath: "part.bin", Size: 400, Status: "resume", Type: wire.EntryFile},
-		{RelativePath: "link", Size: 0, Status: "new", Type: wire.EntrySymlink, SymlinkTarget: "new.bin"},
 	}
 	if len(s.Files) != len(want) {
 		t.Fatalf("want %d file rows (dir dropped), got %d: %+v", len(want), len(s.Files), s.Files)
@@ -38,11 +40,11 @@ func TestSummarize_PopulatesFiles(t *testing.T) {
 	}
 	// Counts reconcile, and the byte tallies separate offered (everything)
 	// from what actually moves.
-	// NewItems counts new + resume + the dir + the symlink (all dispNew/resume).
-	if s.Total != 6 || s.NewItems != 4 || s.Identical != 1 || s.Differing != 1 {
+	// NewItems counts new + resume + the dir (all dispNew/resume).
+	if s.Total != 5 || s.NewItems != 3 || s.Identical != 1 || s.Differing != 1 {
 		t.Errorf("counts drifted: %+v", s)
 	}
-	if s.OfferedBytes != 1000 { // 100+200+300+400 (+0 dir +0 link)
+	if s.OfferedBytes != 1000 { // 100+200+300+400 (+0 dir)
 		t.Errorf("OfferedBytes = %d, want 1000", s.OfferedBytes)
 	}
 	if s.DifferingBytes != 300 {
@@ -76,6 +78,43 @@ func TestPlanToDecision_KeptFlag(t *testing.T) {
 		if d.Action != tc.wantAct || d.Kept != tc.wantKept {
 			t.Errorf("planToDecision(%v, approve=%v) = {Action:%v Kept:%v}, want {%v %v}",
 				tc.disp, tc.approve, d.Action, d.Kept, tc.wantAct, tc.wantKept)
+		}
+	}
+}
+
+// Only files and folders are accepted: the retired symlink type (2) and
+// any type this protocol doesn't define fail the whole listing as unsafe
+// (E012), before anything is created.
+func TestClassify_RefusesUnknownEntryTypes(t *testing.T) {
+	for _, typ := range []wire.EntryType{2, 3, 255} {
+		dir := t.TempDir()
+		_, err := classify([]wire.ListingEntry{
+			{Index: 0, RelativePath: "ok.txt", Size: 1, Type: wire.EntryFile},
+			{Index: 1, RelativePath: "odd", Type: typ},
+		}, dir, false)
+		if !errors.Is(err, fserrors.ErrPathTraversal) {
+			t.Errorf("type %d: err = %v, want ErrPathTraversal", typ, err)
+		}
+		if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+			t.Errorf("type %d: the receive dir is not empty: %v", typ, ents)
+		}
+	}
+}
+
+// A listing whose sizes don't fit int64 — one entry, or the sum — is a
+// protocol error: the receiver's offsets, truncates and totals are int64.
+func TestValidateListing_SizesFitInt64(t *testing.T) {
+	ok := []wire.ListingEntry{{Index: 0, Size: math.MaxInt64}}
+	if err := validateListing(ok); err != nil {
+		t.Errorf("one MaxInt64 entry: %v", err)
+	}
+	for name, es := range map[string][]wire.ListingEntry{
+		"entry": {{Index: 0, Size: math.MaxInt64 + 1}},
+		"sum":   {{Index: 0, Size: math.MaxInt64}, {Index: 1, Size: 1}},
+		"wraps": {{Index: 0, Size: math.MaxUint64}, {Index: 1, Size: 2}},
+	} {
+		if err := validateListing(es); !errors.Is(err, fserrors.ErrProtocolError) {
+			t.Errorf("%s: err = %v, want ErrProtocolError", name, err)
 		}
 	}
 }

@@ -11,6 +11,10 @@ before:
     # committed (completions/ is in .gitignore), so they can't drift from
     # the commands.
     - sh -c 'mkdir -p completions && go run ./cmd/fsend completion bash > completions/fsend.bash && go run ./cmd/fsend completion zsh > completions/_fsend && go run ./cmd/fsend completion fish > completions/fsend.fish && go run ./cmd/fsend completion powershell > completions/fsend.ps1'
+    # Man pages, the same way. The generator only exists with -tags
+    # fsend_man, so release binaries don't carry it or cobra/doc; the
+    # commit's time keeps the pages' date reproducible.
+    - sh -c 'rm -rf manpages && SOURCE_DATE_EPOCH={{ .CommitTimestamp }} go run -tags fsend_man ./cmd/fsend __man manpages'
 
 builds:
   - id: fsend
@@ -78,6 +82,10 @@ archives:
           mtime: '{{ .CommitDate }}'
       - src: completions/*
         dst: completions
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: manpages/*
+        dst: manpages
         info:
           mtime: '{{ .CommitDate }}'
 
@@ -162,6 +170,11 @@ nfpms:
           mtime: '{{ .CommitDate }}'
       - src: completions/fsend.fish
         dst: /usr/share/fish/vendor_completions.d/fsend.fish
+        file_info:
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+      - src: manpages/*.1
+        dst: /usr/share/man/man1/
         file_info:
           mode: 0644
           mtime: '{{ .CommitDate }}'
