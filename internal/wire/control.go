@@ -46,7 +46,7 @@ func WriteControl(w io.Writer, ft FrameType, payload any) error {
 		return fmt.Errorf("%w: control frame %d bytes exceeds limit %d", ErrFrameTooLarge, len(body), MaxControlFrameSize)
 	}
 
-	header := [controlHeaderSize]byte{ProtocolVersion, byte(ft)}
+	header := [controlHeaderSize]byte{Stamp(w, ft), byte(ft)}
 	binary.BigEndian.PutUint32(header[2:6], uint32(len(body)))
 
 	if _, err := w.Write(header[:]); err != nil {
@@ -58,6 +58,28 @@ func WriteControl(w io.Writer, ft FrameType, payload any) error {
 		}
 	}
 	return nil
+}
+
+// Versioned is a control stream that knows the protocol version the two
+// peers negotiated; WriteControl stamps that version on its frames and
+// ReadControlRaw requires it on the peer's.
+type Versioned interface{ WireVersion() uint8 }
+
+// Stamp is the version byte for a frame of type ft written to w, following
+// the negotiation rule: HELLO and HELLO_ACK carry MinProtocolVersion, so
+// any supported peer can parse them whatever its own newest version; every
+// later frame carries the version negotiated for the session (w is
+// Versioned). A frame on a stream with no negotiated version yet — an error
+// before or during the hello — also takes MinProtocolVersion. A build that
+// raises ProtocolVersion therefore keeps talking to peers that predate it.
+func Stamp(w io.Writer, ft FrameType) byte {
+	if ft == TypeHello || ft == TypeHelloAck {
+		return MinProtocolVersion
+	}
+	if v, ok := w.(Versioned); ok {
+		return v.WireVersion()
+	}
+	return MinProtocolVersion
 }
 
 // ReadControl reads one control frame from r and gob-decodes the payload
@@ -99,6 +121,13 @@ func ReadControlRaw(r io.Reader) (FrameType, []byte, error) {
 
 	if ver < MinProtocolVersion || ver > ProtocolVersion {
 		return ft, nil, fmt.Errorf("%w: peer sent version %d, we speak %d-%d", ErrUnsupportedVersion, ver, MinProtocolVersion, ProtocolVersion)
+	}
+	// Once a version is negotiated, every later frame must carry it (see
+	// Stamp), so a peer can't switch versions mid-session. An ERROR may still
+	// carry the minimum: the peer can post one before its own negotiation.
+	if v, ok := r.(Versioned); ok && ft != TypeHello && ft != TypeHelloAck && ver != v.WireVersion() &&
+		(ft != TypeError || ver != MinProtocolVersion) {
+		return ft, nil, fmt.Errorf("%w: peer sent a version %d frame in a version %d session", ErrUnsupportedVersion, ver, v.WireVersion())
 	}
 	if length > MaxControlFrameSize {
 		return ft, nil, fmt.Errorf("%w: declared %d bytes exceeds limit %d", ErrFrameTooLarge, length, MaxControlFrameSize)

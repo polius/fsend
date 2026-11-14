@@ -17,6 +17,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/polius/fsend/internal/atomicfile"
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/wire"
@@ -121,8 +122,8 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	if err != nil {
 		if errors.Is(err, wire.ErrUnsupportedVersion) {
 			// The peer speaks a different wire protocol (a breaking release).
-			// Reply with our own version-stamped frame so the sender's read
-			// trips the same check and both sides report it clearly.
+			// Reply with a HELLO_ACK carrying our version range so the
+			// sender's negotiation fails too and both sides report it clearly.
 			ackProceed(s, opts, false)
 			drainControl(s)
 			return fserrors.ErrIncompatibleVersion
@@ -132,11 +133,13 @@ func Recv(ctx context.Context, s *Streams, opts RecvOptions) error {
 	if ft != wire.TypeHello {
 		return fmt.Errorf("%w: expected HELLO, got %v", fserrors.ErrProtocolError, ft)
 	}
-	if _, ok := wire.Negotiate(hello.MinVersion, hello.MaxVersion); !ok {
+	v, ok := wire.Negotiate(hello.MinVersion, hello.MaxVersion)
+	if !ok {
 		ackProceed(s, opts, false)
 		drainControl(s)
 		return fserrors.ErrIncompatibleVersion
 	}
+	setVersion(s, v)
 
 	if hello.Mode == wire.ModeStream {
 		return recvStream(ctx, s, &hello, opts)
@@ -191,7 +194,7 @@ func newReceiver(s *Streams, opts RecvOptions) *receiver {
 	r := &receiver{s: s, opts: opts, ps: ps, wantSHA: opts.OnManifest != nil,
 		dirs: newDirUnlocker(opts.TargetDir)}
 	r.cls = &classifier{targetDir: opts.TargetDir, checksum: opts.Checksum, sem: probeFS(opts.TargetDir),
-		ps: ps, progress: opts.OnHashProgress}
+		ps: ps, progress: opts.OnHashProgress, policy: opts.policy()}
 	r.commit = &committer{r: r}
 	return r
 }
@@ -239,6 +242,9 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	decisions := make([]wire.Decision, len(plans))
 	for i := range plans {
 		decisions[i] = planToDecision(&plans[i], policy == ConflictReplace, opts)
+		if !hello.Caps.Has(wire.CapSkipReasons) {
+			decisions[i].Reason = ""
+		}
 	}
 	if err := sendDecisions(s.Control, decisions); err != nil {
 		return fmt.Errorf("recv: decisions: %w", err)
@@ -281,7 +287,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 		return err
 	}
 	r.dirs.restore()
-	restoreDirModes(plans)
+	restoreDirMeta(plans)
 	if err := finishRecv(s); err != nil {
 		return err
 	}
@@ -644,6 +650,7 @@ type recvFile struct {
 	unsynced uint64
 	tailHole bool
 	closed   bool
+	modeSet  bool // created with the entry's final mode (no chmod needed)
 }
 
 // guardRegular fails closed when a non-regular file (a planted symlink or
@@ -701,11 +708,11 @@ func (r *receiver) openFile(p *entryPlan, restart bool) (*recvFile, error) {
 		p.disp = dispNew
 		p.prefixBlocks = nil
 	}
-	f, path, err := r.ps.create(p.rel, p.entry)
+	f, path, fresh, err := r.ps.create(p.rel, p.entry)
 	if err != nil {
 		return nil, r.writeFail("create partial", p.rel, err)
 	}
-	rf.f, rf.partial = f, path
+	rf.f, rf.partial, rf.modeSet = f, path, fresh
 	return rf, nil
 }
 
@@ -813,7 +820,9 @@ func (rf *recvFile) finalize(root [32]byte) error {
 	}
 	// Mode and mtime go on before the sync, so a crash can't leave a
 	// committed file with today's date (which a later run would distrust).
-	_ = rf.f.Chmod(fileMode(p.entry.Mode))
+	if !rf.modeSet {
+		_ = rf.f.Chmod(fileMode(p.entry.Mode))
+	}
 	t := time.Unix(p.entry.ModTimeSec, 0)
 	_ = os.Chtimes(rf.partial, t, t)
 	return r.commit.add(pendingFile{f: rf.f, partial: rf.partial, plan: p, size: p.entry.Size})
@@ -859,9 +868,14 @@ func (c *committer) flush() error {
 		return nil
 	}
 	r := c.r
-	syncErr := parallelSync(batch)
-	if syncErr == nil {
-		syncErr = syncBarrier(batch[len(batch)-1].f)
+	// Linux: one syncfs flushes the whole batch (and the filesystem's
+	// metadata) for the price of one call, instead of an fsync per file.
+	synced, syncErr := syncWholeFS(batch[0].f)
+	if !synced {
+		syncErr = parallelSync(batch)
+		if syncErr == nil {
+			syncErr = syncBarrier(batch[len(batch)-1].f)
+		}
 	}
 	for _, pf := range batch {
 		_ = pf.f.Close()
@@ -918,18 +932,50 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 	parent := filepath.Dir(target)
 	r.dirs.unlock(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return false, err
+		return false, r.refuseName(p, err)
 	}
-	if err := moveFile(pf.partial, target); err != nil {
-		return false, err
+	// A target that was absent at classification must still be absent: a
+	// file the user created meanwhile is theirs, not ours to replace.
+	place := moveFile
+	if !p.needsConsent() && !p.replaceResume {
+		place = placeNew
 	}
-	r.ps.dropMeta(p.rel)
+	if err := place(pf.partial, target); err != nil {
+		if errors.Is(err, errTargetAppeared) {
+			r.ps.remove(p.rel)
+			p.disp, p.skipReason = dispRefused, "a file appeared here during the transfer; yours was kept"
+			if r.opts.OnEntrySkipped != nil {
+				r.opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
+			}
+			return false, nil
+		}
+		return false, r.refuseName(p, err)
+	}
+	if canResume(p.entry.Size) {
+		r.ps.dropMeta(p.rel) // small files never had one
+	}
 	if runtime.GOOS == "windows" {
 		// NTFS may stamp the write time again when the handle closes.
 		t := time.Unix(p.entry.ModTimeSec, 0)
 		_ = os.Chtimes(target, t, t)
 	}
 	return true, nil
+}
+
+// refuseName turns a failure to create p into a per-entry refusal when the
+// filesystem rejected the name itself (isNameErr): the partial is dropped,
+// the entry is reported through OnEntrySkipped, and the transfer carries
+// on. Any other error is returned unchanged.
+func (r *receiver) refuseName(p *entryPlan, err error) error {
+	if !isNameErr(err) {
+		return err
+	}
+	r.ps.remove(p.rel)
+	p.disp, p.skipReason = dispRefused, nameRefusedReason
+	if r.opts.OnEntrySkipped != nil {
+		r.opts.OnEntrySkipped(p.entry.RelativePath, p.skipReason)
+	}
+	return nil
 }
 
 // parallelSync flushes every file in batch to the device, a few at a time.
@@ -1032,6 +1078,9 @@ func (r *receiver) materialize(p *entryPlan) error {
 		}
 		r.dirs.unlock(filepath.Dir(target))
 		if err := os.MkdirAll(target, dirMode(p.entry.Mode)); err != nil {
+			if isNameErr(err) {
+				return r.refuseName(p, err)
+			}
 			return r.writeFail("mkdir", p.rel, err)
 		}
 		return nil
@@ -1045,22 +1094,25 @@ func (r *receiver) materialize(p *entryPlan) error {
 		// Empty regular file: same partial → sync → rename path as any other,
 		// so an approved replace never truncates the old inode (or its
 		// hardlinks) in place.
-		f, path, err := r.ps.create(p.rel, p.entry)
+		f, path, fresh, err := r.ps.create(p.rel, p.entry)
 		if err != nil {
 			return r.writeFail("create", p.rel, err)
 		}
 		p.sha256 = emptySHA256
-		_ = f.Chmod(fileMode(p.entry.Mode))
+		if !fresh {
+			_ = f.Chmod(fileMode(p.entry.Mode))
+		}
 		t := time.Unix(p.entry.ModTimeSec, 0)
 		_ = os.Chtimes(path, t, t)
 		return r.commit.add(pendingFile{f: f, partial: path, plan: p})
 	}
 }
 
-// restoreDirModes sets each received directory to the sender's mode, after
-// its children are written. Applied last, deepest first. dirMode keeps the
-// owner's rwx, so a later run can still write into the folder.
-func restoreDirModes(plans []entryPlan) {
+// restoreDirMeta gives each received directory the sender's mode and
+// modification time, after its children are written (which bump it).
+// Applied last, deepest first. dirMode keeps the owner's rwx, so a later run
+// can still write into the folder.
+func restoreDirMeta(plans []entryPlan) {
 	for i := len(plans) - 1; i >= 0; i-- {
 		p := &plans[i]
 		if p.entry.Type != wire.EntryDir || p.blockedAncestor || p.disp == dispRefused {
@@ -1070,9 +1122,17 @@ func restoreDirModes(plans []entryPlan) {
 		// Lstat, not Stat: if a receiver-side symlink sits in the slot (a kept
 		// dir↔symlink conflict), Stat would follow it and chmod the link's
 		// target anywhere on disk. Lstat reports the link itself, so IsDir is
-		// false and we skip it — we only ever chmod a real directory we own.
-		if st, err := os.Lstat(p.target); err == nil && st.IsDir() && st.Mode()&os.ModePerm != want {
+		// false and we skip it — we only ever touch a real directory we own.
+		st, err := os.Lstat(p.target)
+		if err != nil || !st.IsDir() {
+			continue
+		}
+		if st.Mode()&os.ModePerm != want {
 			_ = os.Chmod(p.target, want)
+		}
+		if p.entry.ModTimeSec != 0 {
+			t := time.Unix(p.entry.ModTimeSec, 0)
+			_ = os.Chtimes(p.target, t, t)
 		}
 	}
 }
@@ -1082,7 +1142,9 @@ func restoreDirModes(plans []entryPlan) {
 // hash under --checksum) would otherwise skip it and never pick up the new
 // mode. Best-effort; a chmod failure isn't worth failing the transfer.
 func repairIdenticalMode(p *entryPlan) {
-	if p.entry.Type != wire.EntryFile || p.blockedAncestor {
+	// keptAs: "identical" through an earlier copy; the file at target is
+	// the user's own differing version and keeps its mode.
+	if p.entry.Type != wire.EntryFile || p.blockedAncestor || p.keptAs != "" {
 		return
 	}
 	want := fileMode(p.entry.Mode)
@@ -1126,6 +1188,7 @@ func planToDecision(p *entryPlan, approveOverwrite bool, opts RecvOptions) wire.
 	case dispRefused:
 		d.Action = wire.DecisionSkip
 		d.Kept = true
+		d.Reason = p.skipReason
 		if opts.OnEntrySkipped != nil {
 			opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
 		}
@@ -1204,7 +1267,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 			}
 		}
 		var err error
-		f, partial, err = ps.create(rel, wire.ListingEntry{})
+		f, partial, _, err = ps.create(rel, wire.ListingEntry{})
 		if err != nil {
 			declineTransfer(s, wire.ErrCodeWriteFailed, peerSafe("create", rel, err))
 			return fmt.Errorf("%w: create stream file: %v", fserrors.ErrWriteFailed, err)
@@ -1242,7 +1305,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 		}
 		ps.dropMeta(rel)
 		ps.tidy()
-		fsyncDir(filepath.Dir(target)) // make the rename itself durable
+		atomicfile.SyncDir(filepath.Dir(target)) // make the rename itself durable
 		if opts.OnFileDone != nil {
 			opts.OnFileDone(target, hex.EncodeToString(sha.Sum(nil)))
 		}

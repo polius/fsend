@@ -3,9 +3,11 @@ package transfer
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +24,7 @@ func seedPartial(t *testing.T, dst, rel, srcPath string, data []byte) string {
 		t.Fatal(err)
 	}
 	ps := newPartialStore(dst)
-	f, path, err := ps.create(rel, wire.ListingEntry{Size: uint64(st.Size()), ModTimeSec: st.ModTime().Unix()})
+	f, path, _, err := ps.create(rel, wire.ListingEntry{Size: uint64(st.Size()), ModTimeSec: st.ModTime().Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,5 +370,80 @@ func TestClassify_RejectsPathTraversal(t *testing.T) {
 	entries := []wire.ListingEntry{{Index: 0, RelativePath: "../escape.txt", Type: wire.EntryFile}}
 	if _, err := classify(entries, t.TempDir(), false); err == nil {
 		t.Error("expected path-traversal rejection")
+	}
+}
+
+// An interrupted overwrite resumes once the replace is approved again —
+// from the prompt (ResolveConflicts) or --overwrite — instead of sending
+// every byte again: the partial of the new version is verified like any
+// other, and the commit renames over the user's file they agreed to lose.
+func TestEngine_ApprovedReplaceResumes(t *testing.T) {
+	for _, viaPrompt := range []bool{true, false} {
+		src, dst := t.TempDir(), t.TempDir()
+		data := randBytes(3*wire.MaxChunkSize + 100)
+		sp := filepath.Join(src, "report.pdf")
+		writeFile(t, sp, data)
+		writeFile(t, filepath.Join(dst, "report.pdf"), []byte("MY OLD VERSION"))
+		seedPartial(t, dst, "report.pdf", sp, data[:2*wire.MaxChunkSize])
+
+		var resumedAt uint64
+		var differing uint64
+		se, re := fileTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+			o.OnResume = func(_ uint32, off, _ uint64) { resumedAt = off }
+			o.Accept = func(_ wire.SenderHello, s ClassifySummary) bool { differing = s.DifferingBytes; return true }
+			if viaPrompt {
+				o.ResolveConflicts = func([]Conflict) ConflictPolicy { return ConflictReplace }
+			} else {
+				o.Overwrite = true
+			}
+		})
+		if se != nil || re != nil {
+			t.Fatalf("prompt=%v: send=%v recv=%v", viaPrompt, se, re)
+		}
+		if resumedAt != 2*wire.MaxChunkSize {
+			t.Errorf("prompt=%v: resumed at %d, want %d", viaPrompt, resumedAt, 2*wire.MaxChunkSize)
+		}
+		if want := uint64(len(data)) - 2*wire.MaxChunkSize; differing != want {
+			t.Errorf("prompt=%v: DifferingBytes = %d, want the %d left to send", viaPrompt, differing, want)
+		}
+		if !bytes.Equal(mustRead(t, filepath.Join(dst, "report.pdf")), data) {
+			t.Fatalf("prompt=%v: replaced content mismatch", viaPrompt)
+		}
+	}
+}
+
+// A file that can never resume (one hash block or less) gets no sidecar,
+// and every partial is created with the entry's final mode so the commit
+// needn't chmod it; a reused stale partial reports it still needs one.
+func TestPartialStore_SmallFilesSkipSidecar(t *testing.T) {
+	dst := t.TempDir()
+	ps := newPartialStore(dst)
+	for _, c := range []struct {
+		size     uint64
+		wantMeta bool
+	}{{4096, false}, {hashBlockSize, false}, {hashBlockSize + 1, true}} {
+		rel := fmt.Sprintf("f%d", c.size)
+		f, path, fresh, err := ps.create(rel, wire.ListingEntry{Size: c.size, Mode: 0o640})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+		_, meta := ps.paths(rel)
+		if _, err := os.Stat(meta); (err == nil) != c.wantMeta {
+			t.Errorf("size %d: sidecar present=%v, want %v", c.size, err == nil, c.wantMeta)
+		}
+		st, _ := os.Stat(path)
+		// Windows keeps only the read-only bit, so there is no mode to compare.
+		if !fresh || (runtime.GOOS != "windows" && st.Mode().Perm() != fileMode(0o640)) {
+			t.Errorf("size %d: fresh=%v mode=%v, want final mode %v", c.size, fresh, st.Mode().Perm(), fileMode(0o640))
+		}
+		f, _, fresh, err = ps.create(rel, wire.ListingEntry{Size: c.size, Mode: 0o640})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+		if fresh {
+			t.Errorf("size %d: a reused partial must report it needs a chmod", c.size)
+		}
 	}
 }

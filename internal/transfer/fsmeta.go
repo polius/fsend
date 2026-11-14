@@ -111,6 +111,29 @@ func (s fsSemantics) sameMtime(local time.Time, remote int64) bool {
 
 // moveFile renames src over dst, falling back to copy+sync+rename when they
 // sit on different filesystems (a mount point inside the receive folder).
+// errTargetAppeared: something was created at the target after it was
+// classified as absent; placing the new file would replace it unasked.
+var errTargetAppeared = errors.New("a file appeared at the target during the transfer")
+
+// placeNew moves src to dst only if dst does not exist. A hard link fails on
+// an existing name atomically; where links aren't available (FAT, exFAT,
+// another filesystem) it checks and renames, which narrows the window to
+// microseconds instead of the whole transfer.
+func placeNew(src, dst string) error {
+	err := os.Link(src, dst)
+	if err == nil {
+		_ = os.Remove(src)
+		return nil
+	}
+	if os.IsExist(err) {
+		return errTargetAppeared
+	}
+	if _, lerr := os.Lstat(dst); lerr == nil {
+		return errTargetAppeared
+	}
+	return moveFile(src, dst)
+}
+
 func moveFile(src, dst string) error {
 	err := os.Rename(src, dst)
 	if err == nil || !isCrossDevice(err) {

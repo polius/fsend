@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,8 +49,15 @@ type entryPlan struct {
 	// nonEmptyDir: a folder with contents sits where this entry goes. fsend
 	// never deletes it, even under --overwrite.
 	nonEmptyDir bool
-	renamed     bool   // keep-both: saved under a fresh name
-	skipReason  string // dispRefused: why, for the user
+	renamed     bool // keep-both: saved under a fresh name
+	// replaceResume: a differing regular file whose partial from an
+	// interrupted replace is still valid (resumeOffset/partial hold it). If
+	// the user approves the replace, the transfer resumes from it instead of
+	// sending every byte again.
+	replaceResume bool
+	// keptAs: an earlier keep-both copy of this exact version (rel path).
+	keptAs     string
+	skipReason string // dispRefused: why, for the user
 }
 
 // needsConsent reports a destructive disagreement requiring --overwrite.
@@ -86,6 +94,10 @@ type SummaryEntry struct {
 	Status        string // "new" | "identical" | "differs" | "resume" | "refused"
 	Type          wire.EntryType
 	SymlinkTarget string // EntrySymlink only
+	// KeptAs names an earlier keep-both copy ("src/f1 (1).go") that already
+	// holds this exact version (same size and mtime). Under keep-both the
+	// file counts as up to date instead of gaining another copy.
+	KeptAs string
 }
 
 // Conflict describes one entry that disagrees with what's on disk, for the
@@ -102,6 +114,8 @@ type Conflict struct {
 	// NonEmptyDir: a folder with contents is in the way. Replace keeps it
 	// (fsend never deletes a folder's contents); keep both still works.
 	NonEmptyDir bool
+	// KeptAs: see SummaryEntry.KeptAs.
+	KeptAs string
 }
 
 // classifier resolves listing entries against the receive directory.
@@ -111,13 +125,77 @@ type classifier struct {
 	sem       fsSemantics
 	ps        *partialStore
 	progress  func(done, total uint64) // resume-prefix hashing
+
+	// policy is the conflict answer given up front (--rename, --overwrite),
+	// when there is one: a keep-both whose earlier copy already holds the
+	// incoming version is then up to date from the start.
+	policy ConflictPolicy
+
+	// Per-directory memos for the ancestor checks: a tree's entries share
+	// their parents, so each folder is examined once per receive instead of
+	// once per entry under it (500,000 entries six deep was 12 s of Lstat).
+	// Valid for one classification, before anything is written.
+	linkMemo, fileMemo map[string]bool
 }
 
-// classify resolves every listing entry against targetDir with the probed
-// filesystem semantics. Kept as the simple entry point for tests.
-func classify(entries []wire.ListingEntry, targetDir string, checksum bool) ([]entryPlan, error) {
-	c := &classifier{targetDir: targetDir, checksum: checksum, sem: probeFS(targetDir), ps: newPartialStore(targetDir)}
-	return c.run(entries)
+// linkAbove reports whether any folder between targetDir (exclusive) and
+// target is a symlink. Lstat on the full target only inspects the leaf — an
+// intermediate link is silently followed — so each ancestor is Lstat'd in
+// turn, where it is itself the leaf. A receiver-planted link on the path
+// would let a later write or chmod traverse out of the receive tree;
+// callers must refuse to act on such a target.
+func (c *classifier) linkAbove(target string) bool {
+	return c.memoWalk(&c.linkMemo, target, func(st os.FileInfo) (bool, bool) {
+		if st.Mode()&os.ModeSymlink != 0 {
+			return true, true
+		}
+		return false, false
+	})
+}
+
+// fileAbove reports whether the first existing ancestor of target (below
+// targetDir) is not a folder — a file sits where one of target's parent
+// folders needs to be, so target can't be placed until that conflict is
+// resolved.
+func (c *classifier) fileAbove(target string) bool {
+	return c.memoWalk(&c.fileMemo, target, func(st os.FileInfo) (bool, bool) {
+		return !st.IsDir(), true
+	})
+}
+
+// memoWalk walks target's ancestors up to targetDir. decide examines an
+// existing ancestor and returns (verdict, final); a missing one, or one that
+// isn't final, defers to its parent. Every folder walked gets the verdict it
+// inherits, so later entries stop at the first folder already known.
+func (c *classifier) memoWalk(memo *map[string]bool, target string, decide func(os.FileInfo) (bool, bool)) bool {
+	if *memo == nil {
+		*memo = make(map[string]bool)
+	}
+	root := filepath.Clean(c.targetDir)
+	var walked []string
+	verdict := false
+	for d := filepath.Dir(target); d != root; {
+		if v, ok := (*memo)[d]; ok {
+			verdict = v
+			break
+		}
+		walked = append(walked, d)
+		if st, err := os.Lstat(d); err == nil {
+			if v, final := decide(st); final {
+				verdict = v
+				break
+			}
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break // outside targetDir: classify never builds such a target
+		}
+		d = parent
+	}
+	for _, d := range walked {
+		(*memo)[d] = verdict
+	}
+	return verdict
 }
 
 // run returns the per-entry plans (in listing order) or an error if any path
@@ -140,7 +218,21 @@ func (c *classifier) run(entries []wire.ListingEntry) ([]entryPlan, error) {
 		}
 		rel, err := SanitizeRelativePath(e.RelativePath)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
+			// A name this system cannot create costs that entry, not the
+			// transfer, and is not an attack (E012 stays for traversal).
+			// rel is display-only here: a refused plan is never written.
+			var un *UnplaceableError
+			if !errors.As(err, &un) {
+				return nil, fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
+			}
+			slash := e.RelativePath
+			if _, dup := exact[slash]; dup {
+				return nil, fmt.Errorf("%w: duplicate path %q", fserrors.ErrProtocolError, e.RelativePath)
+			}
+			exact[slash] = struct{}{}
+			plans = append(plans, entryPlan{entry: e, rel: filepath.FromSlash(slash), disp: dispRefused,
+				skipReason: "the name isn't allowed on this system (" + un.Reason + ")"})
+			continue
 		}
 		target := filepath.Join(c.targetDir, rel)
 		// Defense-in-depth: target must stay under targetDir.
@@ -171,7 +263,7 @@ func (c *classifier) run(entries []wire.ListingEntry) ([]entryPlan, error) {
 			continue
 		}
 		p := c.classifyOne(e, rel, target)
-		p.blockedAncestor = symlinkAncestor(target, c.targetDir)
+		p.blockedAncestor = c.linkAbove(target)
 		plans = append(plans, p)
 	}
 	if err := c.hashResumePrefixes(plans); err != nil {
@@ -229,62 +321,6 @@ func hashPartialPrefix(path string, n int64, progress func(int64)) ([][32]byte, 
 	})
 }
 
-// symlinkAncestor reports whether any path component of target between
-// targetDir (exclusive) and target (exclusive) is a symlink. Lstat on the full
-// target only inspects the leaf — an intermediate link is silently followed —
-// so each ancestor is Lstat'd in turn, where it is itself the leaf. A
-// receiver-planted link on the path would let a later write or chmod traverse
-// out of the receive tree; callers must refuse to act on such a target.
-func symlinkAncestor(target, targetDir string) bool {
-	rootAbs, err := filepath.Abs(targetDir)
-	if err != nil {
-		return false
-	}
-	cur, err := filepath.Abs(filepath.Dir(target))
-	if err != nil {
-		return false
-	}
-	for cur != rootAbs {
-		if st, err := os.Lstat(cur); err == nil && st.Mode()&os.ModeSymlink != 0 {
-			return true
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			break // reached the filesystem root without meeting targetDir
-		}
-		cur = parent
-	}
-	return false
-}
-
-// ancestorBlocked reports whether target can't be placed because the nearest
-// existing ancestor directory is actually a non-directory (e.g. a file sits
-// where a parent folder needs to be). Walks up to targetDir. Portable: it
-// inspects file types rather than relying on Lstat's error code, which differs
-// across platforms (Unix ENOTDIR vs Windows ERROR_PATH_NOT_FOUND, the latter
-// reported as "not exist").
-func ancestorBlocked(target, targetDir string) bool {
-	rootAbs, err := filepath.Abs(targetDir)
-	if err != nil {
-		return false
-	}
-	dir := filepath.Dir(target)
-	for {
-		absDir, err := filepath.Abs(dir)
-		if err != nil || absDir == rootAbs {
-			return false // reached the (directory) transfer root
-		}
-		if st, err := os.Lstat(dir); err == nil {
-			return !st.IsDir() // first existing ancestor decides
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return false // hit the filesystem root
-		}
-		dir = parent
-	}
-}
-
 // dirHasEntries reports whether dir contains anything.
 func dirHasEntries(dir string) bool {
 	f, err := os.Open(dir)
@@ -305,7 +341,7 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 	case wire.EntryDir:
 		switch {
 		case !exists:
-			if ancestorBlocked(target, c.targetDir) {
+			if c.fileAbove(target) {
 				p.disp = dispConflict
 			}
 		case st.IsDir():
@@ -351,7 +387,20 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 			p.disp = dispConflict
 		case exists:
 			p.disp = dispDiffers
-		case ancestorBlocked(target, c.targetDir):
+			// An interrupted replace leaves a partial of the new version:
+			// note it now, use it only once the replace is approved.
+			if st.Mode().IsRegular() {
+				// A previous keep-both may already have saved this version.
+				if p.keptAs = c.keptCopy(rel, e); p.keptAs != "" && c.policy == ConflictRename {
+					p.disp = dispIdentical
+					return p
+				}
+				c.resumeCandidate(&p)
+				if p.disp == dispResume {
+					p.disp, p.replaceResume = dispDiffers, true
+				}
+			}
+		case c.fileAbove(target):
 			// A file sits where one of this file's parent folders needs to be;
 			// it can't be placed until that conflict is resolved.
 			p.disp = dispConflict
@@ -410,7 +459,10 @@ func summarize(plans []entryPlan) classifySummary {
 			// per-file row count and the sender's kept tally.
 			if p.entry.Type != wire.EntryDir {
 				s.Differing++
-				s.DifferingBytes += p.entry.Size
+				// What moves if the user approves: a resumable replace only
+				// sends the rest (the CLI's bar then gets the prefix back
+				// through OnResume, as for any resume).
+				s.DifferingBytes += p.entry.Size - p.resumeOffset
 			}
 		}
 		// Directories aren't files the user thinks about; mirror CountFiles
@@ -423,6 +475,7 @@ func summarize(plans []entryPlan) classifySummary {
 				Status:        dispStatus(p.disp),
 				Type:          p.entry.Type,
 				SymlinkTarget: p.entry.SymlinkTarget,
+				KeptAs:        filepath.ToSlash(p.keptAs),
 			})
 		}
 	}
@@ -459,7 +512,7 @@ func conflicts(plans []entryPlan) []Conflict {
 			dirs = append(dirs, p.rel)
 		}
 		c := Conflict{RelativePath: p.entry.RelativePath, IncomingSize: p.entry.Size, Kind: "differs", NonEmptyDir: p.nonEmptyDir,
-			IncomingModTime: time.Unix(p.entry.ModTimeSec, 0)}
+			IncomingModTime: time.Unix(p.entry.ModTimeSec, 0), KeptAs: filepath.ToSlash(p.keptAs)}
 		if st, err := os.Lstat(p.target); err == nil {
 			c.LocalSize = st.Size()
 			c.LocalModTime = st.ModTime()
@@ -503,6 +556,17 @@ func applyPolicy(plans []entryPlan, policy ConflictPolicy, c *classifier) {
 				p.disp = dispRefused
 				p.skipReason = "a folder with files is in the way (fsend never deletes a folder's contents)"
 			}
+			// Approved: resume an interrupted replace from its verified
+			// partial (the same check keep-both runs in retarget). The
+			// commit renames over the user's file, which they agreed to.
+			if p.replaceResume && p.disp == dispDiffers && !p.blockedAncestor {
+				if blocks, err := hashPartialPrefix(p.partial, int64(p.resumeOffset), func(int64) {}); err == nil {
+					p.disp, p.prefixBlocks = dispResume, blocks
+				} else {
+					c.ps.remove(p.rel)
+					p.resumeOffset, p.partial = 0, ""
+				}
+			}
 		}
 	case ConflictRename:
 		taken := make(map[string]struct{}, len(plans))
@@ -527,6 +591,12 @@ func applyPolicy(plans []entryPlan, policy ConflictPolicy, c *classifier) {
 			if moved || !p.needsConsent() {
 				continue
 			}
+			// An earlier keep-both copy already holds this version: the
+			// file is up to date; another "(n)" copy would be a duplicate.
+			if p.keptAs != "" && p.disp == dispDiffers {
+				p.disp = dispIdentical
+				continue
+			}
 			to := freeName(p.rel, c, taken)
 			if p.entry.Type == wire.EntryDir {
 				moves = append(moves, move{p.rel, to})
@@ -538,6 +608,7 @@ func applyPolicy(plans []entryPlan, policy ConflictPolicy, c *classifier) {
 
 // retarget points p at a fresh relative path, which is absent on disk.
 func (c *classifier) retarget(p *entryPlan, rel string) {
+	p.replaceResume, p.resumeOffset, p.partial = false, 0, ""
 	p.rel = rel
 	p.target = filepath.Join(c.targetDir, rel)
 	p.renamed = true
@@ -555,6 +626,30 @@ func (c *classifier) retarget(p *entryPlan, rel string) {
 			}
 		}
 	}
+}
+
+// keptCopy returns the first "name (k).ext" beside rel that is a regular
+// file holding e's version (same size and mtime) — what an earlier
+// keep-both saved — or "". The numbered copies are contiguous from 1, as
+// freeName creates them; the scan stops at the first gap.
+func (c *classifier) keptCopy(rel string, e wire.ListingEntry) string {
+	dir, base := filepath.Split(rel)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	if stem == "" {
+		stem, ext = base, ""
+	}
+	for k := 1; k <= 99; k++ {
+		cand := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, k, ext))
+		st, err := os.Lstat(filepath.Join(c.targetDir, cand))
+		if err != nil {
+			return ""
+		}
+		if st.Mode().IsRegular() && uint64(st.Size()) == e.Size && c.sem.sameMtime(st.ModTime(), e.ModTimeSec) {
+			return cand
+		}
+	}
+	return ""
 }
 
 // freeName returns "name (n).ext" beside rel, unused on disk and in this

@@ -91,6 +91,10 @@ type Decision struct {
 	// value from an old receiver reads as "unknown" — the sender then
 	// falls back to the neutral "skipped" wording.
 	Kept bool
+	// Reason says why a DecisionSkip entry was refused — a name the
+	// receiver's system cannot create. Sent only to a sender that
+	// advertised CapSkipReasons; "" otherwise.
+	Reason string
 }
 
 // FileHash carries one file's BLAKE3 root, sent by the sender in a

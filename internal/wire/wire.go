@@ -23,7 +23,10 @@ package wire
 //
 // Negotiation rule for future versions: HELLO and HELLO_ACK frames carry
 // MinProtocolVersion in their header so any supported peer can parse them;
-// every later frame carries the negotiated version.
+// every later frame carries the negotiated version (see Stamp; the transfer
+// layer marks its control stream Versioned once the hellos are exchanged).
+// When raising it, cap the receiver in transfer's
+// TestSend_NewerBuildTalksToV3Peer at the old version.
 const ProtocolVersion = 0x03
 
 // MinProtocolVersion is the oldest wire protocol version this build speaks.
@@ -35,9 +38,19 @@ type Capability uint64
 
 // Capabilities this build supports. New bits are appended; never reuse one.
 const (
+	// CapSkipReasons: the sender reads Decision.Reason, so the receiver
+	// says why it refused an entry (a name its system can't create).
+	CapSkipReasons Capability = 1 << 0
+	// CapCompressedListing: the receiver accepts TypeListingBatchZ, the
+	// listing batch compressed with zstd.
+	CapCompressedListing Capability = 1 << 1
+
 	// CapsSupported is the bitmap this build advertises.
-	CapsSupported Capability = 0
+	CapsSupported = CapSkipReasons | CapCompressedListing
 )
+
+// Has reports whether c includes every bit of want.
+func (c Capability) Has(want Capability) bool { return c&want == want }
 
 // Negotiate returns the highest version both ranges share, or false if
 // the ranges don't overlap.
@@ -79,6 +92,7 @@ const (
 	TypeTransferAck       FrameType = 0x0B // receiver → sender
 	TypeVerifyRequest     FrameType = 0x0C // receiver → sender: gob []uint32 (--checksum)
 	TypeVerifyResponse    FrameType = 0x0D // sender → receiver: gob []FileHash
+	TypeListingBatchZ     FrameType = 0x0E // sender → receiver: zstd(gob []ListingEntry); only with CapCompressedListing
 	TypeError             FrameType = 0xFE
 )
 

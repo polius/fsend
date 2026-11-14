@@ -323,3 +323,114 @@ func TestControl_ErrorFramePropertyRoundtrip(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// Decision.Reason is additive: a peer built before it decodes a decision
+// carrying one, and a decision from such a peer reads as Reason "".
+func TestDecisionReasonIsAdditive(t *testing.T) {
+	type oldDecision struct {
+		Index        uint32
+		Action       DecisionAction
+		ResumeOffset uint64
+		PrefixRoot   []byte
+		Kept         bool
+	}
+	var buf bytes.Buffer
+	if err := WriteControl(&buf, TypeClassifyBatch, []Decision{{Index: 3, Action: DecisionSkip, Kept: true, Reason: "reserved device name"}}); err != nil {
+		t.Fatal(err)
+	}
+	var old []oldDecision
+	if _, err := ReadControl(bytes.NewReader(buf.Bytes()), &old); err != nil || len(old) != 1 || old[0].Index != 3 || !old[0].Kept {
+		t.Fatalf("old peer decode = %+v, %v", old, err)
+	}
+	buf.Reset()
+	if err := WriteControl(&buf, TypeClassifyBatch, []oldDecision{{Index: 4, Action: DecisionSkip, Kept: true}}); err != nil {
+		t.Fatal(err)
+	}
+	var cur []Decision
+	if _, err := ReadControl(bytes.NewReader(buf.Bytes()), &cur); err != nil || len(cur) != 1 || cur[0].Reason != "" {
+		t.Fatalf("new peer decode = %+v, %v", cur, err)
+	}
+	if !CapsSupported.Has(CapSkipReasons) {
+		t.Error("this build must advertise CapSkipReasons")
+	}
+}
+
+type versioned struct {
+	bytes.Buffer
+	v uint8
+}
+
+func (w *versioned) WireVersion() uint8 { return w.v }
+
+// The stamping rule, independent of today's constants: HELLO and HELLO_ACK
+// always carry MinProtocolVersion (a v3 reader rejects any other), later
+// frames carry what the session negotiated — not the build's own newest
+// version — and a stream with nothing negotiated falls back to the minimum.
+func TestStampFollowsNegotiation(t *testing.T) {
+	neg := &versioned{v: MinProtocolVersion + 1}
+	for _, c := range []struct {
+		w    io.Writer
+		ft   FrameType
+		want byte
+	}{
+		{neg, TypeHello, MinProtocolVersion},
+		{neg, TypeHelloAck, MinProtocolVersion},
+		{neg, TypeListingBatch, MinProtocolVersion + 1},
+		{neg, TypeError, MinProtocolVersion + 1},
+		{&bytes.Buffer{}, TypeError, MinProtocolVersion},
+	} {
+		if got := Stamp(c.w, c.ft); got != c.want {
+			t.Errorf("Stamp(%T, %v) = %d, want %d", c.w, c.ft, got, c.want)
+		}
+	}
+	// What a newer build must avoid: a frame stamped past a peer's newest
+	// version is unreadable to it.
+	newer := &versioned{v: ProtocolVersion + 1}
+	if err := WriteControl(newer, TypeListingEnd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if newer.Bytes()[0] != ProtocolVersion+1 {
+		t.Fatalf("WriteControl ignored the negotiated version: %x", newer.Bytes())
+	}
+	if _, _, err := ReadControlRaw(&newer.Buffer); !errors.Is(err, ErrUnsupportedVersion) {
+		t.Errorf("a frame from a newer version must be refused, got %v", err)
+	}
+}
+
+// Once a session has a version, a frame stamped with another one is
+// refused: a peer can't switch versions mid-session. The hellos and an
+// early ERROR at the minimum are the exceptions Stamp allows for.
+func TestReadControl_RequiresSessionVersion(t *testing.T) {
+	frame := func(ft FrameType) []byte {
+		var b bytes.Buffer
+		if err := WriteControl(&b, ft, nil); err != nil { // stamped MinProtocolVersion
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	session := uint8(MinProtocolVersion + 1) // a session two newer builds negotiated
+	for _, c := range []struct {
+		ft FrameType
+		ok bool
+	}{
+		{TypeListingEnd, false},
+		{TypeTransferComplete, false},
+		{TypeHello, true},
+		{TypeHelloAck, true},
+		{TypeError, true},
+	} {
+		r := &versioned{v: session}
+		r.Write(frame(c.ft))
+		_, _, err := ReadControlRaw(r)
+		if c.ok && err != nil {
+			t.Errorf("%v stamped %d in a version %d session: %v, want it read", c.ft, MinProtocolVersion, session, err)
+		}
+		if !c.ok && !errors.Is(err, ErrUnsupportedVersion) {
+			t.Errorf("%v stamped %d in a version %d session: err = %v, want ErrUnsupportedVersion", c.ft, MinProtocolVersion, session, err)
+		}
+	}
+	// Without a session version (before the hellos) the minimum is fine.
+	if _, _, err := ReadControlRaw(bytes.NewReader(frame(TypeListingEnd))); err != nil {
+		t.Errorf("an unversioned stream refused a minimum-version frame: %v", err)
+	}
+}

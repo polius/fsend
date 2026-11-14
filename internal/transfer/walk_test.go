@@ -121,21 +121,25 @@ func TestWalk_FollowsSymlinkOutsideSet(t *testing.T) {
 	}
 }
 
-func TestWalk_BrokenSymlinkErrors(t *testing.T) {
+func TestWalk_BrokenSymlinkInsideFolderSkipped(t *testing.T) {
 	dir := t.TempDir()
 	mkSymlink(t, "does-not-exist", filepath.Join(dir, "dangling"))
 
-	_, err := Walk([]string{dir}, nil)
-	if !errors.Is(err, fserrors.ErrUnsendableSymlink) {
-		t.Fatalf("want ErrUnsendableSymlink, got %v", err)
+	srcs, skips, err := WalkReport([]string{dir}, nil)
+	if err != nil {
+		t.Fatalf("a broken link inside a folder must not stop the walk: %v", err)
 	}
-	if got := err.Error(); !strings.Contains(got, "dangling") || !strings.Contains(got, "does-not-exist") {
-		t.Errorf("error should name the link and target: %q", got)
+	if len(skips) != 1 || !strings.HasSuffix(skips[0].Path, "/dangling") || !strings.Contains(skips[0].Reason, "does-not-exist") {
+		t.Errorf("skip should name the link and target: %+v", skips)
+	}
+	if len(srcs) != 1 { // just the folder
+		t.Errorf("sources = %d, want the folder alone", len(srcs))
 	}
 }
 
-// A dangling symlink passed directly as an argument gets the same E036 (with
-// link and target named) as one found inside a folder — not a false E025.
+// A dangling symlink passed directly as an argument is refused with E036
+// (link and target named) — not a false E025, and not skipped: the user
+// pointed at it.
 func TestWalk_DanglingSymlinkArgErrors(t *testing.T) {
 	dir := t.TempDir()
 	link := filepath.Join(dir, "bad.lnk")

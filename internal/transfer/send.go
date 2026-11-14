@@ -35,7 +35,11 @@ type SendOptions struct {
 	// OnSkip fires per receiver-declined entry. kept is true when the
 	// receiver reported keeping a differing copy; false also means
 	// "unknown" (old receivers don't send the flag).
-	OnSkip         func(index uint32, kept bool)
+	OnSkip func(index uint32, kept bool)
+	// OnRefused fires per entry the receiver could not create (a name its
+	// system doesn't allow), with the receiver's reason. Without it such
+	// entries are reported through OnSkip as kept.
+	OnRefused      func(index uint32, reason string)
 	OnStreamingEOF func(index uint32, finalBytes uint64)
 	// OnPeer fires when the receiver answers the HELLO: its self-reported
 	// device name (peer-supplied — sanitize before display) and whether it
@@ -56,24 +60,38 @@ type SendOptions struct {
 	// OnSourceChanged fires for a file whose size or mtime changed while it
 	// was being read; the copy that arrives may be inconsistent.
 	OnSourceChanged func(index uint32)
+
+	// advertiseMax overrides the newest version the HELLO offers — tests
+	// stand in for a newer build with it. 0 means wire.ProtocolVersion.
+	advertiseMax uint8
+}
+
+func (o SendOptions) maxVersion() uint8 {
+	if o.advertiseMax != 0 {
+		return o.advertiseMax
+	}
+	return wire.ProtocolVersion
 }
 
 // Send executes the full sender-side protocol over the supplied streams.
 func Send(ctx context.Context, s *Streams, opts SendOptions) error {
-	err := send(ctx, s, opts)
+	var negotiated uint8
+	err := send(ctx, s, opts, &negotiated)
 	switch {
 	case errors.Is(err, context.Canceled):
-		notifyPeer(s, wire.ErrCodeCancelled, "sender cancelled")
+		notifyPeer(s, negotiated, wire.ErrCodeCancelled, "sender cancelled")
 	case errors.Is(err, fserrors.ErrReadFailed):
 		// A local source failure otherwise surfaces on the receiver as a bare
 		// stream close — a "network" error it would burn retries on. Post the
 		// reason, without the sender's local paths.
-		notifyPeer(s, wire.ErrCodeReadFailed, "the sender could not read its source")
+		notifyPeer(s, negotiated, wire.ErrCodeReadFailed, "the sender could not read its source")
 	}
 	return err
 }
 
-func send(ctx context.Context, s *Streams, opts SendOptions) error {
+// send runs the protocol; *negotiated receives the session's version once
+// the hellos are exchanged, so Send's closing notice can carry it too.
+func send(ctx context.Context, s *Streams, opts SendOptions, negotiated *uint8) error {
 	// Bind the streams to ctx so a Ctrl-C parked in a blocked QUIC write
 	// unblocks promptly instead of waiting out the idle timeout. notifyPeer
 	// (called by the outer Send with the raw, unwrapped streams) is unaffected.
@@ -82,7 +100,7 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 
 	hello := &wire.SenderHello{
 		MinVersion:    wire.MinProtocolVersion,
-		MaxVersion:    wire.ProtocolVersion,
+		MaxVersion:    opts.maxVersion(),
 		Caps:          wire.CapsSupported,
 		Hostname:      opts.Hostname,
 		OS:            opts.OS,
@@ -107,9 +125,12 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	if ft != wire.TypeHelloAck {
 		return fmt.Errorf("%w: expected HELLO_ACK, got %v", fserrors.ErrProtocolError, ft)
 	}
-	if _, ok := wire.Negotiate(ack.MinVersion, ack.MaxVersion); !ok {
+	v, ok := wire.Negotiate(ack.MinVersion, ack.MaxVersion)
+	if !ok {
 		return fserrors.ErrIncompatibleVersion
 	}
+	setVersion(s, v)
+	*negotiated = v
 	if opts.OnPeer != nil {
 		opts.OnPeer(ack.Hostname, ack.Accepts)
 	}
@@ -132,15 +153,15 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	if opts.Mode == wire.ModeStream {
 		return sendStream(ctx, s, opts)
 	}
-	return sendFiles(ctx, s, opts)
+	return sendFiles(ctx, s, opts, ack.Caps)
 }
 
 // sendFiles runs the listing → classify → data flow.
-func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
+func sendFiles(ctx context.Context, s *Streams, opts SendOptions, peerCaps wire.Capability) error {
 	if len(opts.Sources) > maxListingEntries {
 		return fmt.Errorf("%w: %d entries, the limit is %d", fserrors.ErrTooManyEntries, len(opts.Sources), maxListingEntries)
 	}
-	if err := sendListing(s.Control, opts.Sources); err != nil {
+	if err := sendListing(s.Control, opts.Sources, peerCaps.Has(wire.CapCompressedListing)); err != nil {
 		return fmt.Errorf("send: listing: %w", err)
 	}
 	decisions, err := senderNegotiate(s, opts.Sources)
@@ -170,7 +191,11 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 		if !ok || d.Action == wire.DecisionSkip {
 			// Mirror the receiver (recv.go): directories aren't user-facing
 			// "files", so a skipped dir mustn't inflate the unchanged count.
-			if ok && opts.OnSkip != nil && src.Entry.Type != wire.EntryDir {
+			switch {
+			case !ok || src.Entry.Type == wire.EntryDir:
+			case d.Reason != "" && opts.OnRefused != nil:
+				opts.OnRefused(src.Entry.Index, d.Reason)
+			case opts.OnSkip != nil:
 				opts.OnSkip(src.Entry.Index, d.Kept)
 			}
 			continue
@@ -516,7 +541,16 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 // (cancel, unreadable source, …) from a network drop. Data closes first so
 // a receiver blocked mid-chunk unblocks and reads the reason. Bounded so a
 // wedged peer can't hold the sender hostage.
-func notifyPeer(s *Streams, code wire.ErrorCode, msg string) {
+// v is the negotiated version (0 before the hellos), stamped on the notice
+// like every other post-hello frame.
+func notifyPeer(s *Streams, v uint8, code wire.ErrorCode, msg string) {
+	// A cancel set a past write deadline on the control stream; give the
+	// notice its own short window. (Set it on the raw stream: the versioned
+	// wrapper below doesn't expose deadlines.)
+	setWriteDeadline(s.Control, time.Now().Add(time.Second))
+	if v != 0 {
+		s = &Streams{Control: versionedConn{ReadWriteCloser: s.Control, v: v}, Data: s.Data}
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

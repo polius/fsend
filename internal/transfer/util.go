@@ -3,7 +3,6 @@ package transfer
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,20 +12,6 @@ import (
 // emptySHA256 is the SHA-256 hex digest of a zero-byte file, reported for
 // empty entries the way finalize reports non-empty ones.
 var emptySHA256 = hex.EncodeToString(sha256.New().Sum(nil))
-
-// fsyncDir flushes a directory's entries to stable storage so a rename
-// into it survives a crash. Best-effort: directory fsync is a POSIX notion
-// not supported on every platform (notably Windows), so errors are ignored.
-// Durability of the file *contents* is guaranteed separately by syncing the
-// file before it is renamed into place.
-func fsyncDir(dir string) {
-	d, err := os.Open(dir)
-	if err != nil {
-		return
-	}
-	_ = d.Sync()
-	_ = d.Close()
-}
 
 // pathIsUnder reports whether child is the same as parent or lives below it
 // in the filesystem hierarchy. Both must be absolute and clean.
