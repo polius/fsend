@@ -232,7 +232,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	// --checksum: resolve same-size candidates by content hash before the
 	// breakdown is shown or any decision is made.
 	if opts.Checksum {
-		if err := resolveVerify(ctx, s, plans, r.cls.sem, opts.OnHashProgress); err != nil {
+		if err := r.cls.resolveVerify(ctx, s, plans, opts.OnHashProgress); err != nil {
 			return err
 		}
 	}
@@ -432,15 +432,25 @@ const verifyWorkers = 4
 // rather than wrongly skipped. The local hashing ends with ctx, or as soon
 // as the sender stops answering: a dropped connection doesn't leave it
 // reading the rest of the tree.
-func resolveVerify(ctx context.Context, s *Streams, plans []entryPlan, sem fsSemantics, progress func(done, total uint64)) error {
+//
+// A file that differs may already have been kept as "name (1).ext" by an
+// earlier keep-both. Under --checksum that too is decided by content: the
+// sender's root is also requested for every differing file with such
+// candidates, and they are hashed once the first verdicts are in
+// (resolveKept).
+func (c *classifier) resolveVerify(ctx context.Context, s *Streams, plans []entryPlan, progress func(done, total uint64)) error {
+	sem := c.sem
 	var idx []uint32
 	var cand []*entryPlan
 	var total uint64
 	for i := range plans {
-		if plans[i].disp == dispVerify {
-			idx = append(idx, plans[i].entry.Index)
-			cand = append(cand, &plans[i])
-			total += plans[i].entry.Size
+		switch p := &plans[i]; {
+		case p.disp == dispVerify:
+			idx = append(idx, p.entry.Index)
+			cand = append(cand, p)
+			total += p.entry.Size
+		case p.disp == dispDiffers && len(p.keptCands) > 0:
+			idx = append(idx, p.entry.Index) // only its root, for resolveKept
 		}
 	}
 	if len(idx) == 0 {
@@ -508,6 +518,71 @@ func resolveVerify(ctx context.Context, s *Streams, plans []entryPlan, sem fsSem
 		if st, err := os.Lstat(p.target); err == nil && !sem.sameMtime(st.ModTime(), p.entry.ModTimeSec) {
 			t := time.Unix(p.entry.ModTimeSec, 0)
 			_ = os.Chtimes(p.target, t, t)
+		}
+	}
+	return c.resolveKept(ctx, plans, remote, progress)
+}
+
+// resolveKept (--checksum) finds, for each differing file, the earlier
+// keep-both copy that holds the incoming version by content — the first
+// candidate whose root equals the sender's — and records it as keptAs, as
+// keptCopy does by size and time without --checksum. Under an up-front
+// keep-both the file then counts as up to date instead of gaining another
+// copy on every run. A matching copy takes the sender's mtime, so a plain
+// run recognises it as well.
+func (c *classifier) resolveKept(ctx context.Context, plans []entryPlan, remote map[uint32][32]byte, progress func(done, total uint64)) error {
+	var todo []*entryPlan
+	var total uint64
+	for i := range plans {
+		p := &plans[i]
+		if _, ok := remote[p.entry.Index]; ok && p.disp == dispDiffers && len(p.keptCands) > 0 && !p.blockedAncestor {
+			todo = append(todo, p)
+			total += p.entry.Size * uint64(len(p.keptCands))
+		}
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	meter := newProgressMeter(total, progress)
+	work := make(chan *entryPlan)
+	var wg sync.WaitGroup
+	for range min(verifyWorkers, len(todo)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range work {
+				want := remote[p.entry.Index]
+				for i, cand := range p.keptCands {
+					path := filepath.Join(c.targetDir, cand)
+					var last int64
+					root, err := hashCache.fileRoot(ctx, path, func(done int64) { meter.add(done - last); last = done })
+					if err != nil || root != want {
+						continue
+					}
+					p.keptAs = cand
+					if st, err := os.Lstat(path); err == nil && !c.sem.sameMtime(st.ModTime(), p.entry.ModTimeSec) {
+						t := time.Unix(p.entry.ModTimeSec, 0)
+						_ = os.Chtimes(path, t, t)
+					}
+					// The copies after it are not read.
+					meter.add(conv.Int64(p.entry.Size * uint64(len(p.keptCands)-i-1)))
+					break
+				}
+			}
+		}()
+	}
+	for _, p := range todo {
+		work <- p
+	}
+	close(work)
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err // cut short: no verdict to act on
+	}
+	for _, p := range todo {
+		if p.keptAs != "" && c.policy == ConflictRename {
+			// Up to date through the copy: nothing to replace or resume.
+			p.disp, p.replaceResume, p.resumeOffset, p.partial = dispIdentical, false, 0, ""
 		}
 	}
 	return nil

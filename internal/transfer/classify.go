@@ -58,7 +58,11 @@ type entryPlan struct {
 	// sending every byte again.
 	replaceResume bool
 	// keptAs: an earlier keep-both copy of this exact version (rel path).
-	keptAs     string
+	keptAs string
+	// keptCands (--checksum): the numbered copies beside the target whose
+	// size matches the incoming file. Which of them, if any, holds this
+	// version is decided by content (resolveVerify), then keptAs is set.
+	keptCands  []string
 	skipReason string // dispRefused: why, for the user
 }
 
@@ -377,7 +381,10 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 		if exists && st.Mode().IsRegular() && conv.Uint64(st.Size()) == e.Size {
 			if c.checksum {
 				// Same size — defer the skip/differ verdict to a content hash.
+				// Should it differ, an earlier keep-both copy may hold this
+				// version: note the candidates for the same check.
 				p.disp = dispVerify
+				p.keptCands = c.keptCandidates(rel, e)
 				return p
 			}
 			if c.sem.sameMtime(st.ModTime(), e.ModTimeSec) {
@@ -408,7 +415,11 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 			// note it now, use it only once the replace is approved.
 			if st.Mode().IsRegular() {
 				// A previous keep-both may already have saved this version.
-				if p.keptAs = c.keptCopy(rel, e); p.keptAs != "" && c.policy == ConflictRename {
+				// Under --checksum a matching size and time is not proof:
+				// the candidates are compared by content in resolveVerify.
+				if c.checksum {
+					p.keptCands = c.keptCandidates(rel, e)
+				} else if p.keptAs = c.keptCopy(rel, e); p.keptAs != "" && c.policy == ConflictRename {
 					p.disp = dispIdentical
 					return p
 				}
@@ -647,23 +658,40 @@ func (c *classifier) retarget(p *entryPlan, rel string) {
 // keep-both saved — or "". The numbered copies are contiguous from 1, as
 // freeName creates them; the scan stops at the first gap.
 func (c *classifier) keptCopy(rel string, e wire.ListingEntry) string {
+	for _, cand := range c.numberedCopies(rel, e, true) {
+		return cand
+	}
+	return ""
+}
+
+// keptCandidates is keptCopy for --checksum: every numbered copy whose size
+// matches, whatever its time. The caller compares their content.
+func (c *classifier) keptCandidates(rel string, e wire.ListingEntry) []string {
+	return c.numberedCopies(rel, e, false)
+}
+
+// numberedCopies lists the regular files "name (k).ext" beside rel that
+// have e's size and, with sameTime, its mtime, up to the first gap in the
+// numbering.
+func (c *classifier) numberedCopies(rel string, e wire.ListingEntry, sameTime bool) []string {
 	dir, base := filepath.Split(rel)
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 	if stem == "" {
 		stem, ext = base, ""
 	}
+	var out []string
 	for k := 1; k <= 99; k++ {
 		cand := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, k, ext))
 		st, err := os.Lstat(filepath.Join(c.targetDir, cand))
 		if err != nil {
-			return ""
+			break
 		}
-		if st.Mode().IsRegular() && conv.Uint64(st.Size()) == e.Size && c.sem.sameMtime(st.ModTime(), e.ModTimeSec) {
-			return cand
+		if st.Mode().IsRegular() && conv.Uint64(st.Size()) == e.Size && (!sameTime || c.sem.sameMtime(st.ModTime(), e.ModTimeSec)) {
+			out = append(out, cand)
 		}
 	}
-	return ""
+	return out
 }
 
 // freeName returns "name (n).ext" beside rel, unused on disk and in this
