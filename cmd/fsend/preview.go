@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/polius/fsend/internal/uxlog"
 )
@@ -52,26 +53,23 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 
 	pad := strings.Repeat(" ", indent)
 	shown := min(len(items), previewRows)
-	sizeWidth := 0
+	if len(items) == previewRows+1 {
+		// "… and 1 more" costs the row it hides: print it instead.
+		shown = len(items)
+	}
+	// Name first (the row's subject, default text), then the size and any
+	// note as faint detail — except "differs", the one note that needs a
+	// decision. Names pad to one column, capped so a single long path
+	// doesn't push every size off screen.
+	nameWidth, sizeWidth := 0, 0
 	for _, it := range items[:shown] {
-		if n := len(sizeCell(it)); n > sizeWidth {
-			sizeWidth = n
-		}
+		nameWidth = max(nameWidth, min(nameColumnCap, utf8.RuneCountInString(rowName(it))))
+		sizeWidth = max(sizeWidth, len(sizeCell(it)))
 	}
 	for _, it := range items[:shown] {
-		// The name cell is a file path — opencode-style green — including
-		// any symlink annotation appended to it (also path material).
-		// Sizes stay default; the green column is the part the eye scans.
-		name := uxlog.Path(it.name)
-		switch {
-		case it.link != "": // preserved symlink: "name → target", "→" size cell
-			name = uxlog.Path(it.name + " → " + it.link)
-		case it.from != "": // followed symlink: real size + "name (→ target)"
-			name = uxlog.Path(it.name + " (→ " + it.from + ")")
-		}
-		// The size column stays in the default foreground: metadata keeps
-		// its readability; the name carries the row's information.
-		line := fmt.Sprintf("%s%s   %s", pad, fmt.Sprintf("%*s", sizeWidth, sizeCell(it)), name)
+		name := rowName(it)
+		gap := strings.Repeat(" ", max(0, nameWidth-utf8.RuneCountInString(name)))
+		line := pad + uxlog.Path(name) + gap + "   " + uxlog.Muted(fmt.Sprintf("%*s", sizeWidth, sizeCell(it)))
 		if it.note != "" {
 			line += "   " + noteText(it.note)
 		}
@@ -82,9 +80,24 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 		for _, it := range items[shown:] {
 			rest += it.size
 		}
-		_, _ = fmt.Fprintf(w, "%s%s\n", pad,
-			fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(int64(rest))))
+		_, _ = fmt.Fprintln(w, pad+uxlog.Muted(fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(int64(rest)))))
 	}
+}
+
+// nameColumnCap bounds the padded name column of a file list.
+const nameColumnCap = 40
+
+// rowName is a row's name cell, with any symlink annotation (path material
+// too): "name → target" for a preserved link, "name (→ target)" for a
+// followed one.
+func rowName(it previewItem) string {
+	switch {
+	case it.link != "":
+		return it.name + " → " + it.link
+	case it.from != "":
+		return it.name + " (→ " + it.from + ")"
+	}
+	return it.name
 }
 
 // sizeCell renders the size column for one row: a byte count, or "→" for a
@@ -96,14 +109,14 @@ func sizeCell(it previewItem) string {
 	return uxlog.HumanBytes(int64(it.size))
 }
 
-// noteText colours a status tag: "differs" needs a decision, so it's
-// highlighted yellow; the rest ("up to date", "resume") render in the
-// default foreground — readable, quiet by being brief.
+// noteText colours a status tag: "differs" needs a decision, so it wears
+// the warning colour; the rest ("up to date", "resume") are faint — rows
+// that need no attention recede.
 func noteText(note string) string {
 	if note == "differs" {
 		return uxlog.Alert(note)
 	}
-	return note
+	return uxlog.Muted(note)
 }
 
 // stripCommonDir removes the longest leading directory prefix shared by every

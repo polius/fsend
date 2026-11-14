@@ -293,7 +293,7 @@ RECEIVING
 
 GENERAL
   -q, --quiet            Errors only (send still prints the code to stdout)
-  --json                 NDJSON events on stdout (schema: docs/usage.md)
+  --json                 NDJSON events on stdout (schema under LEARN MORE)
   --server <host>        Use this server for this run only, not saved
   -h, --help             Show this help
   -v, --version          Show version
@@ -302,6 +302,7 @@ GENERAL
 
 LEARN MORE
   https://github.com/polius/fsend
+  JSON schema and exit codes: https://github.com/polius/fsend/blob/main/docs/usage.md
 `
 
 // advancedHelpTemplate is `fsend help advanced`: everything the everyday
@@ -341,15 +342,19 @@ ENVIRONMENT
   FSEND_PASSWORD         Transfer password (or FSEND_PASSWORD_FILE)
   FSEND_SERVER           Server for this run, like --server
   FSEND_SERVER_PASSWORD  Server password (or FSEND_SERVER_PASSWORD_FILE)
-  FSEND_THEME            light or dark: match colours to your background
-  FSEND_PLAIN=1          No colour, animation or Unicode symbols (screen
+  FSEND_THEME            light or dark: match colors to your background
+  FSEND_PLAIN=1          No color, animation or Unicode symbols (screen
                          readers, logs); automatic when the locale isn't UTF-8
   FSEND_NO_NOTIFY=1      No bell or desktop notification after long runs
-  NO_COLOR=1             No colour
+  FSEND_NO_CLIPBOARD=1   Don't copy the receive command to the clipboard
+  FSEND_NO_UPDATE_CHECK=1
+                         No daily check for a newer release
+  NO_COLOR=1             No color
 
 EXIT STATUS
   0 on success, or when you decline at a prompt; 130 on Ctrl-C; otherwise
-  the error's number (E013 exits 13). The table is in docs/usage.md.
+  the error's number (E013 exits 13). The table:
+  https://github.com/polius/fsend/blob/main/docs/usage.md#exit-codes
 `
 
 // renderHelp stamps the version into a help template's header and adds
@@ -460,7 +465,7 @@ func startHere() {
 		}
 		return render(s)
 	}
-	_, _ = fmt.Fprintf(os.Stdout, `  %s  %s — send files straight to another computer
+	_, _ = fmt.Fprintf(os.Stdout, `  %s — send files straight to another computer
 
   %s
     fsend %s
@@ -471,10 +476,9 @@ func startHere() {
   More: fsend %s   everything
         fsend %s   check your setup
 `,
-		paint(uxlog.Brand, "⇄"),
 		paint(uxlog.Bold, "fsend"),
 		paint(uxlog.Bold, "Send a file"),
-		paint(uxlog.Path, "report.pdf"),
+		"report.pdf",
 		paint(uxlog.Bold, "Then, on the other machine"),
 		paint(uxlog.Code, "xqp-wjyc-zxk"),
 		paint(uxlog.Accent, "--help"),
@@ -769,8 +773,13 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		return runSend(f, []string{"-"})
 	}
 
-	// Multi-arg always means send (codes are single tokens).
+	// Several args mean send — unless together they spell a code typed
+	// the way it is heard ("fsend abc defg jkm") and none of them is a
+	// path. An existing path wins, as for a single argument.
 	if len(f.posArgs) > 1 {
+		if c, ok := splitCode(f.posArgs); ok {
+			return startReceive(f, c)
+		}
 		return runSend(f, f.posArgs)
 	}
 
@@ -940,4 +949,24 @@ func askCodeOrPath(br *bufio.Reader, arg string) (send bool, err error) {
 		}
 		fmt.Fprintln(os.Stderr, "  Please answer s or r.")
 	}
+}
+
+// splitCode joins arguments that spell one share code across several words
+// ("abc defg jkm", or "abc-defg jkm") and returns it in canonical form. It
+// refuses when any argument exists as a path (Lstat: a dangling link
+// counts), so `fsend a.txt b.txt` always sends.
+func splitCode(args []string) (string, bool) {
+	if len(args) > 3 {
+		return "", false
+	}
+	c, ok := code.Normalize(strings.Join(args, " "))
+	if !ok {
+		return "", false
+	}
+	for _, a := range args {
+		if _, err := os.Lstat(a); err == nil {
+			return "", false
+		}
+	}
+	return c, true
 }

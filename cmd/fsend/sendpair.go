@@ -845,7 +845,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	// runSenderTransferLoop.
 	if !f.quiet {
 		fmt.Fprintf(os.Stderr, "%s Receiver connected%s\n",
-			uxlog.Check(), "  ·  "+pathInfo.Chip())
+			uxlog.Check(), uxlog.Muted(uxlog.Sep+pathInfo.Chip()))
 	}
 
 	if winner.lan != nil {
@@ -922,12 +922,42 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// owns that window. The first event off the wire — a byte, a resume
 	// notice, a skip, a retry — stops it so the progress bar (or notice
 	// line) lands on a clean row. Stop is idempotent and nil-safe (--quiet).
+	//
+	// The receiver's HELLO reply only names it: a file receiver decides after
+	// seeing the listing, so "accepted" waits for OnAccepted and the spinner
+	// names the device while it reads the prompt (or types the password).
 	spin := startWaitSpinner(f, "Waiting for them to accept")
-	defer func() { spin.Stop() }() // spin is swapped once the receiver answers
+	defer func() { spin.Stop() }() // spin is swapped as the receiver moves on
+	stream := plan.mode == wire.ModeStream
+	waitFor := func(what string) {
+		spin.Stop()
+		if !sendState.acceptedBy(sendState.peerName()) {
+			spin = startWaitSpinner(f, "Waiting for "+sendState.peerName()+" to "+what)
+		}
+	}
 	peer := func(host string, accepted bool) {
 		spin.Stop()
-		onPeer(f, host, accepted)
-		if accepted && f.passArg != "" {
+		onPeer(host, pathInfo)
+		switch {
+		case !accepted || stream:
+			// A declined or stream reply needs no wait line: the error
+			// path or OnAccepted speaks next.
+		case f.passArg != "":
+			waitFor("enter the password")
+		default:
+			waitFor("accept")
+		}
+	}
+	passOK := func() {
+		spin.Stop()
+		if !stream {
+			waitFor("accept")
+		}
+	}
+	accepted := func() {
+		spin.Stop()
+		onAccepted(f)
+		if stream && f.passArg != "" {
 			spin = startWaitSpinner(f, "Waiting for "+sendState.peerName()+" to enter the password")
 		}
 	}
@@ -956,13 +986,14 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	}
 	unreadable, onUnreadable, onChanged := sourceIssueHooks(f, plan)
 	current := firstRes
-	opts := retry.Options{OnRetry: retryNoticeFor(f)}
-	if notice := opts.OnRetry; notice != nil {
-		opts.OnRetry = func(attempt int, wait time.Duration, lastErr error) {
-			spin.Stop()
+	notice := retryNoticeFor(f)
+	opts := retry.Options{OnRetry: func(attempt int, wait time.Duration, lastErr error) {
+		spin.Stop()
+		jsonEmitRetry(attempt, retry.DefaultAttempts, wait)
+		if notice != nil {
 			notice(attempt, wait, lastErr)
 		}
-	}
+	}}
 	classify := retry.IsTransient
 	if plan.consumable() {
 		// A partially-consumed stdin/--text reader would resend from an
@@ -1013,6 +1044,8 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 				OnSkip:          skip,
 				OnStreamingEOF:  onStreamingEOF,
 				OnPeer:          peer,
+				OnPasswordOK:    passOK,
+				OnAccepted:      accepted,
 				OnSourceSkipped: onUnreadable,
 				OnSourceChanged: onChanged,
 			})

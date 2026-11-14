@@ -80,24 +80,24 @@ func (p *plainProgress) add(n int64) {
 	if p.total > 0 {
 		// Clamp to 0..100: a percentage outside that range is never correct
 		// output, whatever the caller's accounting did.
-		line := fmt.Sprintf("%d%%  %s / %s",
-			max(0, min(100, p.current*100/p.total)), HumanBytes(p.current), HumanBytes(p.total))
+		// No fixed-width field here: a log line is read, not redrawn.
+		line := fmt.Sprintf("%d%%%s%s of %s", Percent(p.current, p.total), Sep, HumanBytes(p.current), HumanBytes(p.total))
 		// Rate and ETA matter most in CI logs, where nobody watches a bar.
 		now := time.Now()
 		if r := p.win.observe(now, p.current); p.total >= rateThreshold && r >= 1 && !p.win.stalled(now) {
-			line += "  ·  " + HumanBytes(int64(r)) + "/s"
+			line += Sep + RateLabel(r)
 			if left := float64(p.total-p.current) / r; left > 0 {
-				line += "  ·  ETA " + etaLabel(left)
+				line += Sep + etaLabel(left) + " left"
 			}
 		}
 		if p.route != "" {
-			line += "  ·  " + p.route
+			line += Sep + p.route
 		}
 		if p.label != "" {
-			line += "  ·  " + p.label
+			line += Sep + p.label
 		}
 		if p.fileN > 0 {
-			line += fmt.Sprintf("  ·  file %d/%d", p.fileI, p.fileN)
+			line += fmt.Sprintf("%sfile %d/%d", Sep, p.fileI, p.fileN)
 		}
 		_, _ = fmt.Fprintf(p.w, "  %s\n", line)
 		return
@@ -107,10 +107,10 @@ func (p *plainProgress) add(n int64) {
 	// noise floor.
 	line := HumanBytes(p.current)
 	if r := HumanRate(p.current, time.Since(p.start)); r != "" {
-		line += "  ·  " + r
+		line += Sep + r
 	}
 	if p.route != "" {
-		line += "  ·  " + p.route
+		line += Sep + p.route
 	}
 	_, _ = fmt.Fprintf(p.w, "  %s\n", line)
 }
@@ -154,30 +154,34 @@ const barWidth = 40
 // barMin floors the bar so even a cramped terminal keeps a track.
 const barMin = 10
 
-// The chips' widest forms, booked against the bar up front. mpb hands the bar
-// whatever the decorators leave on a given frame, so a chip whose text gained
-// a column ("44 MB" vs "43.8 MB") — or that appeared mid-transfer — would
-// resize the bar on that frame; a bar that changes width ten times a second
-// reads as broken. Booking the widest form costs the bar a few columns on
-// terminals where the chips would have stayed hidden for the first second;
-// a steady bar is worth them.
+// The row follows the grid: the track starts in column 2 (the gutter is
+// empty), then the percentage, then the faint figures, as in
+// "━━━━━━━━━━━━━━━╸─────────  62%  185.6 MB of 300 MB · 62.9 MB/s · 2 s left".
+//
+// The chips' widest forms are booked against the bar up front. mpb hands the
+// bar whatever the decorators leave on a given frame, so a chip whose text
+// gained a column ("44 MB" vs "43.8 MB") — or that appeared mid-transfer —
+// would resize the bar on that frame; a bar that changes width ten times a
+// second reads as broken. Booking the widest form costs the bar a few columns
+// on terminals where the chips would have stayed hidden for the first
+// second; a steady bar is worth them.
 const (
-	pctFurniture  = 8  // "  100%  ", or the "  ...  " streaming stand-in
-	rateFurniture = 15 // "  ·  999.9 MB/s"
-	etaFurniture  = 17 // "  ·  ETA 10h02m03s"
-	barFurniture  = 2  // the spaces mpb puts around the track
+	gutter        = 2  // the empty glyph column and its space
+	pctFurniture  = 6  // "  100%"
+	rateFurniture = 13 // " · 999.9 MB/s"
+	etaFurniture  = 22 // " · 10 h 02 min left"
 	nameMin       = 12 // runes below which the file chip isn't worth showing
 	nameGrow      = 30 // the name grows to this before the bar takes the rest
 	barGrow       = 20 // the bar grows to this before the name does
 )
 
 // counterFurniture is the widest the counter decorator can render: its two
-// leading spaces, the current figure's fixed field, the " / " and the total.
+// leading spaces, the current figure's fixed field, " of " and the total.
 func counterFurniture(total int64) int {
 	if total <= 0 {
 		return 2 + 8 // streaming: "  " + a maximal HumanBytes figure
 	}
-	return 2 + counterField(total) + 3 + len(HumanBytes(total))
+	return 2 + counterField(total) + 4 + len(HumanBytes(total))
 }
 
 // barLayout is one row's allocation of the terminal's columns.
@@ -186,19 +190,21 @@ type barLayout struct {
 	eta, rate bool
 	counter   bool
 	nameCap   int // file chip's name budget in runes; 0 = no chip
-	route     bool
 }
 
-// layout splits a row by priority — % > ETA > rate > counter > name > bar
-// > route — booking each element's widest form and dropping whole elements
-// that don't fit, so mpb never has to cut a number mid-digit. Spare columns
-// grow the bar to barGrow, the name to nameGrow, then book the route, then
-// the bar to its cap, and the rest goes to the name. Pure and cheap: every
-// decorator re-derives it from the live width each frame, so a resize
-// re-flows by priority.
-func layout(width int, total int64, showNames bool, route string) barLayout {
+// layout splits a row by priority — % > ETA > rate > counter > name > bar —
+// booking each element's widest form and dropping whole elements that don't
+// fit, so mpb never has to cut a number mid-digit. Spare columns grow the bar
+// to barGrow, the name to nameGrow, then the bar to its cap, and the rest goes
+// to the name. The last column stays free: writing into it makes some
+// terminals wrap. Pure and cheap: every decorator re-derives it from the live
+// width each frame, so a resize re-flows by priority.
+func layout(width int, total int64, showNames bool) barLayout {
 	var l barLayout
-	avail := width - pctFurniture
+	avail := width - 1 - gutter
+	if total > 0 {
+		avail -= pctFurniture
+	}
 	take := func(n int) bool {
 		if avail >= n {
 			avail -= n
@@ -209,10 +215,10 @@ func layout(width int, total int64, showNames bool, route string) barLayout {
 	l.eta = total >= rateThreshold && take(etaFurniture)
 	l.rate = (total <= 0 || total >= rateThreshold) && take(rateFurniture)
 	l.counter = take(counterFurniture(total))
-	if showNames && take(5+nameMin) {
+	if showNames && take(3+nameMin) {
 		l.nameCap = nameMin
 	}
-	if total > 0 && take(barFurniture+barMin) {
+	if total > 0 && take(barMin) {
 		l.bar = barMin
 	}
 	grow := func(cur *int, to int) {
@@ -224,7 +230,6 @@ func layout(width int, total int64, showNames bool, route string) barLayout {
 	}
 	grow(&l.bar, barGrow)
 	grow(&l.nameCap, nameGrow)
-	l.route = route != "" && take(len(route)+5)
 	grow(&l.bar, barWidth)
 	if l.nameCap > 0 {
 		l.nameCap += avail
@@ -234,8 +239,8 @@ func layout(width int, total int64, showNames bool, route string) barLayout {
 
 // liveLayout is layout at the terminal's current width, falling back to
 // the construction-time width when the size query fails.
-func liveLayout(width int, total int64, showNames bool, route string) barLayout {
-	return layout(terminalWidth(width), total, showNames, route)
+func liveLayout(width int, total int64, showNames bool) barLayout {
+	return layout(terminalWidth(width), total, showNames)
 }
 
 // terminalWidth returns stderr's current width, or fallback when stderr
@@ -248,14 +253,6 @@ func terminalWidth(fallback int) int {
 		return fallback
 	}
 	return w
-}
-
-// TerminalWidth is terminalWidth for one-shot renders in cmd/fsend
-// (e.g. the code box): callers that shape a single block to the
-// terminal's width, not a per-frame redraw. Falls back to the given
-// width when stderr isn't a measurable terminal.
-func TerminalWidth(fallback int) int {
-	return terminalWidth(fallback)
 }
 
 // rateThreshold is the transfer size below which rate + ETA are
@@ -289,6 +286,18 @@ func Println(line string) {
 	}
 	printlnTo(os.Stderr, line)
 }
+
+// Status prints one line on the grid every line follows: the glyph in
+// column 0 (Check, Cross, Warn, Ask, Info's blank), the text from column 2.
+// Routed through Println, so it lands cleanly above a live bar or spinner.
+func Status(glyph, text string) { Println(glyph + " " + text) }
+
+// Note prints faint detail in column 2, under the line it belongs to — the
+// form a neutral notice takes (no glyph of its own).
+func Note(text string) { Println(Detail(text)) }
+
+// Detail is Note's string form, for callers assembling a block.
+func Detail(text string) string { return "  " + Muted(text) }
 
 // printlnTo writes line, first wiping a live spinner frame so the line
 // starts at column 0; the spinner redraws below it on its next tick.
@@ -357,9 +366,10 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	// Only the bar's cap is fixed here (so it can't jiggle as chips come
 	// and go); every chip re-derives from the live width each refresh
 	// frame, so a mid-transfer resize re-flows by priority. A bar of 1 is
-	// "no track": the filler draws nothing narrower than its bounds.
-	bw := max(1, layout(width, totalBytes, showNames, route).bar)
-	lay := func() barLayout { return liveLayout(width, totalBytes, showNames, route) }
+	// "no track": the filler draws nothing narrower than its bounds. The
+	// route is not on the row: the "Connected" line above already says it.
+	bw := max(1, layout(width, totalBytes, showNames).bar)
+	lay := func() barLayout { return liveLayout(width, totalBytes, showNames) }
 
 	p := &Progress{}
 	defer setActive(p)
@@ -371,10 +381,20 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 
 	hasTotal := totalBytes > 0
 	// The ━/╸/─ trio gives a calm, modern look without the "=====>"
-	// telegraph aesthetic the default style carries. Unknown totals get
-	// no track at all: it could never fill, and a full-width ─ line at
-	// 0% reads as "stalled" — the counter/rate decorators carry the line.
-	var style mpb.BarFillerBuilder = mpb.BarStyle().Lbound(" ").Rbound(" ").Filler("━").Tip("╸").Padding("─")
+	// telegraph aesthetic the default style carries. The filled part wears
+	// the accent, like the spinner it replaces, so the element in motion
+	// keeps one colour from waiting to done; the unfilled track is faint.
+	// Unknown totals get no track at all: it could never fill, and a
+	// full-width ─ line at 0% reads as "stalled".
+	bs := mpb.BarStyle().Lbound("").Rbound("").Filler("━").Tip("╸").Padding("─")
+	if colorEnabled() {
+		if c := fg(tokenAccent); c != "" {
+			accent := func(s string) string { return c + s + colorReset }
+			bs = bs.FillerMeta(accent).TipMeta(accent)
+		}
+		bs = bs.PaddingMeta(Muted)
+	}
+	var style mpb.BarFillerBuilder = bs
 	if !hasTotal {
 		style = mpb.NopStyle()
 	}
@@ -392,37 +412,31 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 	// total-gated inside its decorator.
 	showRate := !hasTotal || totalBytes >= rateThreshold
 
-	// Percentage on the left. The completed bar is removed (see
-	// BarRemoveOnComplete below), so no terminal-state swap is needed.
-	prependDecs := []decor.Decorator{
-		decor.Name("  "),
-		// "%d" renders "66%", matching plain mode — the default
-		// "% d" pads a space before the sign ("66 %").
-		decor.NewPercentage("%d", decor.WC{W: 4}),
-		decor.Name("  "),
-	}
-	if !hasTotal {
-		// Streaming transfers (stdin) — no meaningful percentage.
-		prependDecs = []decor.Decorator{
-			decor.Name("  "),
-			decor.Name("... "),
-			decor.Name("  "),
-		}
-	}
+	// The empty gutter, then the track (from column 2, like every line's
+	// text). The completed bar is removed (BarRemoveOnComplete below), so
+	// no terminal-state swap is needed.
+	prependDecs := []decor.Decorator{decor.Name("  ")}
 
+	// The percentage follows the track, in default text: it is the figure
+	// the eye reads. The rest of the row is faint detail.
+	var appendDecs []decor.Decorator
+	if hasTotal {
+		appendDecs = append(appendDecs, decor.Any(func(s decor.Statistics) string {
+			return fmt.Sprintf("  %3d%%", Percent(s.Current, s.Total))
+		}))
+	}
 	// Counters: always render via HumanBytes so units stay uppercase
 	// and small whole-byte values don't gain a "%.2f" tail.
-	counters := decor.Any(func(s decor.Statistics) string {
+	appendDecs = append(appendDecs, decor.Meta(decor.Any(func(s decor.Statistics) string {
 		if !lay().counter {
 			return ""
 		}
 		return "  " + counterLine(s.Current, s.Total)
-	})
+	}), Muted))
 
-	appendDecs := []decor.Decorator{counters}
-	// The plain (un-dimmed) stalled marker; decor.Meta colors it below while
-	// mpb measures the bar width off this ANSI-free form.
-	const stalledChip = "  ·  stalled"
+	// The stalled marker carries the warning colour; decor.Meta colours it
+	// while mpb measures the bar width off the ANSI-free form.
+	const stalledChip = Sep + "stalled"
 	if showRate {
 		appendDecs = append(appendDecs,
 			// Rate: hidden when the figure would be misleading (start
@@ -449,25 +463,20 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 					if r < 1 {
 						return ""
 					}
-					return "  ·  " + HumanBytes(int64(r)) + "/s"
+					return Sep + RateLabel(r)
 				}),
-				// Colour only the stalled marker — the warning token, the
-				// caution family, since a stall is a soft warning. Measuring
-				// width off the plain string above keeps mpb from counting
-				// the ANSI escapes — a colorized decor.Any costs ~6 columns
-				// of bar during a stall.
 				func(str string) string {
 					if str == stalledChip {
-						return fg(tokenWarning) + str + colorReset
+						return Muted(Sep) + fg(tokenWarning) + "stalled" + colorReset
 					}
-					return str
+					return Muted(str)
 				},
 			),
 			// ETA: needs a known total, non-zero progress, and at least
 			// 1 s elapsed so the projection isn't dominated by handshake
 			// time. Hidden on completion and during a stall (a projection
 			// off a decaying rate only inflates).
-			decor.Any(func(s decor.Statistics) string {
+			decor.Meta(decor.Any(func(s decor.Statistics) string {
 				if s.Completed || s.Aborted || s.Total <= 0 || s.Current == 0 || !lay().eta {
 					return ""
 				}
@@ -482,47 +491,43 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 				if remainingSecs <= 0 {
 					return ""
 				}
-				return "  ·  ETA " + etaLabel(remainingSecs)
-			}),
+				return Sep + etaLabel(remainingSecs) + " left"
+			}), Muted),
 		)
-	}
-	if route != "" {
-		// Route chip, plain default foreground — the bar's other
-		// decorators provide the emphasis around it. Dropped first when
-		// the terminal is too narrow to hold it beside the bar and the
-		// file chip: the route was already stated on the phase line
-		// above, so it is the cheapest thing to lose.
-		appendDecs = append(appendDecs, decor.Any(func(decor.Statistics) string {
-			if !lay().route {
-				return ""
-			}
-			return "  ·  " + route
-		}))
 	}
 	if showNames {
 		// Current-file chip, last so its per-file width changes don't
-		// jiggle the rate/ETA chips. Two decorators, two tones: the name
-		// wears the file-reference green, while the "file i/N" counter
-		// stays in the default foreground so it reads as progress instead
-		// of another filename. The budget re-derives from the live width
-		// every frame, so a mid-transfer resize re-truncates (or drops)
-		// the chip; terminalWidth falls back to the width seen at
-		// construction if the size query starts failing.
+		// jiggle the rate/ETA chips: the name in default text (it is the
+		// row's subject), the "file i/N" counter faint. The budget
+		// re-derives from the live width every frame, so a mid-transfer
+		// resize re-truncates (or drops) the chip; terminalWidth falls back
+		// to the width seen at construction if the size query starts
+		// failing.
 		appendDecs = append(appendDecs,
+			// Colour the name only: the separator before it stays faint.
+			// decor.Meta keeps mpb measuring the ANSI-free width.
 			decor.Meta(decor.Any(func(decor.Statistics) string {
 				name, _ := p.chipParts(lay().nameCap)
 				return name
-			}), func(str string) string { return Path(str) }),
-			decor.Any(func(decor.Statistics) string {
+			}), func(str string) string {
+				if rest, ok := strings.CutPrefix(str, chipSep); ok && rest != "" {
+					return Muted(chipSep) + Path(rest)
+				}
+				return str
+			}),
+			decor.Meta(decor.Any(func(decor.Statistics) string {
 				_, tail := p.chipParts(lay().nameCap)
 				return tail
-			}),
+			}), Muted),
 		)
 	}
 
 	p.bar = p.mp.New(totalBytes,
 		style,
 		mpb.BarWidth(bw),
+		// No padding around the track: it starts in column 2, the grid's
+		// text column, and the percentage brings its own spacing.
+		mpb.BarFillerTrim(),
 		// Progress is transient: a completed bar erases itself and the
 		// summary line that follows is the permanent record. Aborted
 		// (partial) bars stay — see Done().
@@ -545,14 +550,14 @@ func counterField(total int64) int {
 	return max(8, len(HumanBytes(total))+1)
 }
 
-// counterLine renders the "transferred / total" counter, the current figure
+// counterLine renders the "transferred of total" counter, the current figure
 // right-aligned in counterField's fixed width so the counter occupies the same
 // columns on every frame.
 func counterLine(current, total int64) string {
 	if total <= 0 {
 		return HumanBytes(current)
 	}
-	return fmt.Sprintf("%*s / %s", counterField(total), HumanBytes(current), HumanBytes(total))
+	return fmt.Sprintf("%*s of %s", counterField(total), HumanBytes(current), HumanBytes(total))
 }
 
 // etaLabel renders an ETA projection, rounding up to whole seconds: at
@@ -566,7 +571,7 @@ func etaLabel(remainingSecs float64) string {
 		secs = 1
 	}
 	if secs < 60 {
-		return fmt.Sprintf("%ds", secs)
+		return fmt.Sprintf("%d s", secs)
 	}
 	return HumanDuration(time.Duration(secs) * time.Second)
 }
@@ -637,13 +642,16 @@ func (p *Progress) chipParts(chipCap int) (name, tail string) {
 		return "", ""
 	}
 	if i, n := p.filePosition(); n > 0 {
-		if t := fmt.Sprintf("  ·  file %d/%d", i, n); chipCap-len(t) >= 6 {
+		if t := fmt.Sprintf("%sfile %d/%d", Sep, i, n); chipCap-len(t) >= 6 {
 			tail = t
 			chipCap -= len(t)
 		}
 	}
-	return "  ·  " + truncateName(label, chipCap), tail
+	return chipSep + truncateName(label, chipCap), tail
 }
+
+// chipSep separates the bar's chips.
+const chipSep = Sep
 
 // truncateName caps s at max runes with a middle cut: the whole basename
 // stays when it fits ("assets/…/video1.bin"), else the basename itself is

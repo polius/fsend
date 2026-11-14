@@ -15,9 +15,14 @@ import (
 // versioned by "v" and evolved additively only (documented in
 // docs/usage.md). Human output stays on stderr, untouched.
 //
-// Two events exist:
+// Events:
 //   - "code": the sender's pairing code, emitted as soon as it is issued
 //     so a script can relay it before the transfer completes.
+//   - "peer": the other side's device name and the route, once per peer.
+//   - "accepted": the receiver agreed (the sender hears it when the
+//     receiver's decisions arrive; the receiver emits it on its own yes).
+//   - "retry": a dropped connection is being retried (attempt of max).
+//   - "progress": bytes so far, at most once a second while data moves.
 //   - "done": the final outcome, emitted exactly once per run — from the
 //     summary path when the transfer reached one (rich: bytes/files/route),
 //     or from renderError otherwise (ok/error/exit only).
@@ -59,6 +64,86 @@ type jsonCodeEvent struct {
 	V     int    `json:"v"`
 	Event string `json:"event"`
 	Code  string `json:"code"`
+	// Install is the one-liner that installs fsend and receives with the
+	// code; omitted when the send uses a server of its own.
+	Install string `json:"install,omitempty"`
+}
+
+type jsonPeerEvent struct {
+	V     int    `json:"v"`
+	Event string `json:"event"`
+	Name  string `json:"name"`            // the peer's self-reported device name, sanitized
+	Route string `json:"route,omitempty"` // local | direct | relay
+}
+
+type jsonBareEvent struct {
+	V     int    `json:"v"`
+	Event string `json:"event"`
+}
+
+type jsonRetryEvent struct {
+	V       int    `json:"v"`
+	Event   string `json:"event"`
+	Attempt int    `json:"attempt"` // the attempt about to start
+	Of      int    `json:"of"`      // the attempt cap
+	WaitMS  int64  `json:"wait_ms"` // the backoff before it
+}
+
+type jsonProgressEvent struct {
+	V     int    `json:"v"`
+	Event string `json:"event"`
+	Bytes int64  `json:"bytes"`           // transferred so far, resumed prefixes included
+	Total *int64 `json:"total,omitempty"` // omitted when unknown (a stdin stream)
+	File  string `json:"file,omitempty"`  // the file being transferred, when there are several
+}
+
+// jsonEmit prints an event when --json is on. The done event has its own
+// once-guarded path (jsonEmitDone).
+func jsonEmit(v any) {
+	if jsonEnabled() {
+		jsonEvent(v)
+	}
+}
+
+func jsonEmitPeer(name, route string) {
+	jsonEmit(jsonPeerEvent{V: 1, Event: "peer", Name: name, Route: route})
+}
+
+func jsonEmitAccepted() { jsonEmit(jsonBareEvent{V: 1, Event: "accepted"}) }
+
+func jsonEmitRetry(attempt, of int, wait time.Duration) {
+	jsonEmit(jsonRetryEvent{V: 1, Event: "retry", Attempt: attempt, Of: of, WaitMS: wait.Milliseconds()})
+}
+
+// jsonProgressInterval throttles progress events: enough for a wrapper's
+// bar, little enough that a log of a long transfer stays readable.
+const jsonProgressInterval = time.Second
+
+// jsonProgress throttles one role's progress events.
+type jsonProgress struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+// emit sends a progress event unless one went out within the interval.
+// total <= 0 is "unknown" and omitted.
+func (p *jsonProgress) emit(bytes, total int64, file string) {
+	if !jsonEnabled() {
+		return
+	}
+	p.mu.Lock()
+	now := time.Now()
+	if !p.last.IsZero() && now.Sub(p.last) < jsonProgressInterval {
+		p.mu.Unlock()
+		return
+	}
+	p.last = now
+	p.mu.Unlock()
+	ev := jsonProgressEvent{V: 1, Event: "progress", Bytes: bytes, File: file}
+	if total > 0 {
+		ev.Total = ptr64(total)
+	}
+	jsonEvent(ev)
 }
 
 // jsonDoneEvent is the terminal event. Omitted fields mean "not known at
@@ -87,13 +172,8 @@ type jsonDoneEvent struct {
 	Text         string `json:"text,omitempty"` // receiver: --text payload (replaces raw stdout)
 }
 
-func jsonEmitCode(code string) {
-	jsonOut.mu.Lock()
-	on := jsonOut.enabled
-	jsonOut.mu.Unlock()
-	if on {
-		jsonEvent(jsonCodeEvent{V: 1, Event: "code", Code: code})
-	}
+func jsonEmitCode(code, install string) {
+	jsonEmit(jsonCodeEvent{V: 1, Event: "code", Code: code, Install: install})
 }
 
 // jsonEmitDone emits the done event once; later calls are no-ops.

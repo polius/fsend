@@ -306,10 +306,10 @@ func TestPromptAccept_HeadlineNoDuplicateCount(t *testing.T) {
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
 		_ = ui.promptAccept(h, sum)
 	})
-	if strings.Contains(got, "2 files  ·  2 files") {
+	if strings.Contains(got, "2 files · 2 files") {
 		t.Errorf("headline duplicates the count:\n%s", got)
 	}
-	if !strings.Contains(got, "2 files  ·  100 B") {
+	if !strings.Contains(got, "2 files · 100 B") {
 		t.Errorf("expected collapsed 'count · size' headline:\n%s", got)
 	}
 }
@@ -321,7 +321,7 @@ func TestReceiverSizeClause(t *testing.T) {
 		want string
 	}{
 		{"all new", transfer.ClassifySummary{OfferedBytes: 1_200_000_000, BytesToRecv: 1_200_000_000}, "1.2 GB"},
-		{"some skipped", transfer.ClassifySummary{OfferedBytes: 1_200_000_000, BytesToRecv: 307_000_000}, "307 MB of 1.2 GB"},
+		{"some skipped", transfer.ClassifySummary{OfferedBytes: 1_200_000_000, BytesToRecv: 307_000_000}, "307 MB left of 1.2 GB"},
 		{"all up to date", transfer.ClassifySummary{OfferedBytes: 1_200_000_000, BytesToRecv: 0, Identical: 3}, "already up to date"},
 		{"single differ", transfer.ClassifySummary{OfferedBytes: 4_200_000_000, BytesToRecv: 0, Differing: 1}, "4.2 GB"},
 		// net and offered round to the same human string → show one number,
@@ -357,7 +357,7 @@ func TestPrintSendArtifact_ListsFiles(t *testing.T) {
 		},
 	}
 	got := captureStderr(t, func() {
-		sp := printSendArtifact(&flags{}, "abc-defg-hij", plan)
+		sp := printSendArtifact(&flags{}, "abc-defg-hij", plan, false)
 		if sp != nil {
 			sp.Stop()
 		}
@@ -396,9 +396,43 @@ func TestPromptAccept_ListsFiles(t *testing.T) {
 		t.Errorf("accept prompt missing per-file status:\n%s", got)
 	}
 	// Headline: file count (not items), "X of Y", and the differ count.
-	for _, want := range []string{"2 files", "10 B of 30 B", "1 differ"} {
+	for _, want := range []string{"2 files", "10 B left of 30 B", "1 differ"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("headline missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// "… and 1 more" would cost the very row it hides: 11 files print all 11.
+func TestRenderPreview_NeverHidesExactlyOneRow(t *testing.T) {
+	var items []previewItem
+	for i := 0; i < previewRows+1; i++ {
+		items = append(items, previewItem{name: "f", size: 10})
+	}
+	got := render(items)
+	if strings.Contains(got, "more") || strings.Count(got, "\n") != previewRows+1 {
+		t.Errorf("want all %d rows and no remainder line:\n%s", previewRows+1, got)
+	}
+}
+
+// A receiver without fsend gets one line to run instead: it installs fsend
+// and receives with the code. Only on the default server — a fresh install
+// pairs there — and in the code JSON event too.
+func TestPrintSendArtifact_InstallHint(t *testing.T) {
+	plan := &sendPlan{mode: wire.ModeFiles, totalFiles: 1, totalBytes: 7, label: "a.txt"}
+	got := captureStderr(t, func() {
+		sp := printSendArtifact(&flags{}, "abc-defg-hij", plan, true)
+		sp.Stop()
+	})
+	want := "    curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hij\n"
+	if !strings.Contains(got, "No fsend there yet?") || !strings.Contains(got, want) {
+		t.Errorf("install hint missing:\n%s", got)
+	}
+	got = captureStderr(t, func() {
+		sp := printSendArtifact(&flags{}, "abc-defg-hij", plan, false)
+		sp.Stop()
+	})
+	if strings.Contains(got, "curl") {
+		t.Errorf("a custom server must not get the hint:\n%s", got)
 	}
 }

@@ -41,6 +41,15 @@ type SendOptions struct {
 	// device name (peer-supplied — sanitize before display) and whether it
 	// accepted the transfer.
 	OnPeer func(hostname string, accepted bool)
+	// OnPasswordOK fires once the receiver has proved it holds the
+	// transfer password (password sends only).
+	OnPasswordOK func()
+	// OnAccepted fires when the receiver has actually agreed to the
+	// transfer. For file sends the HELLO reply only lets the listing
+	// through — the receiver decides after seeing it — so this fires once
+	// its per-file decisions arrive. Stream receivers ask before replying,
+	// so for them it fires with the accepting HELLO reply.
+	OnAccepted func()
 	// OnSourceSkipped fires for a file that could not be read; the receiver
 	// is told to drop it and the transfer carries on with the rest.
 	OnSourceSkipped func(index uint32, err error)
@@ -107,10 +116,16 @@ func send(ctx context.Context, s *Streams, opts SendOptions) error {
 	if !ack.Accepts {
 		return fserrors.ErrReceiverDeclined
 	}
+	if opts.Mode == wire.ModeStream && opts.OnAccepted != nil {
+		opts.OnAccepted()
+	}
 
 	if opts.Password != "" {
 		if err := senderPasswordHandshake(s, opts.Password); err != nil {
 			return err
+		}
+		if opts.OnPasswordOK != nil {
+			opts.OnPasswordOK()
 		}
 	}
 
@@ -131,6 +146,9 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions) error {
 	decisions, err := senderNegotiate(s, opts.Sources)
 	if err != nil {
 		return err
+	}
+	if opts.OnAccepted != nil {
+		opts.OnAccepted()
 	}
 
 	// Verify every resume prefix in the background while earlier files

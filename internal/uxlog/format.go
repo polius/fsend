@@ -33,28 +33,28 @@ func HumanBytes(n int64) string {
 	return fmt.Sprintf("%s %cB", s, "KMGTPE"[exp])
 }
 
-// HumanDuration renders elapsed in compact form. Sub-second durations
-// show with milliseconds; longer durations switch to seconds with one
-// decimal, then minutes-and-seconds, then hours-minutes-seconds.
+// HumanDuration renders elapsed in compact form, with a space before the
+// unit like every size ("300 MB in 4.8 s"). Sub-second durations show
+// milliseconds; then seconds with one decimal, whole seconds, minutes and
+// seconds, and past an hour hours and minutes.
 func HumanDuration(d time.Duration) string {
 	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
+		return fmt.Sprintf("%d ms", d.Milliseconds())
 	}
 	if d < 10*time.Second {
-		return fmt.Sprintf("%.1fs", d.Seconds())
+		return fmt.Sprintf("%.1f s", d.Seconds())
 	}
 	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf("%d s", int(d.Seconds()))
 	}
 	if d < time.Hour {
 		m := int(d / time.Minute)
 		s := int((d % time.Minute) / time.Second)
-		return fmt.Sprintf("%dm%02ds", m, s)
+		return fmt.Sprintf("%d min %02d s", m, s)
 	}
 	h := int(d / time.Hour)
 	m := int((d % time.Hour) / time.Minute)
-	s := int((d % time.Minute) / time.Second)
-	return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
+	return fmt.Sprintf("%d h %02d min", h, m)
 }
 
 // HumanRate renders a bytes-per-second figure in compact form. Returns
@@ -77,8 +77,41 @@ func HumanRate(bytes int64, elapsed time.Duration) string {
 	if bytes < rateNoiseFloor {
 		return ""
 	}
-	rate := float64(bytes) / elapsed.Seconds()
-	return HumanBytes(int64(rate)) + "/s"
+	return RateLabel(float64(bytes) / elapsed.Seconds())
+}
+
+// RateLabel renders a bytes-per-second figure with a fixed single decimal
+// ("61.0 MB/s", never "61 MB/s" then "60.1 MB/s"), so a live rate keeps
+// its shape while it is being read. Sizes elsewhere drop a ".0"; a rate
+// changes every frame, so it must not.
+func RateLabel(bytesPerSec float64) string {
+	const unit = 1000
+	n := int64(bytesPerSec)
+	if n < unit {
+		return fmt.Sprintf("%d B/s", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB/s", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// Percent is the one rounding every percentage on screen uses — the bar,
+// plain-mode lines, "stopped at 62%" and "Resuming from … (62%)" — so two
+// lines about the same moment never disagree by a point. Rounds to the
+// nearest whole percent, but never shows 100 before the end or 0 after
+// the start.
+func Percent(current, total int64) int {
+	if total <= 0 || current <= 0 {
+		return 0
+	}
+	if current >= total {
+		return 100
+	}
+	p := int((current*200 + total) / (total * 2))
+	return max(1, min(99, p))
 }
 
 // CountNoun renders "<n> <noun>" with naive pluralisation ("1 file",
@@ -101,13 +134,44 @@ func Code(c string) string {
 	return fgBold(tokenAccent) + c + colorReset
 }
 
-// There is deliberately no "dim"/muted renderer here. Secondary text
-// renders in the terminal's default foreground: that is the one colour
-// guaranteed readable on the user's theme, and hierarchy comes from
-// emphasising the primary elements (accent orange, primary violet,
-// success green, bold) — never from darkening the rest. opencode can
-// calibrate a muted tone against the known background; a portable CLI
-// cannot, and every grey gamble loses on someone's palette.
+// Three levels rank everything on screen: bold for the subject of a line,
+// default text for the sentence, faint (Muted) for the detail — sizes,
+// counts, the route, timings, hints, rows that need no attention. Colour
+// is left for what needs a decision or reports an outcome, so a screen
+// needs few hues.
+
+// Muted renders s in the faint attribute (SGR 2) for metadata. Faint is
+// derived from the user's own foreground, so it stays readable on every
+// theme, unlike a fixed grey. Gated on colour; plain text on pipes.
+func Muted(s string) string {
+	if !colorEnabled() || s == "" {
+		return s
+	}
+	return colorFaint + s + "\x1b[22m"
+}
+
+// Subject renders the subject of a line — the file a summary is about,
+// the destination a prompt names — in bold. Gated on colour.
+func Subject(s string) string {
+	if !colorEnabled() || s == "" {
+		return s
+	}
+	return colorBold + s + "\x1b[22m"
+}
+
+// Sep joins the facts on a line: one separator, one space each side.
+const Sep = " · "
+
+// Join joins the non-empty parts with Sep.
+func Join(parts ...string) string {
+	out := parts[:0:0]
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, Sep)
+}
 
 // Prompt wraps s in the primary accent — the colour of a question, the
 // role opencode's themes give their primary token. Used for the lines
@@ -121,52 +185,17 @@ func Prompt(s string) string {
 	return fg(tokenPrimary) + s + colorReset
 }
 
-// Good wraps s in the success colour — the reassurance family the ✓
-// glyph leads — for positive clauses in summary lines ("2 files up to
-// date"). Gated on colour.
-func Good(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return fg(tokenSuccess) + s + colorReset
-}
+// Path marks a file reference. File names render in the default
+// foreground — green means "it worked" and is kept for the ✓ alone — so
+// this is the identity; it stays as the one place to change if names ever
+// need a treatment of their own.
+func Path(s string) string { return s }
 
-// Path wraps s in the success colour — the file-reference accent. In
-// opencode's TUI, file paths and code references render through the
-// theme's green tokens (diffAdded / markdownCode / syntaxString share
-// one green), which teaches the eye "green = a file on disk". fsend
-// follows the same convention: listing names, saved destinations,
-// conflict rows. Shares the green with Good so the association stays
-// single. Gated on colour.
-func Path(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return fg(tokenSuccess) + s + colorReset
-}
+// Good marks a positive clause. Green is kept for the ✓ alone, so this
+// renders default text; it remains so callers can keep marking intent.
+func Good(s string) string { return s }
 
-// Added wraps s in the diff-added colour — opencode's diffAdded role.
-// Used where the UI narrates a change as old → new (the overwrite
-// prompt's size delta): the incoming, about-to-be-written side.
-// Gated on colour.
-func Added(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return fg(tokenSuccess) + s + colorReset
-}
-
-// Removed wraps s in the diff-removed colour — opencode's diffRemoved
-// role. The counterpart of Added: the on-disk side a consented overwrite
-// will replace. Gated on colour.
-func Removed(s string) string {
-	if !colorEnabled() {
-		return s
-	}
-	return fg(tokenError) + s + colorReset
-}
-
-// Alert wraps s in the warning colour (the same family as the ⚠ glyph)
+// Alert wraps s in the warning colour (the same family as the ! glyph)
 // so an attention-worthy inline tag — e.g. a "differs" status — stands
 // out instead of receding. Plain text when colour is off.
 func Alert(s string) string {
@@ -191,13 +220,6 @@ func Link(s string) string {
 		return s
 	}
 	return fg(tokenInfo) + s + colorReset
-}
-
-// Brand wraps s in the accent colour, unconditionally like Bold and
-// Accent. The caller gates it (ColorFor) for elements that must vanish
-// on pipes: direction arrows, the code box frame.
-func Brand(s string) string {
-	return fg(tokenAccent) + s + colorReset
 }
 
 // Bold wraps s in the ANSI bold escape, unconditionally. Unlike Prompt

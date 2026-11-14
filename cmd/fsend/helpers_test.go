@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
@@ -494,7 +495,7 @@ func TestRenderError_UnsendableSymlink(t *testing.T) {
 	var code int
 	got := captureStderr(t, func() { code = renderError(err, false) })
 	for _, want := range []string{
-		"[E036] Cannot follow this symlink: broken link proj/dangling → ../gone (target does not exist)",
+		"Cannot follow this symlink: broken link proj/dangling → ../gone (target does not exist) [E036]",
 		"Fix the link, or skip it with --exclude.",
 	} {
 		if !strings.Contains(got, want) {
@@ -516,7 +517,7 @@ func TestRenderError_HomebrewManaged(t *testing.T) {
 		t.Errorf("exit code = %d, want 39", code)
 	}
 	for _, want := range []string{
-		"[E039] This fsend is managed by a package manager.",
+		"This fsend is managed by a package manager. [E039]",
 		"uninstall it with: brew uninstall fsend",
 	} {
 		if !strings.Contains(got, want) {
@@ -540,7 +541,7 @@ func TestRenderError_UpdateRootRefused(t *testing.T) {
 		t.Errorf("exit code = %d, want 40", code)
 	}
 	for _, want := range []string{
-		"[E040] Refusing to update as root — fsend installs per-user.",
+		"Refusing to update as root — fsend installs per-user. [E040]",
 		"to update anyway, run:",
 		"FSEND_ALLOW_ROOT=1 fsend --update",
 	} {
@@ -1014,7 +1015,7 @@ func TestPromptAccept_HeadlineReconcilesOfferedAndNet(t *testing.T) {
 			},
 		})
 	})
-	for _, want := range []string{"307 MB of 1.2 GB", "1 differs"} {
+	for _, want := range []string{"307 MB left of 1.2 GB", "1 differs"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("headline missing %q:\n%s", want, got)
 		}
@@ -1225,41 +1226,58 @@ func TestPrintTextPayload_BreaksLineForSharedSinkOnly(t *testing.T) {
 	}
 }
 
-// The cancel hint fires only when bytes actually landed — a Ctrl-C at
-// the accept prompt has no partial to speak of — and stays out of --quiet.
+// The cancel record is kept only when bytes actually landed — a Ctrl-C at
+// the accept prompt has no partial to speak of — and stays out of --quiet;
+// renderError prints it under "Cancelled at N%".
 func TestPrintCancelKeptHint(t *testing.T) {
+	t.Cleanup(func() { cancelKept, errorRole, receiveResume = nil, "", "" })
 	moved := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
-	moved.total = 1024
-	if got := captureStderr(t, func() { printCancelKeptHint(moved.f, moved) }); !strings.Contains(got, "Partial data kept") {
-		t.Errorf("expected resume hint after moved bytes, got %q", got)
+	moved.total, moved.bytesHint = 1024, 4096
+	cancelKept = nil
+	printCancelKeptHint(moved.f, moved)
+	if cancelKept == nil || cancelKept.pct != 25 {
+		t.Fatalf("expected a cancel record at 25%%, got %+v", cancelKept)
+	}
+	errorRole, receiveResume = "receiver", "fsend abc-defg-jkm"
+	got := captureStderr(t, func() { renderError(fserrors.ErrUserCancelled, false) })
+	for _, want := range []string{"Cancelled at 25%", "Partial data kept in", "Resume while the sender waits: fsend abc-defg-jkm"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("cancel block missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "[E026]") {
+		t.Errorf("a Ctrl-C carries no code:\n%s", got)
 	}
 
-	idle := newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo())
-	if got := captureStderr(t, func() { printCancelKeptHint(idle.f, idle) }); got != "" {
-		t.Errorf("no bytes moved must print nothing, got %q", got)
-	}
-
-	quiet := newReceiverUI(context.Background(), &flags{quiet: true}, "/tmp", false, mustLANInfo())
-	quiet.total = 1024
-	if got := captureStderr(t, func() { printCancelKeptHint(quiet.f, quiet) }); got != "" {
-		t.Errorf("--quiet must suppress the hint, got %q", got)
+	for _, ui := range []*receiverUI{
+		newReceiverUI(context.Background(), &flags{}, "/tmp", false, mustLANInfo()),
+		newReceiverUI(context.Background(), &flags{quiet: true}, "/tmp", false, mustLANInfo()),
+	} {
+		if ui.f.quiet {
+			ui.total = 1024
+		}
+		cancelKept = nil
+		printCancelKeptHint(ui.f, ui)
+		if cancelKept != nil {
+			t.Errorf("quiet=%v moved=%d: no record expected", ui.f.quiet, ui.total)
+		}
 	}
 }
 
-func TestSummaryLine_ResumeShowsMovedAndHonestRate(t *testing.T) {
+func TestSummaryDetail_ResumeShowsMovedAndHonestRate(t *testing.T) {
 	// 200 MB total, 50 MB moved in 1s → size annotated with the moved
 	// clause and the rate computed from moved, not total.
 	total, moved := int64(200_000_000), int64(50_000_000)
-	line := summaryLine(total, moved, "sent", time.Second, mustLANInfo())
-	if !strings.Contains(line, "200 MB (50 MB sent)") {
+	line := summaryDetail(total, moved, "sent", time.Second, mustLANInfo())
+	if !strings.Contains(line, "50 MB of 200 MB sent") {
 		t.Errorf("missing moved clause: %s", line)
 	}
-	if !strings.Contains(line, "50 MB/s") {
+	if !strings.Contains(line, "50.0 MB/s") {
 		t.Errorf("rate must derive from moved bytes: %s", line)
 	}
 	// Non-resumed: no annotation, rate from the full size.
-	line = summaryLine(total, total, "sent", time.Second, mustLANInfo())
-	if strings.Contains(line, "sent") || !strings.Contains(line, "200 MB/s") {
+	line = summaryDetail(total, total, "sent", time.Second, mustLANInfo())
+	if strings.Contains(line, "sent") || !strings.Contains(line, "200.0 MB/s") {
 		t.Errorf("non-resumed summary changed shape: %s", line)
 	}
 }
@@ -1321,7 +1339,7 @@ func TestPromptAccept_PathChipShown(t *testing.T) {
 			ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, c.info)
 			_ = ui.promptAccept(filesHello(), oneFileSummary())
 		})
-		if !strings.Contains(got, "Incoming from") || !strings.Contains(got, c.want) {
+		if !strings.Contains(got, "Incoming ") || !strings.Contains(got, c.want) {
 			t.Errorf("prompt missing path chip %q:\n%s", c.want, got)
 		}
 	}
@@ -1371,9 +1389,9 @@ func TestResolveOutDir(t *testing.T) {
 // With zero bytes moved the elapsed figure is prompt dwell or connection
 // wall time, not a transfer duration — it must not render. The moved
 // clause is likewise noise at 0 B ("(0 B sent)" after "Sent").
-func TestSummaryLine_ZeroMovedOmitsDuration(t *testing.T) {
-	line := summaryLine(4096, 0, "sent", 5800*time.Millisecond, mustLANInfo())
-	if strings.Contains(line, "5.8s") {
+func TestSummaryDetail_ZeroMovedOmitsDuration(t *testing.T) {
+	line := summaryDetail(4096, 0, "sent", 5800*time.Millisecond, mustLANInfo())
+	if strings.Contains(line, "5.8 s") {
 		t.Errorf("0 B moved must not show a duration: %s", line)
 	}
 	if strings.Contains(line, "sent") {
@@ -1402,7 +1420,7 @@ func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
 	got = captureStderr(t, func() {
 		printSendSummary(&flags{}, "f.txt", 4096, senderStats{skippedFiles: 1, keptFiles: 1}, time.Millisecond, mustLANInfo())
 	})
-	if !strings.Contains(got, "Nothing sent") || !strings.Contains(got, "kept by receiver") {
+	if !strings.Contains(got, "Nothing sent") || !strings.Contains(got, "1 kept by the receiver") {
 		t.Errorf("kept-file summary changed shape: %q", got)
 	}
 }
@@ -1418,7 +1436,7 @@ func TestPrintRecvSummary_KeptCarriesNoFlagAdvice(t *testing.T) {
 	if strings.Contains(autoKept, "--overwrite") {
 		t.Errorf("summary must not repeat the --overwrite advice: %q", autoKept)
 	}
-	if !strings.Contains(autoKept, "1 file kept") || !strings.Contains(autoKept, uxlog.Warn()) {
+	if !strings.Contains(autoKept, "1 kept") || !strings.Contains(autoKept, uxlog.Warn()) {
 		t.Errorf("auto-kept summary must warn with a kept count: %q", autoKept)
 	}
 
@@ -1429,19 +1447,47 @@ func TestPrintRecvSummary_KeptCarriesNoFlagAdvice(t *testing.T) {
 		t.Errorf("kept-by-choice must render as the user's decision: %q", byChoice)
 	}
 	// Prompt dwell must not masquerade as a transfer duration.
-	if strings.Contains(byChoice, "1s") {
+	if strings.Contains(byChoice, "1.0 s") {
 		t.Errorf("0 B moved must not show a duration: %q", byChoice)
 	}
 }
 
 // A stream's total is 0 until EOF; the summary must report the moved
 // bytes as the size, not "0 B".
-func TestSummaryLine_UnknownTotalUsesMoved(t *testing.T) {
-	line := summaryLine(0, 15_000_000, "sent", 3*time.Second, mustLANInfo())
+func TestSummaryDetail_UnknownTotalUsesMoved(t *testing.T) {
+	line := summaryDetail(0, 15_000_000, "sent", 3*time.Second, mustLANInfo())
 	if !strings.Contains(line, "15 MB") || strings.Contains(line, "0 B") {
 		t.Errorf("stream summary should carry the moved size: %s", line)
 	}
 	if strings.Contains(line, "sent") {
 		t.Errorf("no resume clause expected for a stream: %s", line)
+	}
+}
+
+// The summary is an outcome line plus faint detail lines, each short: with
+// a 16-character device name no line passes 60 columns, and a moved figure
+// that rounds like the total is not repeated ("300 MB (300 MB sent)").
+func TestPrintSendSummary_TwoShortLines(t *testing.T) {
+	t.Cleanup(func() { sendState = sessionState{} })
+	sendState.setPeer("Pols-MacBook-Pro")
+	got := captureStderr(t, func() {
+		printSendSummary(&flags{}, "backup.zip", 300_000_000,
+			senderStats{moved: 299_990_000, skippedFiles: 11, keptFiles: 3}, 4900*time.Millisecond, mustLANInfo())
+	})
+	want := []string{
+		"[OK] Sent backup.zip to Pols-MacBook-Pro",
+		"  300 MB · 4.9 s · 61.2 MB/s · local network",
+		"  8 already there · 3 kept by the receiver",
+	}
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	for i, w := range want {
+		if i >= len(lines) || lines[i] != w {
+			t.Fatalf("summary =\n%s\nwant line %d = %q", got, i, w)
+		}
+	}
+	for _, l := range lines {
+		if n := utf8.RuneCountInString(l); n > 60 {
+			t.Errorf("line is %d columns: %q", n, l)
+		}
 	}
 }

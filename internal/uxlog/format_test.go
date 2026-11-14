@@ -1,7 +1,6 @@
 package uxlog
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -36,11 +35,11 @@ func TestHumanDuration(t *testing.T) {
 		in   time.Duration
 		want string
 	}{
-		{500 * time.Millisecond, "500ms"},
-		{1500 * time.Millisecond, "1.5s"},
-		{30 * time.Second, "30s"},
-		{90 * time.Second, "1m30s"},
-		{3 * time.Hour, "3h00m00s"},
+		{500 * time.Millisecond, "500 ms"},
+		{1500 * time.Millisecond, "1.5 s"},
+		{30 * time.Second, "30 s"},
+		{90 * time.Second, "1 min 30 s"},
+		{3 * time.Hour, "3 h 00 min"},
 	} {
 		if got := HumanDuration(tc.in); got != tc.want {
 			t.Errorf("HumanDuration(%s) = %q, want %q", tc.in, got, tc.want)
@@ -61,9 +60,39 @@ func TestHumanRate(t *testing.T) {
 	if got := HumanRate(64*1000, time.Second); got != "" {
 		t.Errorf("sub-MB should yield empty, got %q", got)
 	}
-	// 1 MB / 1s = 1 MB/s.
-	if got := HumanRate(1000*1000, time.Second); !strings.HasSuffix(got, "/s") {
-		t.Errorf("got %q, want trailing /s", got)
+	// 1 MB / 1s = 1 MB/s, with its decimal kept.
+	if got := HumanRate(1000*1000, time.Second); got != "1.0 MB/s" {
+		t.Errorf("got %q, want 1.0 MB/s", got)
+	}
+}
+
+// A live rate keeps one decimal so its shape doesn't change between frames.
+func TestRateLabel(t *testing.T) {
+	for _, c := range []struct {
+		in   float64
+		want string
+	}{
+		{512, "512 B/s"}, {61_000_000, "61.0 MB/s"}, {60_100_000, "60.1 MB/s"}, {1_250_000_000, "1.2 GB/s"},
+	} {
+		if got := RateLabel(c.in); got != c.want {
+			t.Errorf("RateLabel(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// Every percentage on screen rounds the same way, and never claims 100%
+// before the end or 0% after the start.
+func TestPercent(t *testing.T) {
+	for _, c := range []struct {
+		cur, total int64
+		want       int
+	}{
+		{0, 100, 0}, {1, 1000, 1}, {185_600_000, 300_000_000, 62}, {226_500_000, 300_000_000, 76},
+		{995, 1000, 99}, {1000, 1000, 100}, {1180, 1000, 100}, {-5, 1000, 0}, {5, 0, 0},
+	} {
+		if got := Percent(c.cur, c.total); got != c.want {
+			t.Errorf("Percent(%d, %d) = %d, want %d", c.cur, c.total, got, c.want)
+		}
 	}
 }
 
@@ -74,12 +103,12 @@ func TestHumanDuration_HourTier(t *testing.T) {
 		d    time.Duration
 		want string
 	}{
-		{50 * time.Millisecond, "50ms"},
-		{1500 * time.Millisecond, "1.5s"},
-		{15 * time.Second, "15s"},
-		{90 * time.Second, "1m30s"},
-		{59*time.Minute + 59*time.Second, "59m59s"},
-		{time.Hour + 30*time.Minute + 2*time.Second, "1h30m02s"},
+		{50 * time.Millisecond, "50 ms"},
+		{1500 * time.Millisecond, "1.5 s"},
+		{15 * time.Second, "15 s"},
+		{90 * time.Second, "1 min 30 s"},
+		{59*time.Minute + 59*time.Second, "59 min 59 s"},
+		{time.Hour + 30*time.Minute + 2*time.Second, "1 h 30 min"},
 	}
 	for _, c := range cases {
 		if got := HumanDuration(c.d); got != c.want {
@@ -96,5 +125,35 @@ func TestHumanBytes_DisplayRoundDropsDecimal(t *testing.T) {
 	}
 	if got := HumanBytes(2_400_000); got != "2.4 MB" {
 		t.Errorf("HumanBytes(2400000) = %q, want \"2.4 MB\"", got)
+	}
+}
+
+// Join keeps one separator, one space each side, and skips empty parts.
+func TestJoin(t *testing.T) {
+	if got := Join("300 MB", "", "4.8 s", "local network"); got != "300 MB · 4.8 s · local network" {
+		t.Errorf("Join = %q", got)
+	}
+	if got := Join("", ""); got != "" {
+		t.Errorf("Join of nothing = %q", got)
+	}
+}
+
+// Muted and Subject are faint and bold on a colour terminal, and plain off
+// one (go test's stderr is not a terminal).
+func TestMutedAndSubjectPlainOffTerminal(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("FORCE_COLOR", "")
+	resetColorForTesting()
+	if Muted("x") != "x" || Subject("x") != "x" {
+		t.Error("Muted/Subject must be plain when colour is off")
+	}
+	t.Setenv("FORCE_COLOR", "1")
+	resetColorForTesting()
+	t.Cleanup(resetColorForTesting)
+	if got := Muted("x"); got != "\x1b[2mx\x1b[22m" {
+		t.Errorf("Muted = %q", got)
+	}
+	if got := Subject("x"); got != "\x1b[1mx\x1b[22m" {
+		t.Errorf("Subject = %q", got)
 	}
 }

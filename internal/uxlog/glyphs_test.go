@@ -21,6 +21,9 @@ func TestMarker_NonTTYFallback(t *testing.T) {
 		{Warn, "Warn", "[!]"},
 		{Info, "Info", "[i]"},
 		{Retry, "Retry", "[~]"},
+		{Ask, "Ask", "[?]"},
+		{SendArrow, "SendArrow", " "},
+		{RecvArrow, "RecvArrow", " "},
 	}
 	for _, c := range cases {
 		if got := c.fn(); got != c.want {
@@ -83,7 +86,7 @@ func TestNearest256(t *testing.T) {
 	// used to point at 114 (a mint cell); nearest is 149.
 	cases := map[string]string{
 		"#9ece6a": "149", // success lime
-		"#e0af68": "179", // warning
+		"#e5c07b": "180", // warning
 		"#7dcfff": "117", // info
 		"#000000": "0",
 		"#ffffff": "15",
@@ -124,65 +127,112 @@ func TestCurrentTheme(t *testing.T) {
 func TestTokenPicksBackgroundSibling(t *testing.T) {
 	t.Setenv("COLORFGBG", "")
 	for _, c := range []struct{ theme, want string }{
-		{"dark", "#ff9e64"}, {"light", "#b15c00"}, {"", "#c85000"},
+		{"dark", "#e0805a"}, {"light", "#b54c22"}, {"", ""},
 	} {
 		t.Setenv("FSEND_THEME", c.theme)
 		resetThemeForTesting()
 		if got := tokenAccent.hex(); got != c.want {
-			t.Errorf("FSEND_THEME=%q accent = %s, want %s", c.theme, got, c.want)
+			t.Errorf("FSEND_THEME=%q accent = %q, want %q", c.theme, got, c.want)
 		}
 	}
 }
 
-// TestPaletteContrast pins WCAG AA (4.5:1) for every role: dark against
-// black, light against white, and the unknown-background palette against
-// both — in truecolour and in the 256-colour cells actually emitted.
+// The dark accent is the logo orange: one brand colour.
+func TestDarkAccentIsTheLogo(t *testing.T) {
+	if tokenAccent.dark != "#e0805a" {
+		t.Errorf("dark accent = %s, want the logo's #e0805a", tokenAccent.dark)
+	}
+}
+
+// TestPaletteContrast pins WCAG AA (4.5:1) for every role on each theme's
+// usual backgrounds — dark against black, VS Code, One Dark, Solarized and
+// Tokyo Night; light against white, Solarized, GitHub-ish off-white,
+// Catppuccin Latte and Gruvbox — in truecolour and in the 256-colour cells
+// actually emitted (black / white only for those: the cube is coarse).
 func TestPaletteContrast(t *testing.T) {
 	const aa = 4.5
-	white, black := relLum(255, 255, 255), relLum(0, 0, 0)
+	lum := func(hex string) float64 { r, g, b := parseHexInts(hex); return relLum(r, g, b) }
+	darkBGs := []string{"#000000", "#1e1e1e", "#282c34", "#002b36", "#1a1b26"}
+	lightBGs := []string{"#ffffff", "#fdf6e3", "#fafafa", "#eff1f5", "#fbf1c7"}
 	tokens := map[string]colourToken{
 		"accent": tokenAccent, "primary": tokenPrimary, "success": tokenSuccess,
 		"warning": tokenWarning, "error": tokenError, "info": tokenInfo,
 	}
-	check := func(name, variant string, r, g, b int, bgs ...float64) {
+	check := func(name, variant string, r, g, b int, bgs ...string) {
 		l := relLum(r, g, b)
 		for _, bg := range bgs {
-			if c := contrast(l, bg); c < aa {
-				t.Errorf("%s %s: contrast %.2f < %.1f", name, variant, c, aa)
+			if c := contrast(l, lum(bg)); c < aa {
+				t.Errorf("%s %s on %s: contrast %.2f < %.1f", name, variant, bg, c, aa)
 			}
 		}
 	}
 	for name, tok := range tokens {
 		r, g, b := parseHexInts(tok.dark)
-		check(name, "dark", r, g, b, black)
+		check(name, "dark", r, g, b, darkBGs...)
 		r, g, b = cube256(atoiOrDie(t, nearest256(tok.dark)))
-		check(name, "dark/256", r, g, b, black)
+		check(name, "dark/256", r, g, b, "#000000")
 		r, g, b = parseHexInts(tok.light)
-		check(name, "light", r, g, b, white)
+		check(name, "light", r, g, b, lightBGs...)
 		r, g, b = cube256(atoiOrDie(t, nearest256(tok.light)))
-		check(name, "light/256", r, g, b, white)
-		r, g, b = parseHexInts(tok.both)
-		check(name, "both", r, g, b, white, black)
-		if tok.both256 != "" {
-			r, g, b = cube256(atoiOrDie(t, tok.both256))
-			check(name, "both/256", r, g, b, white, black)
+		check(name, "light/256", r, g, b, "#ffffff")
+	}
+}
+
+// With the background unknown, every role uses the terminal's own ANSI
+// colours (SGR 31 to 36), whatever COLORTERM says: the user's theme has
+// tuned those for its background.
+func TestUnknownThemeUsesANSI(t *testing.T) {
+	t.Setenv("FSEND_THEME", "")
+	t.Setenv("COLORFGBG", "")
+	for _, ct := range []string{"", "truecolor"} {
+		t.Setenv("COLORTERM", ct)
+		resetThemeForTesting()
+		for tok, want := range map[*colourToken]string{
+			&tokenAccent: "\x1b[36m", &tokenPrimary: "\x1b[35m", &tokenSuccess: "\x1b[32m",
+			&tokenWarning: "\x1b[33m", &tokenError: "\x1b[31m", &tokenInfo: "\x1b[36m",
+		} {
+			if got := fg(*tok); got != want {
+				t.Errorf("COLORTERM=%q: fg = %q, want %q", ct, got, want)
+			}
+		}
+		if got := fgBold(tokenAccent); got != "\x1b[1;36m" {
+			t.Errorf("COLORTERM=%q: bold accent = %q", ct, got)
 		}
 	}
 }
 
-func TestUnknownTheme256FallsBackToDefaultForeground(t *testing.T) {
-	t.Setenv("FSEND_THEME", "")
-	t.Setenv("COLORFGBG", "")
+// A declared background without truecolour maps to the nearest 256 cell.
+func TestKnownTheme256(t *testing.T) {
+	t.Setenv("FSEND_THEME", "dark")
 	t.Setenv("COLORTERM", "")
 	resetThemeForTesting()
-	if got := fg(tokenAccent); got != "" {
-		t.Errorf("accent under 256/unknown = %q, want default fg", got)
+	if got := fg(tokenAccent); got != "\x1b[38;5;"+nearest256("#e0805a")+"m" {
+		t.Errorf("accent under 256/dark = %q", got)
 	}
-	if got := fgBold(tokenAccent); got != colorBold {
-		t.Errorf("bold accent under 256/unknown = %q, want plain bold", got)
-	}
-	if got := fg(tokenInfo); got != "\x1b[38;5;63m" {
-		t.Errorf("info under 256/unknown = %q", got)
+}
+
+// The OSC 11 reply is parsed in every form terminals send it: 1 to 4 hex
+// digits a channel, ended by BEL or ST, with the DA1 reply after it.
+func TestParseOSC11(t *testing.T) {
+	for _, c := range []struct {
+		reply string
+		want  theme
+		ok    bool
+	}{
+		{"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[?62;22c", themeDark, true},
+		{"\x1b]11;rgb:ffff/ffff/ffff\x07", themeLight, true},
+		{"\x1b]11;rgb:28/2c/34\x1b\\", themeDark, true},        // One Dark
+		{"\x1b]11;rgb:fdfd/f6f6/e3e3\x1b\\", themeLight, true}, // Solarized light
+		{"\x1b]11;rgb:f/f/f\x07", themeLight, true},
+		{"\x1b[?62;22c", themeUnknown, false}, // no OSC 11 support: DA1 only
+		{"", themeUnknown, false},
+		{"\x1b]11;rgb:zz/00/00\x07", themeUnknown, false},
+		{"\x1b]11;rgb:00/00\x07", themeUnknown, false},
+	} {
+		th, ok := parseOSC11([]byte(c.reply))
+		if th != c.want || ok != c.ok {
+			t.Errorf("parseOSC11(%q) = %v, %v; want %v, %v", c.reply, th, ok, c.want, c.ok)
+		}
 	}
 }
 

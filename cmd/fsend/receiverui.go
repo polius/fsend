@@ -12,12 +12,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
 	"github.com/polius/fsend/internal/atomicfile"
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/retry"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
@@ -59,6 +61,9 @@ type receiverUI struct {
 
 	// choice is the answer to "what about files that already exist",
 	// asked together with the accept prompt and handed to the engine.
+	announced bool // the peer and accepted events went out (once per receive)
+	jp        jsonProgress
+
 	choice   transfer.ConflictPolicy
 	notSaved []string // entries not saved for other reasons (unreadable, unplaceable)
 	changed  []string // files the sender saw change while reading them
@@ -199,8 +204,17 @@ func (ui *receiverUI) accept(h wire.SenderHello, summary transfer.ClassifySummar
 			ui.ordinal[e.Index] = i + 1
 		}
 	}
+	first := !ui.announced
+	ui.announced = true
 	ui.mu.Unlock()
-	return ui.promptAccept(h, summary)
+	if first {
+		jsonEmitPeer(sanitizeRemote(h.Hostname), jsonRoute(ui.pathInfo.Kind))
+	}
+	ok := ui.promptAccept(h, summary)
+	if ok && first {
+		jsonEmitAccepted()
+	}
+	return ok
 }
 
 // promptAccept renders the incoming-transfer block and asks whether to save.
@@ -209,19 +223,12 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	if f.quiet {
 		return f.yes
 	}
-	peer := sanitizeRemote(h.Hostname)
-	pathChip := ""
+	route := ""
 	if ui.pathInfo.Kind != connpath.KindUnknown {
-		pathChip = "  ·  " + ui.pathInfo.Chip()
-	}
-	arrow := ""
-	if uxlog.ColorFor(os.Stderr) {
-		arrow = uxlog.Brand("⇣") + "  "
+		route = ui.pathInfo.Chip()
 	}
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  %sIncoming from %s%s\n", arrow, peer, pathChip)
-	fmt.Fprintln(os.Stderr)
-	renderArtifact(os.Stderr, h, summary, ui.sink)
+	renderArtifact(os.Stderr, h, summary, ui.sink, sanitizeRemote(h.Hostname), route)
 	fmt.Fprintln(os.Stderr)
 
 	// Nothing would be written — every file is already here, identical — so
@@ -231,9 +238,15 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		summary.BytesToRecv == 0 && len(summary.Conflicts) == 0 && summary.Refused == 0 && summary.Identical > 0 && !ui.sink {
 		return true
 	}
+	// Text is sanitized and printed, never saved: asking before showing a
+	// short note only adds a step. The hello carries no size, so a long
+	// payload is asked about once it has arrived (finishReceive).
+	if h.Mode == wire.ModeStream && h.IsText && !ui.sink && stdoutIsTTY() {
+		return true
+	}
 	_, flagged := ui.flagPolicy()
 	if f.yes {
-		fmt.Fprintln(os.Stderr, uxlog.Info(), "Accepting (--yes)")
+		fmt.Fprintln(os.Stderr, uxlog.Detail("Accepting (--yes)"))
 		// --yes answers the accept prompt, not the existing-files question —
 		// differing files are kept and the exit will be E013. Scripts reading
 		// --yes as "yes to everything" deserve to hear that now.
@@ -243,18 +256,16 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		}
 		return true
 	}
-	// The question renders in the violet prompt accent: when the user
-	// glances back at the terminal, every line asking for a decision is
-	// the same colour. Built in parts so the bold destination's reset
-	// doesn't cut the accent short.
+	// Every line that wants an answer leads with the ? gutter, so a glance
+	// down the left edge finds it; the destination is the line's subject.
 	var question string
 	switch {
 	case ui.sink:
-		question = uxlog.Prompt("Write to stdout?")
+		question = "Write to stdout?"
 	case h.Mode == wire.ModeStream && h.IsText:
-		question = uxlog.Prompt("Show the text?")
+		question = "Show the text?"
 	default:
-		question = uxlog.Prompt("Save to ") + boldIfColor(saveTargetLabel(ui.outDir)) + uxlog.Prompt("?")
+		question = "Save to " + uxlog.Subject(saveTargetLabel(ui.outDir))
 	}
 	// Files that already exist: one question covers both the accept and what
 	// to do with them, instead of a second prompt after "yes".
@@ -262,7 +273,7 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		return ui.askWithConflicts(question, summary.Conflicts)
 	}
 	for {
-		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", question)
+		fmt.Fprintf(os.Stderr, "%s %s  [Y/n] ", uxlog.Ask(), question)
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
@@ -287,18 +298,26 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 func (ui *receiverUI) askWithConflicts(question string, conflicts []transfer.Conflict) bool {
 	const preview = 5
 	names := ui.conflictNames(conflicts)
-	fmt.Fprintf(os.Stderr, "  %s\n", uxlog.Prompt(fmt.Sprintf("%s here already %s and %s:",
-		uxlog.CountNoun(len(conflicts), "file"), pick(len(conflicts) == 1, "exists", "exist"), differVerb(len(conflicts)))))
+	fmt.Fprintf(os.Stderr, "%s %s here already %s and %s\n", uxlog.Ask(),
+		uxlog.CountNoun(len(conflicts), "file"), pick(len(conflicts) == 1, "exists", "exist"), differVerb(len(conflicts)))
 	shown := min(len(conflicts), preview)
-	for i, c := range conflicts[:shown] {
-		fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c, names[i]))
+	if len(conflicts) == preview+1 {
+		shown = len(conflicts) // never hide exactly one row
+	}
+	rows := conflictRows(conflicts, names)
+	for _, r := range rows[:shown] {
+		fmt.Fprintf(os.Stderr, "    %s\n", r)
 	}
 	if len(conflicts) > shown {
-		fmt.Fprintf(os.Stderr, "    … and %d more — l lists all %d\n", len(conflicts)-shown, len(conflicts))
+		fmt.Fprintf(os.Stderr, "    %s\n", uxlog.Muted(fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts))))
+	}
+	if allLocalNewer(conflicts) {
+		mine := pick(len(conflicts) == 1, "Yours is newer", "All of yours are newer")
+		fmt.Fprintf(os.Stderr, "%s %s — replace would lose your changes\n", uxlog.Warn(), mine)
 	}
 	options := "[K]eep both · [r]eplace " + uxlog.Alert("(deletes yours)") + " · [s]kip them · [n]o"
 	for {
-		fmt.Fprintf(os.Stderr, "  %s  %s ", question, options)
+		fmt.Fprintf(os.Stderr, "%s %s  %s ", uxlog.Ask(), question, options)
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
@@ -317,8 +336,8 @@ func (ui *receiverUI) askWithConflicts(question string, conflicts []transfer.Con
 		case "n", "no":
 			return false
 		case "l", "list":
-			for i, c := range conflicts {
-				fmt.Fprintf(os.Stderr, "    %s\n", conflictLabel(c, names[i]))
+			for _, r := range rows {
+				fmt.Fprintf(os.Stderr, "    %s\n", r)
 			}
 			continue
 		default:
@@ -359,52 +378,97 @@ func (ui *receiverUI) conflictNames(conflicts []transfer.Conflict) []string {
 	return names
 }
 
-// compactAgo renders an age in the shortest honest unit — "30s", "4m",
-// "3h", "2d" — for the overwrite row's tiebreaker.
+// compactAgo renders an age in the shortest honest unit — "30 s", "4 min",
+// "3 h", "2 d" — for the conflict rows.
 func compactAgo(d time.Duration) string {
 	switch {
 	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf("%d s", int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
+		return fmt.Sprintf("%d min", int(d.Minutes()))
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
+		return fmt.Sprintf("%d h", int(d.Hours()))
 	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
+		return fmt.Sprintf("%d d", int(d.Hours()/24))
 	}
 }
 
-// conflictLabel renders one conflict, distinguishing type clashes from
-// content differences. The row name is a file path — green. A "differs"
-// row carries the size delta in diff semantics (opencode's diffRemoved /
-// diffAdded roles) and, crucially, in plain text: the leading − and + carry
-// the meaning even where colour doesn't, so the row never reads as a no-op
-// for a colourblind user or on a 256-colour terminal. LocalSize is always
-// populated for "differs" (the classification Lstat'ed the file to call it
-// differing); type clashes have no meaningful byte pair, so they keep the
-// kind tag.
-func conflictLabel(c transfer.Conflict, name string) string {
-	row := uxlog.Path(name)
-	if c.Kind != "differs" {
-		return fmt.Sprintf("%s  (%s)", row, c.Kind)
+// sameAgeSlack absorbs filesystem timestamp precision (FAT keeps 2 s, the
+// listing whole seconds) when deciding which copy is newer.
+const sameAgeSlack = 2 * time.Second
+
+// newer reports which copy of a differing file is newer: > 0 yours, < 0
+// theirs, 0 the same age or unknown.
+func newer(c transfer.Conflict) time.Duration {
+	if c.LocalModTime.IsZero() || c.IncomingModTime.IsZero() {
+		return 0
 	}
-	row = fmt.Sprintf("%s  %s → %s",
-		row,
-		uxlog.Removed("− "+uxlog.HumanBytes(c.LocalSize)),
-		uxlog.Added("+ "+uxlog.HumanBytes(int64(c.IncomingSize))))
-	// Two rounded "3.3 MB"s read as a no-op, so when the displayed sizes
-	// collide, say what actually differs: the byte delta, or — when even the
-	// bytes match, meaning the classification rested on mtime — the local
-	// copy's age.
+	d := c.LocalModTime.Sub(c.IncomingModTime)
+	if d.Abs() < sameAgeSlack {
+		return 0
+	}
+	return d
+}
+
+// conflictLabel renders one conflict's facts, after its name: a type clash
+// names its kind; a "differs" row the size change, old → new, and which
+// copy is newer — for two edits of one document the deciding fact, since
+// "replace" deletes yours. When the rounded sizes collide and would read as
+// a no-op, it also says what actually differs: the byte delta. No colour:
+// the name is the subject and the question above the rows carries the
+// attention.
+func conflictLabel(c transfer.Conflict) string {
+	if c.Kind != "differs" {
+		return c.Kind
+	}
+	row := uxlog.HumanBytes(c.LocalSize) + " → " + uxlog.HumanBytes(int64(c.IncomingSize))
 	if uxlog.HumanBytes(c.LocalSize) == uxlog.HumanBytes(int64(c.IncomingSize)) {
-		switch d := int64(c.IncomingSize) - c.LocalSize; {
-		case d != 0:
-			row += fmt.Sprintf("  (%+d B)", d)
-		case !c.LocalModTime.IsZero():
-			row += "  (local copy modified " + compactAgo(time.Since(c.LocalModTime)) + " ago)"
+		if d := int64(c.IncomingSize) - c.LocalSize; d != 0 {
+			row += fmt.Sprintf(" (%+d B)", d)
 		}
 	}
+	switch d := newer(c); {
+	case d > 0:
+		row += "   yours is newer by " + compactAgo(d)
+	case d < 0:
+		row += "   theirs is newer by " + compactAgo(-d)
+	case !c.IncomingModTime.IsZero() && !c.LocalModTime.IsZero():
+		row += "   same age"
+	case !c.LocalModTime.IsZero():
+		row += "   yours modified " + compactAgo(time.Since(c.LocalModTime)) + " ago"
+	}
 	return row
+}
+
+// allLocalNewer reports whether every differing local copy is newer than
+// the incoming one — the case where "replace" loses work.
+func allLocalNewer(conflicts []transfer.Conflict) bool {
+	n := 0
+	for _, c := range conflicts {
+		if c.Kind != "differs" {
+			continue
+		}
+		if newer(c) <= 0 {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
+
+// conflictRows aligns the conflict list: names padded to one column (up to
+// a cap, so one long path doesn't push the rest off screen), facts faint.
+func conflictRows(conflicts []transfer.Conflict, names []string) []string {
+	w := 0
+	for _, n := range names {
+		w = max(w, min(nameColumnCap, utf8.RuneCountInString(n)))
+	}
+	rows := make([]string, len(conflicts))
+	for i, c := range conflicts {
+		pad := strings.Repeat(" ", max(0, w-utf8.RuneCountInString(names[i])))
+		rows[i] = names[i] + pad + "   " + uxlog.Muted(conflictLabel(c))
+	}
+	return rows
 }
 
 func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
@@ -429,7 +493,7 @@ func (ui *receiverUI) onResume(fileIndex uint32, offset, total uint64) {
 	quiet := ui.f.quiet
 	ui.mu.Unlock()
 	if !quiet {
-		uxlog.Println(fmt.Sprintf("  %s %s", uxlog.Info(), resumeNotice(offset, total)))
+		uxlog.Note(resumeNotice(offset, total))
 	}
 }
 
@@ -531,6 +595,7 @@ func (ui *receiverUI) progress(fileIndex uint32, bytesWritten uint64) {
 	ui.prev[fileIndex] = bytesWritten
 	ui.total += int64(d)
 	ui.bar.Add(int64(d))
+	ui.jp.emit(ui.total+ui.skipped, ui.bytesHint, ui.names[fileIndex])
 }
 
 // onFileDone records each saved file's path for the summary headline and
@@ -564,23 +629,42 @@ func (ui *receiverUI) bytes() (total, moved int64) {
 	return ui.total + ui.skipped, ui.total
 }
 
-// printCancelKeptHint tells a Ctrl-C'd receiver that its partial data
-// survives and how the transfer resumes. E026 itself is context-free
-// ("Cancelled.") — only the UI knows whether bytes had already landed.
-// Self-service leads: the still-running sender re-registers the same
-// code, so the receiver can resume without involving the other person.
+// printCancelKeptHint records, for a Ctrl-C'd receiver whose partial data
+// survives, where it stopped — renderError then prints the block under
+// its headline:
+//
+//	! Cancelled at 62%
+//	  Partial data kept in ./.fsend
+//	  Resume while the sender waits: fsend qxq-aaud-zar
+//
+// E026 itself is context-free ("Cancelled."); only the UI knows whether
+// bytes had already landed. The bar closes first: its final frame is the
+// record of where the transfer stopped, and the block belongs under it.
 func printCancelKeptHint(f *flags, ui *receiverUI) {
 	if f.quiet {
 		return
 	}
 	if _, moved := ui.bytes(); moved > 0 {
-		// Via uxlog.Println: the aborted bar is still live here (ui.close
-		// runs on a defer), and its next refresh frame would erase a raw
-		// stderr write.
-		uxlog.Println(fmt.Sprintf("%s Partial data kept in %s. While the sender waits, resume with: %s",
-			uxlog.Info(), displayPath(transfer.PartialDir(ui.outDir)), uxlog.Code(receiveResume)))
+		ui.close()
+		total, _ := ui.bytes()
+		ui.mu.Lock()
+		hint := ui.bytesHint
+		ui.mu.Unlock()
+		cancelKept = &cancelState{
+			pct:     uxlog.Percent(total, hint),
+			partial: displayPath(transfer.PartialDir(ui.outDir)),
+		}
 	}
 }
+
+// cancelState is a cancelled receive's partial-data record, for the
+// cancellation block renderError prints. nil when nothing was kept.
+type cancelState struct {
+	pct     int
+	partial string
+}
+
+var cancelKept *cancelState
 
 // resumeCommand is the exact command that resumes a receive: the same
 // code, into the same directory.
@@ -608,12 +692,12 @@ func (ui *receiverUI) close() {
 // before a notice prints — otherwise the spinner's redraw garbles the line.
 func (ui *receiverUI) retryNotice() func(int, time.Duration, error) {
 	notice := retryNoticeFor(ui.f)
-	if notice == nil {
-		return nil
-	}
 	return func(attempt int, wait time.Duration, lastErr error) {
 		ui.spin.Stop()
-		notice(attempt, wait, lastErr)
+		jsonEmitRetry(attempt, retry.DefaultAttempts, wait)
+		if notice != nil {
+			notice(attempt, wait, lastErr)
+		}
 	}
 }
 
@@ -658,7 +742,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		text = payload
 		// Under --json the payload rides in the done event instead of
 		// raw stdout, which must stay pure NDJSON.
-		if !jsonEnabled() {
+		if !jsonEnabled() && ui.showText(text) {
 			if err := printTextPayload(text); err != nil {
 				return err
 			}
@@ -670,7 +754,7 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		// files") would overcount what landed — say how many were written.
 		if (kept > 0 || len(skipped) > 0) && !ui.sink {
 			headline = fmt.Sprintf("Saved %d of %s to %s",
-				len(files), uxlog.CountNoun(len(files)+skippedSame+kept+len(skipped), "file"), uxlog.Path(saveTargetLabel(ui.outDir)))
+				len(files), uxlog.CountNoun(len(files)+skippedSame+kept+len(skipped), "file"), saveTargetLabel(ui.outDir))
 		}
 		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
 		printSkippedList(f, "", skipped)
@@ -712,6 +796,44 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 	}
 	jsonEmitDone(ev)
 	return retErr
+}
+
+// Text longer than this many bytes or lines is asked about before it is
+// printed to a terminal; anything shorter shows straight away.
+const (
+	shortTextBytes = 4000
+	shortTextLines = 40
+)
+
+// showText decides whether a received text payload is printed. Short text
+// on a terminal always is (promptAccept skipped the question for it); a
+// long payload gets the question it skipped, now that its size is known.
+func (ui *receiverUI) showText(text string) bool {
+	if ui.f.yes || ui.f.quiet || !stdoutIsTTY() {
+		return true
+	}
+	lines := strings.Count(text, "\n") + 1
+	if len(text) <= shortTextBytes && lines <= shortTextLines {
+		return true
+	}
+	q := fmt.Sprintf("Show the text (%s, %s)?", uxlog.HumanBytes(int64(len(text))), uxlog.CountNoun(lines, "line"))
+	for {
+		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", uxlog.Prompt(q))
+		line, eof, ok := readLineCtx(ui.ctx)
+		if !ok || eof {
+			if eof {
+				fmt.Fprintln(os.Stderr)
+			}
+			return false
+		}
+		switch line {
+		case "", "y", "yes":
+			return true
+		case "n", "no":
+			return false
+		}
+		fmt.Fprintln(os.Stderr, "  Please answer y or n.")
+	}
 }
 
 // errKeptByChoice is ErrTargetExists rendered as the user's decision (ℹ, no
@@ -782,34 +904,25 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	// stream send): name the saved file itself, path and all.
 	if len(files) == 1 && h != nil &&
 		(h.Mode == wire.ModeStream || sanitizeForDisplay(h.DisplayName, 128) == filepath.Base(files[0])) {
-		return "Saved " + uxlog.Path(displayPath(files[0]))
+		return "Saved " + uxlog.Subject(displayPath(files[0]))
 	}
 	name := ""
 	if h != nil && h.Mode != wire.ModeStream {
 		name = sanitizeForDisplay(h.DisplayName, 128)
 	}
-	dest := uxlog.Path(saveTargetLabel(ui.outDir))
+	dest := saveTargetLabel(ui.outDir)
 	if name == "" {
 		return "Saved to " + dest
 	}
-	return "Saved " + uxlog.Path(name) + " to " + dest
+	return "Saved " + uxlog.Subject(name) + " to " + dest
 }
 
-// boldIfColor wraps s in bold green when stderr can render it — used for
-// the destination in the accept prompt: a file path (green, the
-// opencode file-reference convention) that is also the answer to "where
-// will this actually land?" (bold). Plain on pipes/files.
-func boldIfColor(s string) string {
-	if !uxlog.ColorFor(os.Stderr) {
-		return s
-	}
-	return uxlog.Bold(uxlog.Path(s))
-}
-
-// printRecvSummary renders the post-transfer outcome line. Kept-back files
-// make it a partial success: warn glyph, matching the E013 exit that follows —
-// unless the user chose to keep them at the prompt, which is their decision,
-// not a warning (info glyph, matching renderError's errKeptByChoice).
+// printRecvSummary renders the post-transfer outcome: the outcome line,
+// the numbers, then the exceptions, details faint. Kept-back files make it
+// a partial success: the ! glyph, matching the E013 exit that follows —
+// unless the user chose to keep them at the prompt, which is their
+// decision, not a warning (no glyph, matching renderError's
+// errKeptByChoice).
 func printRecvSummary(f *flags, headline string, total, moved int64, kept, skippedSame int, keptByChoice bool, elapsed time.Duration, path connpath.Info) {
 	if f.quiet {
 		return
@@ -828,22 +941,26 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	// a re-send where everything was already up to date. Say so plainly instead
 	// of "Saved … 0 B", which reads as if it did work.
 	if total == 0 && moved == 0 && kept == 0 && skippedSame > 0 {
-		fmt.Fprintf(os.Stderr, "%s Already up to date  ·  %s unchanged  ·  %s\n",
-			uxlog.Check(), uxlog.CountNoun(skippedSame, "file"), path.Tag())
+		fmt.Fprintln(os.Stderr, uxlog.Check(), "Already up to date")
+		fmt.Fprintln(os.Stderr, uxlog.Detail(uxlog.Join(uxlog.CountNoun(skippedSame, "file")+" unchanged", path.Tag())))
 		printUpdateNotice(f)
 		return
 	}
-	clauses := ""
-	if skippedSame > 0 {
-		clauses += "  ·  " + uxlog.Good(uxlog.CountNoun(skippedSame, "file")+" up to date")
-	}
+	fmt.Fprintln(os.Stderr, glyph, headline)
+	fmt.Fprintln(os.Stderr, uxlog.Detail(summaryDetail(total, moved, "received", elapsed, path)))
 	// No "(use --overwrite)" here: the remedy already appears once — the
 	// upfront --yes warning or E013's action line — and after an explicit
 	// "n" at the prompt it must not appear at all.
-	if kept > 0 {
-		clauses += "  ·  " + uxlog.Alert(uxlog.CountNoun(kept, "file")+" kept")
+	var exceptions []string
+	if skippedSame > 0 {
+		exceptions = append(exceptions, fmt.Sprintf("%d up to date", skippedSame))
 	}
-	fmt.Fprintf(os.Stderr, "%s %s — %s%s\n", glyph, headline, summaryLine(total, moved, "received", elapsed, path), clauses)
+	if kept > 0 {
+		exceptions = append(exceptions, fmt.Sprintf("%d kept", kept))
+	}
+	if len(exceptions) > 0 {
+		fmt.Fprintln(os.Stderr, uxlog.Detail(uxlog.Join(exceptions...)))
+	}
 	if kept == 0 && moved > 0 {
 		uxlog.Notify("Received "+uxlog.HumanBytes(total), time.Since(runStart))
 	}

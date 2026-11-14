@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Spinner draws an animated single-line status to stderr until Stop is
@@ -51,7 +53,7 @@ const spinnerInterval = 100 * time.Millisecond
 
 // StartSpinner begins drawing an animated spinner to stderr with the given
 // message. An optional hint renders as a static trailer after the elapsed
-// chip — "⠋ Waiting for receiver  ·  4s  ·  Ctrl-C to cancel" — so a long
+// chip — "⠋ Waiting for receiver · 4 s · Ctrl-C to cancel" — so a long
 // wait always advertises its escape hatch. The returned Spinner must be
 // Stop'd before the caller writes anything else to stderr, otherwise the
 // spinner's redraw will fight the caller's output.
@@ -145,32 +147,109 @@ func (s *Spinner) draw(frame string) {
 	hint := s.hint
 	s.mu.Unlock()
 	// Elapsed chip: answers "alive or hung?" while a wait stretches on.
-	// Hidden for the first second so a quick pair doesn't flash "0s";
-	// after a minute the duration formatter switches to 1m05s form.
+	// Hidden for the first second so a quick pair doesn't flash "0 s";
+	// after a minute the duration formatter switches to "1 min 05 s".
 	// Plain default foreground — readable everywhere, quiet by position.
 	elapsed := ""
 	if d := time.Since(s.start); d >= time.Second {
-		elapsed = "  ·  " + spinnerElapsed(d)
+		elapsed = spinnerElapsed(d)
 	}
-	if hint != "" {
-		elapsed += "  ·  " + hint
+	// Clip to the live width every frame: a line that wraps turns each
+	// \r redraw into a new row, flooding the screen ten times a second.
+	text := fitSpinner(msg, elapsed, hint, terminalWidth(80))
+	// The message is the sentence; the elapsed time and the hint after it
+	// are faint detail.
+	if i := strings.Index(text, spinnerSep); i >= 0 {
+		text = text[:i] + Muted(text[i:])
 	}
 	// Stderr write failures inside the UX layer are non-actionable —
 	// the caller has bigger problems than an unrendered spinner.
 	ttyMu.Lock()
 	defer ttyMu.Unlock()
 	if c := fg(tokenAccent); colorEnabled() && c != "" {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s%s", c, frame, colorReset, msg, elapsed)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s%s%s %s", c, frame, colorReset, text)
 	} else {
-		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s%s", frame, msg, elapsed)
+		_, _ = fmt.Fprintf(s.w, "\r\x1b[2K%s %s", frame, text)
 	}
+}
+
+// spinnerSep joins the spinner's message, elapsed time and hint.
+const spinnerSep = Sep
+
+// fitSpinner lays out the text after the spinner frame so the whole line
+// stays inside width-1 columns (the last column would trigger an
+// auto-wrap on some terminals). What gives way, in order: the hint, then
+// the message's tail (cut with an ellipsis); the elapsed time stays, since
+// it is the "still alive?" answer. Columns are counted in runes.
+func fitSpinner(msg, elapsed, hint string, width int) string {
+	avail := width - 1 - 2 // frame glyph and its space
+	n := utf8.RuneCountInString
+	tail := ""
+	if elapsed != "" {
+		tail = spinnerSep + elapsed
+	}
+	if hint != "" {
+		if full := msg + tail + spinnerSep + hint; n(full) <= avail {
+			return full
+		}
+	}
+	if n(msg+tail) <= avail {
+		return msg + tail
+	}
+	budget := avail - n(tail)
+	if budget < 6 { // too cramped for message and time: keep the message
+		tail, budget = "", avail
+	}
+	return clipRunes(msg, budget) + tail
+}
+
+// clipRunes cuts s to at most max runes, ending in "…" when cut.
+func clipRunes(s string, max int) string {
+	r := []rune(s)
+	switch {
+	case len(r) <= max:
+		return s
+	case max <= 0:
+		return ""
+	case max == 1:
+		return "…"
+	}
+	return strings.TrimRight(string(r[:max-1]), " ") + "…"
+}
+
+// Wrap breaks text at spaces so no line passes the terminal's width-1
+// columns, indenting every line by indent spaces. For static lines (the
+// tagline under the share code) that would otherwise wrap mid-word. Off a
+// terminal the fallback width is wide enough that text stays one line.
+func Wrap(text string, indent int) string {
+	width := terminalWidth(1 << 16)
+	avail := max(20, width-1-indent)
+	pad := strings.Repeat(" ", indent)
+	var b strings.Builder
+	line := 0
+	for i, w := range strings.Fields(text) {
+		wl := utf8.RuneCountInString(w)
+		switch {
+		case i == 0:
+			b.WriteString(pad)
+		case line+1+wl > avail:
+			b.WriteString("\n" + pad)
+			line = 0
+		default:
+			b.WriteByte(' ')
+			line++
+		}
+		b.WriteString(w)
+		line += wl
+	}
+	return b.String()
 }
 
 // spinnerElapsed renders a spinner's running age in compact wall-clock
 // form. Seconds for the first minute, then HumanDuration's m/s form.
 func spinnerElapsed(d time.Duration) string {
 	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf("%d s", int(d.Seconds()))
 	}
 	return HumanDuration(d)
 }
