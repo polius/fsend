@@ -181,8 +181,9 @@ See <a href="docs/architecture.md">Architecture</a>.</em></p>
 | [Self-hosting](docs/self-hosting.md) | Run your own pairing server in three steps |
 | [Development](docs/development.md) | Build and test from source |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and what to do about them |
+| [FAQ](docs/faq.md) | Short answers: privacy, routes and ports, speed, verifying a download, updating |
 | [Comparison](docs/comparison.md) | fsend vs croc, magic-wormhole, sendme and LocalSend |
-| [Version compatibility](docs/compatibility.md) | Which versions work together; breaking changes in the [changelog](CHANGELOG.md) |
+| [Version compatibility](docs/compatibility.md) | Which versions work together; release notes in the [changelog](CHANGELOG.md) |
 
 ## Contributing
 

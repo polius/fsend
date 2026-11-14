@@ -133,10 +133,11 @@ fsend <code> [flags]
 
 By default the receiver sees the sender's device name and what they're
 sending, then confirms. Pass `--yes` to skip. Codes are forgiving: any
-case, spaces, underscores or dots for hyphens (`abc defg jkm`), no
-hyphens at all (`abcdefgjkm`), surrounding quotes and a trailing full
-stop all work — unless a file by that exact name exists, which is sent
-instead. To keep the code out of the process list on a shared machine,
+case, spaces, underscores or dots for hyphens (`abc defg jkm`, also
+typed as three words: `fsend abc defg jkm`), no hyphens at all
+(`abcdefgjkm`), surrounding quotes and a trailing full stop all work —
+unless a file by that exact name exists, which is sent instead. To keep
+the code out of the process list on a shared machine,
 use `FSEND_CODE=abc-defg-jkm fsend`, or bare `fsend --receive` to be asked
 for it.
 
@@ -193,13 +194,19 @@ differ, the accept prompt lists them (up to five; `l` lists all) and asks
 once what to do:
 
 ```console
-  1 file here already exists and differs:
-    a.txt  − 2 B → + 8 B
-  Save to ./?  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
+? 1 file here already exists and differs
+    a.txt   2 B → 8 B   yours is newer by 3 h
+! Yours is newer — replace would lose your changes
+? Save to ./  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
 ```
 
+Each row says which copy is newer (`yours is newer by 3 h`, `theirs is
+newer by 2 d`, or `same age`). The warning line appears only when every
+local copy is the newer one.
+
 - **Keep both** (the default, also `y` or Enter) saves the incoming copy
-  as `a (1).txt`.
+  as `a (1).txt`. If a copy from an earlier run already holds the
+  incoming version, no second copy is made.
 - **Replace** overwrites your copy. Folders are never deleted to make
   room for a file.
 - **Skip them** keeps your copies and receives everything else. That's
@@ -515,7 +522,7 @@ failure. For what to *do* about a given error, see
 
 | Code  | When it happens |
 |-------|-----------------|
-| `0`   | Success (or non-fatal warning, e.g. `E016` config corrupted) — or your own "no" at a prompt: declining a transfer (`E006` on the receiver), choosing "skip them" at the existing-files prompt (`E013`), answering `n` to `--uninstall`. The line still names the code; only the exit is 0. |
+| `0`   | Success (or non-fatal warning, e.g. `E016` config corrupted) — or your own "no" at a prompt: declining a transfer (`E006` on the receiver), choosing "skip them" at the existing-files prompt (`E013`), answering `n` to `--uninstall`. These lines print no error code, since a choice isn't a fault; with `--json`, the `done` event still carries it in `error`, with `exit` 0. |
 | `1`   | `E001` — server unreachable. |
 | `2`   | `E002` — code not found. |
 | `3`   | `E003` — code already claimed by another receiver. |

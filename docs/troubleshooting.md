@@ -6,7 +6,8 @@ full list of codes, see [Usage → Exit codes](usage.md#exit-codes).
 
 Wondering what the server can see, or whether your ISP can read the file?
 The short answer is no — everything is end-to-end encrypted between the
-two machines. See [Security](security.md) for the details.
+two machines. See [Security](security.md) for the details, and the
+[FAQ](faq.md) for short answers to common questions.
 
 ## Connecting
 
@@ -206,11 +207,12 @@ rest of the transfer completed.
   real differences.
 - To keep both copies, receive again with `--rename` (the incoming file
   is saved as `name (1).ext`).
-- If you chose "skip them" at the prompt yourself, the line renders as
-  the neutral "Kept your local copies" and fsend exits 0 — your choice,
-  not a failure. Unattended runs (`--yes`) that keep files still exit 13.
-- The sender sees the same outcome: "N files kept by receiver", and
-  "Nothing sent" with a warning glyph when no bytes moved at all.
+- If you chose "skip them" at the prompt yourself, there is no error
+  line: the summary reads "Saved 0 of 1 file" with "1 kept" under it, and
+  fsend exits 0. It was your choice, not a failure. Unattended runs
+  (`--yes`) that keep files still exit 13.
+- The sender's summary says the same ("1 kept by the receiver", and
+  "Nothing sent" when no bytes moved at all). The sender exits 0.
 
 ### "Some files were skipped" (`E050`)
 
@@ -233,6 +235,15 @@ them with a reason:
   `report.pdf` on a case-insensitive disk, or the NFC and NFD spellings
   of an accented name), or a name reserved for fsend (`.fsend`). Rename
   one on the sender, or receive onto a case-sensitive filesystem.
+- **The receiver's system can't create the name.** On Windows: a
+  reserved device name (`aux.c`, `con.txt`), one of `< > : " | ? * \`,
+  or a trailing dot or space. On any system: a name the filesystem
+  refuses (too long, or not valid in its encoding). Only that file is
+  skipped. Rename it on the sender, or pack the folder into an archive
+  first.
+- **A file appeared at the destination during the transfer.** fsend keeps
+  the file that is there and skips the incoming one. Receive again to be
+  asked what to do with it.
 
 Re-sending is cheap: files that already arrived are skipped as up to
 date.
@@ -284,6 +295,14 @@ The progress line ends with the route — `local network`, `direct` or
   hole-punching fails. See [How it works](architecture.md).
 - **The relay runs over TCP.** On a network that blocks UDP, the relay is
   reached over the TCP fallback, which can be slower still.
+- **The local route is on QUIC instead of TCP.** On one network the
+  receiver first connects over TCP, which is far faster on a fast link.
+  When a firewall on the sender blocks TCP on fsend's port (one port
+  between 50000 and 50999), or the sender runs a release before 1.17,
+  the transfer uses QUIC over UDP. The receiver's `--debug` output says
+  which: `route: TCP` or `route: QUIC`. The same happens when local
+  discovery is blocked and the two devices pair through the server: the
+  route still reads `local network`, but it runs over QUIC.
 - **One side's upload is the bottleneck.** A direct transfer can't beat
   the slower of the two links, and high latency or packet loss on the
   path lowers it further.

@@ -165,8 +165,8 @@ and restart:
 ```
 
 Use a long random value (`openssl rand -base64 24`). Wrong guesses are
-counted in metrics but not throttled per client — behind Caddy every client
-shares one source address, so a lockout would lock everyone out — and the
+counted in metrics (`sessions_rejected_total.unauthorized`) but are not
+throttled or locked out, so the password's length is its protection. The
 server warns at startup about passwords shorter than 16 characters.
 
 ```sh
@@ -195,7 +195,7 @@ or with the wrong one — fails with `E028`.
   `FSEND_LOG_LEVEL=debug` adds IPs and request paths.
 - **Update.** `docker compose pull && docker compose up -d`. The image
   tracks `poliuscorp/fsend:latest` unless you pin a release with
-  `FSEND_VERSION=1.15.0` for immutable, reproducible upgrades. On stop the
+  `FSEND_VERSION=1.17.0` for immutable, reproducible upgrades. On stop the
   server first lets in-flight relay transfers finish (up to 30s) while
   pairing keeps working, then stops signaling (up to 5s); a second
   `SIGTERM`/Ctrl-C skips the wait. The compose file sets
@@ -211,8 +211,7 @@ or with the wrong one — fails with `E028`.
   tombstones live in one process's memory, so run exactly one `fsend`
   server per hostname: two replicas behind a load balancer would split
   senders and receivers across processes that can't see each other's
-  codes. Scale up the VM instead of out. The state file is not a way to
-  share state between instances: it is read once at start and deleted.
+  codes. Scale up the VM instead of out.
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
   within an hour; certificates live in the `caddy_data` volume, and Caddy
   reissues them automatically if you lose it. That reissue is the recovery
