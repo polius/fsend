@@ -115,12 +115,20 @@ func (ps *partialStore) create(rel string, e wire.ListingEntry) (f *os.File, pat
 		return nil, "", false, err
 	}
 	data, meta := ps.paths(rel)
-	for _, p := range []string{data, meta} {
+	// Never write through a planted link or folder. The sidecar is opened
+	// by path, so both names are checked before it is written.
+	regular := func(p string) error {
 		if st, err := os.Lstat(p); err == nil && !st.Mode().IsRegular() {
-			return nil, "", false, fmt.Errorf("partial %s is not a regular file", filepath.Base(p))
+			return fmt.Errorf("partial %s is not a regular file", filepath.Base(p))
 		}
+		return nil
 	}
 	if canResume(e.Size) {
+		for _, p := range []string{data, meta} {
+			if err := regular(p); err != nil {
+				return nil, "", false, err
+			}
+		}
 		b, _ := json.Marshal(partialMeta{Path: filepath.ToSlash(rel), Size: e.Size, ModTime: e.ModTimeSec})
 		if err := os.WriteFile(meta, b, 0o600); err != nil {
 			return nil, "", false, err
@@ -130,6 +138,9 @@ func (ps *partialStore) create(rel string, e wire.ListingEntry) (f *os.File, pat
 	if e.Mode != 0 {
 		perm = fileMode(e.Mode)
 	}
+	// O_EXCL neither follows a link nor opens what is already there, so a
+	// small file needs no check of its own before this (two stat calls per
+	// file otherwise).
 	f, err = os.OpenFile(data, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
 	if err == nil {
 		return f, data, e.Mode != 0, nil
@@ -137,7 +148,11 @@ func (ps *partialStore) create(rel string, e wire.ListingEntry) (f *os.File, pat
 	if !os.IsExist(err) {
 		return nil, "", false, err
 	}
-	// A stale partial from an earlier run: truncate it in place.
+	// A stale partial from an earlier run: truncate it in place, if that
+	// is what the name holds.
+	if err := regular(data); err != nil {
+		return nil, "", false, err
+	}
 	f, err = os.OpenFile(data, os.O_RDWR|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, "", false, err

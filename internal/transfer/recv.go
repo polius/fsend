@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -186,6 +187,8 @@ type receiver struct {
 	ps      *partialStore
 	dirs    *dirUnlocker
 	commit  *committer
+	placer  placer
+	ready   map[string]struct{} // folders readyDir has prepared
 	wantSHA bool
 	plans   []entryPlan
 }
@@ -309,6 +312,16 @@ func (r *receiver) checkSpace(need uint64) error {
 	msg := fmt.Sprintf("needs %s, %s free", humanSize(need), humanSize(free))
 	declineTransfer(r.s, wire.ErrCodeDiskFull, msg)
 	return fmt.Errorf("%w: %s", fserrors.ErrDiskFull, msg)
+}
+
+// skipAtWrite records an entry that could not be saved once its bytes had
+// arrived: it is marked refused and reported through OnEntrySkipped under
+// name.
+func (r *receiver) skipAtWrite(p *entryPlan, name, reason string) {
+	p.disp, p.skipReason = dispRefused, reason
+	if r.opts.OnEntrySkipped != nil {
+		r.opts.OnEntrySkipped(name, reason)
+	}
 }
 
 // finishRecv reads the sender's TRANSFER_COMPLETE, acks it, and waits for the
@@ -914,40 +927,44 @@ func (c *committer) flush() error {
 func (r *receiver) place(pf pendingFile) (bool, error) {
 	p := pf.plan
 	target := p.target
-	if st, err := os.Lstat(target); err == nil && p.needsConsent() {
-		switch {
-		case st.IsDir():
-			// Never RemoveAll: os.Remove only succeeds on an empty folder.
-			if err := os.Remove(target); err != nil {
-				r.ps.remove(p.rel)
-				p.disp, p.skipReason = dispRefused, "a folder with files is in the way"
-				if r.opts.OnEntrySkipped != nil {
-					r.opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
+	if p.needsConsent() {
+		if st, err := os.Lstat(target); err == nil {
+			switch {
+			case st.IsDir():
+				// Never RemoveAll: os.Remove only succeeds on an empty folder.
+				if err := os.Remove(target); err != nil {
+					r.ps.remove(p.rel)
+					r.skipAtWrite(p, filepath.ToSlash(p.rel), "a folder with files is in the way")
+					return false, nil
 				}
-				return false, nil
+			case st.Mode()&os.ModeSymlink != 0:
+				_ = os.Remove(target) // the link itself, never its target
 			}
-		case st.Mode()&os.ModeSymlink != 0:
-			_ = os.Remove(target) // the link itself, never its target
 		}
 	}
 	parent := filepath.Dir(target)
-	r.dirs.unlock(parent)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := r.readyDir(parent); err != nil {
 		return false, r.refuseName(p, err)
 	}
 	// A target that was absent at classification must still be absent: a
 	// file the user created meanwhile is theirs, not ours to replace.
 	place := moveFile
 	if !p.needsConsent() && !p.replaceResume {
-		place = placeNew
+		place = r.placer.placeNew
 	}
-	if err := place(pf.partial, target); err != nil {
+	err := place(pf.partial, target)
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		// The folder was removed since readyDir last saw it: make it again.
+		delete(r.ready, parent)
+		if rerr := r.readyDir(parent); rerr != nil {
+			return false, r.refuseName(p, rerr)
+		}
+		err = place(pf.partial, target)
+	}
+	if err != nil {
 		if errors.Is(err, errTargetAppeared) {
 			r.ps.remove(p.rel)
-			p.disp, p.skipReason = dispRefused, "a file appeared here during the transfer; yours was kept"
-			if r.opts.OnEntrySkipped != nil {
-				r.opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
-			}
+			r.skipAtWrite(p, filepath.ToSlash(p.rel), "a file appeared here during the transfer; yours was kept")
 			return false, nil
 		}
 		return false, r.refuseName(p, err)
@@ -963,6 +980,24 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 	return true, nil
 }
 
+// readyDir makes dir exist and writable, once per receive: the files of a
+// folder share it, and checking it again for each of them was four stat
+// calls per file.
+func (r *receiver) readyDir(dir string) error {
+	if _, ok := r.ready[dir]; ok {
+		return nil
+	}
+	r.dirs.unlock(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if r.ready == nil {
+		r.ready = make(map[string]struct{})
+	}
+	r.ready[dir] = struct{}{}
+	return nil
+}
+
 // refuseName turns a failure to create p into a per-entry refusal when the
 // filesystem rejected the name itself (isNameErr): the partial is dropped,
 // the entry is reported through OnEntrySkipped, and the transfer carries
@@ -972,10 +1007,7 @@ func (r *receiver) refuseName(p *entryPlan, err error) error {
 		return err
 	}
 	r.ps.remove(p.rel)
-	p.disp, p.skipReason = dispRefused, nameRefusedReason
-	if r.opts.OnEntrySkipped != nil {
-		r.opts.OnEntrySkipped(p.entry.RelativePath, p.skipReason)
-	}
+	r.skipAtWrite(p, p.entry.RelativePath, nameRefusedReason)
 	return nil
 }
 
