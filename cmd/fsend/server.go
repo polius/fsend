@@ -712,8 +712,6 @@ CONFIGURATION (environment variables — all optional)
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
                                       Only debug logs client IPs and slots.
     FSEND_LOG_FORMAT                  Default text; json for log shippers.
-                                      No IPs are saved; the file is deleted
-                                      once read. Default off.
     FSEND_METRICS_ADDR                Serve /metrics (Prometheus) and
                                       /metrics.json on this extra listener,
                                       e.g. 127.0.0.1:9090. Default off. Keep

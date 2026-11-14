@@ -841,10 +841,6 @@ func (s *Server) waitSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Each /wait poll doubles as the sender's liveness heartbeat.
 	sess.LastSeen = time.Now()
-	if sess.SenderRateKey == "" { // restored from a snapshot, which holds no IPs
-		sess.SenderRateKey = rateLimitKey(s.clientIP(r))
-		s.ipCounts[sess.SenderRateKey]++
-	}
 	// Snapshot what we need under the lock so concurrent joinSession
 	// writes don't race the reads below.
 	state := sess.State
