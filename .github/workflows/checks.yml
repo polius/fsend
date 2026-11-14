@@ -201,6 +201,9 @@ jobs:
           distribution: goreleaser
           version: v2.18.3
           install-only: true
+      # The release body comes from CHANGELOG.md (release.yml): its
+      # sections must parse, and the newest version's must extract.
+      - run: python3 scripts/release-notes.py --check
       - run: goreleaser release --snapshot --clean --skip=sign,sbom
       # Reproducible builds: rebuilding the same commit must give the same
       # bytes (no wall-clock dates, paths or build IDs in the output).

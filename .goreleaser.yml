@@ -237,6 +237,12 @@ release:
     - glob: ./scripts/install.sh
     - glob: ./scripts/install.ps1
 
+# The release body is written by hand: release.yml passes CHANGELOG.md's
+# section for the tag with --release-notes (scripts/release-notes.py),
+# and goreleaser then generates nothing from commit titles. This block
+# is only what a run without that flag would fall back to. Don't replace
+# it with `disable: true`: that also skips the step that reads the notes
+# file, and the release would go out with an empty body.
 changelog:
   use: github
   sort: asc

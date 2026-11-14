@@ -47,8 +47,9 @@ so discovery can't pass there by not running.
 and Intel), Windows (x86-64 and ARM), 32-bit x86 and a FreeBSD VM (plus
 `-race` on amd64 and arm64), golangci-lint, govulncheck, fuzzing, a dead-code check, a
 snapshot release build of every target (checked to be byte-identical on
-rebuild), the install-script smoke tests, workflow linting (actionlint,
-zizmor) and the coverage gate. A final **`ci-ok`** job fails unless
+rebuild), a lint of the changelog the release notes come from, the
+install-script smoke tests, workflow linting (actionlint, zizmor) and
+the coverage gate. A final **`ci-ok`** job fails unless
 every other job passed; it is the one check to mark as required on the
 branch, so new jobs are gated without changing repository settings.
 
@@ -161,6 +162,26 @@ fallbacks) must hold byte-clean. Unix only. Run it before
 merging any change that touches `internal/uxlog` or the CLI's stderr
 surfaces — it is a manual gate, not wired into CI, because its
 assertions are design choices (exact hues) that are meant to evolve.
+
+## Releasing
+
+The body of a GitHub release is the section of
+[`CHANGELOG.md`](../CHANGELOG.md) for that version, not a list of commit
+titles. To release `1.17.0`:
+
+1. Rename `## Unreleased` in `CHANGELOG.md` to `## 1.17.0` and commit.
+2. Read the notes as they will appear:
+   `python3 scripts/release-notes.py v1.17.0`.
+3. Tag that commit `v1.17.0` and push the tag.
+
+`.github/workflows/release.yml` then runs `scripts/release-notes.py`
+first. A tag with no section, or an empty one, stops the release there
+with a message that says what to do. Otherwise the tests run and
+goreleaser publishes with those notes (`--release-notes`). The script
+joins wrapped lines, pins relative links to the tag, and adds a footer
+with install, verification and compatibility links and the comparison
+with the previous tag. CI lints the changelog on every pull request
+(`python3 scripts/release-notes.py --check`).
 
 
 ## LAN smoke test (no server needed)
