@@ -249,10 +249,27 @@ func frame(kind byte, p []byte) []byte {
 // cancel must still be able to send its close.
 func (c *tcpConn) writeLoop() {
 	defer close(c.wdone)
+	// Every queued frame gets an answer: written, or the close that came
+	// first, so a waiting send never mistakes one for the other.
+	defer func() {
+		for {
+			select {
+			case f := <-c.out:
+				if f.done != nil {
+					f.done <- context.Cause(c.ctx)
+				}
+			default:
+				return
+			}
+		}
+	}()
 	for {
 		select {
 		case f := <-c.out:
 			_, err := c.ctrl.Write(f.b)
+			if writeDoneDelay > 0 {
+				time.Sleep(writeDoneDelay)
+			}
 			if f.done != nil {
 				f.done <- err
 			}
@@ -265,6 +282,16 @@ func (c *tcpConn) writeLoop() {
 		}
 	}
 }
+
+// writeDoneDelay, for tests, stretches the moment between a frame's write
+// and its report, where a peer that reads it and closes at once can win.
+var writeDoneDelay time.Duration
+
+// closedGrace is how long a send whose connection just closed still waits
+// for its frame's report: the peer may have read it and closed at once
+// (the receiver's final ack), and a frame that went out must not come
+// back as a failure.
+const closedGrace = 200 * time.Millisecond
 
 // send queues a frame and waits until it is written, the deadline passes
 // or the connection ends.
@@ -293,7 +320,16 @@ func (c *tcpConn) send(b []byte, deadline time.Time) error {
 	case <-timer:
 		return os.ErrDeadlineExceeded
 	case <-c.ctx.Done():
-		return context.Cause(c.ctx)
+		// The close may have overtaken the report of our own frame: the
+		// writer answers every queued frame, so wait for it, briefly.
+		t := time.NewTimer(closedGrace)
+		defer t.Stop()
+		select {
+		case err := <-done:
+			return err
+		case <-t.C:
+			return context.Cause(c.ctx)
+		}
 	}
 }
 

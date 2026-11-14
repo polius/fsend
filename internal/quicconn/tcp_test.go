@@ -423,3 +423,36 @@ func TestTCP_CloseIsQuickWithALivePeer(t *testing.T) {
 		t.Fatal("the peer never saw the close")
 	}
 }
+
+// A frame the peer read counts as written, even when the peer closes the
+// instant it has it: the receiver's final ack once came back as "connection
+// lost" (CI), so a finished transfer was retried and failed.
+func TestTCP_WriteThePeerReadIsNotAnError(t *testing.T) {
+	// Hold each report back long enough for the peer's read and close to
+	// arrive first, as a loaded CI runner did by descheduling the writer.
+	writeDoneDelay = 20 * time.Millisecond
+	t.Cleanup(func() { writeDoneDelay = 0 })
+	const secret = "abc-defg-hjk"
+	ln, addr := tcpListener(t, secret)
+	for i := range 20 {
+		snd, rcv := pairTCP(t, ln, addr, secret)
+		got := make(chan struct{})
+		go func() {
+			buf := make([]byte, 1)
+			if _, err := rcv.Streams.Control.Read(buf); err == nil {
+				close(got)
+				_ = rcv.Conn.CloseWithError(0, "")
+			}
+		}()
+		if _, err := snd.Streams.Control.Write([]byte{1}); err != nil {
+			select {
+			case <-got:
+				t.Fatalf("run %d: the peer read the frame, but Write said %v", i, err)
+			case <-time.After(time.Second):
+				t.Fatalf("run %d: Write failed and the peer never read: %v", i, err)
+			}
+		}
+		snd.Close()
+		rcv.Close()
+	}
+}
