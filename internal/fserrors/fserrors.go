@@ -256,7 +256,8 @@ var catalog = map[error]Entry{
 		Code: "E002", Exit: 2,
 		Message: "No sender is waiting on that code.",
 		Action: "Double-check the code with the sender and make sure their fsend is\n" +
-			"  still running.",
+			"  still running. fsend 1.15 and older can't reach 1.16 and later:\n" +
+			"  if one side is older, run fsend --update there.",
 	},
 	ErrCodeAlreadyClaimed: {
 		Code: "E003", Exit: 3,
