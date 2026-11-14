@@ -21,21 +21,28 @@ import (
 )
 
 // tcpListener is a QUIC listener serving the TCP route on the same port.
+// The UDP port it gets may be taken for TCP by another process: then it
+// tries another, as the sender would serve QUIC alone.
 func tcpListener(t *testing.T, secret string) (*Listener, string) {
 	t.Helper()
-	ln, err := ListenAddr("127.0.0.1:0", secret)
-	if err != nil {
-		t.Fatal(err)
+	for range 10 {
+		ln, err := ListenAddr("127.0.0.1:0", secret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tl, err := net.Listen("tcp", ln.ln.Addr().String())
+		if err != nil {
+			_ = ln.Close()
+			continue
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		if err := ln.ServeTCP(tl); err != nil {
+			t.Fatal(err)
+		}
+		return ln, tl.Addr().String()
 	}
-	t.Cleanup(func() { _ = ln.Close() })
-	tl, err := net.Listen("tcp", ln.ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ln.ServeTCP(tl); err != nil {
-		t.Fatal(err)
-	}
-	return ln, tl.Addr().String()
+	t.Fatal("no port free for both UDP and TCP")
+	return nil, ""
 }
 
 // pairTCP dials the TCP route and accepts it.
@@ -237,7 +244,7 @@ func TestTCP_PeerFilter(t *testing.T) {
 	defer ln.Close()
 	tl, err := net.Listen("tcp", ln.ln.Addr().String())
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("the port is taken for TCP: %v", err)
 	}
 	if err := ln.ServeTCP(tl); err != nil {
 		t.Fatal(err)
@@ -252,13 +259,15 @@ func TestTCP_PeerFilter(t *testing.T) {
 // A sender without the TCP route (an older release) refuses the connect
 // at once, so the caller's fallback to QUIC costs nothing.
 func TestTCP_NoRouteFailsFast(t *testing.T) {
-	ln, err := ListenAddr("127.0.0.1:0", "abc-defg-hjk")
+	// A port nothing listens on for TCP (the sender serves QUIC alone).
+	tl, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	addr := tl.Addr().String()
+	_ = tl.Close()
 	start := time.Now()
-	if _, err := DialTCP(context.Background(), ln.ln.Addr().String(), "abc-defg-hjk", 300*time.Millisecond); err == nil {
+	if _, err := DialTCP(context.Background(), addr, "abc-defg-hjk", 300*time.Millisecond); err == nil {
 		t.Fatal("dialed a TCP route nobody serves")
 	}
 	if d := time.Since(start); d > time.Second {
@@ -363,5 +372,35 @@ func TestTCP_LocalCloseWakesIdleReader(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("a local close left a control Read blocked")
+	}
+}
+
+// With the data connection slots kept full (by silent connects), an
+// honest receiver's TCP attempt fails as a data connection failure, which
+// falls back to QUIC, never as a wrong code.
+func TestTCP_FullDataSlotsAreNotAWrongCode(t *testing.T) {
+	const secret = "abc-defg-hjk"
+	_, addr := tcpListener(t, secret)
+	for range maxPendingData {
+		nc, err := net.DialTimeout("tcp", addr, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tc := tls.Client(nc, tcpTLS(ReceiverTLSConfig()))
+		if err := tc.Handshake(); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = tc.Write([]byte{tcpRoleData}) // then silence
+		t.Cleanup(func() { _ = tc.Close() })
+	}
+	time.Sleep(100 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := DialTCP(ctx, addr, secret, time.Second)
+	if err == nil {
+		t.Skip("a data slot freed up in time; nothing to check")
+	}
+	if !errors.Is(err, ErrTCPData) || errors.Is(err, fserrors.ErrPeerAuthFailed) {
+		t.Fatalf("err = %v, want a data connection failure, not a failed PAKE", err)
 	}
 }

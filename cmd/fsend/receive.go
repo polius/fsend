@@ -336,9 +336,12 @@ func dialLANRoute(ctx context.Context, f *flags, addr, secret string, quicConnec
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	// The sender answered and judged the code (or the version): QUIC would
-	// only spend a second attempt, and a second failure, on the same answer.
-	if errors.Is(err, fserrors.ErrPeerAuthFailed) || errors.Is(err, fserrors.ErrIncompatibleVersion) {
+	// The sender ran the PAKE and judged the code (or the version): QUIC
+	// would only spend a second attempt, and a second failure, on the same
+	// answer. A failed data connection (quicconn.ErrTCPData) came after a
+	// good PAKE, so QUIC is still worth trying.
+	if (errors.Is(err, fserrors.ErrPeerAuthFailed) || errors.Is(err, fserrors.ErrIncompatibleVersion)) &&
+		!errors.Is(err, quicconn.ErrTCPData) {
 		return nil, err
 	}
 	if f.debug && !f.quiet {

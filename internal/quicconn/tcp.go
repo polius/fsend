@@ -102,6 +102,13 @@ func tcpTLS(c *tls.Config) *tls.Config {
 	return c
 }
 
+// ErrTCPData marks a failure of the data connection, after the PAKE on the
+// control connection succeeded. It is never a wrong code: the receiver
+// falls back to QUIC, and the sender doesn't count it against the code
+// (a MITM on the data connection, or its slots kept full, costs only the
+// TCP route).
+var ErrTCPData = errors.New("quicconn: tcp data connection failed")
+
 // errTCPProtocol is a malformed frame or hello on the TCP route.
 var errTCPProtocol = errors.New("quicconn: tcp route protocol error")
 
@@ -653,7 +660,10 @@ func (l *Listener) serveTCPConn(nc net.Conn, cfg *tls.Config, pre, dataSem chan 
 	if err == nil {
 		_, err = io.ReadFull(tc, hello[:])
 	}
-	<-pre
+	// The pre-TLS slot is held until a handshake or data slot is, so
+	// connections waiting out the failure penalty stay counted.
+	releasePre := sync.OnceFunc(func() { <-pre })
+	defer releasePre()
 	if err != nil {
 		_ = tc.Close()
 		return
@@ -671,6 +681,7 @@ func (l *Listener) serveTCPConn(nc net.Conn, cfg *tls.Config, pre, dataSem chan 
 			_ = tc.Close() // busy, as QUIC's closeBusy
 			return
 		}
+		releasePre()
 		defer func() { <-sem }()
 		_ = nc.SetDeadline(time.Time{}) // the conn's read loop takes over
 		res, err := l.tcpSenderHandshake(tc)
@@ -694,6 +705,7 @@ func (l *Listener) serveTCPConn(nc net.Conn, cfg *tls.Config, pre, dataSem chan 
 			_ = tc.Close()
 			return
 		}
+		releasePre()
 		defer func() { <-dataSem }()
 		_ = nc.SetDeadline(time.Now().Add(tcpTLSTimeout))
 		var id [sha256.Size]byte
@@ -766,7 +778,7 @@ func (l *Listener) tcpSenderHandshake(tc *tls.Conn) (res *AcceptResult, err erro
 	select {
 	case dc = <-ch:
 	case <-time.After(HandshakeTimeout):
-		return nil, errors.New("quicconn: tcp data connection never arrived")
+		return nil, fmt.Errorf("%w: it never arrived", ErrTCPData)
 	case <-c.ctx.Done():
 		return nil, context.Cause(c.ctx)
 	case <-l.done:
@@ -804,18 +816,18 @@ func checkDataTags(dc *tls.Conn, binding []byte, me role) error {
 	var got [sha256.Size]byte
 	if me == roleReceiver {
 		if _, err := dc.Write(mine); err != nil {
-			return fmt.Errorf("quicconn: tcp data tag: %w", err)
+			return fmt.Errorf("%w: tag: %v", ErrTCPData, err)
 		}
 	}
 	if _, err := io.ReadFull(dc, got[:]); err != nil {
-		return fmt.Errorf("%w: tcp data tag: %v", fserrors.ErrPeerAuthFailed, err)
+		return fmt.Errorf("%w: tag: %v", ErrTCPData, err)
 	}
 	if subtle.ConstantTimeCompare(got[:], theirs) != 1 {
-		return fmt.Errorf("%w: tcp data connection is not this session's", fserrors.ErrPeerAuthFailed)
+		return fmt.Errorf("%w: it is not this session's", ErrTCPData)
 	}
 	if me == roleSender {
 		if _, err := dc.Write(mine); err != nil {
-			return fmt.Errorf("quicconn: tcp data tag: %w", err)
+			return fmt.Errorf("%w: tag: %v", ErrTCPData, err)
 		}
 	}
 	return nil
@@ -865,11 +877,11 @@ func DialTCP(ctx context.Context, addr, secret string, connectTimeout time.Durat
 
 	dc, err := dial(tcpRoleData)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrTCPData, err)
 	}
 	if _, err := dc.Write(dataID(binding)); err != nil {
 		_ = dc.Close()
-		return nil, fmt.Errorf("quicconn: tcp data id: %w", err)
+		return nil, fmt.Errorf("%w: id: %v", ErrTCPData, err)
 	}
 	if err := checkDataTags(dc, binding, roleReceiver); err != nil {
 		_ = dc.Close()
