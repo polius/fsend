@@ -62,7 +62,8 @@ func TestJSONTransferEvents(t *testing.T) {
 	}
 }
 
-// The code event carries the install-and-receive line when there is one.
+// The code event carries the install-and-receive lines when there are any:
+// "install" (sh) as before, and "install_powershell" beside it (additive).
 func TestJSONCodeEventInstall(t *testing.T) {
 	jsonOut.mu.Lock()
 	jsonOut.enabled = true
@@ -73,13 +74,21 @@ func TestJSONCodeEventInstall(t *testing.T) {
 		jsonOut.mu.Unlock()
 	})
 	out := captureStdout(t, func() {
-		jsonEmitCode("abc-defg-hij", installCommand("abc-defg-hij"))
-		jsonEmitCode("abc-defg-hij", "")
+		jsonEmitCode("abc-defg-hij", installCommand("abc-defg-hij"), installCommandPowerShell("abc-defg-hij"))
+		jsonEmitCode("abc-defg-hij", "", "")
 	})
-	want := `{"v":1,"event":"code","code":"abc-defg-hij","install":"curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hij"}
+	// encoding/json writes "&" as \u0026; a JSON parser reads it back.
+	want := `{"v":1,"event":"code","code":"abc-defg-hij","install":"curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hij","install_powershell":"iex \"\u0026 {$(irm https://getfsend.alzina.dev/windows)} -Code abc-defg-hij\""}
 {"v":1,"event":"code","code":"abc-defg-hij"}
 `
 	if out != want {
 		t.Errorf("code events =\n%s\nwant\n%s", out, want)
+	}
+	var ev jsonCodeEvent
+	if err := json.Unmarshal([]byte(strings.SplitN(out, "\n", 2)[0]), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.InstallPowerShell != `iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code abc-defg-hij"` {
+		t.Errorf("install_powershell decodes to %q", ev.InstallPowerShell)
 	}
 }

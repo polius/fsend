@@ -162,11 +162,24 @@ func TestFitSpinner(t *testing.T) {
 	}
 }
 
-// Static lines wrap at word boundaries under the indent; off a terminal
-// they stay on one line.
-func TestWrapOffTerminal(t *testing.T) {
+// Static lines wrap at word boundaries; off a terminal they stay on one
+// row.
+func TestWrapWords(t *testing.T) {
 	const s = "The code works for one receiver, while this stays open."
-	if got := Wrap(s, 2); got != "  "+s {
-		t.Errorf("Wrap off a terminal = %q", got)
+	if got := wrapWords(s, 2); len(got) != 1 || got[0] != s {
+		t.Errorf("wrapWords off a terminal = %q", got)
+	}
+	for _, width := range []int{40, 60, 80} {
+		for _, row := range wrapWordsAt(s, 2, width) {
+			if n := 2 + Width(row); n > width-1 {
+				t.Errorf("width %d: row %q is %d columns with its indent", width, row, n)
+			}
+			if strings.HasPrefix(row, " ") || strings.HasSuffix(row, " ") {
+				t.Errorf("width %d: row %q carries a stray space", width, row)
+			}
+		}
+		if got := strings.Join(wrapWordsAt(s, 2, width), " "); got != s {
+			t.Errorf("width %d: rows rejoin to %q", width, got)
+		}
 	}
 }

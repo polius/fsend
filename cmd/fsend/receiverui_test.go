@@ -92,20 +92,3 @@ func TestConflictLabel_TypeClashKeepsKind(t *testing.T) {
 		t.Errorf("type clash row = %q", got)
 	}
 }
-
-// compactAgo picks the shortest honest unit.
-func TestCompactAgo(t *testing.T) {
-	for _, c := range []struct {
-		d    time.Duration
-		want string
-	}{
-		{30 * time.Second, "30 s"},
-		{4 * time.Minute, "4 min"},
-		{3 * time.Hour, "3 h"},
-		{50 * time.Hour, "2 d"},
-	} {
-		if got := compactAgo(c.d); got != c.want {
-			t.Errorf("compactAgo(%v) = %q, want %q", c.d, got, c.want)
-		}
-	}
-}

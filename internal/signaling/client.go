@@ -311,8 +311,8 @@ func ClockSkewDetail(skew time.Duration) string {
 	return "This device's clock is " + ClockSkewPhrase(skew) + " the server's: set the correct date and time."
 }
 
-// ClockSkewPhrase is "30 h behind" or "7 min ahead of", to precede "the
-// server's".
+// ClockSkewPhrase is "30 h behind", "3 h 05 min behind" or "7 min ahead
+// of", to precede "the server's".
 func ClockSkewPhrase(skew time.Duration) string {
 	if skew < 0 {
 		return roughDuration(-skew) + " ahead of"
@@ -320,18 +320,21 @@ func ClockSkewPhrase(skew time.Duration) string {
 	return roughDuration(skew) + " behind"
 }
 
-// roughDuration renders a clock skew at the precision that matters.
+// roughDuration renders a clock skew at the precision that matters, in
+// the form every duration on screen takes (uxlog.HumanDuration, which this
+// package does not import): a space before the unit, the units min, h and
+// d, and two-digit minutes after hours ("3 h 05 min").
 func roughDuration(d time.Duration) string {
 	d = d.Round(time.Minute) // the Date header carries whole seconds
 	switch {
 	case d >= 48*time.Hour:
-		return strconv.Itoa(int(d/(24*time.Hour))) + " days"
+		return strconv.Itoa(int(d/(24*time.Hour))) + " d"
 	case d >= time.Hour:
 		h, m := int(d/time.Hour), int(d%time.Hour/time.Minute)
 		if m == 0 {
 			return strconv.Itoa(h) + " h"
 		}
-		return strconv.Itoa(h) + " h " + strconv.Itoa(m) + " min"
+		return fmt.Sprintf("%d h %02d min", h, m)
 	}
 	return strconv.Itoa(int(d/time.Minute)) + " min"
 }

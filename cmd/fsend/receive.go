@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"net"
-	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -291,7 +290,7 @@ func dialLAN(ctx context.Context, f *flags, rs *recvSession, q *landisc.QueryRes
 	// JoinHostPort so an IPv6 announce dials as "[addr]:port".
 	addr := net.JoinHostPort(q.IP.String(), strconv.Itoa(q.Port))
 	if f.debug && !f.quiet {
-		fmt.Fprintln(os.Stderr, "    sender address:", addr)
+		uxlog.Debug("sender address: " + addr)
 	}
 	if !f.quiet {
 		spin.SetMessage("Connecting to the sender")
@@ -302,7 +301,7 @@ func dialLAN(ctx context.Context, f *flags, rs *recvSession, q *landisc.QueryRes
 		// network" via ICE, so this notice by default reads as the tool
 		// contradicting itself.
 		if f.debug && !f.quiet {
-			fmt.Fprintln(os.Stderr, uxlog.Info(), "Local sender unreachable — falling back to server:", err)
+			uxlog.Status(uxlog.Info(), fmt.Sprintf("Local sender unreachable — falling back to server: %v", err))
 		}
 		return nil
 	}
@@ -329,7 +328,7 @@ func dialLANRoute(ctx context.Context, f *flags, addr, secret string, quicConnec
 	res, err := quicconn.DialTCP(ctx, addr, secret, tcpConnectTimeout)
 	if err == nil {
 		if f.debug && !f.quiet {
-			fmt.Fprintln(os.Stderr, "    route: TCP")
+			uxlog.Debug("route: TCP")
 		}
 		return res, nil
 	}
@@ -345,7 +344,7 @@ func dialLANRoute(ctx context.Context, f *flags, addr, secret string, quicConnec
 		return nil, err
 	}
 	if f.debug && !f.quiet {
-		fmt.Fprintln(os.Stderr, "    route: QUIC (no TCP route:", err, ")")
+		uxlog.Debug(fmt.Sprintf("route: QUIC (no TCP route: %v)", err))
 	}
 	return quicconn.DialTimeout(ctx, addr, secret, quicConnect)
 }
@@ -454,16 +453,16 @@ func receiverPasswordPrompt(ctx context.Context, f *flags) func(attempt int) (st
 		return nil
 	}
 	return func(attempt int) (string, error) {
-		fmt.Fprintln(os.Stderr)
+		uxlog.Blank()
 		if attempt > 1 {
 			return readPasswordHiddenCtx(ctx,
-				fmt.Sprintf("  %s (%d/%d): ", uxlog.Prompt("Wrong password — try again"), attempt, transfer.PasswordAttempts), f.quiet)
+				fmt.Sprintf("Wrong password — try again (%d/%d):", attempt, transfer.PasswordAttempts), f.quiet)
 		}
 		// One line of context. The password is protocol-required before the
 		// peer's HELLO can be decrypted, so the ordering is forced — but the
 		// prompt can still say why it is asking.
-		fmt.Fprintf(os.Stderr, "%s This transfer is password-protected.\n", uxlog.Warn())
-		return readPasswordHiddenCtx(ctx, uxlog.Ask()+" "+uxlog.Prompt("Enter the password the sender shared: "), f.quiet)
+		uxlog.Status(uxlog.Warn(), "This transfer is password-protected.")
+		return readPasswordHiddenCtx(ctx, "Enter the password the sender shared:", f.quiet)
 	}
 }
 
@@ -497,7 +496,7 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 			name := sanitizeForDisplay(transfer.StreamFileName(h.DisplayName), 128)
 			head, detail = "Incoming "+uxlog.Subject(name)+from, uxlog.Join("stdin stream", "size unknown")
 		}
-		_, _ = fmt.Fprintln(w, uxlog.RecvArrow(), head)
+		uxlog.On(w).Status(uxlog.RecvArrow(), head)
 		writeDetail(w, uxlog.Join(detail, route), pw)
 		return
 	}
@@ -524,9 +523,9 @@ func renderArtifact(w io.Writer, h wire.SenderHello, summary transfer.ClassifySu
 			break
 		}
 	}
-	_, _ = fmt.Fprintln(w, uxlog.RecvArrow(), head)
+	uxlog.On(w).Status(uxlog.RecvArrow(), head)
 	writeDetail(w, uxlog.Join(fileCount, receiverSizeClause(summary), diff, resume, route), pw)
-	renderPreview(w, receiverPreview(summary.Files), 4)
+	renderPreview(w, receiverPreview(summary.Files))
 }
 
 // writeDetail prints a faint detail line, with the (coloured) password chip
@@ -535,11 +534,11 @@ func writeDetail(w io.Writer, detail, chip string) {
 	switch {
 	case detail == "" && chip == "":
 	case chip == "":
-		_, _ = fmt.Fprintln(w, uxlog.Detail(detail))
+		uxlog.On(w).Note(detail)
 	case detail == "":
-		_, _ = fmt.Fprintln(w, "  "+chip)
+		uxlog.On(w).Line(chip)
 	default:
-		_, _ = fmt.Fprintln(w, uxlog.Detail(detail+uxlog.Sep)+chip)
+		uxlog.On(w).Line(uxlog.Muted(detail+uxlog.Sep) + chip)
 	}
 }
 

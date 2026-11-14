@@ -233,3 +233,37 @@ func TestChain_MultiUnwrap(t *testing.T) {
 		t.Errorf("leaf order wrong: %q", got)
 	}
 }
+
+// The catalog's lines land on the screen's grid (internal/uxlog/grid.go):
+// the message follows the status glyph, so it starts in column 2 and
+// carries no indent of its own; Format puts the action in column 2, and its
+// later lines bring their own indent — 2 for text, 4 for a list row or a
+// command. No tab, no trailing space, no odd indent.
+func TestCatalog_LinesAreOnTheGrid(t *testing.T) {
+	for _, sentinel := range catalogOrder {
+		e := catalog[sentinel]
+		for name, text := range map[string]string{"Message": e.Message, "SenderMessage": e.SenderMessage} {
+			if text != strings.TrimSpace(text) || strings.Contains(text, "\n") {
+				t.Errorf("%s %s = %q: one line, no surrounding space", e.Code, name, text)
+			}
+		}
+		for name, text := range map[string]string{"Action": e.Action, "SenderAction": e.SenderAction} {
+			for i, line := range strings.Split(text, "\n") {
+				indent := len(line) - len(strings.TrimLeft(line, " "))
+				switch {
+				case strings.ContainsRune(line, '\t'):
+					t.Errorf("%s %s line %d has a tab: %q", e.Code, name, i+1, line)
+				case line != strings.TrimRight(line, " "):
+					t.Errorf("%s %s line %d has a trailing space: %q", e.Code, name, i+1, line)
+				case i == 0 && indent != 0:
+					t.Errorf("%s %s starts with an indent (Format adds it): %q", e.Code, name, line)
+				case i > 0 && line == "":
+					// a blank line inside an action is fine
+				case i > 0 && indent != 2 && indent != 4:
+					t.Errorf("%s %s line %d is indented %d columns, want 2 (text) or 4 (a list row or command): %q",
+						e.Code, name, i+1, indent, line)
+				}
+			}
+		}
+	}
+}

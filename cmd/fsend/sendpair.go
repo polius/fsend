@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -543,7 +542,7 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 		return iceConn, icePath, nil
 	}
 	if f != nil && f.debug {
-		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
+		uxlog.Debug(fmt.Sprintf("ICE failed: %v", iceErr))
 	}
 	if f != nil && f.mode == modeDirect {
 		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=direct: %v", fserrors.ErrConnectFailed, iceErr)
@@ -640,8 +639,8 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 			(errors.Is(err, fserrors.ErrWrongPassword) || errors.Is(err, fserrors.ErrPasswordRequired)) {
 			pwMisses++
 			if !f.quiet {
-				fmt.Fprintf(os.Stderr, "%s %s — still waiting; they can rerun %s with the right password.\n",
-					uxlog.Warn(), passwordMissNotice(err), uxlog.Code("fsend "+code))
+				uxlog.Status(uxlog.Warn(), fmt.Sprintf("%s — still waiting; they can rerun %s with the right password.",
+					passwordMissNotice(err), uxlog.Code("fsend "+code)))
 			}
 			waitSpin = startWaitSpinner(f, "Waiting for receiver")
 			continue
@@ -665,7 +664,7 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 			// as exhausted retries; the receiver may still recover on its
 			// own (network change) or be rerun on the same device. The code
 			// box has long scrolled away, so the line repeats the code.
-			fmt.Fprintf(os.Stderr, "%s %s\n", uxlog.Info(), dropNotice(isReceiverClose(err), code))
+			uxlog.Status(uxlog.Info(), dropNotice(isReceiverClose(err), code))
 		}
 		waitSpin = startWaitSpinner(f, "Waiting for receiver")
 	}
@@ -793,7 +792,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	// fails, the final renderError prints the catalog entry.
 	noticeServerDown := func(err error) {
 		if f.debug {
-			fmt.Fprintln(os.Stderr, "DEBUG: server pairing failed:", err)
+			uxlog.Debug(fmt.Sprintf("server pairing failed: %v", err))
 		}
 		if serverDownErr != nil || f.quiet || lanDisabled {
 			serverDownErr = err
@@ -801,7 +800,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 		}
 		serverDownErr = err
 		waitSpin.Stop()
-		fmt.Fprintln(os.Stderr, uxlog.Warn(), serverPairNotice(err))
+		uxlog.Status(uxlog.Warn(), serverPairNotice(err))
 		waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 	}
 
@@ -818,7 +817,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 			// The code is still good: nobody proved they held it.
 			if !f.quiet {
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Info(), "A receiver joined but didn't connect. The code still works.")
+				uxlog.Status(uxlog.Info(), "A receiver joined but didn't connect. The code still works.")
 				waitSpin = startWaitSpinner(f, "Waiting for receiver")
 			}
 
@@ -846,7 +845,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				// server path is up, so pairing carries on there.
 				if !f.quiet {
 					waitSpin.Stop()
-					fmt.Fprintln(os.Stderr, uxlog.Warn(), "Stopped taking local-network connections after", maxLANAuthFailures, "failed attempts. Still waiting via the server.")
+					uxlog.Status(uxlog.Warn(), fmt.Sprintf("Stopped taking local-network connections after %d failed attempts. Still waiting via the server.", maxLANAuthFailures))
 					waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
 				}
 				lanDownNoticed = true
@@ -864,7 +863,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				// Pause the spinner so the notice prints on a clean
 				// line, then restart it for the remaining (server) path.
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local-network discovery unavailable — connecting via the server instead.")
+				uxlog.Status(uxlog.Info(), "Local-network discovery unavailable — connecting via the server instead.")
 				waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
 			}
 
@@ -933,8 +932,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	// route. The accept wait itself is a spinner, started in
 	// runSenderTransferLoop.
 	if !f.quiet {
-		fmt.Fprintf(os.Stderr, "%s Receiver connected%s\n",
-			uxlog.Check(), uxlog.Muted(uxlog.Sep+pathInfo.Chip()))
+		uxlog.Status(uxlog.Check(), "Receiver connected"+uxlog.Muted(uxlog.Sep+pathInfo.Chip()))
 	}
 
 	if winner.lan != nil {

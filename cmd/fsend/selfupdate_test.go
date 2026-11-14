@@ -44,14 +44,82 @@ func TestInstallerFailureDetail(t *testing.T) {
 	}
 }
 
-// availableLine is the single rendering shared by the passive notice and
-// --update --check. Asserted uncoloured, which is what a pipe gets.
-func TestAvailableLine(t *testing.T) {
-	got := availableLine("1.14.1", "1.14.0")
+// printAvailable is the single rendering shared by the passive notice and
+// --update --check. Asserted uncoloured, which is what a pipe gets. The
+// test binary is nobody's package, so the action is fsend's own command.
+func TestPrintAvailable(t *testing.T) {
+	got := captureStderr(t, func() { printAvailable("1.14.1", "1.14.0") })
 	want := "[i] fsend 1.14.1 is available (you have 1.14.0)\n" +
-		"  fsend --update  ·  https://github.com/polius/fsend/releases/tag/v1.14.1"
+		"  fsend --update · https://github.com/polius/fsend/releases/tag/v1.14.1\n"
 	if got != want {
-		t.Errorf("availableLine =\n%q\nwant\n%q", got, want)
+		t.Errorf("printAvailable =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// D2: the notice names an action that works on this installation.
+// `fsend --update` refuses (E039) on a Homebrew or packaged binary, so the
+// notice must never send those users to it.
+func TestAvailableNotice_NamesTheRightAction(t *testing.T) {
+	const link = "https://github.com/polius/fsend/releases/tag/v1.14.1"
+	cases := []struct {
+		name string
+		by   installer
+		want string
+	}{
+		{"install script", installer{}, "fsend --update · " + link},
+		{"homebrew", installer{brew: true}, "brew upgrade fsend · " + link},
+		{"deb", installer{pkg: "deb"}, "Install the new .deb: " + link},
+		{"rpm", installer{pkg: "rpm"}, "Install the new .rpm: " + link},
+		{"apk", installer{pkg: "apk"}, "Install the new .apk: " + link},
+	}
+	for _, c := range cases {
+		head, action := availableNotice("1.14.1", "v1.14.0", c.by)
+		if head != "fsend 1.14.1 is available (you have 1.14.0)" {
+			t.Errorf("%s: head = %q", c.name, head)
+		}
+		if action != c.want {
+			t.Errorf("%s: action = %q, want %q", c.name, action, c.want)
+		}
+		if selfManaged := c.by == (installer{}); !selfManaged && strings.Contains(action, "fsend --update") {
+			t.Errorf("%s: the notice points at fsend --update, which refuses here: %q", c.name, action)
+		}
+		// The line fits 80 columns under its two-column indent.
+		if n := len("  " + action); n > 79 {
+			t.Errorf("%s: action line is %d columns: %q", c.name, n, action)
+		}
+	}
+}
+
+// installerOf reads the same evidence runUpdate's refusals do: the notice
+// and the refusal can't disagree about who owns the binary.
+func TestInstallerOf(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "usr", "bin", "fsend")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := installerOf(bin); got != (installer{}) {
+		t.Errorf("no marker: installerOf = %+v, want fsend's own", got)
+	}
+	marker := filepath.Join(root, "usr", "share", "fsend", "package-manager")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"deb", "rpm", "apk"} {
+		if err := os.WriteFile(marker, []byte(f+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := installerOf(bin); got != (installer{pkg: f}) {
+			t.Errorf("%s marker: installerOf = %+v", f, got)
+		}
+	}
+	for _, brewBin := range []string{
+		"/opt/homebrew/Cellar/fsend/1.2.3/bin/fsend",
+		"/home/linuxbrew/.linuxbrew/Cellar/fsend/1.2.3/bin/fsend",
+	} {
+		if got := installerOf(brewBin); got != (installer{brew: true}) {
+			t.Errorf("installerOf(%q) = %+v, want Homebrew", brewBin, got)
+		}
 	}
 }
 

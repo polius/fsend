@@ -9,6 +9,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/coder/websocket v1.8.15
 	github.com/klauspost/compress v1.20.3
+	github.com/mattn/go-runewidth v0.0.31
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/pion/ice/v4 v4.4.8
 	github.com/pion/mdns/v2 v2.2.2
@@ -34,7 +35,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
-	github.com/mattn/go-runewidth v0.0.31 // indirect
 	github.com/pion/dtls/v3 v3.1.9 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/randutil v0.1.0 // indirect

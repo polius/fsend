@@ -79,7 +79,7 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 		{
 			"force_receive_two_args",
 			[]string{"--receive", "abc-defg-jkm", "extra"},
-			"--receive requires exactly one positional argument",
+			"--receive takes one code (abc-defg-jkm, or its three words), not 2 arguments",
 		},
 		{
 			"text_empty_string",
@@ -577,5 +577,54 @@ func TestDispatch_CodeAsSeparateWords(t *testing.T) {
 	}
 	if _, ok := splitCode([]string{"abc", "defg", "jkm"}); ok {
 		t.Error("an existing path among the words must win")
+	}
+}
+
+// U3: --receive takes the code as separate words too — it was a usage
+// error while the bare `fsend abc defg jkm` already received. With
+// --receive the words are never paths, so a file named like one of them
+// does not get in the way.
+func TestDispatch_ForceReceiveCodeAsSeparateWords(t *testing.T) {
+	t.Chdir(t.TempDir())
+	run := func(args ...string) error {
+		cmd := rootCmd()
+		cmd.SetArgs(append([]string{"--quiet", "--receive"}, args...))
+		cmd.SetOut(io.Discard)
+		return cmd.Execute()
+	}
+	// Receiving under --quiet without --yes stops at a guard inside
+	// runReceive: reaching it proves the words were taken as the code.
+	received := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), "--quiet on receive requires --yes")
+	}
+	for _, args := range [][]string{
+		{"abc", "defg", "jkm"},
+		{"ABC", "Defg", "jkm."},
+		{"abc-defg", "jkm"},
+		{"abc", "defg-jkm"},
+		{"abc-defg-jkm"},
+	} {
+		if err := run(args...); !received(err) {
+			t.Errorf("fsend --receive %q: got %v, want it received as a code", args, err)
+		}
+	}
+	if err := os.WriteFile("defg", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("abc", "defg", "jkm"); !received(err) {
+		t.Errorf("--receive with a file named like one word: got %v, want it received", err)
+	}
+	// Words that do not spell a code stay a usage error (E024), and say
+	// what --receive takes.
+	for _, args := range [][]string{
+		{"abc", "defg"},
+		{"abc", "defg", "jkm", "xyz"},
+		{"abcd", "efg", "jkm"},
+		{"report.pdf", "notes.txt"},
+	} {
+		err := run(args...)
+		if !errors.Is(err, fserrors.ErrUsage) || !strings.Contains(err.Error(), "--receive takes one code") {
+			t.Errorf("fsend --receive %q: got %v, want the usage error", args, err)
+		}
 	}
 }

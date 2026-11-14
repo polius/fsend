@@ -75,8 +75,9 @@ func TestClockSkewDetail(t *testing.T) {
 	for skew, want := range map[time.Duration]string{
 		7 * time.Minute:                 "7 min behind",
 		-(3*time.Hour + 12*time.Minute): "3 h 12 min ahead of",
+		time.Hour + 5*time.Minute:       "1 h 05 min behind", // minutes as HumanDuration writes them
 		26 * time.Hour:                  "26 h behind",
-		-73 * time.Hour:                 "3 days ahead of",
+		-73 * time.Hour:                 "3 d ahead of",
 	} {
 		if got := ClockSkewDetail(skew); !strings.Contains(got, want) {
 			t.Errorf("ClockSkewDetail(%v) = %q, want it to contain %q", skew, got, want)

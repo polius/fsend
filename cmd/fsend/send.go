@@ -100,7 +100,7 @@ func runSend(f *flags, paths []string) error {
 		// uxlog.DetectTheme).
 		uxlog.DetectTheme()
 		for _, sk := range plan.walkSkips {
-			fmt.Fprintf(os.Stderr, "%s Skipping %s: %s\n", uxlog.Warn(), sk.Path, sk.Reason)
+			uxlog.Status(uxlog.Warn(), fmt.Sprintf("Skipping %s: %s", sk.Path, sk.Reason))
 		}
 	}
 	// A receiver that installs fresh pairs through the default server, so
@@ -269,6 +269,16 @@ func installCommand(c string) string {
 	return "curl -fsSL https://getfsend.alzina.dev | sh -s -- " + c
 }
 
+// installCommandPowerShell is installCommand for a Windows receiver, run
+// in PowerShell: scripts/install.ps1 takes the code as -Code. The plain
+// one-liner (irm … | iex) cannot pass a parameter, so the script is run as
+// a block that can. This spelling fits 80 columns under the list indent
+// with any code; `& ([scriptblock]::Create((irm …))) -Code …` is the same
+// call and does not. scripts/smoke-install.ps1 runs both.
+func installCommandPowerShell(c string) string {
+	return `iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code ` + c + `"`
+}
+
 // printSendArtifact renders the receive-command block and starts the
 // "Waiting for receiver" spinner. --quiet emits just the code on stdout.
 // installHint adds the install-and-receive line for a receiver without
@@ -276,14 +286,14 @@ func installCommand(c string) string {
 func printSendArtifact(f *flags, c string, plan *sendPlan, installHint bool) *uxlog.Spinner {
 	// Under --json the code event replaces --quiet's bare-code line —
 	// stdout must carry exactly one machine format.
-	install := ""
+	install, installPS := "", ""
 	if installHint {
-		install = installCommand(c)
+		install, installPS = installCommand(c), installCommandPowerShell(c)
 	}
-	jsonEmitCode(c, install)
+	jsonEmitCode(c, install, installPS)
 	if f.quiet {
 		if !jsonEnabled() {
-			_, _ = fmt.Fprintln(os.Stdout, c)
+			printBareCode(c)
 		}
 		return nil
 	}
@@ -291,11 +301,11 @@ func printSendArtifact(f *flags, c string, plan *sendPlan, installHint bool) *ux
 	// gets the bare code too, so scripts needn't know about --quiet. Not
 	// when stdout and stderr share a sink (2>&1): the code is already there.
 	if !jsonEnabled() && !stdoutIsTTY() && !sameSink(os.Stdout, os.Stderr) {
-		_, _ = fmt.Fprintln(os.Stdout, c)
+		printBareCode(c)
 	}
 	// The grid: the arrow in the gutter, the subject in bold, the counts
 	// and size as faint detail beneath it.
-	fmt.Fprintln(os.Stderr)
+	uxlog.Blank()
 	head, detail := "Sending text", uxlog.HumanBytes(conv.Int64(plan.totalBytes))
 	switch {
 	case plan.mode == wire.ModeStream && plan.isText:
@@ -310,30 +320,41 @@ func printSendArtifact(f *flags, c string, plan *sendPlan, installHint bool) *ux
 		}
 		detail = uxlog.Join(uxlog.CountNoun(plan.totalFiles, "file"), uxlog.HumanBytes(conv.Int64(plan.totalBytes)))
 	}
-	fmt.Fprintln(os.Stderr, uxlog.SendArrow(), head)
-	fmt.Fprintln(os.Stderr, uxlog.Detail(detail))
+	uxlog.Status(uxlog.SendArrow(), head)
+	uxlog.Note(detail)
 	if plan.mode == wire.ModeFiles {
 		// Directory-only sends (an empty folder) survive collectPlan's
 		// nothing-to-send guard because the dir entry itself is a source.
 		// Sending it is legitimate — but "0 files" is usually a mistake,
 		// so say what will actually happen.
 		if plan.totalFiles == 0 {
-			fmt.Fprintln(os.Stderr, uxlog.Warn(), "No files here — only the empty directory will be created on the other side.")
+			uxlog.Status(uxlog.Warn(), "No files here — only the empty directory will be created on the other side.")
 		}
-		renderPreview(os.Stderr, senderPreview(plan.sources), 4)
+		renderPreview(os.Stderr, senderPreview(plan.sources))
 	}
-	fmt.Fprintln(os.Stderr)
+	uxlog.Blank()
 	copied := copyCommand(f, "fsend "+c)
 	renderCodeBlock(os.Stderr, c, f.passArg != "", copied)
 	if install != "" {
 		// Every transfer needs a second person, who may never have heard
-		// of fsend: one faint block they can run instead.
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, uxlog.Detail("No fsend there yet? This installs it and receives:"))
-		fmt.Fprintln(os.Stderr, "    "+uxlog.Muted(install))
+		// of fsend: one faint block they can run instead — the sh line,
+		// then the PowerShell one for a Windows receiver (its address ends
+		// in /windows). Each command is one unbroken line: a pane narrower
+		// than it wraps it, and a copy still yields a runnable command; a
+		// line break of ours would not.
+		uxlog.Blank()
+		uxlog.NoteWrapped("No fsend there yet? This installs it and receives:")
+		uxlog.Item(uxlog.Muted(install))
+		uxlog.Item(uxlog.Muted(installPS))
 	}
-	fmt.Fprintln(os.Stderr)
+	uxlog.Blank()
 	return uxlog.StartSpinner("Waiting for receiver", uxlog.HintCancel)
+}
+
+// printBareCode writes the share code alone on stdout, the machine channel
+// (--quiet, or a piped stdout).
+func printBareCode(c string) {
+	_, _ = fmt.Fprintln(os.Stdout, c)
 }
 
 // renderCodeBlock prints the "run this on the other machine" block: the
@@ -344,10 +365,11 @@ func printSendArtifact(f *flags, c string, plan *sendPlan, installHint bool) *ux
 // line under it says what the code is good for, and that it is on the
 // clipboard when a helper confirmed the copy.
 func renderCodeBlock(w io.Writer, c string, password, copied bool) {
-	_, _ = fmt.Fprintln(w, "  On the other machine, run")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "      %s %s\n", uxlog.Subject("fsend"), uxlog.Code(c))
-	_, _ = fmt.Fprintln(w)
+	out := uxlog.On(w)
+	out.Line("On the other machine, run")
+	out.Blank()
+	out.Command(uxlog.Subject("fsend") + " " + uxlog.Code(c))
+	out.Blank()
 	note := uxlog.Join("One receiver", "valid while this runs")
 	if copied {
 		note = uxlog.Join("Copied to clipboard", "one receiver", "valid while this runs")
@@ -356,7 +378,7 @@ func renderCodeBlock(w io.Writer, c string, password, copied bool) {
 		note = uxlog.Join(note, "they need the password too")
 	}
 	// Wrapped at word boundaries: a narrow pane must not break it mid-word.
-	_, _ = fmt.Fprintln(w, uxlog.Muted(uxlog.Wrap(note, 2)))
+	out.NoteWrapped(note)
 }
 
 // senderPreview projects the walked sources into preview rows, dropping
@@ -550,8 +572,8 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 	// says "Already up to date" — "Sent · (0 B sent)" would contradict
 	// itself. Mirror the receiver's headline.
 	if s.moved == 0 && s.keptFiles == 0 && s.skippedFiles > 0 {
-		fmt.Fprintln(os.Stderr, uxlog.Check(), "Already up to date")
-		fmt.Fprintln(os.Stderr, uxlog.Detail(uxlog.Join(uxlog.CountNoun(s.skippedFiles, "file")+" unchanged", path.Tag())))
+		uxlog.Status(uxlog.Check(), "Already up to date")
+		uxlog.Note(uxlog.Join(uxlog.CountNoun(s.skippedFiles, "file")+" unchanged", path.Tag()))
 		printUpdateNotice(f)
 		return
 	}
@@ -566,8 +588,8 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 		// "Sent — 2.1 MB" would contradict itself; name the outcome.
 		glyph, headline = uxlog.Info(), "Nothing sent"
 	}
-	fmt.Fprintln(os.Stderr, glyph, headline)
-	fmt.Fprintln(os.Stderr, uxlog.Detail(summaryDetail(total, s.moved, "sent", elapsed, path)))
+	uxlog.Status(glyph, headline)
+	uxlog.Note(summaryDetail(total, s.moved, "sent", elapsed, path))
 	var exceptions []string
 	if n := s.skippedFiles - s.keptFiles; n > 0 {
 		// The receiver's word for these is "up to date"; "skipped" reads
@@ -578,7 +600,7 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 		exceptions = append(exceptions, fmt.Sprintf("%d kept by the receiver", s.keptFiles))
 	}
 	if len(exceptions) > 0 {
-		fmt.Fprintln(os.Stderr, uxlog.Detail(uxlog.Join(exceptions...)))
+		uxlog.Note(uxlog.Join(exceptions...))
 	}
 	if s.keptFiles == 0 && s.moved > 0 {
 		uxlog.Notify("Sent "+uxlog.HumanBytes(max(total, s.moved)), time.Since(runStart))
@@ -683,7 +705,7 @@ func onAccepted(f *flags) {
 	}
 	jsonEmitAccepted()
 	if !f.quiet {
-		fmt.Fprintf(os.Stderr, "%s %s accepted\n", uxlog.Check(), sendState.peerName())
+		uxlog.Status(uxlog.Check(), sendState.peerName()+" accepted")
 	}
 }
 
@@ -793,17 +815,18 @@ func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 		case <-ctx.Done():
 			return // run finished without a signal
 		}
-		// Notice before cancel(), and via uxlog.Println: it clears a live
-		// spinner's line first, and a live progress bar's next refresh
-		// would erase a raw stderr write; cancel() races the bar's teardown.
+		// Notice before cancel(): the grid printer clears a live spinner's
+		// line first, and hands the line to a live progress bar, whose next
+		// refresh would erase a raw stderr write; cancel() races the bar's
+		// teardown.
 		if !quiet {
-			// The leading \r: the terminal has just echoed "^C", leaving the
-			// cursor two columns in; the line belongs in column 0.
-			uxlog.Println(fmt.Sprintf("\r%s Cancelling…", uxlog.Info()))
+			// The terminal has just echoed "^C", leaving the cursor two
+			// columns in; the line belongs in column 0.
+			uxlog.StatusAfterInterrupt(uxlog.Info(), "Cancelling…")
 			mu.Lock()
 			if !done {
 				hint = time.AfterFunc(time.Second, func() {
-					uxlog.Println("  Still cleaning up — press Ctrl-C again to force quit.")
+					uxlog.Line("Still cleaning up — press Ctrl-C again to force quit.")
 				})
 			}
 			mu.Unlock()
@@ -858,12 +881,12 @@ func sourceIssueHooks(f *flags, plan *sendPlan) (skipped func() []string, onSkip
 		paths[i] = name(i) + " — " + sourceErrReason(err)
 		mu.Unlock()
 		if !f.quiet {
-			uxlog.Println(fmt.Sprintf("%s Skipped %s: %s", uxlog.Warn(), name(i), sourceErrReason(err)))
+			uxlog.Status(uxlog.Warn(), fmt.Sprintf("Skipped %s: %s", name(i), sourceErrReason(err)))
 		}
 	}
 	onChanged = func(i uint32) {
 		if !f.quiet {
-			uxlog.Println(fmt.Sprintf("%s %s changed while it was being sent — the copy may be inconsistent", uxlog.Warn(), name(i)))
+			uxlog.Status(uxlog.Warn(), name(i)+" changed while it was being sent — the copy may be inconsistent")
 		}
 	}
 	return skipped, onSkipped, onChanged
@@ -909,6 +932,10 @@ func sourceErrReason(err error) string {
 	return err.Error()
 }
 
+// skippedListRows is how many skipped files printSkippedList names before
+// collapsing the rest into "… and N more".
+const skippedListRows = 10
+
 // printSkippedList lists files a transfer skipped, after the summary.
 // cause, if set, says why ("could not be read").
 func printSkippedList(f *flags, cause string, rows []string) {
@@ -922,12 +949,14 @@ func printSkippedList(f *flags, cause string, rows []string) {
 	if cause != "" {
 		cause += " and "
 	}
-	fmt.Fprintf(os.Stderr, "%s %s %s%s skipped:\n", uxlog.Warn(), uxlog.CountNoun(len(rows), "file"), cause, verb)
-	const show = 10
-	for _, r := range rows[:min(len(rows), show)] {
-		fmt.Fprintf(os.Stderr, "    %s\n", r)
+	uxlog.Status(uxlog.Warn(), fmt.Sprintf("%s %s%s skipped:", uxlog.CountNoun(len(rows), "file"), cause, verb))
+	// uxlog.Shown: a list one over the limit is printed whole, so the
+	// closing line never stands for a single file.
+	shown := uxlog.Shown(len(rows), skippedListRows)
+	for _, r := range rows[:shown] {
+		uxlog.Item(r)
 	}
-	if len(rows) > show {
-		fmt.Fprintf(os.Stderr, "    … and %d more\n", len(rows)-show)
+	if len(rows) > shown {
+		uxlog.Item(fmt.Sprintf("… and %d more", len(rows)-shown))
 	}
 }

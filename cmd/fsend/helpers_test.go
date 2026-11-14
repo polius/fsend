@@ -47,16 +47,21 @@ func TestIsLocalAddr(t *testing.T) {
 }
 
 func TestShortErr_TruncatesAndStripsNewlines(t *testing.T) {
-	// shortErr caps to 60 runes (59 + "…"), so the byte length grows by
-	// the UTF-8 width of the ellipsis. Assert in runes, which is what the
+	// shortErr caps to 60 display columns (59 + "…"), which is what the
 	// caller cares about for layout.
 	long := strings.Repeat("a", 100)
 	got := shortErr(errors.New(long))
-	if n := len([]rune(got)); n > 60 {
-		t.Errorf("runes = %d, want ≤ 60", n)
+	if n := uxlog.Width(got); n > 60 {
+		t.Errorf("columns = %d, want ≤ 60", n)
 	}
 	if !strings.HasSuffix(got, "…") {
 		t.Errorf("expected ellipsis suffix on truncated err, got %q", got)
+	}
+	// A message in a wide script is cut by columns, on a character
+	// boundary: the old byte slice could split one in two.
+	wide := shortErr(errors.New(strings.Repeat("接続が切れました", 10)))
+	if n := uxlog.Width(wide); n > 60 || !utf8.ValidString(wide) || !strings.HasSuffix(wide, "…") {
+		t.Errorf("wide message: %d columns, valid=%v: %q", n, utf8.ValidString(wide), wide)
 	}
 
 	multi := errors.New("first line\nsecond line that should be dropped")
@@ -66,19 +71,20 @@ func TestShortErr_TruncatesAndStripsNewlines(t *testing.T) {
 }
 
 // The retry notice rounds the jittered wait — "618.167744ms" is
-// debugging noise on a user-facing line.
+// debugging noise on a user-facing line — and renders it like every other
+// duration on screen: a space before the unit (V9).
 func TestRetryNoticeFor_RoundsWait(t *testing.T) {
 	notice := retryNoticeFor(&flags{})
 	got := captureStderr(t, func() {
 		notice(2, 618167744*time.Nanosecond, errors.New("idle timeout"))
 	})
-	if !strings.Contains(got, "retrying in 600ms (attempt 2/3)") {
+	if !strings.Contains(got, "retrying in 600 ms (attempt 2/3)") {
 		t.Errorf("wait not rounded: %q", got)
 	}
 	got = captureStderr(t, func() {
 		notice(3, 2822002555*time.Nanosecond, errors.New("idle timeout"))
 	})
-	if !strings.Contains(got, "retrying in 2.8s (attempt 3/3)") {
+	if !strings.Contains(got, "retrying in 2.8 s (attempt 3/3)") {
 		t.Errorf("wait not rounded: %q", got)
 	}
 }

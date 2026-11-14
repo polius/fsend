@@ -332,7 +332,7 @@ func publishPathChoice(ctx context.Context, sig *signaling.Client, sessionID, ro
 func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, roleToken string, opts iceconn.Options, controlling bool, debug bool) (net.PacketConn, connpath.Info, error) {
 	debugf := func(format string, args ...any) {
 		if debug {
-			fmt.Fprintf(os.Stderr, "DEBUG: "+format+"\n", args...)
+			uxlog.Debug(fmt.Sprintf(format, args...))
 		}
 	}
 	budget := iceBudget
@@ -716,7 +716,7 @@ func linkViaInternet(ctx context.Context, f *flags, client *signaling.Client, jo
 		prep.discard()
 	} else {
 		if f.debug {
-			fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
+			uxlog.Debug(fmt.Sprintf("ICE failed: %v", iceErr))
 		}
 		if ctx.Err() != nil {
 			prep.discard()
@@ -832,19 +832,20 @@ func retryNoticeFor(f *flags) func(attempt int, wait time.Duration, lastErr erro
 	if f.quiet {
 		return nil
 	}
-	// uxlog.Println coordinates with a live progress bar so the notice
+	// uxlog.Status coordinates with a live progress bar so the notice
 	// prints above it instead of colliding with the in-place redraw.
 	return func(attempt int, wait time.Duration, lastErr error) {
 		// The raw jittered duration ("618.167744ms") is debugging noise
-		// on a user-facing line.
-		wait = wait.Round(100 * time.Millisecond)
+		// on a user-facing line: round it, then render it like every
+		// other duration on screen ("600 ms", "2.8 s").
+		in := uxlog.HumanDuration(wait.Round(100 * time.Millisecond))
 		if f.debug {
-			uxlog.Println(fmt.Sprintf("%s Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
-				uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts))
+			uxlog.Status(uxlog.Retry(), fmt.Sprintf("Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
+				shortErr(lastErr), in, attempt, retry.DefaultAttempts))
 			return
 		}
-		uxlog.Println(fmt.Sprintf("%s Connection interrupted — retrying in %s (attempt %d/%d)",
-			uxlog.Retry(), wait, attempt, retry.DefaultAttempts))
+		uxlog.Status(uxlog.Retry(), fmt.Sprintf("Connection interrupted — retrying in %s (attempt %d/%d)",
+			in, attempt, retry.DefaultAttempts))
 	}
 }
 
@@ -855,11 +856,7 @@ func shortErr(err error) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	const max = 60
-	if len(s) > max {
-		s = s[:max-1] + "…"
-	}
-	return s
+	return uxlog.Clip(s, 60)
 }
 
 func hostnameOrDefault(s string) string {
@@ -879,8 +876,8 @@ func printPath(f *flags, info connpath.Info) {
 	if f.quiet || !f.debug {
 		return
 	}
-	fmt.Fprintln(os.Stderr, uxlog.Check(), info.Headline())
+	uxlog.Status(uxlog.Check(), info.Headline())
 	if d := info.Detail(); d != "" {
-		fmt.Fprintln(os.Stderr, "    ICE candidate pair:", d)
+		uxlog.Debug("ICE candidate pair: " + d)
 	}
 }
