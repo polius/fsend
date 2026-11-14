@@ -516,7 +516,7 @@ func TestRenderError_HomebrewManaged(t *testing.T) {
 		t.Errorf("exit code = %d, want 39", code)
 	}
 	for _, want := range []string{
-		"[E039] This fsend is managed by Homebrew.",
+		"[E039] This fsend is managed by a package manager.",
 		"uninstall it with: brew uninstall fsend",
 	} {
 		if !strings.Contains(got, want) {

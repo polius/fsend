@@ -28,6 +28,9 @@ func runUninstall(f *flags) error {
 		if managedByHomebrew(binPath) {
 			return fmt.Errorf("%w: uninstall it with: brew uninstall fsend", fserrors.ErrHomebrewManaged)
 		}
+		if format := packagedAs(binPath); format != "" {
+			return fmt.Errorf("%w: %s", fserrors.ErrHomebrewManaged, packageAdvice(format, true))
+		}
 	}
 
 	if err := confirmUninstall(f); err != nil {

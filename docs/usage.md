@@ -537,7 +537,7 @@ failure. For what to *do* about a given error, see
 | `36`  | `E036` — a symlink in the send set can't be followed (missing or unreadable target, or a link cycle). |
 | `37`  | `E037` — the server's relay spent its daily byte budget; forwarding is paused until 00:00 UTC. |
 | `38`  | `E038` — files received, but the `--manifest` record could not be written. |
-| `39`  | `E039` — `fsend --update`/`--uninstall` on a Homebrew-managed binary; use `brew upgrade`/`brew uninstall fsend`. |
+| `39`  | `E039` — `fsend --update`/`--uninstall` on a binary a package manager owns (Homebrew, or the deb/rpm/apk packages); the line under it says what to run instead. |
 | `40`  | `E040` — `fsend --update` as root; opt in with `FSEND_ALLOW_ROOT=1` on single-user machines (containers). |
 | `41`  | `E041` — `fsend --update` from a development build; there is no release to compare against. Install a release build. |
 | `42`  | `E042` — the network blocks UDP and the relay's TCP fallback failed too (or the server doesn't offer it). |

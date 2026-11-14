@@ -108,6 +108,59 @@ homebrew_casks:
       email: goreleaser-bot@users.noreply.github.com
     commit_msg_template: 'brew: fsend {{ .Tag }}'
 
+# deb, rpm and apk packages of the Linux builds, attached to the release
+# (no repository yet). Each carries /usr/share/fsend/package-manager so
+# `fsend --update` and `--uninstall` leave the binary to the package
+# manager.
+nfpms:
+  - id: fsend
+    ids:
+      - fsend
+    package_name: fsend
+    # Debian calls both ARMv6 and ARMv7 "armhf", so the conventional names
+    # of those two debs would collide; the ARMv6 one gets a suffix.
+    file_name_template: >-
+      {{- if and (eq .Format "deb") (eq .Arch "arm") (eq .Arm "6") -}}
+      {{ .PackageName }}_{{ .Version }}_armhf-armv6.deb
+      {{- else -}}
+      {{ .ConventionalFileName }}
+      {{- end -}}
+    vendor: polius
+    homepage: 'https://github.com/polius/fsend'
+    maintainer: 'polius <polius@users.noreply.github.com>'
+    description: 'Peer-to-peer, end-to-end encrypted file transfer'
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    mtime: '{{ .CommitDate }}'
+    contents:
+      - src: LICENSE
+        dst: /usr/share/licenses/fsend/LICENSE
+        file_info:
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+      - src: packaging/package-manager.deb
+        dst: /usr/share/fsend/package-manager
+        packager: deb
+        file_info:
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+      - src: packaging/package-manager.rpm
+        dst: /usr/share/fsend/package-manager
+        packager: rpm
+        file_info:
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+      - src: packaging/package-manager.apk
+        dst: /usr/share/fsend/package-manager
+        packager: apk
+        file_info:
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+
 checksum:
   name_template: 'checksums.txt'
   algorithm: sha256

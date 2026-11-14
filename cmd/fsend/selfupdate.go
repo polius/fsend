@@ -53,6 +53,9 @@ func runUpdate(check bool) error {
 		if managedByHomebrew(binPath) {
 			return fmt.Errorf("%w: update it with: brew upgrade fsend", fserrors.ErrHomebrewManaged)
 		}
+		if format := packagedAs(binPath); format != "" {
+			return fmt.Errorf("%w: %s", fserrors.ErrHomebrewManaged, packageAdvice(format, false))
+		}
 
 		// The installers are per-user and refuse root (see scripts/install.*).
 		// Mirror that here so the failure happens before any network work, with
@@ -152,6 +155,43 @@ func resolveBinaryPath(binPath string) string {
 		}
 	}
 	return binPath
+}
+
+// packageMarker is where the deb, rpm and apk packages record their format,
+// relative to the binary's directory (see packaging/ and nfpms: in
+// .goreleaser.yml).
+const packageMarker = "../share/fsend/package-manager"
+
+// packagedAs returns the package format ("deb", "rpm", "apk") that
+// installed the binary at binPath, or "" when no package did.
+func packagedAs(binPath string) string {
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(binPath), packageMarker))
+	if err != nil {
+		return ""
+	}
+	switch f := strings.TrimSpace(string(b)); f {
+	case "deb", "rpm", "apk":
+		return f
+	}
+	return ""
+}
+
+// packageAdvice says how to update (or, with remove, uninstall) a
+// packaged fsend. The packages come from the GitHub release, not a
+// repository, so an update means installing the newer package file.
+func packageAdvice(format string, remove bool) string {
+	if remove {
+		switch format {
+		case "deb":
+			return "uninstall it with: sudo apt remove fsend"
+		case "rpm":
+			return "uninstall it with: sudo dnf remove fsend (or rpm -e fsend)"
+		default:
+			return "uninstall it with: sudo apk del fsend"
+		}
+	}
+	return "it was installed from a ." + format + " package; update it by installing the new one from " +
+		"https://github.com/polius/fsend/releases/latest"
 }
 
 // managedByHomebrew reports whether the (symlink-resolved) binary lives
