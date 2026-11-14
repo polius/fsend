@@ -137,15 +137,8 @@ func runServer() error {
 		return fmt.Errorf("%w: FSEND_RELAY_ADDR %q: %v", fserrors.ErrServerStartup, cfg.udpAddr, err)
 	}
 	s.WithRelay(relaySrv, udpPort)
-	// After the relay is attached: the snapshot also carries its daily
-	// byte count.
-	if cfg.stateFile != "" {
-		n, err := s.LoadState(cfg.stateFile)
-		if err != nil {
-			logger.Warn("discarding saved sessions", "err", err)
-		} else if n > 0 {
-			logger.Info("restored pending sessions", "count", n)
-		}
+	if cfg.legacyStateFile {
+		logger.Warn(envStateFile + " is no longer used and is ignored: pending codes don't survive a restart (their senders re-create them), and the relay's daily byte count starts again")
 	}
 	relayCtx, relayCancel := context.WithCancel(ctx)
 	defer relayCancel()
@@ -233,7 +226,6 @@ func runServer() error {
 	//     pending codes stay reachable and long-polls stay parked.
 	//  2. Stop signaling (≤ httpDrainGrace): parked /wait polls are released
 	//     at once and their senders re-poll the next process.
-	//  3. Save pending sessions for the next process (FSEND_STATE_FILE).
 	// The deployment's stop_grace_period must exceed both graces.
 	relaySrv.Drain()
 	drainCtx, cancelRelayDrain := context.WithTimeout(force, relayDrainGrace)
@@ -245,14 +237,6 @@ func runServer() error {
 	_ = httpSrv.Shutdown(httpCtx)
 	cancelHTTP()
 	cancel()
-
-	if cfg.stateFile != "" {
-		if n, err := s.SaveState(cfg.stateFile); err != nil {
-			logger.Error("saving pending sessions", "err", err)
-		} else {
-			logger.Info("saved pending sessions", "count", n)
-		}
-	}
 	// Marks a clean drain: absent from the logs when SIGKILL (e.g. a too-low
 	// stop_grace_period) cut the shutdown short.
 	logger.Info("shutdown complete")
@@ -371,7 +355,7 @@ type serverRuntimeConfig struct {
 	relayPublicAddr      string
 	metricsAddr          string
 	logJSON              bool
-	stateFile            string
+	legacyStateFile      bool // FSEND_STATE_FILE is set: warn that it is ignored
 	trustedProxies       []netip.Prefix
 }
 
@@ -420,7 +404,7 @@ func loadServerConfig() (serverRuntimeConfig, error) {
 		return cfg, err
 	}
 	cfg.metricsAddr = strings.TrimSpace(os.Getenv(envMetricsAddr))
-	cfg.stateFile = strings.TrimSpace(os.Getenv(envStateFile))
+	cfg.legacyStateFile = strings.TrimSpace(os.Getenv(envStateFile)) != ""
 	switch v := strings.TrimSpace(os.Getenv(envLogFormat)); strings.ToLower(v) {
 	case "", "text":
 	case "json":
@@ -507,7 +491,6 @@ func formatServerConfig(cfg serverRuntimeConfig) string {
 		{envLogLevel, logLevelName(cfg.logLevel), cfg.logLevel != slog.LevelInfo},
 		{envLogFormat, map[bool]string{false: "text", true: "json"}[cfg.logJSON], cfg.logJSON},
 		{envMetricsAddr, orNone(cfg.metricsAddr), cfg.metricsAddr != ""},
-		{envStateFile, orNone(cfg.stateFile), cfg.stateFile != ""},
 		// Env-var name inlined (not a shared const) so gosec G101 doesn't
 		// mistake a password-named identifier for a hardcoded credential.
 		{"FSEND_SERVER_PASSWORD", password, cfg.serverPassword != ""},
@@ -728,11 +711,6 @@ CONFIGURATION (environment variables — all optional)
     FSEND_LOG_LEVEL                   Default info (debug/info/warn/error).
                                       Only debug logs client IPs and slots.
     FSEND_LOG_FORMAT                  Default text; json for log shippers.
-    FSEND_STATE_FILE                  Save pending (unpaired) codes and the
-                                      relay's bytes forwarded today here on
-                                      shutdown and restore them on start, so
-                                      a redeploy neither kills the codes nor
-                                      resets FSEND_RELAY_MAX_BYTES_PER_DAY.
                                       No IPs are saved; the file is deleted
                                       once read. Default off.
     FSEND_METRICS_ADDR                Serve /metrics (Prometheus) and

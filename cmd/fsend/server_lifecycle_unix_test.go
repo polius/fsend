@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/signaling"
 )
 
@@ -77,9 +79,10 @@ func TestServerLifecycle(t *testing.T) {
 	}
 }
 
-// TestServerRestartKeepsPendingCode: with FSEND_STATE_FILE set, a code
-// created before a SIGTERM restart is still waitable afterwards.
-func TestServerRestartKeepsPendingCode(t *testing.T) {
+// TestServerIgnoresStateFile: FSEND_STATE_FILE is no longer used. A server
+// that still has it set starts and stops cleanly, writes nothing there,
+// and a code from before a restart is gone (its sender re-creates it).
+func TestServerIgnoresStateFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("boots a real server on loopback; skipped in -short")
 	}
@@ -88,7 +91,8 @@ func TestServerRestartKeepsPendingCode(t *testing.T) {
 	t.Setenv("FSEND_SERVER_ADDR", httpAddr)
 	t.Setenv("FSEND_RELAY_ADDR", fmt.Sprintf("127.0.0.1:%d", srvFreePortUDP(t)))
 	t.Setenv("FSEND_LOG_LEVEL", "error")
-	t.Setenv("FSEND_STATE_FILE", filepath.Join(t.TempDir(), "sessions.json"))
+	stateFile := filepath.Join(t.TempDir(), "sessions.json")
+	t.Setenv("FSEND_STATE_FILE", stateFile)
 
 	sink := make(chan os.Signal, 1)
 	signal.Notify(sink, syscall.SIGTERM)
@@ -115,20 +119,19 @@ func TestServerRestartKeepsPendingCode(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	client := signaling.New("http://"+httpAddr, "test")
 	done := boot()
-	created, err := client.Create(ctx, "")
+	created, err := signaling.New("http://"+httpAddr, "test").Create(ctx, "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	stop(done)
+	if _, err := os.Stat(stateFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the server wrote %s (stat: %v)", stateFile, err)
+	}
 
 	done = boot()
 	defer stop(done)
-	if _, err := signaling.New("http://"+httpAddr, "test").Join(ctx, created.Code); err != nil {
-		t.Fatalf("join after restart: %v (the pending code was lost)", err)
-	}
-	if resp, err := client.Wait(ctx, created.Code); err != nil || resp == nil {
-		t.Fatalf("sender wait after restart: %v, %v", resp, err)
+	if _, err := signaling.New("http://"+httpAddr, "test").Join(ctx, created.Code); !errors.Is(err, fserrors.ErrCodeNotFound) {
+		t.Errorf("join after restart = %v, want the code gone (E002)", err)
 	}
 }

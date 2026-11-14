@@ -201,13 +201,12 @@ or with the wrong one — fails with `E028`.
   `SIGTERM`/Ctrl-C skips the wait. The compose file sets
   `stop_grace_period: 40s` to cover both (keep it if you edit the file —
   Docker's 10s default would SIGKILL mid-drain).
-- **Codes survive a redeploy.** With `FSEND_STATE_FILE` set (the compose
-  file sets it, on the `fsend_state` volume), the server saves every
-  pending, not-yet-received code on shutdown and restores it on start, so
-  a sender waiting on a code just keeps waiting. The file holds slots and
-  random session tokens, never IPs or codes; it is written `0600` and
-  deleted as soon as it is read. Codes a receiver already joined are not
-  kept: those transfers were already drained in step one.
+- **Codes survive a redeploy.** The server keeps nothing on disk, but a
+  sender waiting on a code notices the restart on its next poll and
+  registers the same code again on the new process, so the code keeps
+  working. (A 1.16 sender run with `--mode direct` doesn't, and gets
+  `E007`.) The relay's daily byte count (`FSEND_RELAY_MAX_BYTES_PER_DAY`)
+  starts again from zero.
 - **Single instance only.** Pairing state, relay allocations and used-code
   tombstones live in one process's memory, so run exactly one `fsend`
   server per hostname: two replicas behind a load balancer would split
@@ -316,13 +315,13 @@ your overrides were picked up (the password value is never printed, only
 whether one is set):
 
 ```
-fsend server configuration (3 of 14 customized; * = changed from default):
+fsend server configuration (2 of 14 customized; * = changed from default):
     FSEND_LOG_LEVEL                              info
     FSEND_LOG_FORMAT                             text
     FSEND_METRICS_ADDR                           (none)
-  * FSEND_STATE_FILE                             /state/sessions.json
   * FSEND_SERVER_PASSWORD                        (set)
     FSEND_SERVER_ADDR                            :8080
+    FSEND_SERVER_TRUSTED_PROXIES                 (none)
   * FSEND_SERVER_MAX_SESSIONS_PER_IP             10
     FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE  0 (unlimited)
     FSEND_MIN_CLIENT_VERSION                     (none)
@@ -346,7 +345,6 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 |---|---|---|
 | `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable (an unknown `FSEND_*` name is logged as a warning). Only `debug` logs client IPs and request paths (which carry slots). |
 | `FSEND_LOG_FORMAT` | `text` | `json` emits one JSON object per line, for log shippers. |
-| `FSEND_STATE_FILE` | _(off; compose: `/state/sessions.json`)_ | Where to save pending codes and the relay's bytes forwarded today on shutdown, and restore them on start, so a redeploy neither kills the codes nor resets `FSEND_RELAY_MAX_BYTES_PER_DAY` — see [Operations](#operations). The directory must be writable by the server (uid 65532 in the image). |
 | `FSEND_METRICS_ADDR` | _(off)_ | Extra listener for `/metrics` (Prometheus) and `/metrics.json` — see [Metrics](#metrics). Never publish it. |
 | `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/`, `/health`, `/healthz`, and `/readyz` — see [Require a password](#require-a-password-optional). |
 | `FSEND_SERVER_PASSWORD_FILE` | _(unset)_ | Read the password from this file (trailing newline trimmed) instead of `FSEND_SERVER_PASSWORD` — for Docker secrets / systemd credentials. Used only when `FSEND_SERVER_PASSWORD` is unset. |

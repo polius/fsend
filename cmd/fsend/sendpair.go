@@ -325,10 +325,12 @@ func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *conf
 		}
 
 		waitResp, err := waitForReceiver(ctx, client, created.Code, onDown)
-		if errors.Is(err, fserrors.ErrSessionExpired) && onDown != nil && ctx.Err() == nil {
+		if errors.Is(err, fserrors.ErrSessionExpired) && ctx.Err() == nil {
 			// The server lost the session (restart, deploy, TTL) while we
 			// still hold the code: the slot is client-derived, so simply
-			// re-create it.
+			// re-create it. In every mode, not only a persistent one: the
+			// server answered, so it is up, and the server keeps nothing
+			// across a restart. The round's pairTTL bounds the code's life.
 			continue
 		}
 		if err != nil {

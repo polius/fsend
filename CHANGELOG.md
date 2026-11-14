@@ -6,6 +6,17 @@ lists the changes that need action, newest first. See
 [Version compatibility](docs/compatibility.md) for which versions work
 together.
 
+## Unreleased
+
+- **`FSEND_STATE_FILE` is gone.** A server that still sets it logs a
+  warning and ignores it. You can drop the variable and the `fsend_state`
+  volume from your compose file.
+  - Codes still survive a redeploy: a waiting sender registers its code
+    again with the new process. A 1.16 sender run with `--mode direct`
+    (server only) doesn't, and gets `E007` on a restart.
+  - The relay's daily byte count (`FSEND_RELAY_MAX_BYTES_PER_DAY`) starts
+    again on every restart.
+
 ## 1.16.0
 
 - **Protocol 3: update both ends.** Sender and receiver both need 1.16 or
