@@ -60,6 +60,14 @@ offline and same-LAN transfers still work.
           ▼                                                       ▼
 ```
 
+The sender listens on the code's port twice, for TCP and for QUIC. The
+receiver connects over TCP first: kernel TCP fills a local link, which
+QUIC in user space (one small datagram per system call) could not. It
+runs the same TLS 1.3 and the same PAKE, on two connections, one for
+control and one for the bytes. If TCP doesn't connect within 300 ms (an
+older sender, or a firewall that drops TCP), the receiver uses
+QUIC as before.
+
 Discovery itself is RTT-scale: the query is re-sent after 100, 200 and
 then every 400 ms, because Wi-Fi power saving can hold multicast for a
 few hundred milliseconds. Both sides also compute the argon2id stretch
@@ -110,9 +118,11 @@ the two machines — and the server never sees one. Throughput is then
 bounded by the slower of the two links, and also by latency and packet
 loss on the path and by CPU on either end. For scale, on an M2 Pro with
 both ends on one machine, `fsend backup.zip` to `fsend --yes --out - <code>`
-moved a 1 GiB file over the local-network route at about 45–75 MB/s,
-while the transfer engine alone (`go test -bench LargeFile
-./internal/transfer/`, no QUIC) reaches about 1.0–1.4 GB/s. The sender
+moves a 1 GiB file of random data over the local-network route (TCP) at
+about 1.1 GB/s, close to the transfer engine alone (`go test -bench
+LargeFile ./internal/transfer/`: about 1.0–1.4 GB/s), and Go source text
+at about 0.7 GB/s (compression runs on several cores). Over QUIC, which
+the internet routes still use, the same file moves at about 72 MB/s. The sender
 gives ICE up to 5 seconds to find a path (1.5 seconds when neither side
 has a public address, since only peers on one network could then connect
 directly), preparing the relay in the meantime, and tells the receiver
