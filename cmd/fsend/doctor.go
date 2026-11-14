@@ -181,16 +181,16 @@ func runDoctor(serverFlag string) (failed int) {
 		say(c)
 	}
 
-	// mDNS: prove the full announce→query roundtrip works from this host.
-	// The check is two-tier so each outcome is deterministic and honest:
+	// mDNS: prove the announce→query roundtrip works from this host, on
+	// two tiers:
 	//
-	//   1. machinery — loopback multicast, which the OS never filters.
-	//      A miss here means fsend's mDNS itself is broken on this host.
-	//   2. LAN — the physical interface. macOS 15+ (Local Network
-	//      Privacy) and some Wi-Fi APs silently drop or stall multicast
-	//      there; when that happens, discovering *other* devices falls
-	//      back to the pairing server (transfers still complete, and
-	//      same-device transfers keep working via loopback).
+	//   1. loopback — finds a sender on this same machine. Linux brings lo
+	//      up without the multicast flag, and Windows never answers
+	//      multicast on loopback, so a miss here alone is normal there.
+	//   2. LAN — the physical interface, which is what reaching other
+	//      devices needs. macOS 15+ (Local Network Privacy) and some Wi-Fi
+	//      APs silently drop multicast there; discovery then falls back to
+	//      the pairing server (transfers still complete).
 	ann, err := landisc.Announce(doctorCode, codepkg.Epoch(time.Now()), ip)
 	if err != nil {
 		sayf(false, "mDNS", "cannot open multicast sockets (%v) — LAN discovery unavailable", err)
@@ -204,24 +204,44 @@ func runDoctor(serverFlag string) (failed int) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	machStart := time.Now()
-	if _, err := landisc.QueryLoopback(ctx, doctorCode, 500*time.Millisecond); err != nil {
-		sayf(false, "mDNS", "roundtrip failed even on loopback (%v) — LAN discovery unavailable", err)
-		return failed
-	}
-	sayf(true, "mDNS", "local roundtrip ok in %s", time.Since(machStart).Round(time.Millisecond))
+	loopStart := time.Now()
+	_, loopErr := landisc.QueryLoopback(ctx, doctorCode, 500*time.Millisecond)
+	loopTook := time.Since(loopStart)
 
-	// LAN tier: a query that only leaves via the physical interface. If
-	// the OS or the AP blocks multicast there, this is the honest signal.
-	lanStart := time.Now()
+	// The LAN tier runs whatever loopback did: only a query that leaves
+	// via the physical interface tells whether other devices can be found.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
-	if _, err := landisc.QueryInterface(ctx2, doctorCode, 500*time.Millisecond, ip); err != nil {
-		sayf(false, "mDNS", "no multicast answer via %s (%s) — discovering other devices falls back to the pairing server; check Local Network permission / Wi-Fi", ip, time.Since(lanStart).Round(time.Millisecond))
-	} else {
-		sayf(true, "mDNS", "answered on the LAN in %s", time.Since(lanStart).Round(time.Millisecond))
+	lanStart := time.Now()
+	_, lanErr := landisc.QueryInterface(ctx2, doctorCode, 500*time.Millisecond, ip)
+	lanTook := time.Since(lanStart)
+
+	for _, c := range mdnsChecks(loopErr, lanErr, loopTook, lanTook, ip) {
+		say(c)
 	}
 	return failed
+}
+
+// mdnsChecks turns the two mDNS tiers into report rows. A loopback miss
+// alone is no failure: it only means a sender on this same machine is
+// found through the LAN interface instead (see the tiers in runDoctor).
+func mdnsChecks(loopErr, lanErr error, loopTook, lanTook time.Duration, ip net.IP) []doctorCheck {
+	ms := func(d time.Duration) time.Duration { return d.Round(time.Millisecond) }
+	switch {
+	case loopErr == nil && lanErr == nil:
+		return []doctorCheck{
+			{true, "mDNS", fmt.Sprintf("local roundtrip ok in %s", ms(loopTook))},
+			{true, "mDNS", fmt.Sprintf("answered on the LAN in %s", ms(lanTook))},
+		}
+	case lanErr == nil:
+		return []doctorCheck{{true, "mDNS", fmt.Sprintf("answered on the LAN in %s (loopback has no multicast on this system; not needed)", ms(lanTook))}}
+	case loopErr == nil:
+		return []doctorCheck{
+			{true, "mDNS", fmt.Sprintf("local roundtrip ok in %s", ms(loopTook))},
+			{false, "mDNS", fmt.Sprintf("no multicast answer via %s (%s) — discovering other devices falls back to the pairing server; check Local Network permission / Wi-Fi", ip, ms(lanTook))},
+		}
+	}
+	return []doctorCheck{{false, "mDNS", fmt.Sprintf("no multicast answer on loopback or via %s (%v) — LAN discovery unavailable; transfers use the pairing server", ip, lanErr)}}
 }
 
 // clockCheck compares this device's clock with the server's Date header,

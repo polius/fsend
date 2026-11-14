@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -117,5 +118,37 @@ func TestNATAndIPv6Checks(t *testing.T) {
 	}
 	if c := ipv6Check(append(local, net.ParseIP("2001:db8::5"))); !strings.Contains(c.msg, "global address 2001:db8::5") {
 		t.Errorf("global IPv6: %+v", c)
+	}
+}
+
+// A loopback miss alone is not a failure — Linux's lo has no multicast
+// flag by default and Windows never answers on loopback — and it doesn't
+// hide the LAN tier, which decides whether other devices can be found.
+func TestMDNSChecks_LoopbackMissAloneIsFine(t *testing.T) {
+	miss := errors.New("no answer")
+	ip := net.IPv4(192, 168, 1, 20)
+	for _, c := range []struct {
+		name          string
+		loop, lan     error
+		wantOK        []bool
+		wantSubstring string
+	}{
+		{"both answer", nil, nil, []bool{true, true}, "answered on the LAN"},
+		{"loopback misses", miss, nil, []bool{true}, "loopback has no multicast on this system"},
+		{"LAN misses", nil, miss, []bool{true, false}, "falls back to the pairing server"},
+		{"both miss", miss, miss, []bool{false}, "LAN discovery unavailable"},
+	} {
+		rows := mdnsChecks(c.loop, c.lan, 3*time.Millisecond, 4*time.Millisecond, ip)
+		if len(rows) != len(c.wantOK) {
+			t.Fatalf("%s: %d rows, want %d: %+v", c.name, len(rows), len(c.wantOK), rows)
+		}
+		for i, r := range rows {
+			if r.ok != c.wantOK[i] {
+				t.Errorf("%s: row %d ok=%v, want %v (%q)", c.name, i, r.ok, c.wantOK[i], r.msg)
+			}
+		}
+		if last := rows[len(rows)-1]; !strings.Contains(last.msg, c.wantSubstring) {
+			t.Errorf("%s: last row %q, want it to mention %q", c.name, last.msg, c.wantSubstring)
+		}
 	}
 }
