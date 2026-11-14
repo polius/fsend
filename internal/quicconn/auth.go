@@ -4,11 +4,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
-
-	"github.com/quic-go/quic-go"
 
 	"github.com/polius/fsend/internal/fserrors"
 	"github.com/polius/fsend/internal/pake"
@@ -76,7 +75,7 @@ var (
 // successful run) for later in-session PAKEs such as --password. Any
 // failure — wrong code, MITM, reflection, malformed input — returns
 // fserrors.ErrPeerAuthFailed; a v2 peer returns ErrIncompatibleVersion.
-func authenticatePeer(conn *quic.Conn, control io.ReadWriter, code string, r role) (binding []byte, err error) {
+func authenticatePeer(tlsState tls.ConnectionState, control io.ReadWriter, code string, r role) (binding []byte, err error) {
 	// Defense in depth: no peer-controlled input may crash the process.
 	defer func() {
 		if p := recover(); p != nil {
@@ -84,7 +83,6 @@ func authenticatePeer(conn *quic.Conn, control io.ReadWriter, code string, r rol
 		}
 	}()
 
-	tlsState := conn.ConnectionState().TLS
 	exporter, err := tlsState.ExportKeyingMaterial(exporterLabel, nil, exporterLen)
 	if err != nil {
 		return nil, fmt.Errorf("auth: tls exporter: %w", err)
@@ -127,6 +125,12 @@ func authenticatePeer(conn *quic.Conn, control io.ReadWriter, code string, r rol
 	wantTag := confirmTag(key, exporter, otherRole(r), senderMsg, receiverMsg)
 
 	if _, err := control.Write(myTag); err != nil {
+		// The peer may have judged the code from our share already and
+		// closed before our tag went out (seen on the TCP route): that is
+		// a failed PAKE, as when its close overtakes its own tag below.
+		if peerRejected(err) {
+			return nil, fmt.Errorf("%w: auth: send tag: %v", fserrors.ErrPeerAuthFailed, err)
+		}
 		return nil, fmt.Errorf("auth: send tag: %w", err)
 	}
 	var peerTag [tagLen]byte

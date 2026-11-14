@@ -45,7 +45,7 @@ func TestHandshake_TagReflectionRejected(t *testing.T) {
 			honestErr <- err
 			return
 		}
-		_, err = authenticatePeer(c, ctrl, honestCode, roleSender)
+		_, err = authenticatePeer(c.ConnectionState().TLS, ctrl, honestCode, roleSender)
 		honestErr <- err
 	}()
 

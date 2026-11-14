@@ -95,15 +95,31 @@ func startHarness() (*harness, error) {
 		return nil, fmt.Errorf("build fsend: %w", err)
 	}
 
+	// A free port can be taken between picking it and the server's bind
+	// (an outgoing connection elsewhere gets it as its ephemeral port, as
+	// on macOS runners), so a server that can't bind gets fresh ports.
+	for attempt := 1; ; attempt++ {
+		if err := hh.startServer(); err == nil {
+			break
+		} else if attempt == 3 {
+			return nil, err
+		}
+	}
+	return hh, nil
+}
+
+// startServer picks free ports and starts the pairing server on them.
+func (hh *harness) startServer() error {
+	var err error
 	hh.httpPort, err = freePort()
 	if err != nil {
-		return nil, fmt.Errorf("pick http port: %w", err)
+		return fmt.Errorf("pick http port: %w", err)
 	}
 	hh.udpPort, err = freeUDPPort()
 	if err != nil {
-		return nil, fmt.Errorf("pick udp port: %w", err)
+		return fmt.Errorf("pick udp port: %w", err)
 	}
-
+	hh.serverOutput.Reset()
 	hh.serverCmd = exec.Command(hh.fsendBin, "server")
 	hh.serverCmd.Env = append(os.Environ(),
 		"FSEND_SERVER_ADDR=:"+strconv.Itoa(hh.httpPort),
@@ -120,15 +136,15 @@ func startHarness() (*harness, error) {
 	)
 	hh.serverCmd.Stdout = &hh.serverOutput
 	hh.serverCmd.Stderr = &hh.serverOutput
-
 	if err := hh.serverCmd.Start(); err != nil {
-		return nil, fmt.Errorf("start fsend server: %w", err)
+		return fmt.Errorf("start fsend server: %w", err)
 	}
 	if err := waitServerReady("127.0.0.1:"+strconv.Itoa(hh.httpPort), &hh.serverOutput, 5*time.Second); err != nil {
-		hh.shutdown()
-		return nil, fmt.Errorf("fsend server not ready: %w", err)
+		_ = hh.serverCmd.Process.Kill()
+		_, _ = hh.serverCmd.Process.Wait()
+		return fmt.Errorf("fsend server not ready: %w", err)
 	}
-	return hh, nil
+	return nil
 }
 
 func (hh *harness) shutdown() {
@@ -557,6 +573,13 @@ func (b *safeBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.Write(p)
+}
+
+// Reset empties the buffer (a retried server start).
+func (b *safeBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
 }
 
 func (b *safeBuffer) String() string {

@@ -76,13 +76,22 @@ come from the hybrid TLS exchange.
 
 ## Per-session keys and integrity
 
-- **Fresh TLS identity per session.** The sender's QUIC listener
+- **Fresh TLS identity per session.** The sender's listener
   generates a new Ed25519 key pair and a self-signed certificate valid
   for one hour; it lives only in memory. It is not verified (the PAKE
   authenticates the peer), so there's nothing to manage, rotate, or
   revoke.
-- **End-to-end integrity.** QUIC's AEAD protects every packet in
-  transit. On top of that, each file carries a BLAKE3 root computed over
+- **The local-network TCP route has the same protection.** On the local
+  network the receiver connects over TCP first, with the same TLS 1.3
+  settings and the same PAKE, bound to that connection's exporter. The
+  file bytes travel on a second TLS connection, which counts only once
+  both sides prove it belongs to the session: each sends a tag over the
+  session's PAKE binding and this connection's own exporter. A MITM that
+  terminates either connection sees different exporters on each side and
+  can't produce the tags. The sender's handshake limits and failure
+  penalty apply to TCP as to QUIC.
+- **End-to-end integrity.** TLS's AEAD (QUIC's, or TLS over TCP)
+  protects every byte in transit. On top of that, each file carries a BLAKE3 root computed over
   1 MiB blocks and the file size; the receiver recomputes it from what
   it wrote and rejects the file on a mismatch (`E011`). When a transfer
   resumes, the receiver's existing prefix is checked against the

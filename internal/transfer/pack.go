@@ -3,6 +3,7 @@ package transfer
 import (
 	"fmt"
 	"io"
+	"runtime"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
@@ -32,7 +33,7 @@ type packed struct {
 }
 
 func newChunkPacker(w io.Writer) (*chunkPacker, error) {
-	enc, err := zstd.NewWriter(nil)
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(packWorkers()))
 	if err != nil {
 		return nil, fmt.Errorf("send: zstd writer: %w", err)
 	}
@@ -41,44 +42,114 @@ func newChunkPacker(w io.Writer) (*chunkPacker, error) {
 	return p, nil
 }
 
-// writeLoop compresses (when it pays) and writes chunks in order. After a
-// chunk that doesn't shrink it stops trying for a growing number of chunks,
-// so incompressible data doesn't burn a core on zstd.
+// packWorkers is how many chunks compress at once. One core held text to
+// about a third of the engine's speed; a few cores lift it near the
+// network's. Past eight the writer, not zstd, is the limit.
+func packWorkers() int { return min(runtime.GOMAXPROCS(0), 8) }
+
+// packJob is one chunk on its way through the compression workers.
+type packJob struct {
+	c    packed
+	try  bool   // compress it (false while backing off incompressible data)
+	z    []byte // the compressed bytes, when tried
+	done chan struct{}
+}
+
+// compressBackoff decides which chunks are worth compressing. After a
+// chunk that doesn't shrink, the next ones go uncompressed for a growing
+// stretch, so incompressible data doesn't burn cores on zstd. Results
+// come back in order but late (chunks are in flight), so a stretch can
+// start a few chunks later than with one worker: harmless, a chunk's
+// compression is its own flag on the wire.
+type compressBackoff struct {
+	mu            sync.Mutex
+	skip, backoff int
+}
+
+func (b *compressBackoff) shouldTry() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.skip > 0 {
+		b.skip--
+		return false
+	}
+	return true
+}
+
+func (b *compressBackoff) result(shrank bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if shrank {
+		b.backoff = 0
+		return
+	}
+	b.backoff = min(max(1, b.backoff*2), 64)
+	b.skip = b.backoff
+}
+
+// writeLoop compresses chunks on packWorkers goroutines (when it pays)
+// and writes them in order: reading, compressing and the network overlap,
+// and compression uses more than one core.
 func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *zstd.Encoder) {
 	defer close(p.done)
 	defer func() { _ = enc.Close() }()
-	skip, backoff := 0, 0
-	for c := range in {
-		if p.failed() != nil {
-			putBlock(c.buf)
-			continue
-		}
-		ch := &wire.Chunk{Segments: c.segs, Payload: c.buf}
-		var zbuf []byte
-		if len(c.buf) > 0 {
-			if skip > 0 {
-				skip--
-			} else {
-				zbuf = enc.EncodeAll(c.buf, getBlock()[:0])
-				if len(zbuf)+len(zbuf)/10 < len(c.buf) {
-					ch.Compressed, ch.Payload = true, zbuf
-					backoff = 0
-				} else {
-					backoff = min(max(1, backoff*2), 64)
-					skip = backoff
+	n := packWorkers()
+	jobs := make(chan *packJob, n)
+	order := make(chan *packJob, n) // bounds the chunks in flight
+	var bo compressBackoff
+	var workers sync.WaitGroup
+	for range n {
+		workers.Go(func() {
+			for j := range jobs {
+				if j.try {
+					j.z = enc.EncodeAll(j.c.buf, getBlock()[:0])
 				}
+				close(j.done)
 			}
+		})
+	}
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		for j := range order {
+			<-j.done
+			p.writeChunk(w, j, &bo)
 		}
-		err := wire.WriteChunk(w, ch)
-		putBlock(c.buf)
-		if zbuf != nil {
-			putBlock(zbuf)
+	}()
+	for c := range in {
+		j := &packJob{c: c, done: make(chan struct{})}
+		j.try = len(c.buf) > 0 && p.failed() == nil && bo.shouldTry()
+		order <- j
+		jobs <- j
+	}
+	close(jobs)
+	close(order)
+	workers.Wait()
+	<-written
+}
+
+// writeChunk writes one finished job, compressed if that shrank it by
+// more than a tenth, and returns its buffers to the pool.
+func (p *chunkPacker) writeChunk(w io.Writer, j *packJob, bo *compressBackoff) {
+	defer putBlock(j.c.buf)
+	if j.z != nil {
+		defer putBlock(j.z)
+	}
+	if p.failed() != nil {
+		return
+	}
+	ch := &wire.Chunk{Segments: j.c.segs, Payload: j.c.buf}
+	if j.try {
+		shrank := len(j.z)+len(j.z)/10 < len(j.c.buf)
+		bo.result(shrank)
+		if shrank {
+			ch.Compressed, ch.Payload = true, j.z
 		}
-		if err != nil {
-			p.mu.Lock()
-			p.err = err
-			p.mu.Unlock()
-		}
+	}
+	if err := wire.WriteChunk(w, ch); err != nil {
+		p.mu.Lock()
+		p.err = err
+		p.mu.Unlock()
 	}
 }
 

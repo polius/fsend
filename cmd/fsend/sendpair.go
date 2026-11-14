@@ -434,7 +434,17 @@ func listenLANWithRetry(ctx context.Context, port int, secret string) (*quicconn
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		ln, err := quicconn.ListenAddr(":"+strconv.Itoa(port), secret, quicconn.WithPeerFilter(landisc.LocalPeer))
-		if err == nil || time.Now().After(deadline) {
+		if err == nil {
+			// The TCP route on the same port (quicconn/tcp.go). Best effort:
+			// if the port is taken for TCP, receivers fall back to QUIC.
+			if tl, terr := net.Listen("tcp", ":"+strconv.Itoa(port)); terr == nil {
+				if terr := ln.ServeTCP(tl); terr != nil {
+					_ = tl.Close()
+				}
+			}
+			return ln, nil
+		}
+		if time.Now().After(deadline) {
 			return ln, err
 		}
 		select {

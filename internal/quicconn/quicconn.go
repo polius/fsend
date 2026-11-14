@@ -81,10 +81,18 @@ const (
 	closeRefused quic.ApplicationErrorCode = 0x13
 )
 
-// AcceptResult bundles the negotiated streams with the underlying QUIC
+// Conn is the connection under an AcceptResult: a QUIC connection, or the
+// TCP pair of the local-network TCP route (tcp.go). Its context ends when
+// the connection does, with the close as its cause.
+type Conn interface {
+	Context() context.Context
+	CloseWithError(code quic.ApplicationErrorCode, msg string) error
+}
+
+// AcceptResult bundles the negotiated streams with the underlying
 // connection so callers can manage its lifecycle.
 type AcceptResult struct {
-	Conn    *quic.Conn
+	Conn    Conn
 	Streams transfer.Streams
 }
 
@@ -257,6 +265,9 @@ type Listener struct {
 	failsRun  int       // failed PAKEs since the last success
 	nextStart time.Time // no handshake starts before this
 
+	sem     chan struct{}             // PAKE handshakes in progress, QUIC and TCP together
+	tcp     net.Listener              // the TCP route, when served (tcp.go)
+	pending map[string]chan *tls.Conn // TCP data connections awaited, by id; under mu
 	results chan *AcceptResult
 	fails   chan error // failed handshakes; dropped when full
 	done    chan struct{}
@@ -269,6 +280,7 @@ func NewListener(ln *quic.Listener, secret string, opts ...ListenOption) *Listen
 	l := &Listener{
 		ln:      ln,
 		secret:  secret,
+		sem:     make(chan struct{}, maxPendingHandshakes),
 		results: make(chan *AcceptResult),
 		fails:   make(chan error, 64),
 		done:    make(chan struct{}),
@@ -295,6 +307,12 @@ func (l *Listener) currentSecret() string {
 
 // Close stops listening and abandons pending handshakes.
 func (l *Listener) Close() error {
+	l.mu.Lock()
+	tcp := l.tcp
+	l.mu.Unlock()
+	if tcp != nil {
+		_ = tcp.Close()
+	}
 	err := l.ln.Close()
 	l.stop(errors.New("quicconn: listener closed"))
 	return err
@@ -341,7 +359,7 @@ func (l *Listener) pause() bool {
 }
 
 func (l *Listener) acceptLoop() {
-	sem := make(chan struct{}, maxPendingHandshakes)
+	sem := l.sem
 	for {
 		c, err := l.ln.Accept(context.Background())
 		if err != nil {
@@ -423,7 +441,7 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, secret string) (res *Acc
 	// can't pin this side until the 30s QUIC idle timeout. Cleared on
 	// success so the transfer's own control reads are not capped.
 	_ = ctrl.SetReadDeadline(time.Now().Add(HandshakeTimeout))
-	binding, err := authenticatePeer(c, ctrl, secret, roleSender)
+	binding, err := authenticatePeer(c.ConnectionState().TLS, ctrl, secret, roleSender)
 	if err != nil {
 		return nil, err
 	}
@@ -513,7 +531,7 @@ func ReceiverHandshake(ctx context.Context, c *quic.Conn, secret string) (res *A
 	}
 	// Bound the handshake reads (see SenderHandshake); cleared on success.
 	_ = ctrl.SetReadDeadline(time.Now().Add(HandshakeTimeout))
-	binding, err := authenticatePeer(c, ctrl, secret, roleReceiver)
+	binding, err := authenticatePeer(c.ConnectionState().TLS, ctrl, secret, roleReceiver)
 	if err != nil {
 		return nil, err
 	}
