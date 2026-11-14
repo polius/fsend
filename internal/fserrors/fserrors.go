@@ -501,7 +501,7 @@ var catalog = map[error]Entry{
 	// uninstall), so the Action is left empty rather than contradicting it.
 	ErrHomebrewManaged: {
 		Code: "E039", Exit: 39,
-		Message: "This fsend is managed by Homebrew.",
+		Message: "This fsend is managed by a package manager.",
 	},
 	ErrUpdateRootRefused: {
 		Code: "E040", Exit: 40,

@@ -31,6 +31,13 @@ services:
     environment:
       FSEND_STATE_FILE: /state/sessions.json   # pending codes survive a redeploy
     #   FSEND_SERVER_PASSWORD: "change-me"     # restrict access (unset = open)
+    # Caps, unset = unlimited. Recommended on a public server: uncomment
+    # and size them to your traffic. The per-IP caps need
+    # FSEND_SERVER_TRUSTED_PROXIES, or every client counts as Caddy.
+    #   FSEND_SERVER_MAX_SESSIONS_PER_IP: "10"              # alive at once
+    #   FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE: "30"   # new per minute
+    #   FSEND_RELAY_MAX_BYTES_PER_SESSION: "50GB"           # one relayed transfer
+    #   FSEND_RELAY_MAX_BYTES_PER_DAY: "1TB"                # relay egress, per UTC day
     volumes:
       - fsend_state:/state
     healthcheck:

@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,12 @@ import (
 // RTT-scale budget and fall back to the server path — not burn the full
 // 10 s HandshakeTimeout staring at a black hole.
 func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Seen on the GitHub runners: loopback multicast gets no answer on
+		// Windows, and Go reports its loopback MTU as -1, which pion/mdns
+		// refuses. Discovery over a real interface is still tested there.
+		t.Skip("loopback mDNS does not work on Windows")
+	}
 	requireE2E(t)
 
 	xdg := h.newXDG(t)
@@ -51,7 +58,7 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 	}()
 	mdnsConn, err := landisc.Announce(code, codepkg.Epoch(time.Now()), net.IPv4(127, 0, 0, 1))
 	if err != nil {
-		t.Skipf("mDNS announce unavailable: %v", err)
+		skipNoMulticast(t, "mDNS announce unavailable: %v", err)
 	}
 	defer landisc.StopAnnounce(mdnsConn)
 
@@ -68,7 +75,7 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 	// Without discovery the run never exercises the doomed dial and the
 	// test would pass vacuously.
 	if !strings.Contains(stderr, "sender address:") {
-		t.Skipf("mDNS discovery did not resolve in this environment\n%s", stderr)
+		skipNoMulticast(t, "mDNS discovery did not resolve in this environment\n%s", stderr)
 	}
 	if code := exitCodeOf(t, recvErr); code != 0 {
 		t.Fatalf("receiver exit %d\n%s", code, stderr)
@@ -83,4 +90,15 @@ func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(recvDir, "payload.bin")); err != nil {
 		t.Fatalf("payload not received: %v", err)
 	}
+}
+
+// skipNoMulticast skips a test that needs working multicast, unless
+// FSEND_TEST_REQUIRE_MULTICAST is set. CI sets it on the runners where
+// multicast works, so LAN discovery can't pass there by not running.
+func skipNoMulticast(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("FSEND_TEST_REQUIRE_MULTICAST") != "" {
+		t.Fatalf("FSEND_TEST_REQUIRE_MULTICAST is set, but: "+format, args...)
+	}
+	t.Skipf(format, args...)
 }

@@ -9,6 +9,7 @@
 # top-to-bottom below.
 #
 #   curl -fsSL https://getfsend.alzina.dev | sh
+#   curl -fsSL https://getfsend.alzina.dev | sh -s -- <code>   # then receive
 #
 set -eu
 
@@ -25,6 +26,10 @@ FSEND_VERSION="${FSEND_VERSION:-latest}"
 PREFIX="${FSEND_PREFIX:-${PREFIX:-}}"
 MODIFY_PATH=1
 VERBOSE=0
+# CODE, when given, is a share code to receive with the fresh binary right
+# after installing: what the sender's screen suggests to someone who
+# doesn't have fsend yet.
+CODE=""
 # Test seam: point the installer at a local HTTP server to exercise the
 # full download → verify → install path without a real release. Same-user
 # trust, like rustup's RUSTUP_DIST_SERVER. A caller that redirects the
@@ -77,7 +82,10 @@ fsend installer
 
 Usage:
   curl -fsSL https://getfsend.alzina.dev | sh
-  curl -fsSL https://getfsend.alzina.dev | sh -s -- [options]
+  curl -fsSL https://getfsend.alzina.dev | sh -s -- [options] [code]
+
+With a share code, the fresh fsend receives it right away (asking first,
+as fsend always does).
 
 Options:
   -p, --prefix DIR        Install location (default: auto-pick a writable dir)
@@ -296,24 +304,61 @@ ensure_prefix() {
         || err "cannot create $PREFIX — pick a writable location with -p/--prefix"
 }
 
+# install_binary stages the new binary next to the old one and renames it
+# into place. A rename inside one directory is atomic, so an interrupted
+# install leaves the old binary or the new one, never neither. A plain mv
+# from $tmp isn't: when /tmp is another filesystem (tmpfs) mv deletes the
+# old binary first and then copies.
+STAGED=""
 install_binary() {
     src="$1"
     dst="$PREFIX/$(basename "$src")"
     if [ ! -w "$PREFIX" ]; then
         err "$PREFIX is not writable — pick a writable location with -p/--prefix"
     fi
-    mv "$src" "$dst"
-    chmod 755 "$dst"
+    STAGED="$PREFIX/.$(basename "$src").new.$$"
+    if ! { cp "$src" "$STAGED" && chmod 755 "$STAGED" && mv -f "$STAGED" "$dst"; }; then
+        rm -f "$STAGED"
+        err "could not install $dst"
+    fi
+    STAGED=""
 }
 
+# path_command is the line that puts PREFIX on PATH in the user's shell.
 # shellcheck disable=SC2016  # the literal $PATH is the point
-print_path_hint() {
+path_command() {
     case "$(basename "${SHELL:-sh}")" in
-        fish) printf '    fish_add_path %s\n' "$PREFIX" >&2 ;;
-        *)
-            printf '    export PATH="%s:$PATH"\n' "$PREFIX" >&2
-            ;;
+        fish) printf 'fish_add_path %s' "$PREFIX" ;;
+        *)    printf 'export PATH="%s:$PATH"' "$PREFIX" ;;
     esac
+}
+
+PATH_HINTED=0
+print_path_hint() {
+    printf '    %s\n' "$(path_command)" >&2
+    PATH_HINTED=1
+}
+
+# on_path reports whether PREFIX is on this shell's PATH already.
+on_path() {
+    case ":${PATH}:" in *":$PREFIX:"*) return 0 ;; esac
+    return 1
+}
+
+# receive_now runs the fresh binary on CODE. Its prompt reads the
+# terminal: stdin is this script, piped from curl.
+receive_now() {
+    # The probe runs in a subshell: in dash (Debian's sh) a failed
+    # redirect on a special builtin like : ends the whole script.
+    if ! ( : </dev/tty ) 2>/dev/null; then
+        warn "no terminal to answer fsend's prompt — to receive, run:"
+        printf '    %s%s %s%s\n' "$C_ORG" "$1" "$CODE" "$C_RST" >&2
+        return 0
+    fi
+    printf '\n' >&2
+    # The code goes in FSEND_CODE, not argv, where other local users
+    # could read it from `ps`.
+    FSEND_CODE="$CODE" "$1" --receive </dev/tty
 }
 
 # Prepend PREFIX to the user's PATH by appending one line to their shell
@@ -368,7 +413,7 @@ configure_path() {
     mkdir -p "${rc%/*}" 2>/dev/null || true
     if [ -w "${rc%/*}" ] && { [ ! -e "$rc" ] || [ -w "$rc" ]; }; then
         printf '\n# fsend\n%s\n' "$line" >> "$rc"
-        ok "PATH updated in $rc — open a new shell"
+        ok "PATH updated in $rc for new shells"
     else
         warn "could not update PATH — add $PREFIX manually:"
         print_path_hint
@@ -421,7 +466,7 @@ main() {
     fi
 
     tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend.XXXXXXXX)"
-    cleanup() { rm -rf "$tmp"; }
+    cleanup() { rm -rf "$tmp"; [ -z "$STAGED" ] || rm -f "$STAGED"; }
     trap cleanup EXIT
     trap 'cleanup; exit 130' INT
     trap 'cleanup; exit 143' TERM
@@ -504,6 +549,15 @@ main() {
     fi
 
     ok "fsend $version installed → $PREFIX/$bin_file"
+    # This shell started before the rc file changed: say how to use fsend
+    # in it now, as one line to paste.
+    if ! on_path && [ "$PATH_HINTED" = "0" ] && [ "${FSEND_UPDATE:-}" != "1" ] && [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+        printf '  To use it in this shell: %s%s%s\n' "$C_ORG" "$(path_command)" "$C_RST" >&2
+    fi
+    if [ -n "$CODE" ]; then
+        receive_now "$PREFIX/$bin_file"
+        return
+    fi
     # Newcomer pointers are for a first install; an update already knows them.
     if [ "${FSEND_UPDATE:-}" != "1" ]; then
         printf '\n' >&2
@@ -530,7 +584,14 @@ while [ $# -gt 0 ]; do
         -n|--no-modify-path) MODIFY_PATH=0; shift ;;
         --verbose) VERBOSE=1; shift ;;
         -h|--help) usage; exit 0 ;;
-        *) err "unexpected argument: $1 (use -h for help)" ;;
+        -*) err "unexpected argument: $1 (use -h for help)" ;;
+        *)
+            # One share code. fsend validates it properly; this only keeps
+            # stray words and paths out.
+            case "$1" in *[!A-Za-z0-9._-]*) err "unexpected argument: $1 (use -h for help)" ;; esac
+            [ -z "$CODE" ] || err "unexpected argument: $1 — give one share code (use -h for help)"
+            CODE="$1"
+            shift ;;
     esac
 done
 

@@ -160,3 +160,37 @@ func TestInstallerEnv(t *testing.T) {
 		t.Errorf("PREFIX = %q, want it dropped", got["PREFIX"])
 	}
 }
+
+// A binary installed from the deb/rpm/apk package carries a marker next to
+// it; --update and --uninstall leave it to the package manager.
+func TestPackagedAs(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "usr", "bin", "fsend")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := packagedAs(bin); got != "" {
+		t.Fatalf("no marker: packagedAs = %q", got)
+	}
+	marker := filepath.Join(root, "usr", "share", "fsend", "package-manager")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"deb", "rpm", "apk"} {
+		if err := os.WriteFile(marker, []byte(f+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := packagedAs(bin); got != f {
+			t.Errorf("packagedAs = %q, want %q", got, f)
+		}
+		if !strings.Contains(packageAdvice(f, false), "releases/latest") || !strings.Contains(packageAdvice(f, true), "fsend") {
+			t.Errorf("%s advice: %q / %q", f, packageAdvice(f, false), packageAdvice(f, true))
+		}
+	}
+	if err := os.WriteFile(marker, []byte("snap\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := packagedAs(bin); got != "" {
+		t.Errorf("unknown format: packagedAs = %q", got)
+	}
+}

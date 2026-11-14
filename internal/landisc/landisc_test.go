@@ -3,6 +3,8 @@ package landisc
 import (
 	"context"
 	"net"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -57,7 +59,7 @@ func TestAnnounceQuery_Roundtrip(t *testing.T) {
 	ip := PreferredLocalIP()
 	ann, err := Announce("round-trip-chk", codepkg.Epoch(time.Now()), ip)
 	if err != nil {
-		t.Skipf("multicast unavailable on this host: %v", err)
+		skipNoMulticast(t, "multicast unavailable on this host: %v", err)
 	}
 	defer StopAnnounce(ann)
 
@@ -69,7 +71,7 @@ func TestAnnounceQuery_Roundtrip(t *testing.T) {
 		res, err = Query(context.Background(), "round-trip-chk", 2*time.Second)
 	}
 	if res == nil {
-		t.Skipf("no mDNS answer after 3 queries (%v) — multicast dropped on this host", err)
+		skipNoMulticast(t, "no mDNS answer after 3 queries (%v) — multicast dropped on this host", err)
 	}
 	if !res.IP.Equal(ip) {
 		t.Errorf("Query returned %v, want the announced %v", res.IP, ip)
@@ -83,9 +85,15 @@ func TestAnnounceQuery_Roundtrip(t *testing.T) {
 // interface the query arrived on: a loopback query gets a loopback
 // address, not whichever LAN IP a multi-homed host happened to pick.
 func TestAnnounceQuery_AnswersWithQueriedInterface(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Seen on the GitHub runners: loopback multicast gets no answer on
+		// Windows, and Go reports its loopback MTU as -1, which pion/mdns
+		// refuses. Discovery over a real interface is still tested there.
+		t.Skip("loopback mDNS does not work on Windows")
+	}
 	ann, err := Announce("iface-answer", codepkg.Epoch(time.Now()), nil)
 	if err != nil {
-		t.Skipf("multicast unavailable on this host: %v", err)
+		skipNoMulticast(t, "multicast unavailable on this host: %v", err)
 	}
 	defer StopAnnounce(ann)
 	time.Sleep(200 * time.Millisecond)
@@ -95,7 +103,7 @@ func TestAnnounceQuery_AnswersWithQueriedInterface(t *testing.T) {
 		res, err = QueryLoopback(context.Background(), "iface-answer", 2*time.Second)
 	}
 	if res == nil {
-		t.Skipf("no loopback mDNS answer (%v)", err)
+		skipNoMulticast(t, "no loopback mDNS answer (%v)", err)
 	}
 	if !res.IP.IsLoopback() {
 		t.Errorf("loopback query answered with %v, want a loopback address", res.IP)
@@ -267,7 +275,7 @@ func TestDiscoveryIface(t *testing.T) {
 func TestDiscoveryInterfaces_LoopbackFirst(t *testing.T) {
 	ifaces := discoveryInterfaces()
 	if len(ifaces) == 0 {
-		t.Skip("no usable interfaces on this host")
+		skipNoMulticast(t, "no usable interfaces on this host")
 	}
 	for i, ifc := range ifaces {
 		isLoop := ifc.Flags&net.FlagLoopback != 0
@@ -299,4 +307,15 @@ func TestOnLinkSubnet(t *testing.T) {
 	if onLinkSubnet(nil) {
 		t.Error("onLinkSubnet(nil) = true, want false")
 	}
+}
+
+// skipNoMulticast skips a test that needs working multicast, unless
+// FSEND_TEST_REQUIRE_MULTICAST is set. CI sets it on the runners where
+// multicast works, so LAN discovery can't pass there by not running.
+func skipNoMulticast(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("FSEND_TEST_REQUIRE_MULTICAST") != "" {
+		t.Fatalf("FSEND_TEST_REQUIRE_MULTICAST is set, but: "+format, args...)
+	}
+	t.Skipf(format, args...)
 }

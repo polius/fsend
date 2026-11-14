@@ -31,7 +31,7 @@ strongly each side knows who is on the other end.
 | Received-file manifest with SHA-256 | ✓ | ✗ | ✗ | ✗ | ✗ |
 | JSON output and built-in diagnostics | ✓ | ✗ | ✗ | ✗ | ✗ |
 | Stdin and stdout streaming | ✓ | ✓ | ✗ | ✗ | ✗ |
-| Signed release binaries | ✓ | ✗ | n/a⁴ | ✗ | Windows only |
+| Signed releases | Checksums⁷ | ✗ | n/a⁴ | ✗ | Windows binaries |
 
 ¹ sendme uses a long ticket that names the sender's public key. It must
 be copied whole, and anyone who sees it can download.
@@ -44,6 +44,10 @@ Tailscale's WireGuard with Tailscale's public DERP servers as fallback.
 device announces over unauthenticated multicast, so a device on the LAN
 can pose as another.
 ⁶ A receive PIN checked over that TLS connection, not a PAKE.
+⁷ fsend signs each release's `checksums.txt` with Sigstore (cosign,
+keyless) and publishes build-provenance attestations. The binaries carry
+no Apple or Microsoft code signature, so a browser download meets
+Gatekeeper or SmartScreen.
 
 ## What sets fsend apart
 

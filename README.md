@@ -7,6 +7,8 @@
 
 <p align="center"><strong>Private file transfer, straight between two computers.</strong></p>
 
+<p align="center">Like croc or magic-wormhole, but no part of the code ever reaches a server, the key exchange is post-quantum, and files of any size go direct whenever a path exists (<a href="docs/comparison.md">comparison</a>).</p>
+
 <p align="center">
   <a href="https://github.com/polius/fsend/actions/workflows/checks.yml"><img src="https://github.com/polius/fsend/actions/workflows/checks.yml/badge.svg" alt="checks"></a>
   <a href="https://github.com/polius/fsend/releases"><img src="https://img.shields.io/github/v/release/polius/fsend" alt="Release"></a>
@@ -66,8 +68,36 @@ brew install polius/tap/fsend
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
-Releases are signed and verified on install — see
+**Someone sent you a code and you don't have fsend yet?** Add the code to
+install and receive in one go:
+
+```bash
+curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hjk
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code abc-defg-hjk
+```
+
+The installers check every archive against the release's checksum file,
+whose Sigstore signature they also verify when `cosign` is installed. The
+binaries themselves carry no Apple or Microsoft code signature — see
 [Security → Release integrity](docs/security.md#release-integrity).
+
+`getfsend.alzina.dev` only redirects to the latest release's install
+scripts on GitHub. To fetch them from GitHub directly:
+
+```bash
+curl -fsSL https://github.com/polius/fsend/releases/latest/download/install.sh | sh
+```
+
+```powershell
+irm https://github.com/polius/fsend/releases/latest/download/install.ps1 | iex
+```
+
+**Update or remove:** `fsend --update` installs the latest release, and
+`fsend --uninstall` removes fsend and its settings. A Homebrew or package
+install is left to brew or the package manager.
 
 <details>
 <summary>Other install methods</summary>
@@ -77,6 +107,12 @@ From source:
 ```bash
 go install github.com/polius/fsend/cmd/fsend@latest
 ```
+
+Linux packages: each release attaches `.deb`, `.rpm` and `.apk` files.
+Install one with `sudo apt install ./fsend_<version>_amd64.deb`,
+`sudo dnf install ./fsend-<version>-1.x86_64.rpm` or
+`sudo apk add --allow-untrusted fsend_<version>_x86_64.apk`, and update by
+installing the next release's package the same way.
 
 Or grab a release binary from [the releases page](https://github.com/polius/fsend/releases).
 
@@ -93,6 +129,9 @@ eval "$(fsend completion bash)"                                # bash
 fsend completion fish | source                                 # fish
 fsend completion powershell | Out-String | Invoke-Expression   # powershell
 ```
+
+The deb, rpm and apk packages install completions for bash, zsh and fish
+already. Release archives carry the same scripts in `completions/`.
 
 </details>
 
@@ -128,20 +167,21 @@ fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as ta
 </p>
 
 <p align="center"><em>One minute: pairing with a share code, then the local, direct and relay
-routes fsend races to move the bytes. Plays as an MP4 in your browser; prefer reading?
+routes fsend tries to move the bytes. Plays as an MP4 in your browser; prefer reading?
 See <a href="docs/architecture.md">Architecture</a>.</em></p>
 
 ## Documentation
 
 | | |
 |---|---|
-| [Architecture](docs/architecture.md) | Three transfer modes, raced concurrently — and why |
+| [Architecture](docs/architecture.md) | Three transfer modes, how fsend picks one — and why |
 | [Security](docs/security.md) | Threat model — what the server can and cannot see |
 | [Usage](docs/usage.md) | Every flag, env var, and exit code |
 | [Self-hosting](docs/self-hosting.md) | Run your own pairing server in three steps |
 | [Development](docs/development.md) | Build and test from source |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and what to do about them |
 | [Comparison](docs/comparison.md) | fsend vs croc, magic-wormhole, sendme and LocalSend |
+| [Version compatibility](docs/compatibility.md) | Which versions work together; breaking changes in the [changelog](CHANGELOG.md) |
 
 ## Contributing
 

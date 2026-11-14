@@ -12,7 +12,9 @@ import (
 )
 
 // removeBinary deletes the running fsend.exe and (if it ends up empty) its
-// install dir, and strips that dir from the user PATH.
+// install dir. It strips that dir from the user PATH only when fsend is
+// all it holds: other tools living there still need the entry. keptPath
+// reports a PATH entry left in place for that reason.
 //
 // A running .exe can't delete its own image on Windows, so the delete is done
 // by a detached PowerShell that Wait-Process'es on our PID, then removes the
@@ -20,9 +22,13 @@ import (
 // single-quoted literal paths keeps double quotes out of the command line,
 // avoiding the cmd.exe/CreateProcess escaping pitfalls that mangle paths.
 // The PATH edit happens here, synchronously — it doesn't need the exe gone.
-func removeBinary(binPath string) error {
+func removeBinary(binPath string) (keptPath bool, err error) {
 	dir := filepath.Dir(binPath)
-	removeUserPathEntry(dir)
+	if onlyFsendIn(dir, binPath) {
+		removeUserPathEntry(dir)
+	} else {
+		keptPath = true
+	}
 
 	// Remove-Item on the dir without -Recurse only deletes it if now empty,
 	// leaving any unrelated files the user put there untouched.
@@ -30,8 +36,9 @@ func removeBinary(binPath string) error {
 		`Wait-Process -Id %d -ErrorAction SilentlyContinue; `+
 			`Start-Sleep -Milliseconds 300; `+
 			`Remove-Item -LiteralPath %s -Force -ErrorAction SilentlyContinue; `+
+			`Remove-Item -LiteralPath %s -Force -ErrorAction SilentlyContinue; `+
 			`Remove-Item -LiteralPath %s -Force -ErrorAction SilentlyContinue`,
-		os.Getpid(), psSingleQuote(binPath), psSingleQuote(dir))
+		os.Getpid(), psSingleQuote(binPath), psSingleQuote(binPath+".old"), psSingleQuote(dir))
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive",
 		"-WindowStyle", "Hidden", "-Command", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -39,7 +46,7 @@ func removeBinary(binPath string) error {
 		// CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: hidden, outlives us.
 		CreationFlags: 0x08000000 | 0x00000200,
 	}
-	return cmd.Start()
+	return keptPath, cmd.Start()
 }
 
 // removeUserPathEntry drops dir from the HKCU user PATH via a registry

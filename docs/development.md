@@ -5,7 +5,9 @@ is the `fsend server` subcommand) from source.
 
 ## Prerequisites
 
-- **Go ≥ 1.27.3** (matches `go.mod`).
+- **Go ≥ 1.27.0** (the `go` line in `go.mod`). With the default
+  `GOTOOLCHAIN=auto`, Go fetches the patch release named on the
+  `toolchain` line, which CI and releases build with.
 - Optional: **Docker** + **docker compose v2**, only for the reverse-proxy
   stack in [`deploy/compose/`](../deploy/compose/).
 
@@ -35,10 +37,15 @@ server on loopback — no shell wrapper needed. It takes roughly 70–110 s
 is tests waiting out real timeouts. CI runs every gating `go test` with
 `-count=1 -timeout 600s`, so it never reuses cached results.
 
+The LAN discovery tests skip on a machine without working multicast.
+Set `FSEND_TEST_REQUIRE_MULTICAST=1` to make them fail instead; CI does,
+so discovery can't pass there by not running.
+
 ## CI
 
-`.github/workflows/checks.yml` runs tests (plus `-race` on amd64 and
-arm64), golangci-lint, govulncheck, fuzzing, a dead-code check, a
+`.github/workflows/checks.yml` runs tests on Linux, macOS (Apple Silicon
+and Intel), Windows (x86-64 and ARM), 32-bit x86 and a FreeBSD VM (plus
+`-race` on amd64 and arm64), golangci-lint, govulncheck, fuzzing, a dead-code check, a
 snapshot release build of every target (checked to be byte-identical on
 rebuild), the install-script smoke tests, workflow linting (actionlint,
 zizmor) and the coverage gate. A final **`ci-ok`** job fails unless

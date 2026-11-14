@@ -62,6 +62,10 @@ ARCHIVE="fsend_${VER}_${os}_${arch}.tar.gz"
 mkdir -p "$FIX/download/v$VER" "$FIX/latest/download"
 cat > "$FIX/fsend" <<EOF
 #!/bin/sh
+if [ "\${1:-}" = "--receive" ]; then
+    printf 'stub receiving %s\n' "\${FSEND_CODE:-}"
+    exit 0
+fi
 printf 'fsend $VER (smoke)\n'
 EOF
 chmod 755 "$FIX/fsend"
@@ -192,6 +196,25 @@ grep -q "installed" "$WORK/out5b" \
     || fail "scenario5: FSEND_UPDATE dropped the install confirmation too"
 pass "reinstall reports currently installed version; FSEND_UPDATE=1 trims it"
 
+# 5b. the new binary is staged inside the prefix and renamed over the old
+# one: nothing staged is left behind, and a copy that fails midway leaves
+# the old binary in place (a plain mv from a tmpfs /tmp deletes it first).
+staged_left() { for _f in "$H5/bin"/.fsend.new.*; do [ -e "$_f" ] && return 0; done; return 1; }
+staged_left && fail "scenario5b: staged file left in the prefix"
+[ -x "$H5/bin/fsend" ] || fail "scenario5b: installed binary not executable"
+printf '#!/bin/sh\necho old-fsend\n' > "$H5/bin/fsend"
+chmod 755 "$H5/bin/fsend"
+mkdir -p "$WORK/failcp"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/failcp/cp"
+chmod 755 "$WORK/failcp/cp"
+SMOKE_PATH="$WORK/failcp:/usr/bin:/bin"
+run_installer "$H5" -p "$H5/bin" -v "$VER" >"$WORK/out5c" 2>&1 \
+    && fail "scenario5b: install with a failing copy succeeded"
+SMOKE_PATH=/usr/bin:/bin
+[ "$("$H5/bin/fsend")" = old-fsend ] || fail "scenario5b: failed install did not keep the old binary"
+staged_left && fail "scenario5b: failed install left a staged file"
+pass "binary staged in the prefix and renamed; a failed copy keeps the old one"
+
 # 6. GitHub Actions: install dir lands in $GITHUB_PATH.
 H6="$WORK/home6"
 GHFILE="$WORK/ghpath"
@@ -209,12 +232,31 @@ H7="$WORK/home7"
 mkdir -p "$H7"
 run_installer "$H7" -v >"$WORK/out7a" 2>&1 && fail "scenario7: -v without value accepted"
 run_installer "$H7" --bogus >"$WORK/out7b" 2>&1 && fail "scenario7: unknown flag accepted"
-run_installer "$H7" positional >"$WORK/out7c" 2>&1 && fail "scenario7: positional arg accepted"
+run_installer "$H7" a/b >"$WORK/out7c" 2>&1 && fail "scenario7: a path accepted as a code"
+run_installer "$H7" abc-defg-hjk xyz-pqrs-tuv >"$WORK/out7f" 2>&1 && fail "scenario7: two codes accepted"
 run_installer "$H7" -h >"$WORK/out7d" 2>&1 || fail "scenario7: -h failed"
 run_installer "$H7" -p "$H7/bin" -v "$VER" --verbose >"$WORK/out7e" 2>&1 \
     || { cat "$WORK/out7e" >&2; fail "scenario7: --verbose run failed"; }
 grep -q "downloading fsend_" "$WORK/out7e" || fail "scenario7: --verbose hides the steps"
-pass "flag handling (missing value, unknown flag, positional, -h, --verbose)"
+pass "flag handling (missing value, unknown flag, stray positionals, -h, --verbose)"
+
+# 13. a share code: install, then receive it with the fresh binary (its
+# prompt needs the terminal, which CI lacks: then the command to run is
+# printed instead). Either way, the PATH line for this shell is shown.
+H13="$WORK/home13"
+mkdir -p "$H13"
+run_installer "$H13" -p "$H13/bin" -v "$VER" abc-defg-hjk >"$WORK/out13" 2>&1 \
+    || { cat "$WORK/out13" >&2; fail "scenario13: install with a code failed"; }
+[ -x "$H13/bin/fsend" ] || fail "scenario13: binary not installed"
+if ( : </dev/tty ) 2>/dev/null; then
+    grep -q "stub receiving abc-defg-hjk" "$WORK/out13" || { cat "$WORK/out13" >&2; fail "scenario13: the code was not received"; }
+else
+    grep -q "fsend abc-defg-hjk" "$WORK/out13" || { cat "$WORK/out13" >&2; fail "scenario13: no command to receive"; }
+fi
+grep -qF "To use it in this shell: export PATH=\"$H13/bin:\$PATH\"" "$WORK/out13" \
+    || { cat "$WORK/out13" >&2; fail "scenario13: no PATH line for this shell"; }
+grep -q "fsend <path>" "$WORK/out13" && fail "scenario13: newcomer pointers instead of receiving"
+pass "share code: installs, then receives (or says how), PATH line for this shell"
 
 # 8. root refusal (needs passwordless sudo).
 if [ "$WITH_ROOT" = "1" ]; then
