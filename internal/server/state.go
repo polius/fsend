@@ -26,6 +26,21 @@ const stateVersion = 1
 type stateFile struct {
 	Version  int            `json:"version"`
 	Sessions []savedSession `json:"sessions"`
+	// RelayBudget is the relay's spend for the day, so a redeploy doesn't
+	// reset the daily byte cap. Absent when nothing was forwarded.
+	RelayBudget *savedBudget `json:"relay_budget,omitempty"`
+}
+
+type savedBudget struct {
+	Day  int64  `json:"day"` // the UTC day's midnight, unix seconds
+	Used uint64 `json:"used"`
+}
+
+// budgetKeeper is the part of the relay that can carry its daily byte
+// count across a restart (relay.Server).
+type budgetKeeper interface {
+	BudgetUsage(now time.Time) (day int64, used uint64)
+	RestoreBudget(now time.Time, day int64, used uint64) bool
 }
 
 type savedSession struct {
@@ -61,6 +76,11 @@ func (s *Server) SaveState(path string) (int, error) {
 		})
 	}
 	s.mu.Unlock()
+	if k, ok := s.relayAllocator.(budgetKeeper); ok {
+		if day, used := k.BudgetUsage(time.Now()); used > 0 {
+			st.RelayBudget = &savedBudget{Day: day, Used: used}
+		}
+	}
 	data, err := json.Marshal(st)
 	if err != nil {
 		return 0, err
@@ -91,6 +111,10 @@ func (s *Server) LoadState(path string) (int, error) {
 		return 0, fmt.Errorf("server state %s: unsupported version %d", path, st.Version)
 	}
 	now := time.Now()
+	if k, ok := s.relayAllocator.(budgetKeeper); ok && st.RelayBudget != nil &&
+		k.RestoreBudget(now, st.RelayBudget.Day, st.RelayBudget.Used) {
+		s.cfg.Logger.Info("restored relay daily byte count", "bytes", st.RelayBudget.Used)
+	}
 	n := 0
 	s.mu.Lock()
 	defer s.mu.Unlock()

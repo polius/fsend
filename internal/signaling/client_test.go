@@ -254,7 +254,7 @@ func TestClient_WaitPairs(t *testing.T) {
 		r, err := sender.Wait(ctx, created.Code)
 		waitErr = err
 		if r != nil {
-			waitResp = r.PeerObservedAddr
+			waitResp = r.PeerIceCredentials.Ufrag
 		}
 	}()
 
@@ -267,7 +267,7 @@ func TestClient_WaitPairs(t *testing.T) {
 		t.Errorf("wait error: %v", waitErr)
 	}
 	if waitResp == "" {
-		t.Error("expected non-empty PeerObservedAddr after pair")
+		t.Error("expected the receiver's ICE credentials after pair")
 	}
 }
 

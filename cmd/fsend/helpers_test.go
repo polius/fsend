@@ -16,6 +16,7 @@ import (
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/connpath"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/signaling"
 	"github.com/polius/fsend/internal/transfer"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/wire"
@@ -1489,5 +1490,16 @@ func TestPrintSendSummary_TwoShortLines(t *testing.T) {
 		if n := utf8.RuneCountInString(l); n > 60 {
 			t.Errorf("line is %d columns: %q", n, l)
 		}
+	}
+}
+
+// "No sender" from a device with a wrong clock names the clock, keeping
+// E002's exit code.
+func TestRenderError_ClockSkew(t *testing.T) {
+	err := fmt.Errorf("join: %w", &signaling.ClockSkewError{Skew: 30 * time.Hour, Err: fserrors.ErrCodeNotFound})
+	var code int
+	got := captureStderr(t, func() { code = renderError(err, false) })
+	if code != 2 || !strings.Contains(got, "E002") || !strings.Contains(got, "clock is 30 h behind") {
+		t.Fatalf("exit %d, output:\n%s", code, got)
 	}
 }

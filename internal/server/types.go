@@ -31,12 +31,11 @@ type CreateSessionRequest struct {
 // to the right side without relying on source IP. Without this, two
 // peers behind the same NAT can't disambiguate.
 type CreateSessionResponse struct {
-	SessionID        string   `json:"session_id"`
-	YourObservedAddr string   `json:"your_observed_addr"`
-	IceCredentials   IceCreds `json:"ice_credentials"`
-	TTLSeconds       int      `json:"ttl_seconds"`
-	ServerVersion    string   `json:"server_version"`
-	RoleToken        string   `json:"role_token"`
+	SessionID      string   `json:"session_id"`
+	IceCredentials IceCreds `json:"ice_credentials"`
+	TTLSeconds     int      `json:"ttl_seconds"`
+	ServerVersion  string   `json:"server_version"`
+	RoleToken      string   `json:"role_token"`
 	// RelayAddr is the server-wide STUN/relay address, so the client can
 	// gather srflx candidates without allocating a slot. Empty if no relay.
 	RelayAddr string `json:"relay_addr,omitempty"`
@@ -49,13 +48,18 @@ type CreateSessionResponse struct {
 // JoinSessionRequest is the body of POST /v1/session/<slot>/join.
 type JoinSessionRequest struct {
 	ClientVersion string `json:"client_version"`
+	// Nonce, when set, makes the join idempotent: a retry carrying the
+	// same nonce after a lost response gets the same answer again instead
+	// of 409 "already paired". Random, at most MaxJoinNonceLen chars.
+	Nonce string `json:"nonce,omitempty"`
 }
+
+// MaxJoinNonceLen bounds JoinSessionRequest.Nonce.
+const MaxJoinNonceLen = 64
 
 // JoinSessionResponse is the success body of POST /v1/session/<slot>/join.
 type JoinSessionResponse struct {
 	SessionID          string   `json:"session_id"`
-	YourObservedAddr   string   `json:"your_observed_addr"`
-	PeerObservedAddr   string   `json:"peer_observed_addr"`
 	PeerIceCredentials IceCreds `json:"peer_ice_credentials"`
 	YourIceCredentials IceCreds `json:"your_ice_credentials"`
 	RoleToken          string   `json:"role_token"`
@@ -72,7 +76,6 @@ type WaitRequest struct{}
 
 // WaitResponse is the body the sender sees once a receiver pairs.
 type WaitResponse struct {
-	PeerObservedAddr   string   `json:"peer_observed_addr"`
 	PeerIceCredentials IceCreds `json:"peer_ice_credentials"`
 }
 
@@ -159,24 +162,20 @@ type IceCreds struct {
 
 // internal: a session lives in the server's in-memory table.
 //
-// SenderAddr / ReceiverAddr are the raw observed IPs returned to the
-// peer in JoinSessionResponse.PeerObservedAddr — kept precise for the
-// human-facing "Peer at <addr>" line. SenderRateKey / ReceiverRateKey
-// are the rate-limit identities (raw v4, /64 for v6) — they're what
+// SenderRateKey / ReceiverRateKey are the rate-limit identities (raw v4, /64 for v6) — they're what
 // indexes ipCounts and ipBucket, and they're stored separately so the
 // decrement on session teardown lands on the same map key the
 // increment used.
 type session struct {
 	ID              string
 	Slot            string // argon2id stretch of the code — the server never holds the code itself
-	SenderAddr      string
 	SenderRateKey   string
 	SenderICE       IceCreds
 	SenderToken     string
-	ReceiverAddr    string
 	ReceiverRateKey string
 	ReceiverICE     IceCreds
 	ReceiverToken   string
+	ReceiverNonce   string // JoinSessionRequest.Nonce of the receiver that paired
 	State           string // "waiting" | "paired" | "complete"
 	CreatedAt       time.Time
 	PairedAt        time.Time

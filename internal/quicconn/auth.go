@@ -131,6 +131,9 @@ func authenticatePeer(conn *quic.Conn, control io.ReadWriter, code string, r rol
 	}
 	var peerTag [tagLen]byte
 	if _, err := io.ReadFull(control, peerTag[:]); err != nil {
+		if peerRejected(err) {
+			return nil, fmt.Errorf("%w: auth: recv tag: %v", fserrors.ErrPeerAuthFailed, err)
+		}
 		return nil, fmt.Errorf("auth: recv tag: %w", err)
 	}
 	if subtle.ConstantTimeCompare(wantTag, peerTag[:]) != 1 {

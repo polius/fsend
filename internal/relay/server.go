@@ -195,7 +195,11 @@ type allocation struct {
 	bytes        atomic.Uint64
 	lastActivity atomic.Int64 // unix nanos
 	lastNudge    atomic.Int64 // unix nanos of the last unsolicited challenge
-	createdAt    time.Time
+	// chalWindow/chalCount meter this allocation's challenges (see
+	// allowChallenge).
+	chalWindow atomic.Int64 // unix second
+	chalCount  atomic.Int32
+	createdAt  time.Time
 	// dataCounted: true once this allocation forwards its first byte, so
 	// transfersTotal counts it exactly once.
 	dataCounted atomic.Bool
@@ -574,9 +578,27 @@ func (s *Server) handleControl(b []byte, src endpoint) {
 	s.send(src, frameControl(tok, msgRegistered, id, nil))
 }
 
-// challenge sends a CHALLENGE to src, within the global reply cap.
+// challengesPerAllocPerSec caps CHALLENGE replies per allocation. Two
+// peers registering and re-learning after a rebind need a handful; the cap
+// bounds what one token holder could reflect at a spoofed address.
+const challengesPerAllocPerSec = 20
+
+// allowChallenge reports whether a may send another challenge this second.
+// Challenges go only to holders of a live token, so they have their own
+// budget: anonymous STUN floods spending the shared reply cap used to stop
+// every peer from registering over UDP, pushing all of them to TCP.
+func (a *allocation) allowChallenge(now time.Time) bool {
+	sec := now.Unix()
+	if w := a.chalWindow.Load(); w != sec && a.chalWindow.CompareAndSwap(w, sec) {
+		a.chalCount.Store(0)
+	}
+	return a.chalCount.Add(1) <= challengesPerAllocPerSec
+}
+
+// challenge sends a CHALLENGE to src, within the allocation's budget.
 func (s *Server) challenge(tok Token, id PeerID, src *net.UDPAddr, now time.Time) {
-	if !s.allowReply(now, src.IP) {
+	a := s.lookup(tok)
+	if a == nil || !a.allowChallenge(now) {
 		return
 	}
 	c := s.cookie(tok, src, cookieEpoch(now))
@@ -655,8 +677,8 @@ func (s *Server) handleSTUN(datagram []byte, src *net.UDPAddr) {
 	}
 }
 
-// allowReply reports whether a STUN reply or registration challenge to ip
-// may be sent, enforcing the per-prefix and global one-second windows.
+// allowReply reports whether a STUN reply to ip may be sent, enforcing the
+// per-prefix and global one-second windows.
 // Fixed memory.
 func (s *Server) allowReply(now time.Time, ip net.IP) bool {
 	s.stunMu.Lock()

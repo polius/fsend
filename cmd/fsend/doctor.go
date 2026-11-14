@@ -19,6 +19,7 @@ import (
 	"github.com/polius/fsend/internal/landisc"
 	"github.com/polius/fsend/internal/relay"
 	"github.com/polius/fsend/internal/server"
+	"github.com/polius/fsend/internal/signaling"
 	"github.com/polius/fsend/internal/syserr"
 	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
@@ -152,12 +153,19 @@ func runDoctor(serverFlag string) (failed int) {
 	default:
 		serverUp = true
 		sayf(true, "server", "reachable in %s", time.Since(start).Round(time.Millisecond))
+		if c, ok := clockCheck(resp.Header, start); ok {
+			say(c)
+		}
 	}
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
 	if serverUp {
-		for _, c := range relayChecks(serverBaseURL(srv), pw) {
+		checks, mapped := relayChecks(serverBaseURL(srv), pw)
+		for _, c := range checks {
+			say(c)
+		}
+		if c, ok := natCheck(mapped, localAddrs()); ok {
 			say(c)
 		}
 	}
@@ -167,6 +175,10 @@ func runDoctor(serverFlag string) (failed int) {
 		sayf(false, "network", "no non-loopback address found — only same-machine transfers will work")
 	} else {
 		sayf(true, "network", "LAN address %s", ip)
+	}
+	say(ipv6Check(localAddrs()))
+	if c, ok := firewallCheck(); ok {
+		say(c)
 	}
 
 	// mDNS: prove the full announce→query roundtrip works from this host.
@@ -212,10 +224,30 @@ func runDoctor(serverFlag string) (failed int) {
 	return failed
 }
 
+// clockCheck compares this device's clock with the server's Date header,
+// read at sentAt. Codes are salted with the UTC day, so a clock that is
+// hours off finds no sender on the local network, and an older fsend on
+// the other side finds none through the server either. ok is false when
+// the server sent no usable Date.
+func clockCheck(h http.Header, sentAt time.Time) (doctorCheck, bool) {
+	skew, ok := signaling.ServerSkew(h, sentAt)
+	if !ok {
+		return doctorCheck{}, false
+	}
+	if skew > signaling.ClockTolerance || skew < -signaling.ClockTolerance {
+		return doctorCheck{false, "clock", signaling.ClockSkewPhrase(skew) +
+			" the server's — codes may not be found on the local network until the date and time are fixed"}, true
+	}
+	return doctorCheck{true, "clock", "matches the server's"}, true
+}
+
 // relayChecks tests the two ways a relayed transfer reaches the server:
 // the TCP fallback (a WebSocket echo on the HTTPS port, which also names
 // the relay's UDP address) and UDP itself (a STUN request to the relay).
-func relayChecks(baseURL, pw string) []doctorCheck {
+//
+// It also returns this machine's public address as the relay saw it (nil
+// without a UDP answer), for natCheck.
+func relayChecks(baseURL, pw string) ([]doctorCheck, *net.UDPAddr) {
 	h := http.Header{}
 	h.Set("User-Agent", "fsend/"+version.Version)
 	if pw != "" {
@@ -252,7 +284,7 @@ func relayChecks(baseURL, pw string) []doctorCheck {
 	uctx, ucancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer ucancel()
 	start = time.Now()
-	_, udpErr := relay.ProbeSTUN(uctx, relayAddr)
+	mapped, udpErr := relay.ProbeSTUN(uctx, relayAddr)
 	udp := doctorCheck{ok: udpErr == nil, label: "UDP"}
 	switch {
 	case udpErr == nil:
@@ -264,7 +296,54 @@ func relayChecks(baseURL, pw string) []doctorCheck {
 	default:
 		udp.msg = fmt.Sprintf("cannot reach relay %s over UDP (%s)", relayAddr, plainNetErr(udpErr))
 	}
-	return []doctorCheck{udp, tcp}
+	return []doctorCheck{udp, tcp}, mapped
+}
+
+// localAddrs lists this machine's interface addresses.
+func localAddrs() []net.IP {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []net.IP
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok {
+			out = append(out, ipnet.IP)
+		}
+	}
+	return out
+}
+
+// natCheck says whether this machine sits behind NAT, from the public
+// address the relay saw. Behind NAT a direct path across networks needs
+// hole punching, which some NATs (symmetric, carrier-grade) defeat; those
+// transfers use the relay. Telling NAT types apart needs a second STUN
+// server, which an fsend server doesn't run, so the row reports only the
+// address. Informational: either answer is fine. No row without an
+// answer, or when the relay is on this network (it then sees a local
+// address, which says nothing about the internet).
+func natCheck(mapped *net.UDPAddr, local []net.IP) (doctorCheck, bool) {
+	if mapped == nil || mapped.IP.IsLoopback() || mapped.IP.IsPrivate() || mapped.IP.IsLinkLocalUnicast() {
+		return doctorCheck{}, false
+	}
+	for _, ip := range local {
+		if ip.Equal(mapped.IP) {
+			return doctorCheck{true, "NAT", fmt.Sprintf("none — this machine has the public address %s", mapped.IP)}, true
+		}
+	}
+	return doctorCheck{true, "NAT", fmt.Sprintf("behind NAT, public address %s — direct paths need hole punching; when it fails, transfers use the relay", mapped.IP)}, true
+}
+
+// ipv6Check reports whether this machine has a global IPv6 address, which
+// lets direct paths skip NAT entirely when the other side has one too.
+// Informational: IPv4 alone works.
+func ipv6Check(local []net.IP) doctorCheck {
+	for _, ip := range local {
+		if ip.To4() == nil && ip.IsGlobalUnicast() && !ip.IsPrivate() {
+			return doctorCheck{true, "IPv6", fmt.Sprintf("global address %s", ip)}
+		}
+	}
+	return doctorCheck{true, "IPv6", "no global address (IPv4 only) — fine; direct paths use IPv4"}
 }
 
 // plainNetErr names a network failure in plain words; --debug appends the
@@ -304,11 +383,19 @@ loopback, then the physical interface — as separate rows:
 
   config    which pairing server is configured (never prints the password)
   server    HTTPS reachability of that server's /health
+  clock     this device's clock against the server's (codes are salted
+            with the date, so a wrong clock can make a code unfindable)
   UDP       the server's relay answers over UDP (needed unless the TCP
             fallback below works)
   TCP       the relay's TCP fallback (a WebSocket on the server's port),
             used when a network blocks UDP
+  NAT       whether this machine is behind NAT, from the public
+            address the relay saw (informational)
   network   the local LAN address fsend would announce
+  IPv6      whether this machine has a global IPv6 address
+            (informational)
+  firewall  macOS only: whether the firewall lets other devices on
+            the network connect to fsend
   mDNS      a real announce→query roundtrip on this machine, in two
             tiers: loopback (fsend's mDNS machinery) and the physical
             LAN interface (discovering other devices)

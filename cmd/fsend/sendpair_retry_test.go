@@ -12,6 +12,7 @@ import (
 
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/server"
 	"github.com/polius/fsend/internal/signaling"
 )
 
@@ -111,8 +112,8 @@ func TestPairOverInternet_RecreatesLostSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := pairOverInternet(ctx, &flags{quiet: true}, &sendSession{}, &sendRound{key: codeKey("abc-defg-jkm")},
-			&config.Config{Server: ts.URL}, func(error) {})
+		_, err := pairOverInternet(ctx, &flags{quiet: true}, &sendRound{key: codeKey("abc-defg-jkm")},
+			&config.Config{Server: ts.URL}, func(error) {}, nil)
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
@@ -156,5 +157,64 @@ func proxyTo(t *testing.T, base string, w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			return
 		}
+	}
+}
+
+// Someone who joins with the right slot but fails the PAKE doesn't send
+// the sender back to waiting: the slot comes from the whole code, so they
+// hold the slot without the code, and a fresh session would hand them
+// another guess. (A receiver that vanishes before the PAKE still does.)
+func TestPairOverInternet_FailedPAKEEndsTheRound(t *testing.T) {
+	_, baseURL := newSignalingTestServer(t)
+	var creates int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/session" {
+			atomic.AddInt32(&creates, 1)
+		}
+		proxyTo(t, baseURL, w, r)
+	}))
+	defer ts.Close()
+
+	const code = "abc-defg-jkm"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := pairOverInternet(ctx, &flags{quiet: true}, &sendRound{key: codeKey(code)},
+			&config.Config{Server: ts.URL}, func(error) {}, nil)
+		done <- err
+	}()
+
+	rc := signaling.New(ts.URL, "test")
+	var joined *server.JoinSessionResponse
+	for {
+		var err error
+		if joined, err = rc.Join(ctx, code); err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("join: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	link, err := linkViaInternet(ctx, &flags{quiet: true}, rc, joined)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	defer link.close()
+	if _, err := link.dial(ctx, "xyz-pqrs-tuv"); !errors.Is(err, fserrors.ErrPeerAuthFailed) {
+		t.Fatalf("a wrong code: dial = %v, want ErrPeerAuthFailed", err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the sender paired with a peer that failed the PAKE")
+		}
+	case <-ctx.Done():
+		t.Fatal("the sender kept waiting after a failed PAKE")
+	}
+	if got := atomic.LoadInt32(&creates); got != 1 {
+		t.Errorf("Create called %d times, want 1: a failed PAKE must not re-open the code", got)
 	}
 }

@@ -420,11 +420,17 @@ func TestJoinWithRetry_RetitlesCallerSpinner(t *testing.T) {
 
 // TestEffectiveServerPassword pins the env fallback precedence: the stored
 // --connect value wins, FSEND_SERVER_PASSWORD is the non-argv fallback
-// (mirroring the server-side env of the same name).
+// (mirroring the server-side env of the same name) for a self-hosted
+// server only: the public default never receives it.
 func TestEffectiveServerPassword(t *testing.T) {
 	t.Setenv("FSEND_SERVER_PASSWORD", "env-secret")
-	if got, err := effectiveServerPassword(&config.Config{}); err != nil || got != "env-secret" {
+	if got, err := effectiveServerPassword(&config.Config{Server: "fs.example.com"}); err != nil || got != "env-secret" {
 		t.Errorf("env fallback = %q, err=%v, want env-secret", got, err)
+	}
+	for _, srv := range []string{"", config.DefaultServer, "fsend.alzina.dev", "https://FSEND.alzina.dev"} {
+		if got, err := effectiveServerPassword(&config.Config{Server: srv}); err != nil || got != "" {
+			t.Errorf("server %q: env password %q sent to the public default (err=%v)", srv, got, err)
+		}
 	}
 	if got, err := effectiveServerPassword(&config.Config{ServerPassword: "cfg-secret"}); err != nil || got != "cfg-secret" {
 		t.Errorf("config precedence = %q, err=%v, want cfg-secret", got, err)

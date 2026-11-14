@@ -3,6 +3,8 @@ package quicconn
 import (
 	"context"
 	"errors"
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,5 +144,121 @@ func TestAcceptResult_CancelReachesPeer(t *testing.T) {
 	snd.Cancel()
 	if !r.PeerCancelled(2 * time.Second) {
 		t.Fatalf("peer cancel not seen; cause: %v", context.Cause(r.Conn.Context()))
+	}
+}
+
+// A peer the filter refuses is closed before any PAKE and is not reported
+// as a failed handshake; an admitted peer pairs as usual.
+func TestListener_PeerFilter(t *testing.T) {
+	const secret = "abc-defg-hjk"
+	var admit atomic.Bool
+	ln, err := ListenAddr("127.0.0.1:0", secret, WithPeerFilter(func(net.Addr) bool { return admit.Load() }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	addr := ln.ln.Addr().String()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := Dial(ctx, addr, secret); err == nil {
+		t.Fatal("a refused peer completed the handshake")
+	}
+	select {
+	case err := <-ln.fails:
+		t.Fatalf("a refused peer was reported as a failed handshake: %v", err)
+	default:
+	}
+
+	admit.Store(true)
+	go func() {
+		if res, err := Dial(ctx, addr, secret); err == nil {
+			res.Close()
+		}
+	}()
+	res, err := ln.Accept(ctx)
+	if err != nil {
+		t.Fatalf("admitted peer: %v", err)
+	}
+	res.Close()
+}
+
+// After a failed PAKE the listener waits before starting the next
+// handshake, longer after each failure, and a success resets the wait.
+func TestListener_SlowsDownAfterFailures(t *testing.T) {
+	for n, want := range map[int]time.Duration{0: 0, 1: 250 * time.Millisecond, 2: 500 * time.Millisecond, 4: 2 * time.Second, 5: 4 * time.Second, 50: 4 * time.Second} {
+		if got := failPenalty(n); got != want {
+			t.Errorf("failPenalty(%d) = %v, want %v", n, got, want)
+		}
+	}
+
+	const secret = "abc-defg-hjk"
+	ln, err := ListenAddr("127.0.0.1:0", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	addr := ln.ln.Addr().String()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for i := 1; i <= 2; i++ {
+		if _, err := Dial(ctx, addr, "xyz-pqrs-tuv"); !errors.Is(err, fserrors.ErrPeerAuthFailed) {
+			t.Fatalf("impostor %d: got %v, want ErrPeerAuthFailed", i, err)
+		}
+		if _, err := ln.Accept(ctx); !errors.Is(err, fserrors.ErrPeerAuthFailed) {
+			t.Fatalf("Accept after impostor %d: got %v", i, err)
+		}
+	}
+	// Two failures in a row: the next handshake waits failPenalty(2).
+	start := time.Now()
+	go func() {
+		if res, err := Dial(ctx, addr, secret); err == nil {
+			res.Close()
+		}
+	}()
+	res, err := ln.Accept(ctx)
+	if err != nil {
+		t.Fatalf("receiver after failures: %v", err)
+	}
+	res.Close()
+	if d := time.Since(start); d < failPenalty(2)-50*time.Millisecond {
+		t.Errorf("the handshake after two failures started after %v, want at least %v", d, failPenalty(2))
+	}
+	ln.mu.Lock()
+	run := ln.failsRun
+	ln.mu.Unlock()
+	if run != 0 {
+		t.Errorf("a successful handshake left %d failures on the count", run)
+	}
+}
+
+// A peer that gives up before the PAKE shares have crossed (cancelled,
+// timed out) did not fail the PAKE, even though it closes with the
+// handshake-failed code.
+func TestListener_EarlyCloseIsNotAuthFailure(t *testing.T) {
+	ln, err := ListenAddr("127.0.0.1:0", "abc-defg-hjk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c, err := quic.DialAddr(ctx, ln.ln.Addr().String(), ReceiverTLSConfig(), QuicConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AcceptStream(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.CloseWithError(closeHandshakeFailed, "handshake failed")
+
+	_, err = ln.Accept(ctx)
+	if !errors.Is(err, ErrHandshakeFailed) {
+		t.Fatalf("got %v, want ErrHandshakeFailed", err)
+	}
+	if errors.Is(err, fserrors.ErrPeerAuthFailed) {
+		t.Fatalf("an early close counted as a failed PAKE: %v", err)
 	}
 }

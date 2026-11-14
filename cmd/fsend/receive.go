@@ -187,7 +187,7 @@ func runReceive(f *flags, c string) error {
 			spin.Stop()
 		}
 
-		err = receiveOver(ctx, f, rs, ui, sink, link)
+		err = receiveOver(ctx, f, rs, ui, sink, link, round < maxRepairRounds)
 		link.close()
 		if err == nil {
 			forgetResumeKey(c)
@@ -224,6 +224,21 @@ func discoverSender(ctx context.Context, f *flags, rs *recvSession, spin *uxlog.
 		q, err := landisc.Query(lanCtx, rs.key.rendezvous, lanQueryWindow)
 		lanCh <- lanResult{q, err}
 	}()
+
+	if f.mode == modeLocal {
+		// --local: the local network only, never the pairing server.
+		select {
+		case r := <-lanCh:
+			if r.err == nil {
+				if link := dialLAN(ctx, f, rs, r.q, spin); link != nil {
+					return link, nil
+				}
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: not found on the local network (--local)", fserrors.ErrCodeNotFound)
+	}
 
 	head := time.NewTimer(lanHeadStart)
 	defer head.Stop()
@@ -301,16 +316,26 @@ func dialLAN(ctx context.Context, f *flags, rs *recvSession, q *landisc.QueryRes
 	}
 }
 
+// errRouteGone marks a failed re-dial that should go straight to
+// re-discovery (see receiveOver).
+var errRouteGone = errors.New("the route to the sender is gone")
+
 // receiveOver runs the transfer on link with in-place retries: a
 // mid-stream drop re-dials the same route and resumes from the
 // receiver's partial. Sink mode gets one attempt: emitted bytes can't be
 // reconciled, so a retry would duplicate output.
-func receiveOver(ctx context.Context, f *flags, rs *recvSession, ui *receiverUI, sink bool, link *recvLink) error {
+//
+// When canRediscover is set, a re-dial that fails ends the retries at
+// once: the route itself is gone (the laptop changed networks, the relay
+// dropped us), and another dial on it would only add its timeout before
+// runReceive finds the sender again on fresh sockets.
+func receiveOver(ctx context.Context, f *flags, rs *recvSession, ui *receiverUI, sink bool, link *recvLink, canRediscover bool) error {
 	opts := retry.Options{OnRetry: ui.retryNotice()}
 	if sink {
 		opts.Attempts = 1
 	}
-	err := retry.WithBackoff(ctx, opts, nil, func(attempt int) error {
+	isTransient := func(err error) bool { return !errors.Is(err, errRouteGone) && retry.IsTransient(err) }
+	err := retry.WithBackoff(ctx, opts, isTransient, func(attempt int) error {
 		if attempt > 1 {
 			ui.resetAttemptCounts()
 		}
@@ -319,6 +344,9 @@ func receiveOver(ctx context.Context, f *flags, rs *recvSession, ui *receiverUI,
 		if res == nil {
 			var err error
 			if res, err = link.dial(ctx, rs.key.secret); err != nil {
+				if canRediscover && rs.resumed && retry.IsTransient(err) {
+					return fmt.Errorf("%w: %w: dialing sender: %v", fserrors.ErrTransientFailure, errRouteGone, err)
+				}
 				return fmt.Errorf("dialing sender: %w", err)
 			}
 		}

@@ -426,3 +426,23 @@ func srvWaitForPort(t *testing.T, addr string, within time.Duration) {
 	}
 	t.Fatalf("port %s did not accept connections within %v", addr, within)
 }
+
+func TestParseTrustedProxies(t *testing.T) {
+	got, err := parseTrustedProxies(" 10.0.0.5, 172.16.9.0/12 ,::1,,")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := formatPrefixes(got); s != "10.0.0.5/32, 172.16.0.0/12, ::1/128" {
+		t.Errorf("parsed %q", s)
+	}
+	if _, err := parseTrustedProxies("10.0.0.5,caddy"); err == nil || !strings.Contains(err.Error(), "FSEND_SERVER_TRUSTED_PROXIES") {
+		t.Errorf("a hostname: got %v, want an error naming the variable", err)
+	}
+	// An IPv4-mapped range is stored unmapped, the form peers are matched in.
+	if got, err := parseTrustedProxies("::ffff:172.16.0.0/108"); err != nil || formatPrefixes(got) != "172.16.0.0/12" {
+		t.Errorf("mapped range: got %v, %v", formatPrefixes(got), err)
+	}
+	if got, err := parseTrustedProxies(""); err != nil || formatPrefixes(got) != "(none)" {
+		t.Errorf("empty: got %v, %v", got, err)
+	}
+}

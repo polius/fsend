@@ -63,21 +63,20 @@ func TestSignal_SenderSIGINTMidTransfer(t *testing.T) {
 	s.signal(t, syscall.SIGINT)
 	s.wait(t, 5*time.Second)
 
-	// Generous bound: the receiver may walk its full retry budget
-	// (3 × 10s QUIC handshake plus backoff waits ≈ 33s) when SIGINT
-	// lands at certain stream positions before giving up — already past
-	// a 30s bound before any runner load, which is why 30s flaked on
-	// loaded CI. We only care that it eventually surfaces a non-zero
-	// exit; the duration is bounded by retry config.
+	// Normally the sender's cancel notice reaches the receiver and it exits
+	// at once. If the notice is lost under load, the receiver sees a drop,
+	// looks for the sender again and waits resumeJoinBudget (90 s) for it
+	// to come back before giving up: about 105 s with a killed sender. We
+	// only care that it eventually surfaces a non-zero exit.
 	select {
 	case err := <-rDone:
 		if err == nil {
 			t.Fatalf("receiver returned 0 after sender SIGINT — should be non-zero")
 		}
-	case <-time.After(60 * time.Second):
+	case <-time.After(150 * time.Second):
 		_ = rCmd.Process.Kill()
 		<-rDone
-		t.Fatalf("receiver did not exit within 60s")
+		t.Fatalf("receiver did not exit within 150s\n%s", rErr.String())
 	}
 
 	if fi, err := os.Stat(filepath.Join(dst, "big.bin")); err == nil {

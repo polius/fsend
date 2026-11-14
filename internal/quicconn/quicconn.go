@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -76,6 +77,8 @@ const (
 	closeHandshakeFailed quic.ApplicationErrorCode = 0x11
 	// closeBusy rejects a connection while too many handshakes are pending.
 	closeBusy quic.ApplicationErrorCode = 0x12
+	// closeRefused turns away a peer the listener's filter does not admit.
+	closeRefused quic.ApplicationErrorCode = 0x13
 )
 
 // AcceptResult bundles the negotiated streams with the underlying QUIC
@@ -192,14 +195,49 @@ func QuicConfig() *quic.Config {
 // connection flood can't pile up goroutines and live connections.
 const maxPendingHandshakes = 8
 
+// Failed PAKE handshakes slow the listener down: after the n-th failure in
+// a row it waits failPenaltyBase·2^(n-1), at most failPenaltyMax, before
+// starting the next handshake. Guessing a code was hopeless already; the
+// pause keeps a flood of junk handshakes from monopolising the listener
+// while staying far inside a real receiver's HandshakeTimeout.
+const (
+	failPenaltyBase = 250 * time.Millisecond
+	failPenaltyMax  = 4 * time.Second
+)
+
+// failPenalty is the pause after the n-th failure in a row.
+func failPenalty(n int) time.Duration {
+	if n <= 0 {
+		return 0
+	}
+	d := failPenaltyBase
+	for i := 1; i < n && d < failPenaltyMax; i++ {
+		d *= 2
+	}
+	return min(d, failPenaltyMax)
+}
+
+// ListenOption configures a Listener.
+type ListenOption func(*Listener)
+
+// WithPeerFilter admits only peers whose remote address allow accepts.
+// Others are closed before any PAKE work and are not reported as failed
+// handshakes: they never reached the code.
+func WithPeerFilter(allow func(net.Addr) bool) ListenOption {
+	return func(l *Listener) { l.allow = allow }
+}
+
 // Listener wraps a quic.Listener and runs the PAKE handshake for each
 // inbound connection in its own goroutine, bounded by HandshakeTimeout:
 // a stalling impostor can't block the real receiver queued behind it.
 type Listener struct {
-	ln *quic.Listener
+	ln    *quic.Listener
+	allow func(net.Addr) bool // nil admits every peer
 
-	mu     sync.Mutex
-	secret string
+	mu        sync.Mutex
+	secret    string
+	failsRun  int       // failed PAKEs since the last success
+	nextStart time.Time // no handshake starts before this
 
 	results chan *AcceptResult
 	fails   chan error // failed handshakes; dropped when full
@@ -209,13 +247,16 @@ type Listener struct {
 }
 
 // NewListener wraps ln, authenticating each peer with secret.
-func NewListener(ln *quic.Listener, secret string) *Listener {
+func NewListener(ln *quic.Listener, secret string, opts ...ListenOption) *Listener {
 	l := &Listener{
 		ln:      ln,
 		secret:  secret,
 		results: make(chan *AcceptResult),
 		fails:   make(chan error, 64),
 		done:    make(chan struct{}),
+	}
+	for _, o := range opts {
+		o(l)
 	}
 	go l.acceptLoop()
 	return l
@@ -248,12 +289,53 @@ func (l *Listener) stop(err error) {
 	})
 }
 
+// handshakeDone records a handshake's outcome for the failure penalty.
+// Only a failed PAKE counts: a peer that gave up or timed out proved
+// nothing about the code.
+func (l *Listener) handshakeDone(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case err == nil:
+		l.failsRun, l.nextStart = 0, time.Time{}
+	case errors.Is(err, fserrors.ErrPeerAuthFailed):
+		l.failsRun++
+		l.nextStart = time.Now().Add(failPenalty(l.failsRun))
+	}
+}
+
+// pause waits out the failure penalty. False when the listener closed.
+func (l *Listener) pause() bool {
+	l.mu.Lock()
+	d := time.Until(l.nextStart)
+	l.mu.Unlock()
+	if d <= 0 {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-l.done:
+		return false
+	}
+}
+
 func (l *Listener) acceptLoop() {
 	sem := make(chan struct{}, maxPendingHandshakes)
 	for {
 		c, err := l.ln.Accept(context.Background())
 		if err != nil {
 			l.stop(fmt.Errorf("quicconn: accept: %w", err))
+			return
+		}
+		if l.allow != nil && !l.allow(c.RemoteAddr()) {
+			_ = c.CloseWithError(closeRefused, "refused")
+			continue
+		}
+		if !l.pause() {
+			_ = c.CloseWithError(closeBusy, "closed")
 			return
 		}
 		select {
@@ -265,6 +347,7 @@ func (l *Listener) acceptLoop() {
 		go func() {
 			defer func() { <-sem }()
 			res, err := SenderHandshake(context.Background(), c, l.currentSecret())
+			l.handshakeDone(err)
 			if err != nil {
 				select {
 				case l.fails <- fmt.Errorf("%w: %w", ErrHandshakeFailed, err):
@@ -345,24 +428,27 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, secret string) (res *Acc
 }
 
 // closeOnFailure closes c when *errp is set, so a failed handshake never
-// leaves a live connection behind. A peer that closed with
-// closeHandshakeFailed rejected us — its close can overtake its last
-// PAKE message — so that surfaces as ErrPeerAuthFailed.
+// leaves a live connection behind.
 func closeOnFailure(c *quic.Conn, errp *error) {
 	if *errp == nil {
 		return
 	}
-	var appErr *quic.ApplicationError
-	if errors.As(*errp, &appErr) && appErr.Remote && appErr.ErrorCode == closeHandshakeFailed &&
-		!errors.Is(*errp, fserrors.ErrPeerAuthFailed) {
-		*errp = fmt.Errorf("%w: %v", fserrors.ErrPeerAuthFailed, *errp)
-	}
 	_ = c.CloseWithError(closeHandshakeFailed, "handshake failed")
+}
+
+// peerRejected reports whether err is the peer closing with
+// closeHandshakeFailed. Only meaningful once both PAKE shares have
+// crossed: a peer can judge the code only after it has ours, and its
+// close can then overtake its confirmation tag. Earlier, the same close
+// is a peer giving up (cancelled, timed out), not a wrong code.
+func peerRejected(err error) bool {
+	var appErr *quic.ApplicationError
+	return errors.As(err, &appErr) && appErr.Remote && appErr.ErrorCode == closeHandshakeFailed
 }
 
 // ListenAddr binds a QUIC listener on addr. secret is the PAKE secret
 // (the short code, or a resume secret) every incoming peer must know.
-func ListenAddr(addr, secret string) (*Listener, error) {
+func ListenAddr(addr, secret string, opts ...ListenOption) (*Listener, error) {
 	tlsCfg, err := SenderTLSConfig()
 	if err != nil {
 		return nil, err
@@ -371,7 +457,7 @@ func ListenAddr(addr, secret string) (*Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: listen: %w", err)
 	}
-	return NewListener(ln, secret), nil
+	return NewListener(ln, secret, opts...), nil
 }
 
 // Dial connects to a sender-side QUIC listener and returns the
