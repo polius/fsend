@@ -167,7 +167,10 @@ over UDP within 2 seconds (or sending UDP fails outright), each peer
 attaches to the same relay allocation over a WebSocket on the server's
 HTTPS port (`/v1/relay/ws`, TCP 443 behind the bundled Caddy). Each
 WebSocket message carries one relay frame, so QUIC runs unchanged on top
-and a TCP peer can pair with a UDP peer. No extra port is needed.
+and a TCP peer can pair with a UDP peer. No extra port is needed. The
+WebSocket is opened once UDP has been silent for 0.7 seconds, while UDP is
+still being tried, so the switch itself costs one registration; UDP keeps
+its full 2 seconds, and where it answers the WebSocket is never opened.
 
 This gets fsend through networks that allow only HTTPS. It doesn't help
 when:
