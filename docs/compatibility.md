@@ -2,8 +2,9 @@
 
 Which fsend versions can transfer to each other, and which can use which
 pairing server. Release notes for every version are on
-[GitHub Releases](https://github.com/polius/fsend/releases); the
-[changelog](../CHANGELOG.md) lists the breaking ones.
+[GitHub Releases](https://github.com/polius/fsend/releases) and, from
+1.17 on, in the [changelog](../CHANGELOG.md), which also lists the
+breaking changes of earlier releases.
 
 ## Between two devices
 
