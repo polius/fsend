@@ -203,10 +203,15 @@ func (c *tcpConn) shutdown() {
 		_ = dc.Close()
 	}
 	// A write blocked on a peer that stopped reading holds the TLS write
-	// lock CloseWrite needs: the deadline releases it (the connection is
-	// done with writes anyway).
+	// lock: the deadline releases it (the connection is done with writes
+	// anyway). Then a TCP half-close, not TLS CloseWrite: its close alert
+	// gets a 5 s write deadline of its own, which a peer that stopped
+	// reading would make it wait out. The close frame already carried the
+	// reason; the peer reads what was sent, then EOF.
 	_ = c.ctrl.SetWriteDeadline(time.Now())
-	_ = c.ctrl.CloseWrite()
+	if tc, ok := c.ctrl.NetConn().(*net.TCPConn); ok {
+		_ = tc.CloseWrite()
+	}
 	time.AfterFunc(time.Second, func() { _ = c.ctrl.Close() })
 }
 

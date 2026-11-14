@@ -125,6 +125,12 @@ func authenticatePeer(tlsState tls.ConnectionState, control io.ReadWriter, code 
 	wantTag := confirmTag(key, exporter, otherRole(r), senderMsg, receiverMsg)
 
 	if _, err := control.Write(myTag); err != nil {
+		// The peer may have judged the code from our share already and
+		// closed before our tag went out (seen on the TCP route): that is
+		// a failed PAKE, as when its close overtakes its own tag below.
+		if peerRejected(err) {
+			return nil, fmt.Errorf("%w: auth: send tag: %v", fserrors.ErrPeerAuthFailed, err)
+		}
 		return nil, fmt.Errorf("auth: send tag: %w", err)
 	}
 	var peerTag [tagLen]byte
