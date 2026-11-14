@@ -22,6 +22,10 @@ coverage.txt
 coverage.out
 *.fsend-partial
 
+# Python bytecode (scripts/)
+__pycache__/
+*.pyc
+
 # Local config
 .env
 .env.local
