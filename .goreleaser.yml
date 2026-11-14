@@ -7,6 +7,10 @@ before:
     # verify, not tidy: tidy can rewrite go.mod/go.sum, and goreleaser
     # aborts on a dirty git state mid-release.
     - go mod verify
+    # Shell completions for the archives and packages. Generated, not
+    # committed (completions/ is in .gitignore), so they can't drift from
+    # the commands.
+    - sh -c 'mkdir -p completions && go run ./cmd/fsend completion bash > completions/fsend.bash && go run ./cmd/fsend completion zsh > completions/_fsend && go run ./cmd/fsend completion fish > completions/fsend.fish && go run ./cmd/fsend completion powershell > completions/fsend.ps1'
 
 builds:
   - id: fsend
@@ -70,6 +74,10 @@ archives:
         info:
           mtime: '{{ .CommitDate }}'
       - src: README.md
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: completions/*
+        dst: completions
         info:
           mtime: '{{ .CommitDate }}'
 
@@ -139,6 +147,21 @@ nfpms:
     contents:
       - src: LICENSE
         dst: /usr/share/licenses/fsend/LICENSE
+        file_info:
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+      - src: completions/fsend.bash
+        dst: /usr/share/bash-completion/completions/fsend
+        file_info:
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+      - src: completions/_fsend
+        dst: /usr/share/zsh/site-functions/_fsend
+        file_info:
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+      - src: completions/fsend.fish
+        dst: /usr/share/fish/vendor_completions.d/fsend.fish
         file_info:
           mode: 0644
           mtime: '{{ .CommitDate }}'

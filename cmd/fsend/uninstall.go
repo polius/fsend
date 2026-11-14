@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/polius/fsend/internal/config"
 	"github.com/polius/fsend/internal/fserrors"
@@ -70,13 +71,17 @@ func runUninstall(f *flags) error {
 	// hands off to a detached helper that deletes it once we exit and strips
 	// the install dir from PATH — keeping uninstall hands-off like elsewhere.
 	if runtime.GOOS == "windows" {
-		if err := removeBinary(binPath); err != nil {
+		keptPath, err := removeBinary(binPath)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
 			fmt.Fprintf(os.Stderr, "    Delete it manually to finish: %s\n", binPath)
 			return fserrors.ErrUninstallFailed
 		}
 		fmt.Fprintf(os.Stderr, "%s Removed binary: %s\n", uxlog.Check(), binPath)
 		fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
+		if keptPath {
+			fmt.Fprintf(os.Stderr, "  Left %s on your PATH: other files live there.\n", filepath.Dir(binPath))
+		}
 		return nil
 	}
 
@@ -100,6 +105,25 @@ func runUninstall(f *flags) error {
 	fmt.Fprintf(os.Stderr, "  If your shell rc has a PATH entry for %s, remove it.\n", filepath.Dir(rawPath))
 	fmt.Fprintln(os.Stderr, "  Also remove any \"fsend completion\" line you added.")
 	return nil
+}
+
+// onlyFsendIn reports whether dir holds nothing but the fsend binary at
+// binPath (and the .old copy an interrupted Windows update can leave).
+// Uninstall drops the dir from PATH only then: a shared dir like
+// ~/bin keeps its entry for the other tools in it. An unreadable dir
+// counts as shared, the safe answer.
+func onlyFsendIn(dir, binPath string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	name := filepath.Base(binPath)
+	for _, e := range entries {
+		if !strings.EqualFold(e.Name(), name) && !strings.EqualFold(e.Name(), name+".old") {
+			return false
+		}
+	}
+	return true
 }
 
 // errDeclined is the user answering "n" at a confirmation prompt.

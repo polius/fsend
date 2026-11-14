@@ -70,9 +70,9 @@ func runUpdate(check bool) error {
 	}
 
 	fmt.Fprintln(os.Stderr, uxlog.Step(), "Checking the latest release...")
-	latest, ok := update.Latest(context.Background())
-	if !ok {
-		return fmt.Errorf("%w: could not look up the latest release", fserrors.ErrUpdateFailed)
+	latest, err := update.Latest(context.Background())
+	if err != nil {
+		return fmt.Errorf("%w: could not look up the latest release: %v", fserrors.ErrUpdateFailed, err)
 	}
 	if !update.Newer(latest, current) {
 		fmt.Fprintf(os.Stderr, "%s fsend %s is already the latest version.\n", uxlog.Check(), current)

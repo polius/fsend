@@ -84,6 +84,21 @@ whose Sigstore signature they also verify when `cosign` is installed. The
 binaries themselves carry no Apple or Microsoft code signature — see
 [Security → Release integrity](docs/security.md#release-integrity).
 
+`getfsend.alzina.dev` only redirects to the latest release's install
+scripts on GitHub. To fetch them from GitHub directly:
+
+```bash
+curl -fsSL https://github.com/polius/fsend/releases/latest/download/install.sh | sh
+```
+
+```powershell
+irm https://github.com/polius/fsend/releases/latest/download/install.ps1 | iex
+```
+
+**Update or remove:** `fsend --update` installs the latest release, and
+`fsend --uninstall` removes fsend and its settings. A Homebrew or package
+install is left to brew or the package manager.
+
 <details>
 <summary>Other install methods</summary>
 
@@ -92,6 +107,12 @@ From source:
 ```bash
 go install github.com/polius/fsend/cmd/fsend@latest
 ```
+
+Linux packages: each release attaches `.deb`, `.rpm` and `.apk` files.
+Install one with `sudo apt install ./fsend_<version>_amd64.deb`,
+`sudo dnf install ./fsend-<version>-1.x86_64.rpm` or
+`sudo apk add --allow-untrusted fsend_<version>_x86_64.apk`, and update by
+installing the next release's package the same way.
 
 Or grab a release binary from [the releases page](https://github.com/polius/fsend/releases).
 
@@ -108,6 +129,9 @@ eval "$(fsend completion bash)"                                # bash
 fsend completion fish | source                                 # fish
 fsend completion powershell | Out-String | Invoke-Expression   # powershell
 ```
+
+The deb, rpm and apk packages install completions for bash, zsh and fish
+already. Release archives carry the same scripts in `completions/`.
 
 </details>
 
@@ -157,6 +181,7 @@ See <a href="docs/architecture.md">Architecture</a>.</em></p>
 | [Development](docs/development.md) | Build and test from source |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and what to do about them |
 | [Comparison](docs/comparison.md) | fsend vs croc, magic-wormhole, sendme and LocalSend |
+| [Version compatibility](docs/compatibility.md) | Which versions work together; breaking changes in the [changelog](CHANGELOG.md) |
 
 ## Contributing
 

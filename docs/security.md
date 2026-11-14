@@ -306,6 +306,14 @@ What the tools check for you:
   checks it against that release's `checksums.txt` (checking the
   signature first when cosign is installed), and runs it pinned to that
   version; the script then verifies the archive as above.
+- **The install address.** `getfsend.alzina.dev`, the address in the
+  one-line installs, is a redirect on the maintainer's domain and serves
+  nothing itself: `/` answers with a redirect to
+  `https://github.com/polius/fsend/releases/latest/download/install.sh`
+  and `/windows` to `…/install.ps1`. Whoever controls that domain chooses
+  what the one-liner runs, so it is a trust root next to GitHub. To trust
+  GitHub alone, use those release URLs directly (the README lists both
+  commands).
 - **Homebrew** installs carry the same attestation; the cask's caveats
   show `gh attestation verify "$(brew --prefix)/bin/fsend" --repo polius/fsend`.
 

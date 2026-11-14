@@ -1,9 +1,13 @@
 name: go-patch
 
-# Dependabot updates module requirements but never the `go` directive in
-# go.mod, so a stdlib security release would never reach people building
-# from source until someone remembered by hand. This opens the bump PR
-# Dependabot can't. Patch-only on purpose: a minor bump raises the
+# Dependabot updates module requirements but never the `toolchain`
+# directive in go.mod, so a stdlib security release would never reach
+# people building from source until someone remembered by hand. This opens
+# the bump PR Dependabot can't. It bumps `toolchain`, not `go`: the `go`
+# line stays at the minor's .0 so packagers building with a local
+# toolchain of that minor aren't broken by every patch release, while
+# GOTOOLCHAIN=auto builds (and CI, through setup-go) still get the
+# patched toolchain. Patch-only on purpose: a minor bump raises the
 # language floor and must land together with the golangci-lint pin in
 # checks.yml (lint refuses modules newer than its own build toolchain).
 
@@ -30,7 +34,7 @@ jobs:
           cache: false
       - run: |
           minor=$(go mod edit -json | jq -r .Go | cut -d. -f1-2)
-          go get "go@$minor"
+          go get "toolchain@go$minor"
       # With no diff (already current) the action skips, so quiet days
       # between Go releases cost nothing.
       - id: pr
@@ -38,12 +42,12 @@ jobs:
         with:
           branch: chore/go-patch
           delete-branch: true
-          title: "build: bump the go directive to the latest patch release"
-          commit-message: "build: bump the go directive to the latest patch release"
+          title: "build: bump the toolchain directive to the latest patch release"
+          commit-message: "build: bump the toolchain directive to the latest patch release"
           body: >-
-            Keeps go.mod's `go` directive at the newest patch of the current
-            minor so `GOTOOLCHAIN=auto` forces a security-patched toolchain
-            for every build. Scheduled from .github/workflows/go-patch.yml;
+            Keeps go.mod's `toolchain` directive at the newest patch of the
+            current minor so `GOTOOLCHAIN=auto` picks a security-patched
+            toolchain for every build. Scheduled from .github/workflows/go-patch.yml;
             merged automatically once the required checks pass.
       # A PR pushed with GITHUB_TOKEN starts no pull_request workflows, so
       # the required checks would never report. workflow_dispatch is exempt

@@ -2,6 +2,7 @@
 /fsend
 /fsend-server
 /dist/
+/completions/
 /build/
 *.exe
 *.test

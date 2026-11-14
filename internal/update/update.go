@@ -3,7 +3,7 @@
 // The passive check never downloads or replaces anything, it only
 // reports whether a new release is out. `fsend --update` (cmd/fsend)
 // uses FetchInstaller to get the pinned release's verified installer and
-// runs it. The result of the GitHub lookup is cached for a day so normal
+// runs it. The result of the release lookup is cached for a day so normal
 // runs do no network I/O, and every failure path of the passive check is
 // silent — it must never disturb a transfer.
 package update
@@ -11,8 +11,10 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,10 +28,19 @@ import (
 // API endpoint and the human-facing release page can't drift apart.
 const repo = "polius/fsend"
 
-// apiURL is the GitHub "latest release" endpoint. /latest already
-// excludes drafts and pre-releases, so we never nag about those. A
-// package var so tests can point it at a local server.
-var apiURL = "https://api.github.com/repos/" + repo + "/releases/latest"
+// latestURL redirects to the newest release's tag page. It's the same
+// plain release redirect the installers use: unlike the REST API it isn't
+// rate-limited per address, so --update keeps working behind shared
+// egress (offices, CI, CGNAT). GitHub points /latest only at full
+// releases, never drafts or pre-releases. A package var so tests can point
+// it at a local server.
+var latestURL = "https://github.com/" + repo + "/releases/latest"
+
+// noRedirectClient stops at the first answer: the version is read from
+// the redirect itself, so following it would only fetch an HTML page.
+var noRedirectClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 const (
 	cacheFile     = "update-check.json"
@@ -74,15 +85,15 @@ func ReleaseURL(v string) string {
 
 // Latest returns the latest release version (no leading "v") from a
 // fresh lookup, bypassing the daily cache: an explicit `fsend --update`
-// deserves a current answer. ok is false when the lookup failed.
-func Latest(ctx context.Context) (string, bool) {
+// deserves a current answer. The error says why the lookup failed.
+func Latest(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, explicitTimeout)
 	defer cancel()
-	latest, ok := fetchLatest(ctx)
-	if ok {
+	latest, err := fetchLatest(ctx)
+	if err == nil {
 		writeCache(cachePath(), cache{CheckedAt: time.Now(), Latest: latest})
 	}
-	return latest, ok
+	return latest, err
 }
 
 // latestVersion returns the latest release version (no leading "v"),
@@ -95,8 +106,8 @@ func latestVersion(ctx context.Context) string {
 	}
 	ctx, cancel := context.WithTimeout(ctx, noticeTimeout)
 	defer cancel()
-	latest, ok := fetchLatest(ctx)
-	if !ok {
+	latest, err := fetchLatest(ctx)
+	if err != nil {
 		// Network failed: stamp the attempt so we don't retry (and re-pay
 		// the timeout) on every run for the next interval, and fall back
 		// to whatever we last knew.
@@ -111,38 +122,36 @@ func latestVersion(ctx context.Context) string {
 	return latest
 }
 
-// fetchLatest queries the GitHub API for the latest release tag. The
-// caller bounds ctx (notice vs explicit timeouts differ).
-func fetchLatest(ctx context.Context) (string, bool) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+// fetchLatest reads the latest release tag from where latestURL
+// redirects (…/releases/tag/v1.2.3). The caller bounds ctx (notice vs
+// explicit timeouts differ).
+func fetchLatest(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, latestURL, nil)
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	// GitHub requires a User-Agent; the recommended Accept pins the API
-	// version's media type.
 	req.Header.Set("User-Agent", "fsend-update-check")
-	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", false
+	_ = resp.Body.Close()
+	if resp.StatusCode < 300 || resp.StatusCode > 399 {
+		return "", fmt.Errorf("%s answered %s, not a redirect to the release", req.URL.Host, resp.Status)
 	}
-
-	var body struct {
-		TagName string `json:"tag_name"`
+	loc, err := resp.Location()
+	if err != nil {
+		return "", fmt.Errorf("%s redirected nowhere", req.URL.Host)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", false
+	if !strings.HasSuffix(path.Dir(loc.Path), "/releases/tag") {
+		return "", fmt.Errorf("%s redirected to %s, not a release", req.URL.Host, loc.Redacted())
 	}
-	tag := strings.TrimPrefix(strings.TrimSpace(body.TagName), "v")
-	if tag == "" {
-		return "", false
+	tag := strings.TrimPrefix(path.Base(loc.Path), "v")
+	if _, _, _, ok := parse(tag); !ok {
+		return "", fmt.Errorf("latest release tag %q is not a version", tag)
 	}
-	return tag, true
+	return tag, nil
 }
 
 func cachePath() string {

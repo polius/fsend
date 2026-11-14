@@ -304,14 +304,24 @@ ensure_prefix() {
         || err "cannot create $PREFIX — pick a writable location with -p/--prefix"
 }
 
+# install_binary stages the new binary next to the old one and renames it
+# into place. A rename inside one directory is atomic, so an interrupted
+# install leaves the old binary or the new one, never neither. A plain mv
+# from $tmp isn't: when /tmp is another filesystem (tmpfs) mv deletes the
+# old binary first and then copies.
+STAGED=""
 install_binary() {
     src="$1"
     dst="$PREFIX/$(basename "$src")"
     if [ ! -w "$PREFIX" ]; then
         err "$PREFIX is not writable — pick a writable location with -p/--prefix"
     fi
-    mv "$src" "$dst"
-    chmod 755 "$dst"
+    STAGED="$PREFIX/.$(basename "$src").new.$$"
+    if ! { cp "$src" "$STAGED" && chmod 755 "$STAGED" && mv -f "$STAGED" "$dst"; }; then
+        rm -f "$STAGED"
+        err "could not install $dst"
+    fi
+    STAGED=""
 }
 
 # path_command is the line that puts PREFIX on PATH in the user's shell.
@@ -454,7 +464,7 @@ main() {
     fi
 
     tmp="$(mktemp -d 2>/dev/null || mktemp -d -t fsend.XXXXXXXX)"
-    cleanup() { rm -rf "$tmp"; }
+    cleanup() { rm -rf "$tmp"; [ -z "$STAGED" ] || rm -f "$STAGED"; }
     trap cleanup EXIT
     trap 'cleanup; exit 130' INT
     trap 'cleanup; exit 143' TERM

@@ -196,6 +196,25 @@ grep -q "installed" "$WORK/out5b" \
     || fail "scenario5: FSEND_UPDATE dropped the install confirmation too"
 pass "reinstall reports currently installed version; FSEND_UPDATE=1 trims it"
 
+# 5b. the new binary is staged inside the prefix and renamed over the old
+# one: nothing staged is left behind, and a copy that fails midway leaves
+# the old binary in place (a plain mv from a tmpfs /tmp deletes it first).
+staged_left() { for _f in "$H5/bin"/.fsend.new.*; do [ -e "$_f" ] && return 0; done; return 1; }
+staged_left && fail "scenario5b: staged file left in the prefix"
+[ -x "$H5/bin/fsend" ] || fail "scenario5b: installed binary not executable"
+printf '#!/bin/sh\necho old-fsend\n' > "$H5/bin/fsend"
+chmod 755 "$H5/bin/fsend"
+mkdir -p "$WORK/failcp"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/failcp/cp"
+chmod 755 "$WORK/failcp/cp"
+SMOKE_PATH="$WORK/failcp:/usr/bin:/bin"
+run_installer "$H5" -p "$H5/bin" -v "$VER" >"$WORK/out5c" 2>&1 \
+    && fail "scenario5b: install with a failing copy succeeded"
+SMOKE_PATH=/usr/bin:/bin
+[ "$("$H5/bin/fsend")" = old-fsend ] || fail "scenario5b: failed install did not keep the old binary"
+staged_left && fail "scenario5b: failed install left a staged file"
+pass "binary staged in the prefix and renamed; a failed copy keeps the old one"
+
 # 6. GitHub Actions: install dir lands in $GITHUB_PATH.
 H6="$WORK/home6"
 GHFILE="$WORK/ghpath"
