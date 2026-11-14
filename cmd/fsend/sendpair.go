@@ -1127,7 +1127,14 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 				}
 				res.Close()
 			}()
+			// The engine stops hashing sources the moment the connection
+			// is gone, instead of finishing a prefix nobody will receive.
+			var conn context.Context
+			if res.Conn != nil {
+				conn = res.Conn.Context()
+			}
 			return transfer.Send(ctx, &res.Streams, transfer.SendOptions{
+				Conn:            conn,
 				Hostname:        hostnameOrDefault(f.hostname),
 				OS:              runtime.GOOS,
 				ClientVersion:   version.Version,

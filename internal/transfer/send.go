@@ -68,6 +68,13 @@ type SendOptions struct {
 	// was being read; the copy that arrives may be inconsistent.
 	OnSourceChanged func(index uint32)
 
+	// Conn, when set, is done once the connection under the streams is
+	// gone, with the close as its cause (quicconn's Conn.Context). Hashing
+	// a source can take minutes during which nothing is written, so a drop
+	// would go unnoticed; with Conn it ends the hashing at once and Send
+	// returns the connection's error.
+	Conn context.Context
+
 	// advertiseMax overrides the newest version the HELLO offers — tests
 	// stand in for a newer build with it. 0 means wire.ProtocolVersion.
 	advertiseMax uint8
@@ -174,7 +181,12 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions, peerCaps wire.
 	if err := sendListing(s.Control, opts.Sources, peerCaps.Has(wire.CapCompressedListing)); err != nil {
 		return fmt.Errorf("send: listing: %w", err)
 	}
-	decisions, err := senderNegotiate(s, opts.Sources)
+	// work bounds the hashing of sources: it ends with ctx, with the
+	// connection, and when this attempt returns, so no hasher outlives the
+	// attempt it worked for.
+	work, stopWork := workContext(ctx, opts.Conn)
+	defer stopWork()
+	decisions, verified, err := senderNegotiate(work, s, opts.Sources)
 	if err != nil {
 		return err
 	}
@@ -184,7 +196,7 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions, peerCaps wire.
 
 	// Verify every resume prefix in the background while earlier files
 	// stream, so a big resume doesn't stall the pipe when its turn comes.
-	prefixes := startPrefixHashing(ctx, opts.Sources, decisions)
+	prefixes := startPrefixHashing(work, opts.Sources, decisions)
 
 	packer, err := newChunkPacker(s.Data)
 	if err != nil {
@@ -215,7 +227,9 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions, peerCaps wire.
 		if src.Entry.Type != wire.EntryFile || src.Entry.Size == 0 {
 			continue
 		}
-		if err := sendOneFile(ctx, s, packer, src, d, prefixes[src.Entry.Index], opts); err != nil {
+		// A receiver comparing by content (--checksum) asks for the roots
+		// of delivered files again on a retry: remember every file's then.
+		if err := sendOneFile(ctx, work, s, packer, src, d, prefixes[src.Entry.Index], verified, opts); err != nil {
 			return err
 		}
 	}
@@ -301,10 +315,52 @@ func reportWriteRefusals(result *wire.TransferResult, decisions map[uint32]wire.
 // can't replay the request to make the sender re-hash forever.
 const maxVerifyRounds = maxListingEntries/maxVerifyIDsPerFrame + 1
 
+// workContext returns the context local work for one connection runs under:
+// it ends with ctx, and with conn (when the caller named one), whose close
+// then becomes its cause.
+func workContext(ctx, conn context.Context) (context.Context, func()) {
+	work, cancel := context.WithCancelCause(ctx)
+	if conn == nil {
+		return work, func() { cancel(nil) }
+	}
+	stop := context.AfterFunc(conn, func() {
+		// The connection's own error, so the caller classifies the drop as
+		// it would a failed write (a retry, a deliberate close); never a
+		// bare cancellation, which Send reports as the user's Ctrl-C.
+		cause := context.Cause(conn)
+		if cause == nil || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+			cancel(fmt.Errorf("%w: connection lost", fserrors.ErrConnectFailed))
+			return
+		}
+		cancel(fmt.Errorf("send: connection lost: %w", cause))
+	})
+	return work, func() { stop(); cancel(nil) }
+}
+
+// workEnded is the error for hashing cut short because work ended: the
+// reason the receiver posted before it went, if it did (a decline, a full
+// disk), else why work ended — the connection's error, or ctx's.
+func workEnded(s *Streams, work context.Context) error {
+	cause := context.Cause(work)
+	// With the connection gone or ctx cancelled the read returns at once;
+	// the bound is for a caller whose Conn ended while its streams live on.
+	posted := make(chan error, 1)
+	go func() { posted <- tryReadPeerError(s.Control) }()
+	select {
+	case reason := <-posted:
+		if reason != nil {
+			return reason
+		}
+	case <-time.After(time.Second):
+	}
+	return cause
+}
+
 // senderNegotiate reads the receiver's classification, answering any
 // TypeVerifyRequest (--checksum) by hashing just the requested files before
-// the decision vector arrives.
-func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, error) {
+// the decision vector arrives. verified reports that there was one. The
+// hashing ends with work.
+func senderNegotiate(work context.Context, s *Streams, sources []Source) (decisions map[uint32]wire.Decision, verified bool, err error) {
 	byIndex := make(map[uint32]string, len(sources))
 	for _, src := range sources {
 		byIndex[src.Entry.Index] = src.AbsPath
@@ -315,25 +371,31 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 	for {
 		ft, body, err := wire.ReadControlRaw(s.Control)
 		if err != nil {
-			return nil, fmt.Errorf("send: negotiate: %w", err)
+			return nil, false, fmt.Errorf("send: negotiate: %w", err)
 		}
 		switch ft {
 		case wire.TypeVerifyRequest:
 			verifyRounds++
 			if verifyRounds > maxVerifyRounds {
-				return nil, fmt.Errorf("%w: too many verify requests", fserrors.ErrProtocolError)
+				return nil, false, fmt.Errorf("%w: too many verify requests", fserrors.ErrProtocolError)
 			}
 			var idx []uint32
 			if err := wire.Decode(body, &idx); err != nil {
-				return nil, fmt.Errorf("send: verify request: %w", err)
+				return nil, false, fmt.Errorf("send: verify request: %w", err)
 			}
-			if err := wire.WriteControl(s.Control, wire.TypeVerifyResponse, verifyHashes(idx, byIndex, hashed)); err != nil {
-				return nil, fmt.Errorf("send: verify response: %w", err)
+			resp := verifyHashes(work, idx, byIndex, hashed)
+			if work.Err() != nil {
+				// Cut short: the answer would pass unhashed files off as
+				// unreadable. Report why the work ended instead.
+				return nil, false, workEnded(s, work)
+			}
+			if err := wire.WriteControl(s.Control, wire.TypeVerifyResponse, resp); err != nil {
+				return nil, false, fmt.Errorf("send: verify response: %w", err)
 			}
 		case wire.TypeClassifyBatch:
 			var batch []wire.Decision
 			if err := wire.Decode(body, &batch); err != nil {
-				return nil, fmt.Errorf("send: decisions decode: %w", err)
+				return nil, false, fmt.Errorf("send: decisions decode: %w", err)
 			}
 			for _, d := range batch {
 				out[d.Index] = d
@@ -342,16 +404,16 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 			// sent. More means a malformed or hostile peer trying to grow the
 			// map unbounded — the listing path is capped, so cap this too.
 			if len(out) > len(sources) {
-				return nil, fmt.Errorf("%w: more decisions than entries sent", fserrors.ErrProtocolError)
+				return nil, false, fmt.Errorf("%w: more decisions than entries sent", fserrors.ErrProtocolError)
 			}
 		case wire.TypeClassifyEnd:
-			return out, nil
+			return out, verifyRounds > 0, nil
 		case wire.TypeError:
 			var ef wire.ErrorFrame
 			_ = wire.Decode(body, &ef)
-			return nil, mapPeerError(ef)
+			return nil, false, mapPeerError(ef)
 		default:
-			return nil, fmt.Errorf("%w: expected classification, got %v", fserrors.ErrProtocolError, ft)
+			return nil, false, fmt.Errorf("%w: expected classification, got %v", fserrors.ErrProtocolError, ft)
 		}
 	}
 }
@@ -359,8 +421,9 @@ func senderNegotiate(s *Streams, sources []Source) (map[uint32]wire.Decision, er
 // verifyHashes hashes the requested files a few at a time. A file that
 // can't be read is left out, so the receiver treats it as differing and the
 // data phase reports it per file. hashed caches roots so a replayed request
-// can't make a hostile peer re-hash the same files indefinitely.
-func verifyHashes(idx []uint32, byIndex map[uint32]string, hashed map[uint32][32]byte) []wire.FileHash {
+// can't make a hostile peer re-hash the same files indefinitely. Hashing
+// stops when ctx ends; the caller then discards the answer.
+func verifyHashes(ctx context.Context, idx []uint32, byIndex map[uint32]string, hashed map[uint32][32]byte) []wire.FileHash {
 	var todo []uint32
 	for _, i := range idx {
 		if _, done := hashed[i]; !done && byIndex[i] != "" {
@@ -372,11 +435,14 @@ func verifyHashes(idx []uint32, byIndex map[uint32]string, hashed map[uint32][32
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, verifyWorkers)
 	for _, i := range todo {
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(i uint32, path string) {
 			defer func() { <-sem; wg.Done() }()
-			if h, err := hashFileRoot(path, nil); err == nil {
+			if h, err := hashCache.fileRoot(ctx, path, nil); err == nil {
 				mu.Lock()
 				hashed[i] = h
 				mu.Unlock()
@@ -393,15 +459,20 @@ func verifyHashes(idx []uint32, byIndex map[uint32]string, hashed map[uint32][32
 	return resp
 }
 
-// prefixResult is the sender's block hashes for a resume prefix.
+// prefixResult is the sender's block hashes for a resume prefix, with the
+// state the source was in and the moment its hashing began.
 type prefixResult struct {
 	blocks [][32]byte
+	id     fileID
+	began  time.Time
 	err    error
 }
 
 // startPrefixHashing hashes each resume prefix of the source in the
-// background, in send order. Each result arrives on its own channel.
-func startPrefixHashing(ctx context.Context, sources []Source, decisions map[uint32]wire.Decision) map[uint32]chan prefixResult {
+// background, in send order. Each result arrives on its own channel. It
+// stops when work ends (the attempt is over, or its connection is): the
+// remaining results then carry work's cause.
+func startPrefixHashing(work context.Context, sources []Source, decisions map[uint32]wire.Decision) map[uint32]chan prefixResult {
 	out := make(map[uint32]chan prefixResult)
 	var jobs []*Source
 	for i := range sources {
@@ -415,18 +486,13 @@ func startPrefixHashing(ctx context.Context, sources []Source, decisions map[uin
 	go func() {
 		for _, src := range jobs {
 			ch := out[src.Entry.Index]
-			if ctx.Err() != nil {
-				ch <- prefixResult{err: ctx.Err()}
+			if work.Err() != nil {
+				ch <- prefixResult{err: context.Cause(work)}
 				continue
 			}
-			f, err := os.Open(src.AbsPath)
-			if err != nil {
-				ch <- prefixResult{err: err}
-				continue
-			}
-			blocks, err := hashBlocks(f, conv.Int64(decisions[src.Entry.Index].ResumeOffset), nil)
-			_ = f.Close()
-			ch <- prefixResult{blocks: blocks, err: err}
+			began := time.Now()
+			blocks, id, err := hashCache.hashPrefix(work, src.AbsPath, conv.Int64(decisions[src.Entry.Index].ResumeOffset), nil)
+			ch <- prefixResult{blocks: blocks, id: id, began: began, err: err}
 		}
 	}()
 	return out
@@ -436,7 +502,11 @@ func startPrefixHashing(ctx context.Context, sources []Source, decisions map[uin
 // hashing it once, in parallel blocks, for the root on its EOF segment. A
 // file that can't be read is skipped (the receiver is told) rather than
 // aborting the whole transfer.
-func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Source, d wire.Decision, prefix chan prefixResult, opts SendOptions) error {
+//
+// work is the attempt's hashing context (sendFiles). remember asks for the
+// file's block hashes to be kept once it is sent; those of a file cut off
+// part-way always are, so a retry's prefix check needn't read it again.
+func sendOneFile(ctx, work context.Context, s *Streams, packer *chunkPacker, src *Source, d wire.Decision, prefix chan prefixResult, remember bool, opts SendOptions) error {
 	idx := src.Entry.Index
 	skip := func(cause error) error {
 		if opts.OnSourceSkipped != nil {
@@ -455,13 +525,33 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 	defer func() { _ = f.Close() }()
 
 	h := newFileHasher()
-	defer h.discard()
+	keep := sourceBlocks{path: src.AbsPath, began: time.Now()}
+	if canResume(src.Entry.Size) || remember {
+		if fi, err := f.Stat(); err == nil && conv.Uint64(fi.Size()) == src.Entry.Size {
+			keep.id = identify(fi)
+		}
+	}
+	sent, done := uint64(0), false
+	defer func() {
+		// Sent whole, or cut off part-way with a retry to come: either way
+		// these hashes are the ones it would compute again.
+		if done && !remember || !done && sent == 0 {
+			h.discard()
+			return
+		}
+		keep.save(f, h.blocks())
+	}()
 	offset := uint64(0)
 	if prefix != nil {
-		pr := <-prefix
+		var pr prefixResult
+		select {
+		case pr = <-prefix:
+		case <-work.Done():
+			return workEnded(s, work)
+		}
 		if pr.err != nil {
-			if errors.Is(pr.err, context.Canceled) {
-				return pr.err
+			if work.Err() != nil {
+				return workEnded(s, work) // cut short, not unreadable
 			}
 			return skip(pr.err)
 		}
@@ -470,6 +560,7 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 		// stale: send the file from 0 and tell the receiver to start over.
 		if root := foldRoot(pr.blocks, d.ResumeOffset); string(d.PrefixRoot) == string(root[:]) {
 			h.seed(pr.blocks)
+			keep.seeded(pr)
 			offset = d.ResumeOffset
 			if _, err := f.Seek(conv.Int64(offset), io.SeekStart); err != nil {
 				return skip(err)
@@ -482,7 +573,7 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 		}
 	}
 
-	sent := offset
+	sent = offset
 	for sent < src.Entry.Size {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -520,7 +611,37 @@ func sendOneFile(ctx context.Context, s *Streams, packer *chunkPacker, src *Sour
 	if err := packer.endFile(idx, h.Sum(), changed); err != nil {
 		return sendChunkErr(s, err)
 	}
+	done = true
 	return nil
+}
+
+// sourceBlocks decides whether the block hashes computed while sending a
+// source may go into hashCache: only for a file that was the listed size
+// when opened, is still in that state afterwards, and had been left alone
+// for a while before any of its bytes were read (fileID.settled).
+type sourceBlocks struct {
+	path  string
+	id    fileID    // the source when it was opened; zero: don't keep
+	began time.Time // when the first of the hashed bytes was read
+}
+
+// seeded notes that the hashes start with a prefix hashed earlier (pr): it
+// must have been read from the file in this same state.
+func (k *sourceBlocks) seeded(pr prefixResult) {
+	if !pr.id.same(k.id) {
+		k.id = fileID{}
+		return
+	}
+	k.began = pr.began
+}
+
+func (k *sourceBlocks) save(f *os.File, blocks [][32]byte) {
+	if k.id.fi == nil || !k.id.settled(k.began) {
+		return
+	}
+	if after, err := f.Stat(); err == nil && identify(after).same(k.id) {
+		hashCache.put(k.path, k.id, blocks)
+	}
 }
 
 // sendChunkErr surfaces a receiver-posted reason (e.g. write failure) instead

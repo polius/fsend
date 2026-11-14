@@ -218,8 +218,12 @@ func newReceiver(s *Streams, opts RecvOptions) *receiver {
 func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []wire.ListingEntry) error {
 	s, opts := r.s, r.opts
 	r.ps.sweep()
+	r.cls.ctx = ctx
 	plans, err := r.cls.run(entries)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err() // cut short while hashing partials, not a bad listing
+		}
 		declineTransfer(s, wire.ErrCodeListingInvalid, "invalid listing")
 		return err
 	}
@@ -228,7 +232,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	// --checksum: resolve same-size candidates by content hash before the
 	// breakdown is shown or any decision is made.
 	if opts.Checksum {
-		if err := resolveVerify(s, plans, r.cls.sem, opts.OnHashProgress); err != nil {
+		if err := resolveVerify(ctx, s, plans, r.cls.sem, opts.OnHashProgress); err != nil {
 			return err
 		}
 	}
@@ -249,6 +253,9 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 		}
 		if policy != ConflictKeep {
 			applyPolicy(plans, policy, r.cls)
+			if err := ctx.Err(); err != nil {
+				return err // ended while a partial was being hashed
+			}
 			if err := r.checkSpace(summary.BytesToRecv + summary.DifferingBytes); err != nil {
 				return err
 			}
@@ -422,8 +429,10 @@ const verifyWorkers = 4
 // dispVerify to dispIdentical (match) or dispDiffers. A match also takes the
 // sender's mtime, so the next plain run sees the file as identical. Hashing
 // failures fall to dispDiffers so an unreadable/changed file is re-sent
-// rather than wrongly skipped.
-func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func(done, total uint64)) error {
+// rather than wrongly skipped. The local hashing ends with ctx, or as soon
+// as the sender stops answering: a dropped connection doesn't leave it
+// reading the rest of the tree.
+func resolveVerify(ctx context.Context, s *Streams, plans []entryPlan, sem fsSemantics, progress func(done, total uint64)) error {
 	var idx []uint32
 	var cand []*entryPlan
 	var total uint64
@@ -439,6 +448,8 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 	}
 
 	// Local hashing runs alongside the request/response rounds.
+	hctx, stopHashing := context.WithCancel(ctx)
+	defer stopHashing()
 	local := make(map[uint32][32]byte, len(cand))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -450,7 +461,7 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 			defer wg.Done()
 			for p := range work {
 				var last int64
-				root, err := hashFileRoot(p.target, func(done int64) { meter.add(done - last); last = done })
+				root, err := hashCache.fileRoot(hctx, p.target, func(done int64) { meter.add(done - last); last = done })
 				if err != nil {
 					continue
 				}
@@ -461,10 +472,14 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 		}()
 	}
 	go func() {
+		defer close(work)
 		for _, p := range cand {
-			work <- p
+			select {
+			case work <- p:
+			case <-hctx.Done():
+				return
+			}
 		}
-		close(work)
 	}()
 
 	remote := make(map[uint32][32]byte, len(idx))
@@ -472,9 +487,15 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 	for start := 0; start < len(idx) && reqErr == nil; start += maxVerifyIDsPerFrame {
 		reqErr = verifyRound(s, idx[start:min(start+maxVerifyIDsPerFrame, len(idx))], remote)
 	}
+	if reqErr != nil {
+		stopHashing()
+	}
 	wg.Wait()
 	if reqErr != nil {
 		return reqErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err // hashing was cut short: no verdict to act on
 	}
 	for _, p := range cand {
 		lr, lok := local[p.entry.Index]
@@ -780,17 +801,28 @@ func (r *receiver) openFile(p *entryPlan, restart bool) (*recvFile, error) {
 	return rf, nil
 }
 
-// abandon closes the file; drop also deletes the partial.
+// abandon closes the file. keep leaves the partial for a retry to resume
+// from, with the hashes of the whole blocks written so far remembered, so
+// the retry needn't read them back; otherwise the partial is deleted.
 func (rf *recvFile) abandon(keep bool) {
 	if rf.closed {
 		return
 	}
 	rf.closed = true
-	rf.hasher.discard()
-	_ = rf.f.Close()
-	if !keep {
-		rf.r.ps.remove(rf.plan.rel)
+	if !keep || !canResume(rf.plan.entry.Size) {
+		rf.hasher.discard()
+		_ = rf.f.Close()
+		if !keep {
+			rf.r.ps.remove(rf.plan.rel)
+		}
+		return
 	}
+	// Only the blocks the hasher saw whole: bytes of a write that failed
+	// part-way may be on disk beyond them, unhashed.
+	whole := int(rf.hasher.n / hashBlockSize)
+	blocks := rf.hasher.blocks()
+	_ = rf.f.Close()
+	hashCache.rememberBlocks(rf.partial, blocks[:min(whole, len(blocks))])
 }
 
 func (rf *recvFile) write(data []byte) error {

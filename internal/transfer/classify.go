@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -120,6 +121,9 @@ type Conflict struct {
 
 // classifier resolves listing entries against the receive directory.
 type classifier struct {
+	// ctx ends the hashing of partials when the transfer does (a dropped
+	// connection, Ctrl-C); nil means no deadline.
+	ctx       context.Context
 	targetDir string
 	checksum  bool
 	sem       fsSemantics
@@ -273,9 +277,36 @@ func (c *classifier) run(entries []wire.ListingEntry) ([]entryPlan, error) {
 	return plans, nil
 }
 
+// context is the classifier's ctx, never nil.
+func (c *classifier) context() context.Context {
+	if c.ctx == nil {
+		return context.Background()
+	}
+	return c.ctx
+}
+
+// prefixBlocks returns the block hashes of the first n bytes of p's
+// partial. A partial that can't be read is dropped, so the file is sent
+// fresh; one whose hashing was cut short by the transfer ending is kept,
+// for the retry.
+func (c *classifier) prefixBlocks(p *entryPlan, progress func(int64)) ([][32]byte, error) {
+	var last int64
+	blocks, _, err := hashCache.hashPrefix(c.context(), p.partial, conv.Int64(p.resumeOffset), func(done int64) {
+		if progress != nil {
+			progress(done - last)
+		}
+		last = done
+	})
+	if err != nil && c.context().Err() == nil {
+		c.ps.remove(p.rel)
+	}
+	return blocks, err
+}
+
 // hashResumePrefixes computes the block hashes of every resume partial's
 // prefix, several files at a time, so the sender can verify them. A partial
-// that can't be read is dropped and its file sent fresh.
+// that can't be read is dropped and its file sent fresh. It returns an
+// error only when the transfer ended while it was hashing.
 func (c *classifier) hashResumePrefixes(plans []entryPlan) error {
 	var total uint64
 	var idx []int
@@ -296,9 +327,8 @@ func (c *classifier) hashResumePrefixes(plans []entryPlan) error {
 		sem <- struct{}{}
 		go func(p *entryPlan) {
 			defer func() { <-sem; wg.Done() }()
-			blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), prog.add)
+			blocks, err := c.prefixBlocks(p, prog.add)
 			if err != nil {
-				c.ps.remove(p.rel)
 				p.disp, p.resumeOffset, p.partial = dispNew, 0, ""
 				return
 			}
@@ -306,20 +336,7 @@ func (c *classifier) hashResumePrefixes(plans []entryPlan) error {
 		}(&plans[i])
 	}
 	wg.Wait()
-	return nil
-}
-
-func hashPartialPrefix(path string, n int64, progress func(int64)) ([][32]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	var last int64
-	return hashBlocks(f, n, func(done int64) {
-		progress(done - last)
-		last = done
-	})
+	return c.context().Err()
 }
 
 // dirHasEntries reports whether dir contains anything.
@@ -559,10 +576,9 @@ func applyPolicy(plans []entryPlan, policy ConflictPolicy, c *classifier) {
 			// partial (the same check keep-both runs in retarget). The
 			// commit renames over the user's file, which they agreed to.
 			if p.replaceResume && p.disp == dispDiffers && !p.blockedAncestor {
-				if blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), func(int64) {}); err == nil {
+				if blocks, err := c.prefixBlocks(p, nil); err == nil {
 					p.disp, p.prefixBlocks = dispResume, blocks
 				} else {
-					c.ps.remove(p.rel)
 					p.resumeOffset, p.partial = 0, ""
 				}
 			}
@@ -617,10 +633,9 @@ func (c *classifier) retarget(p *entryPlan, rel string) {
 		// An earlier interrupted keep-both run may have left a partial.
 		c.resumeCandidate(p)
 		if p.disp == dispResume {
-			if blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), func(int64) {}); err == nil {
+			if blocks, err := c.prefixBlocks(p, nil); err == nil {
 				p.prefixBlocks = blocks
 			} else {
-				c.ps.remove(p.rel)
 				p.disp, p.resumeOffset, p.partial = dispNew, 0, ""
 			}
 		}
