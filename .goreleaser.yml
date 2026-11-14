@@ -9,12 +9,15 @@ before:
     - go mod verify
     # Shell completions for the archives and packages. Generated, not
     # committed (completions/ is in .gitignore), so they can't drift from
-    # the commands.
+    # the commands. The scripts don't carry the version (a dev build and
+    # a release build print the same bytes), so a plain `go run` is fine.
     - sh -c 'mkdir -p completions && go run ./cmd/fsend completion bash > completions/fsend.bash && go run ./cmd/fsend completion zsh > completions/_fsend && go run ./cmd/fsend completion fish > completions/fsend.fish && go run ./cmd/fsend completion powershell > completions/fsend.ps1'
     # Man pages, the same way. The generator only exists with -tags
     # fsend_man, so release binaries don't carry it or cobra/doc; the
-    # commit's time keeps the pages' date reproducible.
-    - sh -c 'rm -rf manpages && SOURCE_DATE_EPOCH={{ .CommitTimestamp }} go run -tags fsend_man ./cmd/fsend __man manpages'
+    # commit's time keeps the pages' date reproducible. The pages' header
+    # names the version, so this build gets the same -X as the release
+    # binaries (builds.ldflags below); without it they said "fsend dev".
+    - sh -c 'rm -rf manpages && SOURCE_DATE_EPOCH={{ .CommitTimestamp }} go run -tags fsend_man -ldflags "-X github.com/polius/fsend/internal/version.Version={{ .Version }}" ./cmd/fsend __man manpages'
 
 builds:
   - id: fsend
