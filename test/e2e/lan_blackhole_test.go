@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,12 @@ import (
 // RTT-scale budget and fall back to the server path — not burn the full
 // 10 s HandshakeTimeout staring at a black hole.
 func TestReceive_LANBlackholeFallsBackFast(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Seen on the GitHub runners: loopback multicast gets no answer on
+		// Windows, and Go reports its loopback MTU as -1, which pion/mdns
+		// refuses. Discovery over a real interface is still tested there.
+		t.Skip("loopback mDNS does not work on Windows")
+	}
 	requireE2E(t)
 
 	xdg := h.newXDG(t)

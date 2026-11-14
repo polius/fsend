@@ -132,20 +132,8 @@ func discoveryInterfaces() []net.Interface {
 		}
 		return out[i].Index < out[j].Index
 	})
-	for i := range out {
-		// Windows reports its loopback MTU as -1 (unlimited). pion/mdns
-		// sizes its read buffer from the largest MTU and refuses a set
-		// with none positive, so a loopback-only query failed there.
-		if out[i].MTU <= 0 {
-			out[i].MTU = mdnsMaxPacket
-		}
-	}
 	return out
 }
-
-// mdnsMaxPacket is RFC 6762's ceiling for one mDNS packet, the MTU given
-// to an interface that reports none.
-const mdnsMaxPacket = 9000
 
 // closePacketConns tears down the multicast sockets. pion/mdns does not
 // close caller-supplied conns on its own error paths, so every failure

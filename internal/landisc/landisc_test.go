@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,12 @@ func TestAnnounceQuery_Roundtrip(t *testing.T) {
 // interface the query arrived on: a loopback query gets a loopback
 // address, not whichever LAN IP a multi-homed host happened to pick.
 func TestAnnounceQuery_AnswersWithQueriedInterface(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Seen on the GitHub runners: loopback multicast gets no answer on
+		// Windows, and Go reports its loopback MTU as -1, which pion/mdns
+		// refuses. Discovery over a real interface is still tested there.
+		t.Skip("loopback mDNS does not work on Windows")
+	}
 	ann, err := Announce("iface-answer", codepkg.Epoch(time.Now()), nil)
 	if err != nil {
 		skipNoMulticast(t, "multicast unavailable on this host: %v", err)
