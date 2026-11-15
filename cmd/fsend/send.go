@@ -191,7 +191,10 @@ func collectPlan(f *flags, paths []string) (*sendPlan, error) {
 	// instead of generating a code and waiting on a receiver for a no-op.
 	if len(sources) == 0 {
 		msg := "nothing to send — the folder is empty"
-		if len(f.excludes) > 0 {
+		switch {
+		case len(skips) > 0:
+			msg = "nothing to send — the folder holds only broken links"
+		case len(f.excludes) > 0:
 			msg = "nothing to send — every file matched --exclude"
 		}
 		return nil, fmt.Errorf("%w: %s", fserrors.ErrUsage, msg)
@@ -872,11 +875,13 @@ func sourceIssueHooks(f *flags, plan *sendPlan) (skipped func() []string, onSkip
 // refusalHooks collects the entries the receiver refused because its system
 // cannot create their names (transfer.SendOptions.OnRefused), keyed by index
 // so a retry doesn't count one twice; list returns them sorted for
-// printSkippedList.
-func refusalHooks(plan *sendPlan) (list func() []string, on func(uint32, string)) {
+// printSkippedList, with how many more the receiver refused than it named
+// (onMore, transfer.SendOptions.OnRefusedMore).
+func refusalHooks(plan *sendPlan) (list func() (rows []string, more int), on func(uint32, string), onMore func(int)) {
 	var mu sync.Mutex
 	rows := map[uint32]string{}
-	list = func() []string {
+	unnamed := 0
+	list = func() ([]string, int) {
 		mu.Lock()
 		defer mu.Unlock()
 		out := make([]string, 0, len(rows))
@@ -884,7 +889,12 @@ func refusalHooks(plan *sendPlan) (list func() []string, on func(uint32, string)
 			out = append(out, r)
 		}
 		sort.Strings(out)
-		return out
+		return out, unnamed
+	}
+	onMore = func(n int) {
+		mu.Lock()
+		unnamed = n
+		mu.Unlock()
 	}
 	on = func(i uint32, reason string) {
 		name := fmt.Sprintf("#%d", i)
@@ -896,7 +906,7 @@ func refusalHooks(plan *sendPlan) (list func() []string, on func(uint32, string)
 		rows[i] = name + " — " + sanitizeForDisplay(reason, 160)
 		mu.Unlock()
 	}
-	return list, on
+	return list, on, onMore
 }
 
 // sourceErrReason is the cause of a source read failure without the path
@@ -910,24 +920,26 @@ func sourceErrReason(err error) string {
 }
 
 // printSkippedList lists files a transfer skipped, after the summary.
-// cause, if set, says why ("could not be read").
-func printSkippedList(f *flags, cause string, rows []string) {
-	if f.quiet || len(rows) == 0 {
+// cause, if set, says why ("could not be read"). more counts skipped files
+// there is no row for (the receiver names only so many).
+func printSkippedList(f *flags, cause string, rows []string, more int) {
+	total := len(rows) + more
+	if f.quiet || total == 0 {
 		return
 	}
 	verb := "were"
-	if len(rows) == 1 {
+	if total == 1 {
 		verb = "was"
 	}
 	if cause != "" {
 		cause += " and "
 	}
-	fmt.Fprintf(os.Stderr, "%s %s %s%s skipped:\n", uxlog.Warn(), uxlog.CountNoun(len(rows), "file"), cause, verb)
+	fmt.Fprintf(os.Stderr, "%s %s %s%s skipped:\n", uxlog.Warn(), uxlog.CountNoun(total, "file"), cause, verb)
 	const show = 10
 	for _, r := range rows[:min(len(rows), show)] {
 		fmt.Fprintf(os.Stderr, "    %s\n", r)
 	}
-	if len(rows) > show {
-		fmt.Fprintf(os.Stderr, "    … and %d more\n", len(rows)-show)
+	if total > show {
+		fmt.Fprintf(os.Stderr, "    … and %d more\n", total-min(len(rows), show))
 	}
 }

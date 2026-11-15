@@ -2,6 +2,8 @@ package transfer
 
 import (
 	"path/filepath"
+	"testing"
+	"time"
 
 	"github.com/polius/fsend/internal/wire"
 )
@@ -26,4 +28,24 @@ func bytesRoot(b []byte) [32]byte {
 func (ps *partialStore) hasPartials() bool {
 	m, _ := filepath.Glob(filepath.Join(ps.dir, "*.partial"))
 	return len(m) > 0
+}
+
+// freshHashCache gives the test an empty hash cache that also remembers
+// files made a moment ago (racyWindow would otherwise leave them out), and
+// empties it again afterwards.
+func freshHashCache(t *testing.T) {
+	t.Helper()
+	old := racyWindow
+	racyWindow = -time.Hour
+	hashCache.reset()
+	t.Cleanup(func() {
+		racyWindow = old
+		hashCache.reset()
+	})
+}
+
+func (c *blockCache) reset() {
+	c.mu.Lock()
+	c.files, c.cost, c.off = nil, 0, false
+	c.mu.Unlock()
 }

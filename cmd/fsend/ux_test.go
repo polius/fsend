@@ -208,11 +208,16 @@ func TestRefusalHooks(t *testing.T) {
 		{Entry: wire.ListingEntry{Index: 0, RelativePath: "proj/ok.txt"}},
 		{Entry: wire.ListingEntry{Index: 1, RelativePath: "proj/aux.c"}},
 	}}
-	list, on := refusalHooks(plan)
+	list, on, onMore := refusalHooks(plan)
 	on(1, "the name isn't allowed on this system (reserved device name)\x1b[31m")
 	on(1, "the name isn't allowed on this system (reserved device name)")
-	got := list()
-	if len(got) != 1 || got[0] != "proj/aux.c — the name isn't allowed on this system (reserved device name)" {
-		t.Errorf("refusals = %q", got)
+	got, more := list()
+	if len(got) != 1 || got[0] != "proj/aux.c — the name isn't allowed on this system (reserved device name)" || more != 0 {
+		t.Errorf("refusals = %q, %d more", got, more)
+	}
+	// What the receiver refused beyond its bounded list is counted.
+	onMore(40)
+	if _, more := list(); more != 40 {
+		t.Errorf("more = %d, want 40", more)
 	}
 }

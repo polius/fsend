@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"reflect"
 	"runtime"
 	"strings"
@@ -351,6 +352,45 @@ func TestDecisionReasonIsAdditive(t *testing.T) {
 	}
 	if !CapsSupported.Has(CapSkipReasons) {
 		t.Error("this build must advertise CapSkipReasons")
+	}
+}
+
+// A TRANSFER_ACK is empty unless it has refusals to report. The fullest
+// report the bounds allow (MaxWriteRefusals entries, MaxRefusalReason bytes
+// each, the largest indexes and count) still fits a control frame, and
+// round-trips; an empty ack decodes as "nothing to report".
+func TestTransferResultFitsAControlFrame(t *testing.T) {
+	full := TransferResult{Refused: math.MaxUint32, Entries: make([]WriteRefusal, MaxWriteRefusals)}
+	for i := range full.Entries {
+		full.Entries[i] = WriteRefusal{Index: math.MaxUint32 - uint32(i), Reason: strings.Repeat("\xff", MaxRefusalReason)}
+	}
+	var buf bytes.Buffer
+	if err := WriteControl(&buf, TypeTransferAck, &full); err != nil {
+		t.Fatalf("the fullest TransferResult does not fit a control frame: %v", err)
+	}
+	if n := buf.Len(); n > MaxControlFrameSize*3/4 {
+		t.Errorf("the fullest TransferResult takes %d bytes, too close to the %d limit", n, MaxControlFrameSize)
+	}
+	var got TransferResult
+	ft, err := ReadControl(bytes.NewReader(buf.Bytes()), &got)
+	if err != nil || ft != TypeTransferAck || got.Refused != full.Refused || len(got.Entries) != MaxWriteRefusals ||
+		got.Entries[MaxWriteRefusals-1] != full.Entries[MaxWriteRefusals-1] {
+		t.Fatalf("round trip = %v, %v, %d entries", ft, err, len(got.Entries))
+	}
+
+	buf.Reset()
+	if err := WriteControl(&buf, TypeTransferAck, nil); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != controlHeaderSize {
+		t.Fatalf("an empty ack is %d bytes, want the %d-byte header alone", buf.Len(), controlHeaderSize)
+	}
+	ft, body, err := ReadControlRaw(bytes.NewReader(buf.Bytes()))
+	if err != nil || ft != TypeTransferAck || len(body) != 0 {
+		t.Fatalf("empty ack = %v, %d-byte body, %v", ft, len(body), err)
+	}
+	if !CapsSupported.Has(CapWriteRefusals) {
+		t.Error("this build must advertise CapWriteRefusals")
 	}
 }
 

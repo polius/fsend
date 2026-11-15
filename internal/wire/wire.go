@@ -44,9 +44,13 @@ const (
 	// CapCompressedListing: the receiver accepts TypeListingBatchZ, the
 	// listing batch compressed with zstd.
 	CapCompressedListing Capability = 1 << 1
+	// CapWriteRefusals: the sender reads a TransferResult in TRANSFER_ACK,
+	// so the receiver reports the files it could not save once their
+	// bytes had arrived (a name its filesystem refused at write time).
+	CapWriteRefusals Capability = 1 << 2
 
 	// CapsSupported is the bitmap this build advertises.
-	CapsSupported = CapSkipReasons | CapCompressedListing
+	CapsSupported = CapSkipReasons | CapCompressedListing | CapWriteRefusals
 )
 
 // Has reports whether c includes every bit of want.
@@ -89,7 +93,7 @@ const (
 	TypeClassifyEnd       FrameType = 0x08 // receiver → sender: ends classification
 	TypePasswordVerified  FrameType = 0x09 // sender → receiver: sender's confirmation tag (mutual)
 	TypeTransferComplete  FrameType = 0x0A // sender → receiver
-	TypeTransferAck       FrameType = 0x0B // receiver → sender
+	TypeTransferAck       FrameType = 0x0B // receiver → sender: empty, or gob TransferResult (only with CapWriteRefusals)
 	TypeVerifyRequest     FrameType = 0x0C // receiver → sender: gob []uint32 (--checksum)
 	TypeVerifyResponse    FrameType = 0x0D // sender → receiver: gob []FileHash
 	TypeListingBatchZ     FrameType = 0x0E // sender → receiver: zstd(gob []ListingEntry); only with CapCompressedListing

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"path/filepath"
 	"time"
 
@@ -29,11 +30,21 @@ func recvFilesToSink(ctx context.Context, s *Streams, hello *wire.SenderHello, e
 			return fmt.Errorf("%w: peer sent an entry of type %d (%q)", fserrors.ErrPathTraversal, e.Type, e.RelativePath)
 		}
 		rel, err := SanitizeRelativePath(e.RelativePath)
-		if err != nil {
+		var un *UnplaceableError
+		switch {
+		case err == nil:
+			names[i] = filepath.ToSlash(rel)
+		case errors.As(err, &un):
+			// A name this system could not create (Windows: "aux.c",
+			// "a:b") is no obstacle here: nothing is created on disk, the
+			// name only labels the bytes in the archive. It already
+			// passed every traversal rule (those run first), so it goes
+			// out as the sender wrote it.
+			names[i] = path.Clean(e.RelativePath)
+		default:
 			declineTransfer(s, wire.ErrCodeListingInvalid, "invalid path")
 			return fmt.Errorf("%w: %v", fserrors.ErrPathTraversal, err)
 		}
-		names[i] = filepath.ToSlash(rel)
 		if _, dup := seen[names[i]]; dup {
 			declineTransfer(s, wire.ErrCodeListingInvalid, "duplicate path")
 			return fmt.Errorf("%w: duplicate path %q", fserrors.ErrProtocolError, e.RelativePath)
@@ -70,12 +81,12 @@ func recvFilesToSink(ctx context.Context, s *Streams, hello *wire.SenderHello, e
 				return err
 			}
 		}
-		return finishRecv(s)
+		return finishRecv(s, nil)
 	}
 	if err := streamTar(ctx, s, entries, names, opts); err != nil {
 		return err
 	}
-	return finishRecv(s)
+	return finishRecv(s, nil)
 }
 
 // streamTar writes the listing as a tar archive. Headers for folders and

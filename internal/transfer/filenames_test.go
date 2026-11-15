@@ -1,8 +1,11 @@
 package transfer
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +95,69 @@ func TestEngine_TraversalStillRejected(t *testing.T) {
 	}
 }
 
+// With --out - nothing is created on disk, so a name Windows could not
+// create is no reason to stop: every file's bytes reach the archive under
+// the name the sender gave it, and a single file streams as raw bytes.
+func TestSink_WindowsUnsafeNamesStillStream(t *testing.T) {
+	defer func(o string) { hostOS = o }(hostOS)
+	hostOS = "windows"
+	names := []string{"ok.txt", "linux/drivers/aux.c", "backup-12:30:00.tar", "What now?.txt", "v1."}
+	var sink bytes.Buffer
+	se, re := runTransfer(t,
+		SendOptions{Mode: wire.ModeFiles, Sources: sourcesFor(t, names)},
+		RecvOptions{TargetDir: t.TempDir(), Sink: &sink})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v, want both to finish", se, re)
+	}
+	got := map[string]string{}
+	tr := tar.NewReader(&sink)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(tr)
+		got[h.Name] = string(b)
+	}
+	for i, n := range names {
+		if got[n] != "content of "+pad(i) {
+			t.Errorf("archive entry %q = %q, want the file's bytes (entries: %d)", n, got[n], len(got))
+		}
+	}
+
+	sink.Reset()
+	se, re = runTransfer(t,
+		SendOptions{Mode: wire.ModeFiles, Sources: sourcesFor(t, []string{"con.txt"})},
+		RecvOptions{TargetDir: t.TempDir(), Sink: &sink})
+	if se != nil || re != nil || sink.String() != "content of 000" {
+		t.Fatalf("single file: send=%v recv=%v sink=%q", se, re, sink.String())
+	}
+}
+
+// E012 stays for real traversal attempts with --out - too, on any OS, and
+// whichever separator the attempt uses on Windows.
+func TestSink_TraversalStillRejected(t *testing.T) {
+	defer func(o string) { hostOS = o }(hostOS)
+	for _, goos := range []string{"windows", "darwin"} {
+		hostOS = goos
+		for _, bad := range []string{"../escape.txt", "/etc/passwd", "C:evil.txt", `\\host\share\x`} {
+			var sink bytes.Buffer
+			_, re := runTransfer(t,
+				SendOptions{Mode: wire.ModeFiles, Sources: sourcesFor(t, []string{"ok.txt", bad})},
+				RecvOptions{TargetDir: t.TempDir(), Sink: &sink})
+			if !errors.Is(re, fserrors.ErrPathTraversal) {
+				t.Errorf("%s: %q: recv = %v, want E012", goos, bad, re)
+			}
+			if sink.Len() != 0 {
+				t.Errorf("%s: %q: %d bytes reached the sink", goos, bad, sink.Len())
+			}
+		}
+	}
+}
+
 // A name the target filesystem refuses at commit (too long everywhere;
 // invalid UTF-8 on APFS) skips that file; its neighbours land and .fsend is
 // cleaned up.
@@ -117,12 +183,15 @@ func TestEngine_NameTheFilesystemRefuses(t *testing.T) {
 
 // A file the user creates at a target after it was classified as absent is
 // theirs: the incoming file is not placed over it; the entry is skipped with
-// a reason and the rest arrive.
+// a reason and the rest arrive. The sender is told, in words that read
+// right from its side.
 func TestEngine_FileAppearedDuringTransferIsKept(t *testing.T) {
 	dst := t.TempDir()
 	var skipped []string
-	_, re := runTransfer(t,
-		SendOptions{Mode: wire.ModeFiles, Sources: sourcesFor(t, []string{"a.txt", "b.txt"})},
+	told := map[uint32]string{}
+	se, re := runTransfer(t,
+		SendOptions{Mode: wire.ModeFiles, Sources: sourcesFor(t, []string{"a.txt", "b.txt"}),
+			OnRefused: func(i uint32, why string) { told[i] = why }},
 		RecvOptions{TargetDir: dst,
 			// Runs after classification, before any byte lands.
 			Accept: func(wire.SenderHello, ClassifySummary) bool {
@@ -130,8 +199,11 @@ func TestEngine_FileAppearedDuringTransferIsKept(t *testing.T) {
 				return true
 			},
 			OnEntrySkipped: func(rel, _ string) { skipped = append(skipped, rel) }})
-	if re != nil {
-		t.Fatalf("recv = %v", re)
+	if se != nil || re != nil {
+		t.Fatalf("send = %v, recv = %v", se, re)
+	}
+	if len(told) != 1 || !strings.Contains(told[1], "the receiver's was kept") {
+		t.Errorf("sender was told %v, want b.txt (index 1) kept by the receiver", told)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dst, "b.txt")); string(b) != "made meanwhile" {
 		t.Errorf("b.txt = %q: the file made during the transfer was replaced", b)

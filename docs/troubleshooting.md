@@ -228,10 +228,14 @@ rest of the transfer completed.
 ```
 
 The transfer finished, but some entries didn't make it. Both sides list
-them with a reason:
+them with a reason (a broken link is listed by the sender, which is the
+side that left it out):
 
 - **The sender couldn't read the file** — permissions, or it vanished
   or shrank while being sent. Fix it on the sender and send again.
+- **A broken link in a folder being sent** — its target is missing, so
+  there is nothing to send for it. Fix or remove the link, or leave it
+  out with `--exclude`.
 - **The name can't be placed on the receiver** — two incoming names
   that your filesystem treats as the same (`Report.pdf` and
   `report.pdf` on a case-insensitive disk, or the NFC and NFD spellings
@@ -240,9 +244,12 @@ them with a reason:
 - **The receiver's system can't create the name.** On Windows: a
   reserved device name (`aux.c`, `con.txt`), one of `< > : " | ? * \`,
   or a trailing dot or space. On any system: a name the filesystem
-  refuses (too long, or not valid in its encoding). Only that file is
-  skipped. Rename it on the sender, or pack the folder into an archive
-  first.
+  refuses when the file is written (longer than 255 bytes, or not valid
+  in its encoding; a keep-both copy `name (1).ext` can cross the length
+  limit when the original just fits). Only that file is skipped. Rename
+  it on the sender, pack the folder into an archive first, or receive
+  with `--out -`, which writes a tar stream to stdout and creates
+  nothing under these names.
 - **A file appeared at the destination during the transfer.** fsend keeps
   the file that is there and skips the incoming one. Receive again to be
   asked what to do with it.
@@ -275,11 +282,16 @@ protecting you.
 
 ### Sending stopped on a symlink (`E036`, sender side)
 
-fsend follows symlinks to send their target's content, so a link it can't
-resolve halts the send before any code is generated. The message names the
-offending link — fix it, or skip it with `--exclude`:
+fsend follows symlinks to send their target's content. A link it can't
+resolve halts the send before any code is generated when you named the
+link yourself, or when skipping it could not be right. The message names
+the offending link — fix it, or skip it with `--exclude`:
 
-- **Broken** (the target doesn't exist) or **unreadable** (permissions).
+- **Broken** (the target doesn't exist) and named on the command line.
+  A broken link found in a folder you send — at any depth, including
+  the top level of `fsend .` — is skipped and listed instead, and the
+  sender exits `E050`.
+- **Unreadable** (permissions on the target).
 - **Cyclic** — a link that loops back into the folder (`a → b → a`, or a
   link to a parent directory), which would otherwise recurse forever.
 
@@ -310,7 +322,8 @@ The progress line ends with the route — `local network`, `direct` or
   path lowers it further.
 - **The disk or CPU is.** Many small files each need a sync (batched,
   but not free), `--checksum` reads everything already on disk, and
-  resuming hashes the existing partial before it continues.
+  resuming hashes the existing partial before it continues (a retry
+  within the same run reuses the hashes it already has).
 
 ## Anything else
 

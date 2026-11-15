@@ -372,7 +372,7 @@ func TestSenderNegotiate_RejectsExcessDecisions(t *testing.T) {
 
 	res := make(chan error, 1)
 	go func() {
-		_, err := senderNegotiate(sender, sources)
+		_, _, err := senderNegotiate(context.Background(), sender, sources)
 		res <- err
 	}()
 	go func() { _, _ = io.Copy(io.Discard, ctrlB) }() // drain any sender writes

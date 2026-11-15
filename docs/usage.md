@@ -125,8 +125,13 @@ arrives with `latest` as a **real copy** of `report.pdf` (both files land —
 the link's bytes are sent too). This works even when the target is outside
 the folder you're sending.
 
-A symlink whose target is missing or cyclic stops the send with `E036` —
-fix it, or skip it with `--exclude`.
+A broken link (its target is missing) found in a folder you send is
+skipped: fsend names it before printing the code and again after the
+transfer, sends everything else, and the sender exits `E050`. That holds
+at any depth, including the top level of `fsend .`. A broken link you
+name on the command line, a link whose target can't be read and a link
+that loops back into the folder stop the send with `E036` — fix it, or
+skip it with `--exclude`.
 
 ## Receiving
 
@@ -228,6 +233,13 @@ Two names that your filesystem treats as one — `Report.pdf` and
 skips the other, lists it, and exits `E050`. fsend probes the receiving
 folder's actual behaviour rather than guessing from the OS. The name
 `.fsend` is reserved for partial downloads (see below).
+
+A name the receiving system can't create costs that one file, never the
+transfer: a name Windows doesn't allow (`aux.c`, `notes:draft`,
+`what?.txt`), or one the filesystem refuses when the file is written
+(longer than 255 bytes, invalid UTF-8 on macOS). The file is skipped,
+both sides list it with the reason, and both exit `E050`. With `--out -`
+nothing is created on disk, so such names go into the stream unchanged.
 
 ### Verifying what you received
 
@@ -564,7 +576,7 @@ failure. For what to *do* about a given error, see
 | `33`  | `E033` — `fsend --update` could not complete. |
 | `34`  | `E034` — the other device is running an incompatible fsend version. |
 | `35`  | `E035` — `fsend --uninstall` could not remove the binary. |
-| `36`  | `E036` — a symlink in the send set can't be followed (missing or unreadable target, or a link cycle). |
+| `36`  | `E036` — a symlink can't be followed: a broken link named on the command line, an unreadable target, or a link cycle. (A broken link found in a folder is skipped: `E050`.) |
 | `37`  | `E037` — the server's relay spent its daily byte budget; forwarding is paused until 00:00 UTC. |
 | `38`  | `E038` — files received, but the `--manifest` record could not be written. |
 | `39`  | `E039` — `fsend --update`/`--uninstall` on a binary a package manager owns (Homebrew, or the deb/rpm/apk packages); the line under it says what to run instead. |
@@ -574,7 +586,7 @@ failure. For what to *do* about a given error, see
 | `43`  | `E043` — `fsend doctor` found at least one degraded check. |
 | `46`  | `E046` — no longer raised (older senders stopped after 10 failed handshakes on their code). |
 | `47`  | `E047` — the pairing server's TLS certificate isn't trusted (captive portal or intercepting proxy). |
-| `50`  | `E050` — the transfer finished, but some files were skipped (unreadable on the sender, or a name that can't be placed on the receiver). |
+| `50`  | `E050` — the transfer finished, but some files were skipped (unreadable or a broken link on the sender, or a name that can't be placed on the receiver). |
 | `51`  | `E051` — more than 4,000,000 files and folders in one transfer. |
 | `60`  | `E060` — the pairing server refused this fsend as too old (HTTP 426). Run `fsend --update`. |
 | `61`  | `E061` — `fsend server` stopped because its relay UDP socket failed; the restart policy should bring it back. |
