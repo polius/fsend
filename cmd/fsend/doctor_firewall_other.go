@@ -1,7 +1,9 @@
-//go:build !darwin
+//go:build !darwin && !linux && !windows
 
 package main
 
-// firewallCheck has no portable way to ask the OS firewall about fsend
-// outside macOS, so there is no row.
-func firewallCheck() (doctorCheck, bool) { return doctorCheck{}, false }
+import "net"
+
+// firewallCheck has no row on the systems whose firewall doctor doesn't
+// know (the BSDs' pf and ipfw).
+func firewallCheck(net.IP, bool) (doctorCheck, bool) { return doctorCheck{}, false }

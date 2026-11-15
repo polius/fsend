@@ -154,17 +154,48 @@ the server is too old to offer it.
 
 ### `fsend doctor` reports a problem (`E043`)
 
-`fsend doctor` exits `43` when any check is degraded. Each `⚠` line (or
-`[!]` in plain output) says what it affects and what still works:
+`fsend doctor` exits `43` when any check is degraded. Each `!` line (or
+`[!]` in plain output) says what it affects and what still works, and
+the fainter lines under it say how to fix it:
 
 | Line | What it means |
 |---|---|
 | `server … unreachable` | Cross-network transfers fail; same-LAN transfers are unaffected. |
 | `UDP` | The relay didn't answer over UDP; relayed transfers will use the TCP fallback. |
 | `TCP … no TCP fallback for its relay` | The server predates the fallback; on a network that blocks UDP, cross-network transfers will fail. |
+| `listener … did not answer` / `cannot open` | fsend's local-network listener doesn't work even from this machine (the port can't be bound, or something drops the connection). Transfers to devices on your network go through the server. |
+| `firewall … blocks` | This machine's firewall keeps other devices from connecting to fsend when you send. Transfers still complete through the server; the lines under the row give the command or setting that opens it. |
 | `mDNS` (LAN answer) | Multicast is blocked here; receivers on other devices will pair through the server instead. |
 
-See [Usage → `fsend doctor`](usage.md#fsend-doctor) for every check.
+A row with no mark (`[i]` in plain output) is not a problem: doctor
+could not find something out, most often a Linux firewall whose rules
+need root to read. It says how to check, and never changes the exit
+code.
+
+See [Usage → `fsend doctor`](usage.md#fsend-doctor) for every check, and
+there [what the listener check can and cannot prove](usage.md#the-listener-check).
+
+### Transfers on the same network go through the server
+
+Both devices are on one network, yet the route shows `direct` or `relay`
+instead of `local network`, or the transfer takes a moment longer to
+start. The receiver could not connect to the sender's listener. Run
+`fsend doctor` on the **sending** machine:
+
+- **`firewall` shows `!`** — the sender's firewall blocks the listener
+  (UDP and TCP ports 50000–50999). The row prints the fix; see
+  [Usage → The firewall check](usage.md#the-firewall-check). On Windows
+  the usual cause is having cancelled the "allow access?" prompt the
+  first time fsend ran, which leaves a block rule behind.
+- **`firewall` has no mark** — doctor couldn't read the rules (Linux,
+  without root). Run `sudo fsend doctor`, or open the ports it names.
+- **`listener` and `firewall` both pass** — the firewall on this machine
+  isn't the reason. A passing `listener` is tested from the machine
+  itself, so it can't see what sits between two devices: Wi-Fi "client
+  isolation" (guest networks), separate VLANs, or a VPN that takes over
+  local traffic. Try another network, or a cable.
+- **`mDNS` shows `!`** — the devices can't discover each other, so the
+  receiver never learns where the listener is.
 
 ### "Could not verify the other side" (`E022`)
 

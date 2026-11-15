@@ -1,0 +1,26 @@
+table inet filter {
+	set lan_ports {
+		type inet_service
+		flags interval
+		elements = { 22, 8000-8100 }
+	}
+
+	chain inbound_ipv4 {
+		icmp type echo-request limit rate 5/second burst 5 packets accept
+	}
+
+	chain inbound_ipv6 {
+		icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+		icmpv6 type echo-request limit rate 5/second burst 5 packets accept
+	}
+
+	chain inbound {
+		type filter hook input priority filter; policy drop;
+		ct state vmap { invalid : drop, established : accept, related : accept }
+		iifname "lo" accept
+		meta protocol vmap { ip : jump inbound_ipv4, ip6 : jump inbound_ipv6 }
+		tcp dport @lan_ports accept
+		udp dport 50000-50999 ip saddr 172.16.0.0/12 accept
+		tcp dport { 22, 80, 443 } accept
+	}
+}
