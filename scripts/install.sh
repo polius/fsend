@@ -63,13 +63,13 @@ else
     C_RED='' C_GRN='' C_YLW='' C_RST='' C_ORG=''
 fi
 
-# The step marker is the plain '›' the fsend binary prints for narration
-# (uxlog.Step): cyan is reserved for the ℹ info glyph, so a step competing
-# in cyan only adds noise. Keeping it colourless also makes the installer's
-# lines read as one continuous block with the narration fsend prints ahead
-# of it under `fsend --update`.
+# The lines follow the fsend binary's grid: a status glyph in column 0, the
+# text from column 2. A step is narration, so it has no glyph — an empty
+# gutter, as the binary prints its own neutral lines (uxlog.Info). The
+# installer's lines then read as one block with the narration fsend prints
+# ahead of it under `fsend --update`, and only ✓ ! ✗ ever sit in the gutter.
 err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
-info() { printf '› %s\n' "$*" >&2; }
+info() { printf '  %s\n' "$*" >&2; }
 warn() { printf '%s!%s %s\n' "$C_YLW" "$C_RST" "$*" >&2; }
 ok()   { printf '%s✓%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
 vinfo() {

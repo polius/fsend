@@ -84,8 +84,54 @@ go through it.
 column 0 (or nothing, for a neutral line), the text starts in column 2,
 and nested lists start in column 4. The share command is the one line
 indented further (column 6), alone, so a triple-click copies a runnable
-command. `uxlog.Status`, `uxlog.Note` and `uxlog.Detail` print on the
-grid; new messages should use them rather than choose an indent.
+command. The printers in `internal/uxlog/grid.go` own the indent and are
+the only way a line reaches the screen — pick the role, never write
+leading spaces:
+
+| printer | prints |
+| --- | --- |
+| `Status(glyph, text)` | the glyph in column 0 (`Check`, `Cross`, `Warn`, `Ask`, `Retry`, an arrow, or `Info`'s blank), text from column 2 |
+| `Line(text)` | a neutral line: text from column 2 |
+| `Note(text)`, `NoteWrapped(text)` | faint detail from column 2; the second breaks between words on a narrow terminal |
+| `Item(text)` | a list row, from column 4 |
+| `On(w).Command(text)` | the command to copy, from column 6 |
+| `Question(text, options)` | a prompt with choices: `? Save to ./  [Y/n] `, cursor left on the line |
+| `Entry(label)` | a prompt for typed text: `? Enter the password the sender shared: ` |
+| `Blank()`, `Debug(text)` | an empty line; a `--debug` line (`  DEBUG: …`) |
+
+They write to stderr and cooperate with what is drawing there (a line
+lands above a live bar and wipes a live spinner's frame first).
+`uxlog.On(w)` gives the same printers for another writer (stdout for a
+query's answer, a buffer in a test); `Row`, `Detail`, `ItemRow` and
+`CommandRow` are the string forms, for a block assembled before it is
+printed (an error and its advice). `uxlog.Gap` separates two columns of
+one row. `TestGridIsTheOnlyWayToPrint` (`cmd/fsend/grid_guard_test.go`)
+parses the package and fails on a `fmt.Print*`/`Fprint*` call, a write to
+`os.Stderr`, a cobra command's own printers (`cmd.Println`), the `println`
+builtin, a string literal with an indent of its own, or a glyph that is
+not one of uxlog's; the functions that write a machine payload or a
+stdout page (JSON, the bare code, `--help`) are listed there with the
+reason. `cmd/fsend/doctor*.go` is not scanned yet.
+
+**Width.** A line that is clipped or padded is measured in terminal
+columns, not runes (`uxlog.Width`, `Clip`, `PadRight`): a CJK ideograph or
+an emoji takes two, a combining mark none, so a device or file name in a
+wide script can't push the spinner or the bar past the terminal's edge.
+The measure is go-runewidth's, the one the progress bar (mpb) uses. Like
+mpb it counts the East Asian Ambiguous class (`…`, `·`, `→`) as two
+columns in a CJK locale, where some terminals draw them wide: the cost is
+a line clipped a little early, never one that wraps.
+`RUNEWIDTH_EASTASIAN=0|1` overrides the guess.
+
+**Durations.** One form: a number, a space, a unit — `188 ms`, `4.8 s`,
+`42 s`, `1 min 05 s`, `2 h 03 min`. `uxlog.HumanDuration` renders every
+measured or announced time (a transfer, a retry's wait, a probe's round
+trip); `uxlog.HumanAge` the rough ones (`30 s`, `4 min`, `3 h`, `2 d`).
+Never print a `time.Duration` with `%s`: Go's form has no space.
+
+**Lists.** A list that is cut ends "… and N more", and N is never 1 —
+that line costs the row it would save. `uxlog.Shown(n, limit)` gives the
+number of rows to print.
 
 **Weights.** Bold for the subject of a line (the file a summary is
 about, the destination a prompt names), default text for the sentence,
@@ -98,7 +144,9 @@ grey or bright-black. Terminals that ignore SGR 2 show default text.
 line that wants an answer, `→` / `←` for the direction of a transfer, and
 the braille spinner. Every monospace font carries these; ⚠ ℹ ⟳ ⇢ ⇣ are
 missing from common ones and get drawn from a fallback font, so they are
-not used. Neutral notices have no glyph. Pipes and plain mode get ASCII
+not used. Neutral notices and narration ("Checking the latest release...",
+the install scripts' steps) have no glyph: an empty gutter. Every prompt
+starts with `?`. Pipes and plain mode get ASCII
 markers (`[OK]`, `[FAIL]`, `[!]`, `[?]`, `[i]`) and no escapes.
 
 **Colour roles.** Six, borrowed from the family opencode's themes use:
@@ -123,7 +171,8 @@ column is chosen per process:
    (`bgquery_unix.go`). Every terminal answers DA1, in order, so its reply
    marks the end of the exchange; a terminal that stays silent for 0.3 s
    (a pty with no emulator) is given up on. Only for a foreground job with
-   a colour terminal on stderr.
+   a colour terminal on stderr. Unix only: on Windows the background
+   stays unknown unless declared (1 or 2).
 4. Otherwise **unknown**: the terminal's own ANSI colours (SGR 31–36).
    The user's theme has tuned those for its background and their eyes,
    which is why gh, cargo, git and docker use them.
@@ -160,7 +209,14 @@ raw SGR stream and asserted against the design tokens in
 green-means-success rule are checked at 60, 80 and 100 columns for an
 unknown, dark and light background (the fake terminal can answer the
 OSC 11 query); degradation contracts (NO_COLOR, piped stderr, ASCII
-fallbacks) must hold byte-clean. Unix only. It takes about five minutes.
+fallbacks) must hold byte-clean. The screen rules ride along wherever the
+grid is checked: every prompt starts with `?`, every duration has a space
+before its unit, no list hides exactly one row, and clipped lines fit the
+terminal in display columns (CJK device and file names at 40 and 60).
+Scenarios also cover the install-and-receive lines at 40 to 100 columns
+and the update notice for each kind of install (the install script,
+Homebrew, deb/rpm/apk: a versioned build with a seeded check cache, no
+network). Unix only. It takes about five minutes.
 With working multicast the two sides find each other over mDNS and use
 the local-network route; without it they pair through the script's
 server and the checks still pass, on the QUIC path. (On Linux, loopback

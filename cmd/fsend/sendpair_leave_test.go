@@ -104,8 +104,19 @@ func TestPairOverInternet_ReceiverThatLeavesFreesTheCode(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("the sender never paired with the second receiver")
 			}
-			if got := atomic.LoadInt32(&vanished); got != 1 {
+			// A receiver that leaves right after its join can be gone
+			// before the sender's next poll has seen it join. The sender
+			// then finds its session missing while it still waits for a
+			// receiver, registers the code again as it does after a server
+			// restart, and never announces a receiver that vanished: the
+			// code opens just the same (and sooner). With the data path up
+			// the sender has seen the join, so it must say so.
+			got := atomic.LoadInt32(&vanished)
+			if stage == "with its data path up" && got != 1 {
 				t.Errorf("the sender went back to waiting %d times, want 1", got)
+			}
+			if got > 1 {
+				t.Errorf("the sender went back to waiting %d times, want at most 1", got)
 			}
 		})
 	}

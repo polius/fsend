@@ -220,6 +220,39 @@ try { `$null = `$notSetAnywhere } catch { `$leaks += 'StrictMode' }
     Check "-Code skips the newcomer sign-off" ($null -eq ($out | Where-Object { "$_" -like '*all options*' }))
     $env:FSEND_VERSION = $null; $env:FSEND_PREFIX = $null; $env:FSEND_NO_MODIFY_PATH = $null
 
+    # 10. the same through the line fsend prints for a Windows receiver
+    # (installCommandPowerShell in cmd/fsend/send.go): the script expanded
+    # into a block inside a string, then run with -Code. Shorter than the
+    # scriptblock form, so it fits 80 columns under fsend's indent. It must
+    # install, hand the code on, and - like the plain one-liner - leave
+    # nothing of the installer behind in the session.
+    $p10 = Join-Path $work 'bin-code-iex'
+    $iexRun = @"
+`$env:FSEND_VERSION = '$ver'; `$env:FSEND_PREFIX = '$p10'; `$env:FSEND_NO_MODIFY_PATH = '1'
+iex "& {`$(irm '$($env:FSEND_RELEASE_BASE_URL)/install.ps1')} -Code abc-defg-hjk"
+`$leaks = @()
+foreach (`$n in 'Info', 'Ok', 'Warn', 'Err', 'Fetch', 'Download') {
+    if (Get-Command `$n -CommandType Function -ErrorAction SilentlyContinue) { `$leaks += `$n }
+}
+foreach (`$v in 'Repo', 'Binary', 'mark', 'tmp', 'Code') {
+    if (Get-Variable `$v -Scope Global -ErrorAction SilentlyContinue) { `$leaks += ('`$' + `$v) }
+}
+'LEAKS:' + (`$leaks -join ',')
+"@
+    $out = @(& $ps -NoProfile -Command $iexRun 2>&1)
+    Check "iex -Code installs" (Test-Path (Join-Path $p10 'fsend.exe'))
+    Check "iex -Code receives or says how" ($null -ne ($out | Where-Object { "$_" -like '*abc-defg-hjk*' -or "$_" -like '*receiv*' }))
+    Check "iex -Code skips the newcomer sign-off" ($null -eq ($out | Where-Object { "$_" -like '*all options*' }))
+    $leakLine = $out | Where-Object { "$_" -like 'LEAKS:*' } | Select-Object -First 1
+    Check "iex -Code leaves the session unchanged ($leakLine)" ("$leakLine" -eq 'LEAKS:')
+    $env:FSEND_VERSION = $null; $env:FSEND_PREFIX = $null; $env:FSEND_NO_MODIFY_PATH = $null
+
+    # Steps are narration: an empty gutter, never a marker of their own
+    # (the binary's grid has six glyphs, and none of them is a step).
+    $out = Invoke-Installer @('-Version', $ver, '-Prefix', (Join-Path $work 'bin-steps'), '-NoModifyPath')
+    Check "step line has an empty gutter" ($null -ne ($out | Where-Object { "$_" -like "  installing fsend v$ver*" }))
+    Check "no step marker" ($null -eq ($out | Where-Object { "$_" -match '^(›|>) ' }))
+
     # 6. a corrupted archive is rejected by the checksum. Runs last: it
     # poisons the shared fixture archive.
     $bytes = [System.IO.File]::ReadAllBytes("$work/fixture/download/v$ver/$archive")

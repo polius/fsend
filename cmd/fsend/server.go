@@ -59,7 +59,7 @@ func serverCmd() *cobra.Command {
 				// to detect, not an fsend bug: one line, exit 1 as documented
 				// — never the E099 "file an issue" catchall (exit 99).
 				if err := healthCheck(); err != nil {
-					fmt.Fprintln(os.Stderr, uxlog.Cross(), err)
+					uxlog.Status(uxlog.Cross(), err.Error())
 					os.Exit(1)
 				}
 				return nil

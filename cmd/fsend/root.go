@@ -67,20 +67,23 @@ type flags struct {
 	posArgs []string
 }
 
-func rootCmd() *cobra.Command {
-	f := &flags{}
-
-	c := &cobra.Command{
-		Use:   "fsend [file|dir|code]...",
-		Short: "Peer-to-peer file transfer",
-		Long: `fsend transfers files directly between two computers.
+// rootLong is the root command's long description (man page, cobra docs).
+const rootLong = `fsend transfers files directly between two computers.
 
 Examples:
   Send:      fsend report.pdf
   Receive:   fsend abc-defg-jkm
   Folder:    fsend ./myproject
   Stdin:     cat file | fsend
-  Text:      fsend --text "hello world"`,
+  Text:      fsend --text "hello world"`
+
+func rootCmd() *cobra.Command {
+	f := &flags{}
+
+	c := &cobra.Command{
+		Use:           "fsend [file|dir|code]...",
+		Short:         "Peer-to-peer file transfer",
+		Long:          rootLong,
 		Args:          cobra.ArbitraryArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -759,7 +762,17 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		case 1:
 			return startReceive(f, f.posArgs[0])
 		}
-		return fmt.Errorf("%w: --receive requires exactly one positional argument (the code)", fserrors.ErrUsage)
+		// The code typed the way it is heard ("--receive abc defg jkm").
+		// --receive has already said these are not paths, so — unlike the
+		// auto-detect below — a file that happens to share a word's name
+		// does not turn this into a send.
+		if c, ok := joinCode(f.posArgs); ok {
+			return startReceive(f, c)
+		}
+		// Says what is accepted and no more: counting the arguments back
+		// ("not 3 arguments") would puzzle someone who typed three words
+		// with a typo in one. One line at 80 columns.
+		return fmt.Errorf("%w: --receive takes one code (abc-defg-jkm, or its three words)", fserrors.ErrUsage)
 	}
 
 	// --text is unambiguously send mode. An explicitly empty value
@@ -858,17 +871,17 @@ func askForCode() (string, error) {
 			fserrors.ErrUsage)
 	}
 	for range 3 {
-		fmt.Fprint(os.Stderr, "  "+uxlog.Prompt("Code from the sender: "))
+		uxlog.Entry("Code from the sender:")
 		line, eof := readLine(os.Stdin)
 		if eof {
-			fmt.Fprintln(os.Stderr)
+			uxlog.Blank()
 			return "", fmt.Errorf("%w: no code entered", fserrors.ErrUsage)
 		}
 		if c, ok := code.Normalize(line); ok {
 			return c, nil
 		}
 		if line != "" {
-			fmt.Fprintf(os.Stderr, "  That isn't a code — codes look like %s.\n", uxlog.Code("abc-defg-jkm"))
+			uxlog.Line("That isn't a code — codes look like " + uxlog.Code("abc-defg-jkm") + ".")
 		}
 	}
 	return "", fserrors.ErrInvalidCodeFormat
@@ -898,7 +911,7 @@ func applyEnvFallbacks(f *flags, cmd *cobra.Command) error {
 			// The user who typed bare --password expects a prompt; say why
 			// none appears rather than silently pre-empting it.
 			if bare && !f.quiet {
-				fmt.Fprintln(os.Stderr, uxlog.Info(), "Using the password from the environment — skipping the prompt.")
+				uxlog.Status(uxlog.Info(), "Using the password from the environment — skipping the prompt.")
 			}
 		}
 	}
@@ -952,12 +965,13 @@ func promptCodeOrPath(f *flags, arg string) error {
 // user meant. EOF must not take that default (see the readLine contract);
 // unrecognized input re-prompts instead of hard-erroring on a typo.
 func askCodeOrPath(br *bufio.Reader, arg string) (send bool, err error) {
-	fmt.Fprintf(os.Stderr, "\n  %q matches a code AND is a local file.\n", arg)
+	uxlog.Blank()
+	uxlog.Line(fmt.Sprintf("%q matches a code AND is a local file.", arg))
 	for {
-		fmt.Fprint(os.Stderr, "  Send this file, or receive with this code? [s/R] ")
+		uxlog.Question("Send this file, or receive with this code?", "[s/R]")
 		resp, eof := readLineFrom(br)
 		if eof {
-			fmt.Fprintln(os.Stderr)
+			uxlog.Blank()
 			return false, fmt.Errorf("%w: no input to answer the code-vs-file prompt; pass --receive (or --send) to choose without a prompt",
 				fserrors.ErrUsage)
 		}
@@ -967,19 +981,24 @@ func askCodeOrPath(br *bufio.Reader, arg string) (send bool, err error) {
 		case "r", "receive", "":
 			return false, nil
 		}
-		fmt.Fprintln(os.Stderr, "  Please answer s or r.")
+		uxlog.Line("Please answer s or r.")
 	}
 }
 
-// splitCode joins arguments that spell one share code across several words
-// ("abc defg jkm", or "abc-defg jkm") and returns it in canonical form. It
-// refuses when any argument exists as a path (Lstat: a dangling link
-// counts), so `fsend a.txt b.txt` always sends.
-func splitCode(args []string) (string, bool) {
+// joinCode joins arguments that spell one share code across several words
+// ("abc defg jkm", or "abc-defg jkm") and returns it in canonical form.
+func joinCode(args []string) (string, bool) {
 	if len(args) > 3 {
 		return "", false
 	}
-	c, ok := code.Normalize(strings.Join(args, " "))
+	return code.Normalize(strings.Join(args, " "))
+}
+
+// splitCode is joinCode for the auto-detect, where the arguments could
+// also be paths: it refuses when any of them exists as one (Lstat: a
+// dangling link counts), so `fsend a.txt b.txt` always sends.
+func splitCode(args []string) (string, bool) {
+	c, ok := joinCode(args)
 	if !ok {
 		return "", false
 	}

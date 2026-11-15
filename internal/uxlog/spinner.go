@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 )
 
 // Spinner draws an animated single-line status to stderr until Stop is
@@ -23,7 +22,7 @@ import (
 //	sp := uxlog.StartSpinner("Looking for sender on local network…")
 //	doWork()
 //	sp.Stop()
-//	fmt.Fprintln(os.Stderr, uxlog.Check(), "Found sender on local network")
+//	uxlog.Status(uxlog.Check(), "Found sender on local network")
 //
 // Stop clears the spinner line so the next stderr write starts at column 0.
 // On non-TTY the static line stays in place — Stop is a no-op visually.
@@ -180,69 +179,61 @@ const spinnerSep = Sep
 // stays inside width-1 columns (the last column would trigger an
 // auto-wrap on some terminals). What gives way, in order: the hint, then
 // the message's tail (cut with an ellipsis); the elapsed time stays, since
-// it is the "still alive?" answer. Columns are counted in runes.
+// it is the "still alive?" answer. Columns are display columns (Width): a
+// device name in a wide script counts two per character.
 func fitSpinner(msg, elapsed, hint string, width int) string {
 	avail := width - 1 - 2 // frame glyph and its space
-	n := utf8.RuneCountInString
 	tail := ""
 	if elapsed != "" {
 		tail = spinnerSep + elapsed
 	}
 	if hint != "" {
-		if full := msg + tail + spinnerSep + hint; n(full) <= avail {
+		if full := msg + tail + spinnerSep + hint; Width(full) <= avail {
 			return full
 		}
 	}
-	if n(msg+tail) <= avail {
+	if Width(msg+tail) <= avail {
 		return msg + tail
 	}
-	budget := avail - n(tail)
+	budget := avail - Width(tail)
 	if budget < 6 { // too cramped for message and time: keep the message
 		tail, budget = "", avail
 	}
-	return clipRunes(msg, budget) + tail
+	return Clip(msg, budget) + tail
 }
 
-// clipRunes cuts s to at most max runes, ending in "…" when cut.
-func clipRunes(s string, max int) string {
-	r := []rune(s)
-	switch {
-	case len(r) <= max:
-		return s
-	case max <= 0:
-		return ""
-	case max == 1:
-		return "…"
-	}
-	return strings.TrimRight(string(r[:max-1]), " ") + "…"
+// wrapWords breaks text at spaces into rows no wider than the terminal's
+// width-1 columns once each is indented by indent columns — for static
+// lines (the tagline under the share code) that would otherwise wrap
+// mid-word. Off a terminal the fallback width is wide enough that the text
+// stays one row.
+func wrapWords(text string, indent int) []string {
+	return wrapWordsAt(text, indent, terminalWidth(1<<16))
 }
 
-// Wrap breaks text at spaces so no line passes the terminal's width-1
-// columns, indenting every line by indent spaces. For static lines (the
-// tagline under the share code) that would otherwise wrap mid-word. Off a
-// terminal the fallback width is wide enough that text stays one line.
-func Wrap(text string, indent int) string {
-	width := terminalWidth(1 << 16)
+// wrapWordsAt is wrapWords for a given terminal width, in display columns.
+// A word wider than the row stays whole on a row of its own.
+func wrapWordsAt(text string, indent, width int) []string {
 	avail := max(20, width-1-indent)
-	pad := strings.Repeat(" ", indent)
-	var b strings.Builder
-	line := 0
-	for i, w := range strings.Fields(text) {
-		wl := utf8.RuneCountInString(w)
+	var rows []string
+	row, used := "", 0
+	for _, w := range strings.Fields(text) {
+		wl := Width(w)
 		switch {
-		case i == 0:
-			b.WriteString(pad)
-		case line+1+wl > avail:
-			b.WriteString("\n" + pad)
-			line = 0
+		case row == "":
+			row, used = w, wl
+		case used+1+wl > avail:
+			rows = append(rows, row)
+			row, used = w, wl
 		default:
-			b.WriteByte(' ')
-			line++
+			row += " " + w
+			used += 1 + wl
 		}
-		b.WriteString(w)
-		line += wl
 	}
-	return b.String()
+	if row != "" {
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 // spinnerElapsed renders a spinner's running age in compact wall-clock

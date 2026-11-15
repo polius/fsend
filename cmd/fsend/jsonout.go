@@ -67,6 +67,9 @@ type jsonCodeEvent struct {
 	// Install is the one-liner that installs fsend and receives with the
 	// code; omitted when the send uses a server of its own.
 	Install string `json:"install,omitempty"`
+	// InstallPowerShell is Install for a Windows receiver, to run in
+	// PowerShell; present exactly when Install is.
+	InstallPowerShell string `json:"install_powershell,omitempty"`
 }
 
 type jsonPeerEvent struct {
@@ -172,8 +175,8 @@ type jsonDoneEvent struct {
 	Text         string `json:"text,omitempty"` // receiver: --text payload (replaces raw stdout)
 }
 
-func jsonEmitCode(code, install string) {
-	jsonEmit(jsonCodeEvent{V: 1, Event: "code", Code: code, Install: install})
+func jsonEmitCode(code, install, installPowerShell string) {
+	jsonEmit(jsonCodeEvent{V: 1, Event: "code", Code: code, Install: install, InstallPowerShell: installPowerShell})
 }
 
 // jsonEmitDone emits the done event once; later calls are no-ops.

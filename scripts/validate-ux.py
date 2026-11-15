@@ -12,6 +12,9 @@ terminal's ANSI colours; with a declared or detected background every
 truecolour value must clear WCAG AA (4.5:1) on that theme's usual
 backgrounds. The grid holds (glyphs in column 0, text from column 2),
 green appears only on ✓, only ✓ ✗ ! ? → ← and the spinner are glyphs,
+every line that waits for an answer starts with ?, every duration has a
+space before its unit, no list hides exactly one row, lines that are
+clipped fit the terminal in display columns (wide scripts included),
 and degraded modes stay byte-clean (NO_COLOR, FSEND_PLAIN, piped stderr
 → zero colour escapes, ASCII glyph fallbacks). Text checks assert on
 what the user reads (headlines, hints, exit codes), not just on escapes.
@@ -21,9 +24,11 @@ flow (wrong → correct), decline, text send, error rendering, NO_COLOR,
 --help, piped degradation, light and dark palettes, a 40-column
 terminal, Ctrl-C while waiting and mid-transfer, a late second receiver,
 shell completion, notifications, usage-error paths, plain mode, the
-detected background, the visual system at three widths and the
-clipboard. Exit status: 0 when every check passes, or fails only where
-EXPECTED_FAILURES says it will (reported as XFAIL).
+detected background, the visual system at three widths, the clipboard,
+the prompts outside the main flow, wide (CJK) names at 40 columns,
+skipped-file lists, the install-and-receive hint and the update notice
+for each kind of install. Exit status: 0 when every check passes, or
+fails only where EXPECTED_FAILURES says it will (reported as XFAIL).
 
 Unix only (uses pty). Run from the repo root:
 
@@ -52,6 +57,7 @@ import termios
 import threading
 import time
 import fcntl
+import unicodedata
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -93,7 +99,27 @@ ORANGE, VIOLET, GREEN, YELLOW, RED, CYAN = tokens('unknown')
 DEFAULT = None                 # terminal default foreground
 GLYPHS = '✓✗!?→←'
 SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-OLD_GLYPHS = '⚠ℹ⟳⇢⇣⇄┌│└'
+OLD_GLYPHS = '⚠ℹ⟳⇢⇣⇄┌│└›'
+# A duration written Go's way: the unit glued to the number ("152ms",
+# "2.8s", "1m30s"). On screen it is "152 ms". Tokens only — a digit and a
+# unit inside a path or a name is not a duration.
+GLUED_DURATION = re.compile(r'(?<![\w/.\-])\d+(?:\.\d+)?(?:ms|s|m|h)(?:\d+(?:ms|s|m))?(?![\w/\-])')
+# What a line that waits for an answer looks like: its options, or the
+# label of a typed answer.
+PROMPT = re.compile(r'\[(?:Y/n|y/N|s/R|K\]eep both)|(?:Enter the password the sender shared|'
+                    r'Press Enter to use it, or type your own|Code from the sender|'
+                    r'Wrong password — try again \(\d/\d\)): ')
+
+
+def cols_of(text):
+    """Display columns of text: East Asian Wide/Fullwidth characters take
+    two, combining marks and format characters none."""
+    n = 0
+    for ch in text:
+        if unicodedata.category(ch) in ('Mn', 'Me', 'Cf'):
+            continue
+        n += 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+    return n
 
 
 def rel_lum(r, g, b):
@@ -208,14 +234,7 @@ RESULTS = []
 # while the fix is on its way. A marked check that passes fails the run
 # (XPASS): the mark has to go with the fix, or it would hide the next
 # regression.
-EXPECTED_FAILURES = {
-    # A second receiver that uses the code while the first one is still
-    # at its prompt should be told the code is taken (E003). Today it
-    # waits for the sender instead. Being fixed in the product; remove
-    # this entry with that fix.
-    ('S14 late second receiver', 'late receiver gets E003'):
-        'a late second receiver waits instead of getting E003; fix in progress',
-}
+EXPECTED_FAILURES = {}
 
 
 def check(sc, label, stream, context, needle, expect_fg, expect_bold=None, expect_faint=None):
@@ -301,6 +320,27 @@ def grid_ok(sc, stream, label=''):
     glob_ok(sc, pre + 'glyphs in column 0, text from column 2', not off, repr(off[:2]) if off else None)
     glob_ok(sc, pre + 'green only on ✓', not green, repr(green[:1]) if green else None)
     glob_ok(sc, pre + 'only ✓ ✗ ! ? → ← and the spinner', not old, repr(old[:1]) if old else None)
+    # V7: a line that waits for an answer starts with ? in the gutter.
+    bare = [pl for pl, _ in screen_lines(stream) if PROMPT.search(pl) and not pl.startswith('? ')]
+    glob_ok(sc, pre + 'every prompt starts with ?', not bare, repr(bare[:1]) if bare else None)
+    # V9: "188 ms", never "188ms".
+    glued = [pl for pl, _ in screen_lines(stream) if GLUED_DURATION.search(pl)]
+    glob_ok(sc, pre + 'durations have a space before the unit', not glued, repr(glued[:1]) if glued else None)
+    # U8: "… and 1 more" costs the row it hides.
+    one = [pl for pl, _ in screen_lines(stream) if re.search(r'… and 1 more\b', pl)]
+    glob_ok(sc, pre + 'no list hides exactly one row', not one, repr(one[:1]) if one else None)
+
+
+def prompt_ok(sc, label, stream, question):
+    """V7: the line asking `question` has the bold primary ? in column 0
+    and its text from column 2."""
+    for plain, colors in screen_lines(stream):
+        if question not in plain:
+            continue
+        ok = plain.startswith('? ') and colors[0] == (VIOLET, True, False)
+        glob_ok(sc, label, ok, None if ok else repr(plain[:60]))
+        return
+    glob_ok(sc, label, False, f'missing {question!r}')
 
 
 class PtyRun(threading.Thread):
@@ -674,16 +714,22 @@ def s4_password():
     sp, rv = snd.text, rcv.text
     check(s, 'sender instruction primary', sp, 'Press Enter to use it',
           'Press Enter to use it, or type your own:', VIOLET)
+    prompt_ok(s, 'sender instruction behind the ? gutter', sp, 'Press Enter to use it')
+    glob_ok(s, 'suggestion is a neutral line in column 2',
+            any(pl.startswith('  Suggested password: ') for pl, _ in screen_lines(sp)))
     check(s, 'receiver prompt primary', rv, 'Enter the password',
           'Enter the password the sender shared:', VIOLET)
+    prompt_ok(s, 'receiver prompt behind the ? gutter', rv, 'Enter the password')
     check(s, 'password context ! warning', rv, 'password-protected', '!', YELLOW, True)
-    check(s, 'retry prompt primary', rv, 'Wrong password', 'Wrong password — try again', VIOLET)
+    check(s, 'retry prompt primary', rv, 'Wrong password', 'Wrong password — try again (2/3):', VIOLET)
+    prompt_ok(s, 'retry prompt behind the ? gutter', rv, 'Wrong password — try again')
     check(s, 'chip warning colour', rv, 'password required', 'password required', YELLOW)
     check(s, 'transfer succeeded', rv, 'Saved', '✓', GREEN)
     has_text(s, 'sender waits on the password, naming the device', sp, ' to enter the password')
     glob_ok(s, 'suggestion is four words', re.fullmatch(r'[a-z]+(-[a-z]+){3}', pw) is not None, pw)
     has_text(s, 'code block says a password is needed', sp, 'they need the password too')
     ansi_only(s, sp + rv)
+    grid_ok(s, sp + rv)
 
 
 def s5_decline():
@@ -729,6 +775,17 @@ def s7_errors():
     words.start(); words.join()
     has_text(s, 'three-word code receives', words.text, '[E002]')
     lacks_text(s, 'three-word code is not three missing files', words.text, 'No such file')
+    # ... and so it does behind --receive, which used to call it a usage error.
+    forced = PtyRun([H.bin, '--receive', 'abc', 'defg', 'jkm'], d, runtime=20)
+    forced.start(); forced.join()
+    has_text(s, '--receive takes the three words too', forced.text, '[E002]')
+    lacks_text(s, '--receive with three words is not a usage error', forced.text, '[E024]')
+    glob_ok(s, '--receive with three words exits 2 (no sender), not 24', forced.status == 2, f'exit {forced.status}')
+    two = PtyRun([H.bin, '--receive', 'abc', 'defg'], d, runtime=6)
+    two.start(); two.join()
+    has_text(s, '--receive with words that spell no code says what it takes', two.text,
+             '--receive takes one code (abc-defg-jkm, or its three words) [E024]')
+    glob_ok(s, 'that is still a usage error (24)', two.status == 24, f'exit {two.status}')
     out2 = PtyRun([H.bin, 'abc-defg-jk'], d, runtime=6)
     out2.start(); out2.join()
     check(s, 'code-typo hint accent', out2.text, 'receive code', 'abc-defg-jkm', ORANGE, True)
@@ -745,8 +802,9 @@ def s7_errors():
     out5.start(); out5.join()
     glob_ok(s, 'unknown help topic is E024', '[E024]' in out5.text and out5.status == 24,
             f'exit {out5.status}')
-    for o in (out, out2, out3, out4, out5):
+    for o in (out, out2, out3, out4, out5, forced, two):
         lacks_text(s, 'no E099 on an error path', o.text, 'E099')
+    grid_ok(s, ''.join(o.text for o in (out, out2, out3, out4, out5, forced, two)))
     check(s, 'catalog code faint, after the sentence', out.text, 'nope.txt', '[E025]', DEFAULT, False, True)
     ansi_only(s, out.text + out2.text + out3.text)
 
@@ -830,7 +888,7 @@ def s12_narrow():
     glob_ok(s, 'progress frames rendered', bool(bars), f'{len(bars)} frames')
     cut = [b for b in bars if re.search(r'\d…|…\d', b)]
     glob_ok(s, 'no number cut mid-digit', not cut, repr(cut[:1]) if cut else None)
-    wide = [b for b in bars if len(b) > 39]
+    wide = [b for b in bars if cols_of(b) > 39]
     glob_ok(s, 'frames fit the width', not wide, repr(wide[:1]) if wide else None)
 
 
@@ -933,7 +991,7 @@ def s18_spinner_width():
         frames = [x for x in segs if 'Waiting for receiver' in x]
         orphans = [x for x in segs if x.strip() and not x.startswith(('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'))
                    and ('cancel' in x or 'Ctrl-C' in x)]
-        wide = [x for x in frames if len(x) > cols - 1]
+        wide = [x for x in frames if cols_of(x) > cols - 1]
         glob_ok(s, f'{cols} cols: frames fit', bool(frames) and not wide and not orphans,
                 repr((wide or orphans)[:1]) if (wide or orphans) else f'{len(frames)} frames')
         glob_ok(s, f'{cols} cols: elapsed time kept', any(re.search(r'1[45] s', x) for x in frames))
@@ -996,7 +1054,7 @@ def s20_visual_system():
                     continue
                 block = lines[i:i + 3]
                 block = [block[0]] + [l for l in block[1:] if l.startswith('  ') and not l.startswith('   ')]
-                wide = [l for l in block if len(l) > cols - 1]
+                wide = [l for l in block if cols_of(l) > cols - 1]
                 glob_ok(s, f'{tag} {side}: summary fits', not wide, repr(wide[:1]) if wide else None)
             check(s, f'{tag}: route faint in the summary', sp, 'B ·', 'local network', DEFAULT, False, True)
             check(s, f'{tag}: listing "differs" needs a decision', rv, 'README.md', 'differs', tokens(theme)[3])
@@ -1098,11 +1156,325 @@ def s22_clipboard():
             lacks_text(s, f'{tag}: says nothing about copying', p.text, 'Copied')
 
 
+def s23_prompts():
+    """V7: the prompts outside the main flow — the code, the code-or-file
+    question, uninstall, a bare --password, a long text — take the form of
+    the accept prompt: ? in the gutter, the question from column 2, the
+    options two spaces on."""
+    s = 'S23 prompts outside the main flow'
+    d = fresh('s23')
+    # Bare --receive asks for the code; a wrong answer re-asks.
+    ask = PtyRun([H.bin, '--receive'], d, feed=[(1.5, b'nonsense\n'), (3.0, b'\x04')], runtime=6)
+    ask.start(); ask.join()
+    prompt_ok(s, 'code prompt behind the ? gutter', ask.text, 'Code from the sender:')
+    check(s, 'code prompt label primary', ask.text, 'Code from the sender', 'Code from the sender:', VIOLET)
+    has_text(s, 'the correction is a neutral line', ask.text, "\n  That isn't a code — codes look like ")
+    grid_ok(s, ask.text, 'code prompt')
+    # An argument that is both a code and a file.
+    with open(os.path.join(d, 'abc-defg-jkm'), 'w') as f:
+        f.write('x')
+    both = PtyRun([H.bin, 'abc-defg-jkm'], d, feed=[(1.5, b'x\n'), (3.0, b'\x04')], runtime=6)
+    both.start(); both.join()
+    prompt_ok(s, 'code-or-file prompt behind the ? gutter', both.text, 'Send this file, or receive with this code?')
+    has_text(s, 'code-or-file: options two spaces after the question', both.text,
+             '? Send this file, or receive with this code?  [s/R] ')
+    has_text(s, 'code-or-file: the re-ask hint in column 2', both.text, '\n  Please answer s or r.')
+    grid_ok(s, both.text, 'code-or-file')
+    os.remove(os.path.join(d, 'abc-defg-jkm'))
+    # --uninstall asks before removing anything; "n" removes nothing.
+    un = PtyRun([H.bin, '--uninstall'], d, feed=[(1.5, b'what\n'), (3.0, b'n\n')], runtime=6)
+    un.start(); un.join()
+    prompt_ok(s, 'uninstall prompt behind the ? gutter', un.text, 'Continue?')
+    has_text(s, 'uninstall: options two spaces after the question', un.text, '? Continue?  [y/N] ')
+    has_text(s, 'uninstall: what goes is a list in column 4', un.text, '\n    - binary:     ')
+    has_text(s, 'uninstall: declined, nothing removed', un.text, '\n  Not uninstalled.')
+    glob_ok(s, 'uninstall: the binary is still there', os.path.exists(H.bin))
+    glob_ok(s, 'uninstall: "n" exits 0', un.status == 0, f'exit {un.status}')
+    grid_ok(s, un.text, 'uninstall')
+    # A bare --password on both sides: the sender's suggestion, the
+    # receiver's hidden prompt.
+    snd = PtyRun([H.bin, 'small.txt', '--password'], d, feed=[(2.0, b'hunter2\n')], runtime=30)
+    snd.start()
+    m = snd.wait_for(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
+    if not m:
+        snd.stop()
+        RESULTS.append((s, 'sender produced no code', 'TIMEOUT', False))
+        return
+    time.sleep(0.5)
+    rcv = PtyRun([H.bin, m.group(1), '--password', '--yes', '--out', 'recv_out'], d,
+                 feed=[(2.0, b'hunter2\n')], runtime=20)
+    rcv.start(); rcv.join(); snd.join(timeout=8); snd.stop()
+    prompt_ok(s, 'bare --password (receiver) behind the ? gutter', rcv.text, 'Enter the password the sender shared:')
+    lacks_text(s, 'the typed password is not echoed', rcv.text, 'hunter2')
+    has_text(s, 'bare --password transfer completes', rcv.text, 'Saved ./recv_out/small.txt')
+    grid_ok(s, snd.text + rcv.text, 'bare --password')
+    # A long text is asked about before it fills the screen.
+    long_text = '\n'.join(f'line {i}' for i in range(60))
+    snd, rcv = pair(s, d, ['--text', long_text], [], [(4.0, b'what\n'), (5.5, b'n\n')])
+    rv = rcv.text if rcv else ''
+    prompt_ok(s, 'long-text prompt behind the ? gutter', rv, 'Show the text (')
+    has_text(s, 'long-text prompt: options two spaces after the question', rv, ' 60 lines)?  [Y/n] ')
+    lacks_text(s, 'long text not shown after "n"', rv, 'line 59')
+    grid_ok(s, rv, 'long text')
+
+
+def s24_wide_names():
+    """U2: names in a wide script (CJK: two columns a character) at 40 and
+    60 columns. The spinner names the peer's device and the bar the current
+    file; counted in runes, either line overflows, and a line that wraps
+    leaves a row behind on every redraw."""
+    s = 'S24 wide names fit the width'
+    snd_name, rcv_name = '田中さんのノートパソコン', '受信用のデスクトップ機です'
+    for cols in (40, 60):
+        d = fresh(f's24-{cols}')
+        proj = os.path.join(d, '写真アルバム')
+        os.makedirs(proj)
+        for fn, sz in (('富士山の夜明けの写真その一.bin', 12_000_000), ('京都の紅葉と清水寺の舞台.bin', 9_000_000),
+                       ('メモ.txt', 7)):
+            with open(os.path.join(proj, fn), 'wb') as f:
+                f.write(os.urandom(sz))
+        snd, rcv = pair(s, d, ['--device-name', snd_name, '写真アルバム'],
+                        ['--device-name', rcv_name, '--out', 'recv_out'], [(5.0, b'y\n')], cols=cols)
+        sp, rv = snd.text, rcv.text if rcv else ''
+        tag = f'{cols} cols'
+        for side, text in (('sender', sp), ('receiver', rv)):
+            segs = [line_colors(x)[0] for x in split_stream(text)]
+            spins = [x for x in segs if x[:1] and x[0] in SPINNER]
+            wide = [x for x in spins if cols_of(x) > cols - 1]
+            glob_ok(s, f'{tag} {side}: spinner frames fit', bool(spins) and not wide,
+                    repr(wide[:1]) if wide else f'{len(spins)} frames')
+            bars = [x for x in segs if re.search(r'\d+%', x)]
+            wide = [x for x in bars if cols_of(x) > cols - 1]
+            glob_ok(s, f'{tag} {side}: progress frames fit', bool(bars) and not wide,
+                    repr(wide[:1]) if wide else f'{len(bars)} frames')
+            # A wrapped redraw leaves a row that starts mid-line: every
+            # non-empty segment starts on the grid.
+            stray = [x for x in segs if x.strip() and not x.startswith(tuple(SPINNER + GLYPHS)) and not x.startswith('  ')]
+            glob_ok(s, f'{tag} {side}: no redraw row left behind', not stray, repr(stray[:1]) if stray else None)
+        waited = [line_colors(x)[0] for x in split_stream(sp) if 'Waiting for 受信' in line_colors(x)[0]]
+        glob_ok(s, f'{tag}: the spinner names the wide device', bool(waited), f'{len(waited)} frames')
+        # 40 columns cannot hold the name: it is cut, by columns, with an
+        # ellipsis. 60 can, whole.
+        longest = max(waited, key=cols_of) if waited else ''
+        if cols == 40:
+            glob_ok(s, f'{tag}: its name is cut with an ellipsis, in columns',
+                    '…' in longest and cols_of(longest) <= cols - 1, repr(longest))
+        else:
+            glob_ok(s, f'{tag}: its name is shown whole', rcv_name + ' to accept' in longest, repr(longest))
+        has_text(s, f'{tag}: the transfer still completes', rv, 'Saved 写真アルバム/ to ./recv_out/')
+        # Rows of the listing line their sizes up under names of mixed width.
+        rows = [pl for pl, _ in screen_lines(rv) if pl.startswith('    ') and ' MB' in pl]
+        starts = {cols_of(pl[:pl.index(' MB')]) for pl in rows}
+        glob_ok(s, f'{tag}: listing sizes align under wide names', len(rows) >= 2 and len(starts) == 1,
+                repr(rows[:2]))
+
+
+def s25_skipped_lists():
+    """U8: the list of skipped files, on both sides. One over the limit is
+    printed whole — "… and 1 more" would cost the row it hides — and two
+    over collapses."""
+    s = 'S25 skipped-file lists'
+    if os.geteuid() == 0:
+        RESULTS.append((s, 'skipped (root reads every file)', 'n/a', True))
+        return
+    for n, want_more in ((11, None), (12, '… and 2 more')):
+        d = fresh(f's25-{n}')
+        locked = os.path.join(d, 'locked')
+        os.makedirs(locked)
+        with open(os.path.join(locked, 'ok.txt'), 'w') as f:
+            f.write('fine')
+        for i in range(n):
+            path = os.path.join(locked, f'secret{i:02d}.txt')
+            with open(path, 'w') as f:
+                f.write('nope')
+            os.chmod(path, 0)
+        snd, rcv = pair(s, d, ['locked'], ['--out', 'recv_out', '--yes'], [])
+        sp, rv = snd.text, rcv.text if rcv else ''
+        for side, text in (('sender', sp), ('receiver', rv)):
+            lines = [pl for pl, _ in screen_lines(text)]
+            k = next((i for i, l in enumerate(lines) if 'skipped:' in l), None)
+            if k is None:
+                glob_ok(s, f'{n} skipped, {side}: list printed', False, 'missing')
+                continue
+            rows = []
+            for l in lines[k + 1:]:
+                if not l.startswith('    '):
+                    break
+                rows.append(l)
+            named = [r for r in rows if 'secret' in r]
+            if want_more:
+                glob_ok(s, f'{n} skipped, {side}: 10 rows, then "{want_more}"',
+                        len(named) == 10 and rows[-1].strip() == want_more, repr(rows[-2:]))
+            else:
+                glob_ok(s, f'{n} skipped, {side}: all {n} rows, none hidden',
+                        len(named) == n and not any('more' in r for r in rows), repr(rows[-2:]))
+            has_text(s, f'{n} skipped, {side}: headline counts them', text, f'{n} files ')
+        grid_ok(s, sp + rv, f'{n} skipped')
+        for i in range(n):
+            os.chmod(os.path.join(locked, f'secret{i:02d}.txt'), 0o600)
+
+
+def s26_install_hint():
+    """D1: on the default server the sender prints a line that installs
+    fsend and receives — for sh, and for PowerShell on Windows. Both are
+    single unbroken lines (a copy must yield a runnable command) and fit 80
+    columns. A config of its own (no --connect) and --local: the default
+    server is named, never contacted."""
+    s = 'S26 install-and-receive hint'
+    home = os.path.join(H.tmp, 'home-default')
+    os.makedirs(home, exist_ok=True)
+    # No pairing server is used under --local; a dead proxy makes sure of it.
+    env = {'HOME': home, 'XDG_CONFIG_HOME': os.path.join(home, '.config'),
+           'HTTPS_PROXY': 'http://127.0.0.1:9', 'HTTP_PROXY': 'http://127.0.0.1:9', 'NO_PROXY': ''}
+    runs = []
+    for cols in (40, 60, 80, 100):
+        d = fresh(f's26-{cols}')
+        p = PtyRun([H.bin, '--local', 'small.txt'], d, runtime=4, cols=cols, env=env)
+        p.start()
+        runs.append((cols, p))
+    for cols, p in runs:
+        p.join()
+        t = p.text
+        m = re.search(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b', t)
+        code = m.group(1) if m else 'zzz-zzzz-zzz'
+        sh = f'curl -fsSL https://getfsend.alzina.dev | sh -s -- {code}'
+        ps = f'iex "& {{$(irm https://getfsend.alzina.dev/windows)}} -Code {code}"'
+        lines = [pl for pl, _ in screen_lines(t)]
+        tag = f'{cols} cols'
+        glob_ok(s, f'{tag}: sh line, alone and unbroken, in column 4', '    ' + sh in lines)
+        glob_ok(s, f'{tag}: PowerShell line, alone and unbroken, in column 4', '    ' + ps in lines,
+                repr([l for l in lines if 'irm' in l][:1]))
+        check(s, f'{tag}: sh line faint', t, 'curl -fsSL', sh, DEFAULT, False, True)
+        check(s, f'{tag}: PowerShell line faint', t, 'irm https', ps, DEFAULT, False, True)
+        k = lines.index('    ' + sh) if '    ' + sh in lines else -1
+        glob_ok(s, f'{tag}: PowerShell line right under the sh line', k >= 0 and lines[k + 1:k + 2] == ['    ' + ps])
+        if cols >= 80:
+            wide = [l for l in lines if cols_of(l) > cols - 1 and l[:1] not in SPINNER]
+            glob_ok(s, f'{tag}: every line fits', not wide, repr(wide[:1]) if wide else None)
+        else:
+            # Narrower than the commands: they stay one line each (the
+            # terminal wraps them), and the sentence above breaks between
+            # words instead of mid-word.
+            head = [l for l in lines if l.startswith('  ') and not l.startswith('   ')
+                    and ('No fsend' in l or l.strip().endswith('receives:'))]
+            glob_ok(s, f'{tag}: the heading wraps between words',
+                    bool(head) and all(cols_of(l) <= cols - 1 for l in head), repr(head))
+        grid_ok(s, t, tag)
+    # --json: the code event carries both, the new field beside the old.
+    d = fresh('s26-json')
+    e = dict(os.environ, **env)
+    e['FSEND_NO_UPDATE_CHECK'] = '1'
+    for k in ('FSEND_SERVER', 'FSEND_CODE', 'FSEND_PASSWORD'):
+        e.pop(k, None)
+    proc = subprocess.Popen([H.bin, '--local', '--json', 'small.txt'], cwd=d, env=e,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    time.sleep(3)
+    proc.kill()
+    first = proc.stdout.read().decode('utf-8', 'replace').split('\n')[0]
+    try:
+        ev = json.loads(first)
+    except ValueError:
+        ev = {}
+    c = ev.get('code', '')
+    glob_ok(s, 'json: code event keeps "install"', ev.get('event') == 'code'
+            and ev.get('install') == f'curl -fsSL https://getfsend.alzina.dev | sh -s -- {c}', first[:80])
+    glob_ok(s, 'json: code event gains "install_powershell"',
+            ev.get('install_powershell') == f'iex "& {{$(irm https://getfsend.alzina.dev/windows)}} -Code {c}"',
+            repr(ev.get('install_powershell')))
+    # A server of one's own: neither line, neither field.
+    own = subprocess.Popen([H.bin, '--local', '--json', 'small.txt'], cwd=d,
+                           env=dict(os.environ, **H.client_env(), FSEND_NO_UPDATE_CHECK='1'),
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    time.sleep(3)
+    own.kill()
+    first = own.stdout.read().decode('utf-8', 'replace').split('\n')[0]
+    glob_ok(s, 'json: no install fields on a server of its own',
+            '"event":"code"' in first and 'install' not in first, first[:80])
+
+
+def s27_update_notice():
+    """D2: the notice after a transfer names the action that works for the
+    way this fsend was installed. `fsend --update` refuses (E039) on a
+    binary that Homebrew or a deb/rpm/apk package owns, so those are told
+    what to do instead. A versioned build is installed four ways under the
+    harness's temp dir; the "newer release" comes from a seeded check
+    cache (fresh, so nothing is looked up; a dead proxy makes sure)."""
+    s = 'S27 update notice per install'
+    root = os.path.join(H.tmp, 'installs')
+    os.makedirs(root)
+    built = os.path.join(root, 'fsend-1.0.0')
+    subprocess.run(['go', 'build', '-ldflags', '-X github.com/polius/fsend/internal/version.Version=1.0.0',
+                    '-o', built, './cmd/fsend'], cwd=ROOT, check=True)
+    with open(os.path.join(H.home, '.config', 'fsend', 'update-check.json'), 'w') as f:
+        json.dump({'checked_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'latest': '9.9.9'}, f)
+    env = {'FSEND_NO_UPDATE_CHECK': '0', 'HTTPS_PROXY': 'http://127.0.0.1:9',
+           'HTTP_PROXY': 'http://127.0.0.1:9', 'NO_PROXY': ''}
+    link = 'https://github.com/polius/fsend/releases/tag/v9.9.9'
+    # (label, where the binary lives, what it is run as, package marker, action line, the command in it)
+    installs = [
+        ('install script', 'own/bin/fsend', None, None, f'fsend --update · {link}', 'fsend --update'),
+        ('Homebrew', 'brew/Cellar/fsend/1.0.0/bin/fsend', 'brew/bin/fsend', None,
+         f'brew upgrade fsend · {link}', 'brew upgrade fsend'),
+        ('deb', 'deb/usr/bin/fsend', None, 'deb', f'Install the new .deb: {link}', None),
+        ('rpm', 'rpm/usr/bin/fsend', None, 'rpm', f'Install the new .rpm: {link}', None),
+        ('apk', 'apk/usr/bin/fsend', None, 'apk', f'Install the new .apk: {link}', None),
+    ]
+    for label, rel, via, marker, action, command in installs:
+        binary = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(binary))
+        shutil.copy2(built, binary)
+        run_as = binary
+        if via:
+            # As brew links it: bin/fsend -> ../Cellar/fsend/<version>/bin/fsend.
+            run_as = os.path.join(root, via)
+            os.makedirs(os.path.dirname(run_as))
+            os.symlink(os.path.relpath(binary, os.path.dirname(run_as)), run_as)
+        if marker:
+            share = os.path.join(os.path.dirname(os.path.dirname(binary)), 'share', 'fsend')
+            os.makedirs(share)
+            with open(os.path.join(share, 'package-manager'), 'w') as f:
+                f.write(marker + '\n')
+        d = fresh('s27-' + label.replace(' ', '-').lower())
+        snd = PtyRun([run_as, 'small.txt'], d, runtime=30, env=env, cols=100)
+        snd.start()
+        m = snd.wait_for(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
+        if not m:
+            snd.stop()
+            RESULTS.append((s, f'{label}: sender produced no code', 'TIMEOUT', False))
+            continue
+        time.sleep(0.5)
+        rcv = PtyRun([H.bin, m.group(1), '--yes', '--out', 'recv_out'], d, runtime=20)
+        rcv.start(); rcv.join(); snd.join(timeout=8); snd.stop()
+        t = snd.text
+        lines = [pl for pl, _ in screen_lines(t)]
+        has_text(s, f'{label}: the notice follows the summary', t, '\n  fsend 9.9.9 is available (you have 1.0.0)')
+        glob_ok(s, f'{label}: the action for this install, alone in column 2', '  ' + action in lines,
+                repr([l for l in lines if 'releases/tag' in l][:1]))
+        if command:
+            check(s, f'{label}: the command to type is accent + bold', t, 'releases/tag', command, ORANGE, True)
+        if command != 'fsend --update':
+            lacks_text(s, f'{label}: never sent to fsend --update, which refuses here', t, 'fsend --update')
+        check(s, f'{label}: the release link is the link colour', t, 'releases/tag', link, CYAN)
+        wide = [l for l in lines if cols_of(l) > 79 and l[:1] not in SPINNER]
+        glob_ok(s, f'{label}: the notice fits 80 columns', not [l for l in wide if 'releases/tag' in l or 'is available' in l],
+                repr(wide[:1]) if wide else None)
+        grid_ok(s, t, label)
+        ansi_only(s, t)
+    # The refusal the notice must agree with: --update on the packaged
+    # binary is E039 and names the same way out (the release's package).
+    refused = PtyRun([os.path.join(root, 'deb/usr/bin/fsend'), '--update'], H.tmp, runtime=6, env=env)
+    refused.start(); refused.join()
+    has_text(s, 'deb: --update refuses (E039), before any lookup', refused.text, '[E039]')
+    has_text(s, 'deb: the refusal points at the package too', refused.text, 'installing the new one')
+    glob_ok(s, 'deb: --update exits 39', refused.status == 39, f'exit {refused.status}')
+
+
 SCENARIOS = (s1_single_file, s2_folder, s3_conflict, s4_password, s5_decline,
              s6_text, s7_errors, s8_no_color, s9_help, s10_piped, s11_themes,
              s12_narrow, s13_cancel, s14_late_arriver, s15_completion, s16_notify,
              s17_plain, s18_spinner_width, s19_detected_background, s20_visual_system,
-             s21_cancel_resume, s22_clipboard)
+             s21_cancel_resume, s22_clipboard, s23_prompts, s24_wide_names,
+             s25_skipped_lists, s26_install_hint, s27_update_notice)
 
 
 def main():

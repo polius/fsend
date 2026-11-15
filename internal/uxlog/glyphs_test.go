@@ -287,3 +287,29 @@ func atoiOrDie(t *testing.T, s string) int {
 	}
 	return n
 }
+
+// V7: the gutter has six glyphs — ✓ ✗ ! ? and the two arrows — plus the
+// spinner. A new marker kind must reuse one of them (or the blank gutter of
+// a neutral line), so a seventh can't slip in: every glyph must exist in
+// every monospace font.
+func TestGlyphSetIsClosed(t *testing.T) {
+	allowed := map[string]bool{"✓": true, "✗": true, "!": true, "?": true, " ": true}
+	for k := gCheck; k <= gSpin; k++ {
+		glyph, ascii, _, _ := glyphForKind(k)
+		if k == gSpin {
+			// The animated spinner draws its own frames; this static form
+			// is never shown on a terminal.
+			continue
+		}
+		if !allowed[glyph] {
+			t.Errorf("glyph kind %d renders %q, which is not one of ✓ ✗ ! ? or the blank gutter", k, glyph)
+		}
+		if ascii == "" || ascii[0] != '[' || ascii[len(ascii)-1] != ']' {
+			t.Errorf("glyph kind %d has ASCII form %q, want a bracketed marker", k, ascii)
+		}
+	}
+	// One past the last kind is unmapped: the loop above covers them all.
+	if glyph, _, _, _ := glyphForKind(gSpin + 1); glyph != "" {
+		t.Errorf("a glyph kind past gSpin exists (%q): extend this test", glyph)
+	}
+}

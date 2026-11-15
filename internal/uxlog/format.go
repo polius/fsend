@@ -33,16 +33,27 @@ func HumanBytes(n int64) string {
 	return fmt.Sprintf("%s %cB", s, "KMGTPE"[exp])
 }
 
-// HumanDuration renders elapsed in compact form, with a space before the
-// unit like every size ("300 MB in 4.8 s"). Sub-second durations show
+// HumanDuration renders a duration in compact form, with a space before
+// the unit like every size ("300 MB in 4.8 s"). Sub-second durations show
 // milliseconds; then seconds with one decimal, whole seconds, minutes and
 // seconds, and past an hour hours and minutes.
+//
+// It is the one formatter for a measured or announced time on screen — a
+// transfer's elapsed time, a retry's wait, a probe's round trip — so
+// "188 ms" never sits near a "152ms". Never print a time.Duration with %s
+// or %v: Go's own form has no space and other units ("1m30s"). Rough ages
+// use HumanAge, which shares the units.
 func HumanDuration(d time.Duration) string {
 	if d < time.Second {
 		return fmt.Sprintf("%d ms", d.Milliseconds())
 	}
 	if d < 10*time.Second {
-		return fmt.Sprintf("%.1f s", d.Seconds())
+		// 9.96 s rounds up into the next tier, which has no decimal:
+		// "10 s", not a lone "10.0 s".
+		if s := fmt.Sprintf("%.1f", d.Seconds()); s != "10.0" {
+			return s + " s"
+		}
+		return "10 s"
 	}
 	if d < time.Minute {
 		return fmt.Sprintf("%d s", int(d.Seconds()))
@@ -55,6 +66,23 @@ func HumanDuration(d time.Duration) string {
 	h := int(d / time.Hour)
 	m := int((d % time.Hour) / time.Minute)
 	return fmt.Sprintf("%d h %02d min", h, m)
+}
+
+// HumanAge renders how old something is, or how far apart two times are,
+// in the largest whole unit that fits — "30 s", "4 min", "3 h", "2 d" —
+// for facts where the size of the gap matters and its seconds do not. Same
+// units and spacing as HumanDuration.
+func HumanAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%d s", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d h", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d d", int(d.Hours()/24))
+	}
 }
 
 // HumanRate renders a bytes-per-second figure in compact form. Returns

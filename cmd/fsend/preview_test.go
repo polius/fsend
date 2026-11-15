@@ -17,7 +17,7 @@ import (
 // render captures renderPreview into a string for assertion.
 func render(items []previewItem) string {
 	var b bytes.Buffer
-	renderPreview(&b, items, 6)
+	renderPreview(&b, items)
 	return b.String()
 }
 

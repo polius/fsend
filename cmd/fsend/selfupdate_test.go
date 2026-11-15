@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 )
 
@@ -31,6 +33,100 @@ func TestRunUpdate_DevBuildRefused(t *testing.T) {
 	}
 }
 
+// stubUpdate points runUpdate at a release lookup, a download and an
+// installer of the test's own, on a build that reports version current.
+// It returns the directory runUpdate will name (the test binary's), and a
+// pointer to what the installer was run with.
+func stubUpdate(t *testing.T, current, latest string, signed bool) (dir string, ran *[]string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe = resolveBinaryPath(exe)
+	if managedByHomebrew(exe) || packagedAs(exe) != "" {
+		t.Skip("the test binary sits in a package manager's tree: runUpdate refuses before printing")
+	}
+	// A test run as root (a container) must not stop at the root refusal.
+	t.Setenv("FSEND_ALLOW_ROOT", "1")
+	origVersion, origLatest, origFetch, origExec := version.Version, latestRelease, fetchInstaller, execInstaller
+	t.Cleanup(func() {
+		version.Version, latestRelease, fetchInstaller, execInstaller = origVersion, origLatest, origFetch, origExec
+	})
+	version.Version = current
+	latestRelease = func(context.Context) (string, error) { return latest, nil }
+	fetchInstaller = func(_ context.Context, v, name, dir string) (string, bool, error) {
+		return filepath.Join(dir, name), signed, nil
+	}
+	ran = new([]string)
+	execInstaller = func(binPath, script, v string) error {
+		*ran = []string{binPath, filepath.Base(script), v}
+		// What the installer itself prints (scripts/install.sh, under
+		// FSEND_UPDATE=1): its steps in column 2, its outcome behind ✓.
+		uxlog.Line("installing fsend v" + v)
+		return nil
+	}
+	return filepath.Dir(exe), ran
+}
+
+// V7: `fsend --update` narrates on the grid with the six glyphs only. Its
+// two steps are neutral lines (an empty gutter; "[i]" on a pipe, as
+// here), not lines behind a "›" of their own; the verification is an
+// outcome and takes the tick; the installer's steps follow in column 2.
+func TestRunUpdate_Narration(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		signed bool
+		verify string
+	}{
+		{"checksum only", false, "[OK] Installer checksum verified\n  Install cosign to also check the release signature\n"},
+		{"signed", true, "[OK] Release signature verified\n"},
+	} {
+		dir, ran := stubUpdate(t, "1.0.0", "1.1.0", c.signed)
+		var err error
+		got := captureStderr(t, func() { err = runUpdate(false) })
+		if err != nil {
+			t.Fatalf("%s: runUpdate: %v", c.name, err)
+		}
+		want := "[i] Checking the latest release...\n" +
+			"[i] Updating fsend 1.0.0 → 1.1.0 in " + dir + "\n" +
+			"  what's new: https://github.com/polius/fsend/releases/tag/v1.1.0\n" +
+			c.verify +
+			"  installing fsend v1.1.0\n"
+		if got != want {
+			t.Errorf("%s: --update printed\n%s\nwant\n%s", c.name, got, want)
+		}
+		if strings.ContainsAny(got, "›>") {
+			t.Errorf("%s: a step marker is back:\n%s", c.name, got)
+		}
+		if len(*ran) != 3 || filepath.Dir((*ran)[0]) != dir || (*ran)[1] != installerAsset || (*ran)[2] != "1.1.0" {
+			t.Errorf("%s: installer run with %q", c.name, *ran)
+		}
+	}
+}
+
+// Nothing newer: one line of narration, then the tick. And --check, which
+// only looks, ends in the same notice a transfer prints.
+func TestRunUpdate_UpToDateAndCheck(t *testing.T) {
+	_, ran := stubUpdate(t, "1.1.0", "1.1.0", false)
+	var err error
+	got := captureStderr(t, func() { err = runUpdate(false) })
+	if want := "[i] Checking the latest release...\n[OK] fsend 1.1.0 is already the latest version.\n"; err != nil || got != want {
+		t.Errorf("up to date: err %v, printed\n%s\nwant\n%s", err, got, want)
+	}
+	stubUpdate(t, "1.0.0", "1.1.0", false)
+	got = captureStderr(t, func() { err = runUpdate(true) })
+	want := "[i] Checking the latest release...\n" +
+		"[i] fsend 1.1.0 is available (you have 1.0.0)\n" +
+		"  fsend --update · https://github.com/polius/fsend/releases/tag/v1.1.0\n"
+	if err != nil || got != want {
+		t.Errorf("--check: err %v, printed\n%s\nwant\n%s", err, got, want)
+	}
+	if *ran != nil {
+		t.Errorf("an installer ran without an update to install: %q", *ran)
+	}
+}
+
 // The installer's exit is phrased for a person; other failures (no shell
 // on PATH) pass through untouched.
 func TestInstallerFailureDetail(t *testing.T) {
@@ -44,14 +140,82 @@ func TestInstallerFailureDetail(t *testing.T) {
 	}
 }
 
-// availableLine is the single rendering shared by the passive notice and
-// --update --check. Asserted uncoloured, which is what a pipe gets.
-func TestAvailableLine(t *testing.T) {
-	got := availableLine("1.14.1", "1.14.0")
+// printAvailable is the single rendering shared by the passive notice and
+// --update --check. Asserted uncoloured, which is what a pipe gets. The
+// test binary is nobody's package, so the action is fsend's own command.
+func TestPrintAvailable(t *testing.T) {
+	got := captureStderr(t, func() { printAvailable("1.14.1", "1.14.0") })
 	want := "[i] fsend 1.14.1 is available (you have 1.14.0)\n" +
-		"  fsend --update  ·  https://github.com/polius/fsend/releases/tag/v1.14.1"
+		"  fsend --update · https://github.com/polius/fsend/releases/tag/v1.14.1\n"
 	if got != want {
-		t.Errorf("availableLine =\n%q\nwant\n%q", got, want)
+		t.Errorf("printAvailable =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// D2: the notice names an action that works on this installation.
+// `fsend --update` refuses (E039) on a Homebrew or packaged binary, so the
+// notice must never send those users to it.
+func TestAvailableNotice_NamesTheRightAction(t *testing.T) {
+	const link = "https://github.com/polius/fsend/releases/tag/v1.14.1"
+	cases := []struct {
+		name string
+		by   installer
+		want string
+	}{
+		{"install script", installer{}, "fsend --update · " + link},
+		{"homebrew", installer{brew: true}, "brew upgrade fsend · " + link},
+		{"deb", installer{pkg: "deb"}, "Install the new .deb: " + link},
+		{"rpm", installer{pkg: "rpm"}, "Install the new .rpm: " + link},
+		{"apk", installer{pkg: "apk"}, "Install the new .apk: " + link},
+	}
+	for _, c := range cases {
+		head, action := availableNotice("1.14.1", "v1.14.0", c.by)
+		if head != "fsend 1.14.1 is available (you have 1.14.0)" {
+			t.Errorf("%s: head = %q", c.name, head)
+		}
+		if action != c.want {
+			t.Errorf("%s: action = %q, want %q", c.name, action, c.want)
+		}
+		if selfManaged := c.by == (installer{}); !selfManaged && strings.Contains(action, "fsend --update") {
+			t.Errorf("%s: the notice points at fsend --update, which refuses here: %q", c.name, action)
+		}
+		// The line fits 80 columns under its two-column indent.
+		if n := len("  " + action); n > 79 {
+			t.Errorf("%s: action line is %d columns: %q", c.name, n, action)
+		}
+	}
+}
+
+// installerOf reads the same evidence runUpdate's refusals do: the notice
+// and the refusal can't disagree about who owns the binary.
+func TestInstallerOf(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "usr", "bin", "fsend")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := installerOf(bin); got != (installer{}) {
+		t.Errorf("no marker: installerOf = %+v, want fsend's own", got)
+	}
+	marker := filepath.Join(root, "usr", "share", "fsend", "package-manager")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"deb", "rpm", "apk"} {
+		if err := os.WriteFile(marker, []byte(f+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := installerOf(bin); got != (installer{pkg: f}) {
+			t.Errorf("%s marker: installerOf = %+v", f, got)
+		}
+	}
+	for _, brewBin := range []string{
+		"/opt/homebrew/Cellar/fsend/1.2.3/bin/fsend",
+		"/home/linuxbrew/.linuxbrew/Cellar/fsend/1.2.3/bin/fsend",
+	} {
+		if got := installerOf(brewBin); got != (installer{brew: true}) {
+			t.Errorf("installerOf(%q) = %+v, want Homebrew", brewBin, got)
+		}
 	}
 }
 
