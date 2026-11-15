@@ -48,7 +48,10 @@ func fwSample(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(b)
+	// A Windows checkout may hold the samples with CRLF line ends (git's
+	// autocrlf). The tools that wrote them end lines with LF, and that is
+	// what the parsers are tested on, whatever the checkout did.
+	return strings.ReplaceAll(string(b), "\r\n", "\n")
 }
 
 // lanAt is a machine at cidr on iface.

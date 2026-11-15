@@ -404,9 +404,14 @@ func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *conf
 		// Bring up QUIC on the established PacketConn and authenticate the
 		// first peer. Retries re-Accept on the same listener.
 		acceptCtx, cancelAccept := context.WithTimeout(ctx, firstAcceptTimeout)
-		go watchSessionGone(acceptCtx, client, created, cancelAccept)
+		watched := make(chan struct{})
+		go func() {
+			defer close(watched)
+			watchSessionGone(acceptCtx, client, created, cancelAccept)
+		}()
 		ln, res, teardown, err := senderQUICAccept(acceptCtx, pc, round.key.secret)
 		cancelAccept()
+		<-watched // nothing of the watch runs once the accept has returned
 		if err != nil {
 			endSession()
 			// A failed PAKE (a wrong confirmation tag) is not a vanished

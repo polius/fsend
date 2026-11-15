@@ -196,7 +196,15 @@ func sendFiles(ctx context.Context, s *Streams, opts SendOptions, peerCaps wire.
 
 	// Verify every resume prefix in the background while earlier files
 	// stream, so a big resume doesn't stall the pipe when its turn comes.
-	prefixes := startPrefixHashing(work, opts.Sources, decisions)
+	prefixes, hashed := startPrefixHashing(work, opts.Sources, decisions)
+	// "No hasher outlives the attempt" includes the moment it returns: the
+	// hasher is told to stop and then waited for (it stops within one
+	// block), so nothing of this attempt is still reading files, or the
+	// cache, once its caller has moved on.
+	defer func() {
+		stopWork()
+		<-hashed
+	}()
 
 	packer, err := newChunkPacker(s.Data)
 	if err != nil {
@@ -472,9 +480,11 @@ type prefixResult struct {
 // startPrefixHashing hashes each resume prefix of the source in the
 // background, in send order. Each result arrives on its own channel. It
 // stops when work ends (the attempt is over, or its connection is): the
-// remaining results then carry work's cause.
-func startPrefixHashing(work context.Context, sources []Source, decisions map[uint32]wire.Decision) map[uint32]chan prefixResult {
+// remaining results then carry work's cause. done closes when the hashing
+// goroutine has returned.
+func startPrefixHashing(work context.Context, sources []Source, decisions map[uint32]wire.Decision) (results map[uint32]chan prefixResult, done <-chan struct{}) {
 	out := make(map[uint32]chan prefixResult)
+	finished := make(chan struct{})
 	var jobs []*Source
 	for i := range sources {
 		src := &sources[i]
@@ -485,6 +495,7 @@ func startPrefixHashing(work context.Context, sources []Source, decisions map[ui
 		}
 	}
 	go func() {
+		defer close(finished)
 		for _, src := range jobs {
 			ch := out[src.Entry.Index]
 			if work.Err() != nil {
@@ -496,7 +507,7 @@ func startPrefixHashing(work context.Context, sources []Source, decisions map[ui
 			ch <- prefixResult{blocks: blocks, id: id, began: began, err: err}
 		}
 	}()
-	return out
+	return out, finished
 }
 
 // sendOneFile streams one regular file (resume-aware) through the packer,

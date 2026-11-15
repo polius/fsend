@@ -126,8 +126,11 @@ func TestPairOverInternet_ReceiverThatLeavesFreesTheCode(t *testing.T) {
 // not cost a receiver whose connection is already on its way: the sender
 // keeps accepting for the grace period.
 func TestPairOverInternet_SessionGoneGraceLetsTheReceiverFinish(t *testing.T) {
+	// A grace far longer than a handshake takes, also where the code's
+	// key stretch is slow (the 32-bit CI job needs seconds for it): the
+	// test ends as soon as the receiver is in, not when the grace does.
 	origEvery, origGrace := sessionWatchEvery, sessionGoneGrace
-	sessionWatchEvery, sessionGoneGrace = 20*time.Millisecond, 5*time.Second
+	sessionWatchEvery, sessionGoneGrace = 20*time.Millisecond, 45*time.Second
 	t.Cleanup(func() { sessionWatchEvery, sessionGoneGrace = origEvery, origGrace })
 
 	_, baseURL := newSignalingTestServer(t)
@@ -144,7 +147,7 @@ func TestPairOverInternet_SessionGoneGraceLetsTheReceiverFinish(t *testing.T) {
 	defer ts.Close()
 
 	const code = "abc-defg-jkm"
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
