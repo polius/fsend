@@ -1,0 +1,14 @@
+table netdev guard {
+	chain ingress {
+		type filter hook ingress device "eth0" priority filter; policy accept;
+		udp dport 50000-50999 drop
+	}
+}
+table inet filter {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		ct state established,related accept
+		iif "lo" accept
+		meta l4proto { tcp, udp } th dport 50000-50999 accept
+	}
+}

@@ -1,0 +1,9 @@
+Total number of apps = 4 
+1 : /Applications/Example Browser.app/Contents/Frameworks/Example Helper (Plugin).app 
+             (Allow incoming connections)
+2 : /Users/me/.nvm/versions/node/v22.21.1/bin/node 
+             (Allow incoming connections)
+3 : /opt/homebrew/Caskroom/fsend/1.12.0/fsend 
+             (Allow incoming connections)
+4 : /Users/me/.local/bin/fsend 
+             (Allow incoming connections)

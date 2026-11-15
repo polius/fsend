@@ -432,36 +432,52 @@ fsend doctor — checking what a transfer depends on
 
 ✓ config   server fsend.alzina.dev:443 (default)
 ✓ config   FSEND_SERVER overrides it: fs.example.com:443
-✓ server   reachable in 1ms
+✓ server   reachable in 152 ms
 ✓ clock    matches the server's
-✓ UDP      relay fs.example.com:443 answered in 1ms
-✓ TCP      relay fallback over TCP works (echo in 1ms)
-✓ NAT      behind NAT, public address 203.0.113.7 — direct paths need hole punching; when it fails, transfers use the relay
+✓ UDP      relay fs.example.com:443 answered in 54 ms
+✓ TCP      relay fallback over TCP works (echo in 61 ms)
+✓ NAT      behind NAT, public address 203.0.113.7 — direct paths need hole
+           punching; when it fails, transfers use the relay
 ✓ network  LAN address 192.168.1.85
 ✓ IPv6     no global address (IPv4 only) — fine; direct paths use IPv4
+✓ listener answered at 192.168.1.85:50412 over TCP in 16 ms and QUIC in 209 ms
+           dialled from this machine: the connection never left it, so this
+           shows the listener works, not that other devices get past a firewall
 ✓ firewall macOS firewall allows incoming connections to fsend
-✓ mDNS     local roundtrip ok in 3ms
-✓ mDNS     answered on the LAN in 30ms
+✓ mDNS     local roundtrip ok in 3 ms
+✓ mDNS     answered on the LAN in 30 ms
 
-✓ All 12 checks passed. Transfers will try your local network first.
+✓ All 13 checks passed. Transfers will try your local network first.
 ```
 
-A degraded run, against a server that predates the TCP fallback (shown
-as it prints when piped or with `FSEND_PLAIN=1`, where the glyphs become
-`[OK]`, `[!]` and `[FAIL]`):
+A row is one of three things: `✓` a check that passed, `!` a problem
+(with what it costs and, in the fainter lines under it, how to fix it),
+or a row with no mark, for something doctor could not find out — a
+firewall whose rules need root to read, say. A row with no mark is not
+counted and never fails the run.
+
+A run on Linux as an ordinary user, against a server that predates the
+TCP fallback (shown as it prints when piped or with `FSEND_PLAIN=1`,
+where the marks become `[OK]`, `[!]` and `[i]`, and nothing is wrapped):
 
 ```text
 fsend doctor — checking what a transfer depends on
 
 [OK] config   server fsend.alzina.dev:443 (default)
-[OK] server   reachable in 152ms
-[OK] UDP      relay fsend.alzina.dev:443 answered in 54ms
+[OK] server   reachable in 152 ms
+[OK] clock    matches the server's
+[OK] UDP      relay fsend.alzina.dev:443 answered in 54 ms
 [!] TCP      this server has no TCP fallback for its relay — on a network that blocks UDP, cross-network transfers will fail
 [OK] network  LAN address 192.168.1.85
-[OK] mDNS     local roundtrip ok in 13ms
-[OK] mDNS     answered on the LAN in 34ms
+[OK] IPv6     no global address (IPv4 only) — fine; direct paths use IPv4
+[OK] listener answered at 192.168.1.85:50664 over TCP in 2 ms and QUIC in 1 ms
+              dialled from this machine: the connection never left it, so this shows the listener works, not that other devices get past a firewall
+[i] firewall ufw is on and blocks incoming connections by default; its rules can't be read without root
+             `sudo ufw status` lists them. fsend listens on UDP and TCP 50000-50999; to open them:
+             sudo ufw allow 50000:50999/udp && sudo ufw allow 50000:50999/tcp
+[OK] mDNS     answered on the LAN in 34 ms (loopback has no multicast on this system; not needed)
 
-[FAIL] [E043] Some checks found a problem — see the warnings above.
+[FAIL] Some checks found a problem — see the warnings above. [E043]
   Each one says what it affects and what still works.
 ```
 
@@ -475,9 +491,84 @@ fsend doctor — checking what a transfer depends on
 | `NAT` | Whether this machine is behind NAT, from the public address the relay saw. Informational. Telling NAT types apart would need a second STUN server. No row when the relay is on your own network. |
 | `network` | The local LAN address fsend would announce. VPN/container interfaces are skipped. |
 | `IPv6` | Whether this machine has a global IPv6 address. Informational. |
-| `firewall` | macOS only: whether the application firewall lets other devices on the network connect to fsend. Blocked → same-network receivers go through the server instead. |
+| `listener` | A self-test of the socket receivers on your network connect to. See [below](#the-listener-check). |
+| `firewall` | Whether this machine's firewall lets devices on the network connect to that listener. See [below](#the-firewall-check). |
 | `mDNS` (roundtrip) | fsend's mDNS machinery tested over loopback — deterministic, the OS cannot filter it. A miss here means LAN discovery is unavailable entirely. |
 | `mDNS` (LAN answer) | Multicast across the physical interface. Blocked → discovering *other* devices falls back to the pairing server (transfers still complete; same-device transfers keep working). |
+
+### The listener check
+
+When you send, fsend listens on your local network for the receiver: on
+one port between 50000 and 50999 (derived from the code), over UDP for
+QUIC and over TCP, which receivers try first because it is faster.
+`listener` opens that listener exactly as a send does and connects to it
+the way a receiver does, through this machine's LAN address rather than
+loopback, over both routes and all the way through the handshake.
+
+- **What a pass shows:** fsend can bind the port for UDP and TCP, the LAN
+  address reaches it, and both routes complete (TLS, then the code
+  exchange). A failure names the route and why, and is a real finding:
+  if the listener does not answer even from this machine, no other
+  device will reach it either.
+- **What a pass cannot show:** that *another* device gets in. The
+  connection never leaves this machine, so it crosses neither the Wi-Fi
+  access point or switch between two devices (client isolation, VLANs)
+  nor, on Linux and Windows, the firewall: the same test passes on a
+  Linux machine whose ufw or firewalld turns every other device away.
+  macOS is the exception — its application firewall screens these
+  connections like any incoming one — so there a pass also means the
+  firewall lets fsend accept connections.
+
+No test run from one machine alone can do better without special
+privileges. That is why the `firewall` row reads the rules, and why only
+a real transfer from a second device settles it: when it ends with
+`local network`, the two devices connected directly.
+
+### The firewall check
+
+`firewall` answers one question — can a device on this network connect
+to fsend's listener (UDP and TCP 50000–50999 here), and if not, what do
+you change — from what each system lets an ordinary user read:
+
+| System | What is read | Without root or admin |
+|---|---|---|
+| macOS | The application firewall (`socketfilterfw`): on or off, "block all incoming connections", and whether fsend is allowed. The firewall knows apps by code signature rather than by path, so a fsend it has no entry for counts as allowed when the listener check got through (see above). | Everything. |
+| Windows | Windows Defender Firewall: whether it is on for the network type in use (domain, private, public), "block all incoming connections", and the rules for this `fsend.exe` — including the block rule Windows leaves behind when its "allow access?" prompt is cancelled, the usual reason a Windows sender is unreachable. Group Policy settings are honoured. Third-party firewalls are not inspected. | Everything. |
+| Linux, ufw | Whether ufw is on, its default policy, and its rules for the port range. | On/off and the default policy. The rules file is root-only, so the row says the rules are unread and prints the command that opens the ports. |
+| Linux, firewalld | The zone of the LAN interface: its target, open ports and rich rules. | Depends on polkit: a desktop session can usually read it, an ssh session cannot. Unread → the row says so and names the zone. |
+| Linux, nftables / iptables | With neither ufw nor firewalld active, the kernel's own rules. doctor follows a new connection to the port range through them and reports a verdict only when the rules settle it; rules it cannot model (named sets, marks) make the row say "unclear". | Nothing: these need root. The row says so; `sudo fsend doctor` reads them. |
+
+On other systems (the BSDs) there is no `firewall` row.
+
+When a firewall blocks the listener, transfers to devices on your
+network still complete: the receiver pairs through the server, and the
+two sides usually still find a direct path. They just start slower and
+miss the fast TCP route. The row prints the fix:
+
+```sh
+# ufw
+sudo ufw allow 50000:50999/udp && sudo ufw allow 50000:50999/tcp
+
+# firewalld (use the zone the row names)
+sudo firewall-cmd --zone=public --add-port=50000-50999/udp --add-port=50000-50999/tcp
+sudo firewall-cmd --runtime-to-permanent
+
+# nftables (the row names your table and chain)
+sudo nft insert rule inet filter input udp dport 50000-50999 accept
+sudo nft insert rule inet filter input tcp dport 50000-50999 accept
+```
+
+On macOS, allow fsend in System Settings → Network → Firewall →
+Options. On Windows, choose **Allow** when Windows asks about fsend, or
+run in an administrator terminal:
+
+```bat
+netsh advfirewall firewall add rule name="fsend" dir=in action=allow program="C:\path\to\fsend.exe" enable=yes
+```
+
+The listener accepts only devices on your local network, and every
+connection still has to prove it knows the code, so opening these ports
+exposes nothing to the internet.
 
 ## `fsend server`
 

@@ -1,0 +1,5 @@
+Total number of apps = 2 
+1 : /Users/me/.nvm/versions/node/v22.21.1/bin/node 
+             (Allow incoming connections)
+2 : /Users/me/Downloads/fsend 
+             (Block incoming connections)

@@ -1,0 +1,19 @@
+
+ôffentliches Profil-Einstellungen: 
+----------------------------------------------------------------------
+Status                                EIN
+Firewallrichtlinie                    BlockInbound,AllowOutbound
+LocalFirewallRules                    Nicht zutreffend (nur fÅr Gruppenrichtlinienobjektspeicher)
+LocalConSecRules                      Nicht zutreffend (nur fÅr Gruppenrichtlinienobjektspeicher)
+InboundUserNotification               Aktivieren
+RemoteManagement                      Deaktivieren
+UnicastResponseToMulticast            Aktivieren
+
+Protokollierung:
+LogAllowedConnections                 Deaktivieren
+LogDroppedConnections                 Deaktivieren
+FileName                              %systemroot%\system32\LogFiles\Firewall\pfirewall.log
+MaxFileSize                           4096
+
+OK.
+
