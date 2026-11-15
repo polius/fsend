@@ -44,8 +44,9 @@ The pairing server introduces the two devices. It sees:
 - when it relays, the size and timing of the encrypted traffic.
 
 It never sees the code, file names, sizes, contents, device names or a
-`--password`. It keeps pairing state in memory only, and at the default
-log level it logs no IP addresses and nothing per transfer.
+`--password`. It keeps pairing state in memory only. At the default log
+level it logs no IP addresses and no slots: only startup, shutdown,
+errors, and one line per failed request (method, route, status).
 
 A send on the local network still registers with the server, so that a
 receiver elsewhere could find it. `--local` skips the server completely.
@@ -70,19 +71,20 @@ curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-jkm
 & ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code abc-defg-jkm
 ```
 
-The sender prints the first line under the share command when it uses
-the default server.
+When the sender uses the default server, it prints an install line of
+this kind under the share command.
 
 ## How long does a code live? What happens after wrong guesses?
 
 - A code works while the sender keeps running. Each wait for a receiver
   lasts up to one hour, then the sender stops with `E007`. Ctrl-C on the
   sender ends the code at once.
-- A code works for one receiver. Once a receiver has connected, anyone
-  else who tries the code gets `E003` for ten minutes, then `E002`.
-- A mistyped code is simply not found (`E002`, after about 6 seconds).
-  Each code leads to its own meeting point, so a wrong one never reaches
-  the sender.
+- A code works for one receiver. Once a receiver has connected, another
+  device that tries the code is told it was already claimed (`E003`).
+  About ten minutes later the code is simply not found (`E002`).
+- A mistyped code is not found either (`E002`, after a few seconds of
+  looking). Each code leads to its own meeting point, so a wrong one
+  never reaches the sender.
 - Guessing is expensive. A code has about 45 bits, every guess costs a
   64 MiB argon2id computation, and it only works against a sender that
   is waiting right then. The public server also limits new sessions and
@@ -92,8 +94,8 @@ the default server.
   it slows down such attempts and can stop listening on the local
   network for that send. The limits are in
   [Security → Share codes](security.md#share-codes).
-- With `--password`, the receiver gets three tries per connection, and
-  the sender gives up after three rounds.
+- With `--password`, a receiver who types the password gets three
+  tries per connection, and the sender gives up after three rounds.
 
 ## What happens if the transfer is interrupted?
 
@@ -125,7 +127,7 @@ Whichever pairs first is used. Each summary names the route:
 |---|---|---|
 | `local network` | Both devices on one network | Straight between them: TLS over TCP, or QUIC if TCP doesn't connect |
 | `direct` | Different networks, NATs that can be hole-punched | Straight between them over UDP (QUIC) |
-| `relay` | No direct path (fsend tries for up to 5 seconds) | Through the server, still encrypted end to end: over UDP, or over HTTPS (TCP 443) when UDP is blocked |
+| `relay via <server>` | No direct path (fsend tries for up to 5 seconds) | Through the server, still encrypted end to end: over UDP, or over HTTPS (TCP 443) when UDP is blocked |
 
 If local discovery is blocked (Wi-Fi client isolation, a firewall), the
 two devices pair through the server. They may still connect straight
@@ -157,7 +159,8 @@ route and goes through the server instead. If it blocks only TCP there,
 the transfer uses QUIC over UDP, which is much slower on a fast link.
 macOS and Windows may ask whether fsend may accept incoming connections
 the first time you send; say yes for local transfers. `fsend doctor`
-checks the server, the relay over UDP and TCP, and local discovery.
+checks, among other things, the server, the relay over UDP and TCP, and
+local discovery.
 
 A server operator opens 80/tcp, 443/tcp and 443/udp
 ([Self-hosting](self-hosting.md#before-you-start)).
@@ -175,7 +178,7 @@ random data, the receiver discarding the bytes:
 | Relay | 26–29 MB/s | about 170 MB/s |
 
 - Data that compresses goes through zstd on several cores (source code:
-  about 690 MB/s on the local route).
+  about 690 MB/s on the local route, on macOS).
 - The public relay is shared and best effort. A relayed transfer is
   limited by that server, not by your link.
 - Re-sending a folder moves only the files that are new or changed.
@@ -237,16 +240,16 @@ are listed in `checksums.txt` but are not signed as packages. Details:
 - `fsend --update` downloads the new release's install script, checks it
   against that release's checksums, and runs it. As root it refuses
   unless `FSEND_ALLOW_ROOT=1` is set.
-- `fsend --uninstall` removes the binary and fsend's config folder. On a
-  Homebrew or package install, `--update` and `--uninstall` stop with
-  `E039` and name the command to run. The package managers leave the
-  config folder in place (its path per system is in
-  [Usage](usage.md#choosing-a-server---connect)).
+- `fsend --uninstall` asks first, then removes the binary and fsend's
+  config folder. On a Homebrew or package install, `--update` and
+  `--uninstall` stop with `E039` and say what to do instead (the table
+  above). The package managers leave the config folder in place (its
+  path per system is in [Usage](usage.md#choosing-a-server---connect)).
 
 ## Can I send text, or pipe data in and out?
 
 ```bash
-fsend --text "wifi: hunter2"            # the receiver prints it; nothing is saved
+fsend --text "wifi: hunter2"            # the receiver prints it; no file is kept
 pg_dump mydb | fsend --as db.sql        # send a stream; the receiver saves it as db.sql
 fsend abc-defg-jkm --out - | tar x      # receive to stdout (a folder arrives as tar)
 fsend abc-defg-jkm > note.txt           # keep a text payload
