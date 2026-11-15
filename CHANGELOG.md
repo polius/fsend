@@ -15,10 +15,11 @@ The wire protocol is unchanged (protocol 3). This release transfers with
 ### Upgrade notes
 
 - **Self-hosted behind the bundled Caddy: redeploy with the new compose
-  file.** It sets `FSEND_SERVER_TRUSTED_PROXIES`, so each client gets its
-  own per-IP limits. Without it, every client behind Caddy shares one
-  allowance, as before. Download `deploy/compose/docker-compose.yml`
-  again (or add that line to yours), then run
+  file.** It sets `FSEND_SERVER_TRUSTED_PROXIES`, so the per-IP limits,
+  if you set them, count each client on its own. Without it, every
+  client behind Caddy shares one allowance, as before. Download
+  `deploy/compose/docker-compose.yml` again (or add that line to yours),
+  then run
   `docker compose pull && docker compose up -d`. Details under Added.
 - **Firewalls: the sender now also listens for TCP on the local
   network**, on the port it already used for UDP (one port per code,
@@ -34,8 +35,8 @@ The wire protocol is unchanged (protocol 3). This release transfers with
   files for x86-64, arm64, ARMv6, ARMv7, 32-bit x86 and riscv64. They
   install the binary to `/usr/bin`, the man pages, and completions for
   bash, zsh and fish. On a packaged install, `fsend --update` and
-  `fsend --uninstall` stop with `E039` and name the package manager
-  command to run instead.
+  `fsend --uninstall` stop with `E039` and say how to update or remove
+  the package instead.
 - **Man pages and completions in the release archives**, in `manpages/`
   and `completions/`.
 - **Install and receive in one line.** The installers take a share code
@@ -43,7 +44,7 @@ The wire protocol is unchanged (protocol 3). This release transfers with
   `curl -fsSL https://getfsend.alzina.dev | sh -s -- <code>`, or in
   PowerShell
   `& ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code <code>`.
-  The sender prints the first form under the share command, for a
+  The sender prints an install line under the share command, for a
   receiver who doesn't have fsend yet (only when it uses the default
   server).
 - **The receive command goes to the clipboard.** The sender copies
@@ -126,7 +127,7 @@ Measured with both ends on one machine, the receiver writing to
   the sender stops listening on the local network and keeps waiting
   through the server.
 - **A receiver that connects and then vanishes no longer uses up the
-  code.** The sender says so and waits again.
+  code.** The sender says so and waits again, up to three times.
 - **A broken link inside a folder no longer stops the send.** The sender
   skips it, lists it, and exits `E050`; everything else arrives. A
   broken link named on the command line, or a link that loops, still
@@ -169,6 +170,9 @@ Measured with both ends on one machine, the receiver writing to
   is staged inside the install folder and renamed into place.
 - **Relay: a flood of STUN requests** no longer pushes registered peers
   onto the TCP fallback.
+- **The server no longer logs client variables as typos**: a shell that
+  also sets `FSEND_SERVER` or `FSEND_NO_UPDATE_CHECK` got "ignoring
+  unknown variable (typo?)" at startup.
 - **The server image** is built with Go 1.27.4, which fixes GO-2026-6859
   in `net/http`.
 
