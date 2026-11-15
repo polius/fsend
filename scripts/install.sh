@@ -49,13 +49,15 @@ if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     esc="$(printf '\033')"
     C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_RST="${esc}[0m"
     # C_ORG styles a command the user is about to run — the same bold +
-    # accent-orange treatment the fsend binary gives one (uxlog.Code,
-    # tokenAccent #ff9e64): truecolour when the terminal advertises it
-    # (COLORTERM), nearest 256-colour index otherwise. Bold is folded in
-    # like the binary's fgBold; one C_RST clears both.
+    # accent treatment the fsend binary gives one (uxlog.Code). The colour
+    # is the binary's dark accent, the logo orange #e0805a (tokenAccent in
+    # internal/uxlog/glyphs.go): truecolour when the terminal advertises
+    # it (COLORTERM), otherwise 173, the nearest xterm-256 cell, as the
+    # binary's nearest256 picks it. Bold is folded in like the binary's
+    # fgBold; one C_RST clears both.
     case "${COLORTERM:-}" in
-        truecolor|24bit|TrueColor|24BIT) C_ORG="${esc}[1;38;2;255;158;100m" ;;
-        *)                               C_ORG="${esc}[1;38;5;209m" ;;
+        truecolor|24bit|TrueColor|24BIT) C_ORG="${esc}[1;38;2;224;128;90m" ;;
+        *)                               C_ORG="${esc}[1;38;5;173m" ;;
     esac
 else
     C_RED='' C_GRN='' C_YLW='' C_RST='' C_ORG=''

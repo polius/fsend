@@ -35,7 +35,8 @@ The E2E suite builds its own binary in a temp dir and runs an isolated
 server on loopback — no shell wrapper needed. It takes roughly 70–110 s
 (about 105 s on an M-series laptop, including the build); much of that
 is tests waiting out real timeouts. CI runs every gating `go test` with
-`-count=1 -timeout 600s`, so it never reuses cached results.
+`-count=1` and a timeout (600 s; 900 s in the FreeBSD VM), so it never
+reuses cached results.
 
 The LAN discovery tests skip on a machine without working multicast.
 Set `FSEND_TEST_REQUIRE_MULTICAST=1` to make them fail instead; CI does,
@@ -47,8 +48,10 @@ so discovery can't pass there by not running.
 and Intel), Windows (x86-64 and ARM), 32-bit x86 and a FreeBSD VM (plus
 `-race` on amd64 and arm64), golangci-lint, govulncheck, fuzzing, a dead-code check, a
 snapshot release build of every target (checked to be byte-identical on
-rebuild), the install-script smoke tests, workflow linting (actionlint,
-zizmor) and the coverage gate. A final **`ci-ok`** job fails unless
+rebuild), a lint of the changelog the release notes come from, the
+install-script smoke tests, the terminal UI audit
+([below](#ux-colour-audit), on Linux and macOS), workflow linting
+(actionlint, zizmor) and the coverage gate. A final **`ci-ok`** job fails unless
 every other job passed; it is the one check to mark as required on the
 branch, so new jobs are gated without changing repository settings.
 
@@ -157,10 +160,45 @@ raw SGR stream and asserted against the design tokens in
 green-means-success rule are checked at 60, 80 and 100 columns for an
 unknown, dark and light background (the fake terminal can answer the
 OSC 11 query); degradation contracts (NO_COLOR, piped stderr, ASCII
-fallbacks) must hold byte-clean. Unix only. Run it before
-merging any change that touches `internal/uxlog` or the CLI's stderr
-surfaces — it is a manual gate, not wired into CI, because its
-assertions are design choices (exact hues) that are meant to evolve.
+fallbacks) must hold byte-clean. Unix only. It takes about five minutes.
+With working multicast the two sides find each other over mDNS and use
+the local-network route; without it they pair through the script's
+server and the checks still pass, on the QUIC path. (On Linux, loopback
+has multicast off by default: `sudo ip link set lo multicast on`.)
+
+CI runs it on Linux and macOS (the `ux` job). Its assertions include
+design choices (exact hues), so a deliberate change to the UI changes
+the script in the same pull request.
+
+```sh
+python3 scripts/validate-ux.py s14 s21   # only these scenarios
+```
+
+A check that fails because of a known problem in the product is listed
+in `EXPECTED_FAILURES` at the top of the script, with the reason. It is
+reported as `XFAIL` and doesn't fail the run. When such a check passes
+it is reported as `XPASS` and the run fails, so the entry is removed in
+the same change that fixes the product.
+
+## Releasing
+
+The body of a GitHub release is the section of
+[`CHANGELOG.md`](../CHANGELOG.md) for that version, not a list of commit
+titles. To release `1.17.0`:
+
+1. Rename `## Unreleased` in `CHANGELOG.md` to `## 1.17.0` and commit.
+2. Read the notes as they will appear:
+   `python3 scripts/release-notes.py v1.17.0`.
+3. Tag that commit `v1.17.0` and push the tag.
+
+`.github/workflows/release.yml` then runs `scripts/release-notes.py`
+first. A tag with no section, or an empty one, stops the release there
+with a message that says what to do. Otherwise the tests run and
+goreleaser publishes with those notes (`--release-notes`). The script
+joins wrapped lines, pins relative links to the tag, and adds a footer
+with install, verification and compatibility links and the comparison
+with the previous tag. CI lints the changelog on every pull request
+(`python3 scripts/release-notes.py --check`).
 
 
 ## LAN smoke test (no server needed)

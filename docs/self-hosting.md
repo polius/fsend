@@ -5,8 +5,10 @@
 > box. This page is only about the **pairing server**: an optional service
 > that helps two peers find each other **across the internet**, and relays
 > the transfer when a direct connection can't be made. On the same network
-> it isn't involved at all — peers discover each other over the LAN (mDNS)
-> and the bytes go straight across, even with the server offline.
+> it isn't needed — peers discover each other over the LAN (mDNS) and the
+> bytes go straight across, even with the server offline. (A sender
+> still registers its code with the server unless it runs with
+> `--local`.)
 
 By default, fsend uses a free pairing server at `fsend.alzina.dev`, run by
 the maintainer on a best-effort basis (no uptime guarantee). It does two
@@ -73,8 +75,9 @@ with a UDP peer in the same allocation. The server pings each WebSocket
 every 15 s, which keeps it alive through the Caddyfile's 30 s timeouts.
 Behind another proxy (nginx, Traefik), make sure WebSocket upgrades are
 passed through on `/v1/relay/ws` and idle timeouts exceed 15 s; behind a
-CDN that can't carry UDP, set `FSEND_RELAY_PUBLIC_ADDR` so clients can
-still reach the UDP relay directly. Relayed transfers over TCP pass
+CDN that can't carry UDP, set `FSEND_RELAY_PUBLIC_ADDR` to the server's
+public IP address and port so clients can still reach the UDP relay
+directly. Relayed transfers over TCP pass
 through Caddy, so they cost it some CPU.
 
 ```
@@ -156,8 +159,8 @@ checks it end to end, including the UDP relay and the TCP fallback.
 ## Require a password (optional)
 
 By default, anyone who knows the address can use the server. To lock it
-down, set `FSEND_SERVER_PASSWORD` in `docker-compose.yml` (it ships empty)
-and restart:
+down, set `FSEND_SERVER_PASSWORD` in `docker-compose.yml` (it ships
+commented out) and restart:
 
 ```yaml
     environment:
@@ -165,8 +168,8 @@ and restart:
 ```
 
 Use a long random value (`openssl rand -base64 24`). Wrong guesses are
-counted in metrics but not throttled per client — behind Caddy every client
-shares one source address, so a lockout would lock everyone out — and the
+counted in metrics (`sessions_rejected_total.unauthorized`) but are not
+throttled or locked out, so the password's length is its protection. The
 server warns at startup about passwords shorter than 16 characters.
 
 ```sh
@@ -195,7 +198,7 @@ or with the wrong one — fails with `E028`.
   `FSEND_LOG_LEVEL=debug` adds IPs and request paths.
 - **Update.** `docker compose pull && docker compose up -d`. The image
   tracks `poliuscorp/fsend:latest` unless you pin a release with
-  `FSEND_VERSION=1.15.0` for immutable, reproducible upgrades. On stop the
+  `FSEND_VERSION=1.17.0` for immutable, reproducible upgrades. On stop the
   server first lets in-flight relay transfers finish (up to 30s) while
   pairing keeps working, then stops signaling (up to 5s); a second
   `SIGTERM`/Ctrl-C skips the wait. The compose file sets
@@ -211,8 +214,7 @@ or with the wrong one — fails with `E028`.
   tombstones live in one process's memory, so run exactly one `fsend`
   server per hostname: two replicas behind a load balancer would split
   senders and receivers across processes that can't see each other's
-  codes. Scale up the VM instead of out. The state file is not a way to
-  share state between instances: it is read once at start and deleted.
+  codes. Scale up the VM instead of out.
 - **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
   within an hour; certificates live in the `caddy_data` volume, and Caddy
   reissues them automatically if you lose it. That reissue is the recovery
@@ -239,7 +241,9 @@ That listener serves two paths:
   scrapers). Names are `fsend_<field>`, e.g. `fsend_sessions_created_total`,
   `fsend_sessions_rejected_total{reason="rate_limit"}`,
   `fsend_relay_forwarded_bytes_total`, `fsend_build_info{version="…"}`.
-- `GET /metrics.json` — the same snapshot as JSON:
+- `GET /metrics.json` — the same snapshot as JSON, plus two relay
+  counters that the Prometheus output doesn't have
+  (`datagrams_oversize_total`, `tcp_fallback_total`):
 
 ```json
 {
@@ -256,7 +260,10 @@ That listener serves two paths:
     "transfers_total": 412,
     "transfers_capped_total": 4,
     "bytes_forwarded_total": 5839201023,
-    "peak_transfer_bytes": 940000000
+    "peak_transfer_bytes": 940000000,
+    "budget_bytes_today": 0,
+    "datagrams_oversize_total": 0,
+    "tcp_fallback_total": 37
   }
 }
 ```
@@ -272,7 +279,7 @@ the public port.
 | `uptime_seconds` | Seconds since the process started — spot restarts. |
 | `sessions_active` | Pairing sessions live right now — current load. |
 | `sessions_created_total` | Sessions a sender opened since boot — total usage. |
-| `sessions_paired_total` | Sessions a receiver successfully joined. Compared to `sessions_created_total`, the gap is senders who never found a receiver (abandoned codes). |
+| `sessions_paired_total` | Sessions a receiver successfully joined. Compared to `sessions_created_total`, the gap is sessions no receiver joined through the server: abandoned codes, and also every transfer that paired over the local network. |
 | `sessions_rejected_total.rate_limit` | Sessions refused by the per-IP rate cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE`) — bursts or brute-force. |
 | `sessions_rejected_total.concurrency_limit` | Sessions refused by the per-IP concurrency cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP`). |
 | `sessions_rejected_total.unauthorized` | Wrong/missing `FSEND_SERVER_PASSWORD` — brute-force or misconfigured clients (always `0` on an open server). |
@@ -283,9 +290,13 @@ the public port.
 | `relay.transfers_capped_total` | Transfers cut off for hitting the per-session byte cap — raise the cap if this climbs. |
 | `relay.bytes_forwarded_total` | Cumulative bytes relayed since boot — what the relay is costing you. |
 | `relay.peak_transfer_bytes` | Largest single transfer so far; compare to your byte cap to see headroom. |
-| `relay.budget_bytes_today` | Bytes forwarded so far in the current UTC day (same count as the budget). Approaching your configured `FSEND_RELAY_MAX_BYTES_PER_DAY` is your early warning; reaching it means the breaker has tripped and transfers are being refused until 00:00 UTC. |
+| `relay.budget_bytes_today` | Bytes forwarded so far in the current UTC day (same count as the budget). Counted only when `FSEND_RELAY_MAX_BYTES_PER_DAY` is set; otherwise it stays `0`. Approaching your configured `FSEND_RELAY_MAX_BYTES_PER_DAY` is your early warning; reaching it means the breaker has tripped and transfers are being refused until 00:00 UTC. |
 
-The `relay` block is omitted when the server runs without a relay.
+| `relay.datagrams_oversize_total` | Datagrams dropped for being larger than the relay accepts (JSON only). |
+| `relay.tcp_fallback_total` | Relay connections accepted over the WebSocket (TCP) fallback (JSON only). |
+
+In pairing-only mode the `relay` block is still there, with
+`forwarding` set to `false`.
 
 **Access.** Bind `FSEND_METRICS_ADDR` to loopback (`127.0.0.1:9090`) when
 the scraper runs on the host, or leave the port unpublished in Docker and
@@ -302,7 +313,7 @@ this listener; never publish it.
 | `fsend doctor` says the server has no TCP fallback | The server predates it, or a proxy in front of fsend blocks the WebSocket upgrade on `/v1/relay/ws`. |
 | Old clients fail with `E060` | You set `FSEND_MIN_CLIENT_VERSION`, or the clients speak an older wire protocol than this server. They need `fsend --update`. |
 | Pairing starts but the transfer hangs or drops | A reverse proxy in front of fsend (not the bundled Caddy) is buffering long-poll signaling. Caddy is configured for 30s read/write; nginx/Traefik need the same. |
-| Clients hit `E028` ("pairing server requires a password") | You set `FSEND_SERVER_PASSWORD` on the server. Clients must connect with `fsend --connect host:443,<password>`. |
+| Clients hit `E028` ("The server requires a password.") | You set `FSEND_SERVER_PASSWORD` on the server. Clients must connect with `fsend --connect host:443,<password>`. |
 
 ## Configuration
 
@@ -355,7 +366,7 @@ TCP listener and per-IP session limits), and the **relay / data plane**
 | `FSEND_MIN_CLIENT_VERSION` | _(none)_ | Refuse fsend releases below this version (e.g. `1.15.0`): they get HTTP 426 and `E060` ("too old for the pairing server"). Clients on an older wire protocol than the server speaks are always refused this way. Development builds are not checked. |
 | `FSEND_RELAY_ENABLED` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
 | `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>` unless `FSEND_RELAY_PUBLIC_ADDR` is set. |
-| `FSEND_RELAY_PUBLIC_ADDR` | _(unset)_ | `host:port` advertised to clients for STUN and the relay, overriding `<request-host>:<FSEND_RELAY_ADDR port>`. Set it when signaling is behind a CDN proxy (e.g. Cloudflare's orange cloud, which can't carry UDP) or on a different hostname than the relay. |
+| `FSEND_RELAY_PUBLIC_ADDR` | _(unset)_ | `host:port` advertised to clients for STUN and the relay, overriding `<request-host>:<FSEND_RELAY_ADDR port>`. Set it when signaling is behind a CDN proxy (e.g. Cloudflare's orange cloud, which can't carry UDP). The host must be the name clients use for the server, or a public IP address: clients refuse a relay on a different hostname and use the TCP fallback instead. |
 | `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap — wire bytes after compression. Defaults to unlimited; set a value to bound per-transfer bandwidth. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |
 | `FSEND_RELAY_MAX_BYTES_PER_DAY` | `0` (unlimited) | **Egress budget** — outbound bytes the relay forwards **per UTC day** across all sessions. The Denial-of-Wallet ceiling: once spent, the relay stops forwarding and refuses new transfers until 00:00 UTC. Bounds a distributed abuser that the per-IP caps can't. Each byte is counted once, so a 1 MB file sent over the relay uses about 1 MB of budget. Only relay-fallback transfers count — same-network and direct transfers don't, and STUN doesn't. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500GB`, `2TB`) or a plain byte count; default unlimited — **set a value to bound your bandwidth bill**. |
 
@@ -367,7 +378,8 @@ forwards a single byte of file data. Use this when you want to help peers
 find each other without paying for — or being liable for — relayed traffic.
 
 The trade-off: when hole-punching fails (typically symmetric NAT on both
-ends), there is no fallback. Those transfers fail with a clear
-"relay forwarding disabled" error instead of relaying. Same-LAN and
+ends), there is no fallback. Those transfers fail with `E014` ("Could
+not reach the other side."); `--debug` adds that the server has relay
+forwarding disabled. Same-LAN and
 direct-internet transfers are unaffected. The UDP listener still binds (STUN
 needs it); only forwarding is off.

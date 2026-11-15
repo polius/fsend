@@ -7,7 +7,7 @@
 # Usage:   export FSEND_DOMAIN=<your-domain-or-subdomain>   # e.g. fsend.alzina.dev
 #          docker compose up -d
 # Upgrade: docker compose pull && docker compose up -d
-# Pin:     export FSEND_VERSION=1.15.0   # default: latest
+# Pin:     export FSEND_VERSION=1.17.0   # default: latest
 #
 # Run exactly one fsend server per domain: pairing state is per process.
 #

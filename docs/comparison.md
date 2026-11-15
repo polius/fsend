@@ -86,7 +86,8 @@ be sent, `--json` serves scripts, and `fsend doctor` diagnoses
 connectivity.
 
 **One binary, private by default.** The client is also the server
-(`fsend server`). The server logs no client IPs and exposes metrics
+(`fsend server`). At its default log level the server logs no client
+IPs, and it exposes metrics
 only on a private listener. Releases are signed with cosign and carry
 GitHub attestations; croc publishes checksums only.
 

@@ -68,8 +68,8 @@ line:
 
 The file lands in the current directory (use `--out <dir>` to change
 that, or `--yes` to skip the prompt). The trailing chip names the route:
-`local network`, `direct`, or `relay`. That's the whole flow —
-everything below is detail.
+`local network`, `direct`, or `relay via <server>`. That's the whole
+flow — everything below is detail.
 
 ## Sending
 
@@ -84,9 +84,12 @@ is sent without a positional argument; an empty or `/dev/null` stdin shows
 help instead. When stdout isn't a terminal, the bare code is also printed
 there (`code=$(fsend f)`).
 
-A file the sender can't read (permissions, or it vanished or shrank
-mid-send) is skipped and listed on both sides; everything else still
-transfers, and both sides exit `E050`. A file that changes while it's
+A file inside a folder that the sender can't read (permissions), or any
+file that vanishes or shrinks mid-send, is skipped and listed on both
+sides; everything else still transfers, and both sides exit `E050`. A
+file or folder named on the command line that can't be read, or a
+subfolder that can't be listed, stops the send with `E010` before a code
+is issued. A file that changes while it's
 being read is still sent, with a warning on both sides that the copy may
 be inconsistent. One transfer can hold up to 4,000,000 files and
 folders; past that the sender refuses before issuing a code (`E051`).
@@ -132,11 +135,13 @@ fsend <code> [flags]
 ```
 
 By default the receiver sees the sender's device name and what they're
-sending, then confirms. Pass `--yes` to skip. Codes are forgiving: any
-case, spaces, underscores or dots for hyphens (`abc defg jkm`), no
-hyphens at all (`abcdefgjkm`), surrounding quotes and a trailing full
-stop all work — unless a file by that exact name exists, which is sent
-instead. To keep the code out of the process list on a shared machine,
+sending, then confirms. Pass `--yes` to skip. (A short `--text` is
+printed on a terminal without asking.) Codes are forgiving: any
+case, spaces, underscores or dots for hyphens (`abc defg jkm`, also
+typed as three words: `fsend abc defg jkm`), no hyphens at all
+(`abcdefgjkm`), surrounding quotes and a trailing full stop all work —
+unless a file by that exact name exists, which is sent instead. To keep
+the code out of the process list on a shared machine,
 use `FSEND_CODE=abc-defg-jkm fsend`, or bare `fsend --receive` to be asked
 for it.
 
@@ -149,7 +154,7 @@ written.
 | `-y`, `--yes` | Auto-accept. Files that already exist and differ are kept (exit `E013`) unless you also pass `--overwrite` or `--rename`. |
 | `-o`, `--out <dir>` | Receive into this directory (created if missing, like `mkdir -p`). Default: cwd. |
 | `-o -`, `--out -` | Stream the payload to stdout instead of saving it. A single file, text or piped stream arrives as raw bytes; a folder or several files arrive as a plain (uncompressed) tar stream: `fsend <code> -o - \| tar x`. Retries are disabled: emitted bytes can't be rewound. |
-| `--overwrite` | Replace existing files whose contents **differ**. A folder is never deleted to make room for a file. (Identical files are skipped either way.) |
+| `--overwrite` | Replace existing files whose contents **differ**. A folder is never deleted to make room for a file, unless it is empty. (Identical files are skipped either way.) |
 | `--rename` | Keep both: save each differing file next to yours as `name (1).ext`. |
 | `--manifest <file>` | After receiving, write a CSV record (`path,size,status,sha256`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `renamed` / `kept` / `resumed` / `skipped`) and the SHA-256 of the content written (empty when no bytes moved this run, e.g. identical or kept files). |
 | `--checksum` | Decide what's already present by hashing **contents** (BLAKE3) instead of comparing size + mtime — like rsync's `-c`. See [below](#when-a-file-already-exists). |
@@ -187,21 +192,27 @@ decides:
   catches a file that changed in place without its size or timestamp
   changing.
 
-Byte-identical files are always skipped silently, and if everything is
-already up to date there is no prompt at all. When some files *do*
-differ, the accept prompt lists them (up to five; `l` lists all) and asks
-once what to do:
+Identical files (by the rule in use) are always skipped silently, and
+if everything is already up to date there is no prompt at all. When some
+files *do* differ, the accept prompt lists them (the first five when
+there are more than six; `l` lists all) and asks once what to do:
 
 ```console
-  1 file here already exists and differs:
-    a.txt  − 2 B → + 8 B
-  Save to ./?  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
+? 1 file here already exists and differs
+    a.txt   2 B → 8 B   yours is newer by 3 h
+! Yours is newer — replace would lose your changes
+? Save to ./  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
 ```
 
+Each row says which copy is newer (`yours is newer by 3 h`, `theirs is
+newer by 2 d`, or `same age`). The warning line appears only when every
+local copy is the newer one.
+
 - **Keep both** (the default, also `y` or Enter) saves the incoming copy
-  as `a (1).txt`.
-- **Replace** overwrites your copy. Folders are never deleted to make
-  room for a file.
+  as `a (1).txt`. If a copy from an earlier run already holds the
+  incoming version, no second copy is made.
+- **Replace** overwrites your copy. A folder is never deleted to make
+  room for a file, unless it is empty.
 - **Skip them** keeps your copies and receives everything else. That's
   your decision, so fsend exits 0.
 - **No** declines the whole transfer (also exit 0).
@@ -225,11 +236,14 @@ before it keeps it. For an independent check, `--manifest <file>` records
 the SHA-256 of each file written this run; compare it against
 `shasum -a 256 <file>` on the sender. (The terminal doesn't print hashes.)
 
-The progress bar carries a route chip — `local network`, `direct`, or
-`relay` — showing which path the bytes are taking. A successful transfer
-that took 10 seconds or more rings the terminal bell and raises a desktop
-notification (when stderr is a terminal and `--quiet` is not set;
-`FSEND_NO_NOTIFY=1` turns it off).
+The route (`local network`, `direct`, or `relay via <server>`) is
+named on the sender's "Receiver connected" line, on the receiver's
+"Incoming" block and in both summaries. (Plain output, piped or
+`FSEND_PLAIN=1`, repeats it on each progress line.) A successful run
+that lasted 10 seconds or more, the wait for the other side included,
+rings the terminal bell and raises a desktop notification (when stderr
+is a terminal and `--quiet` is not set; `FSEND_NO_NOTIFY=1` turns it
+off).
 
 ### Resuming an interrupted transfer
 
@@ -313,7 +327,7 @@ Fields of `done`:
 | `role` | `"sender"` or `"receiver"`; omitted when the command fails before either path is entered (e.g. a flag-parse error) |
 | `bytes_total` | Per role: the sender reports the full offered size; the receiver reports the bytes it accepted for writing (up-to-date and kept files count 0) — the two sides can differ for the same session |
 | `bytes_moved` | Bytes that crossed the wire this run (a re-send of unchanged files moves 0) |
-| `files_sent`, `files_skipped`, `files_kept` | Sender counts (`files_skipped` = receiver-declined for an unknown reason — old receivers don't report the distinction) |
+| `files_sent`, `files_skipped`, `files_kept` | Sender counts (`files_skipped` = files the receiver already had; `files_kept` = differing files it kept) |
 | `files_saved`, `files_up_to_date`, `files_kept` | Receiver counts |
 | `duration_ms`, `route` | Timed from the first byte; `route` is `local`, `direct`, or `relay` |
 | `dir` | Receiver: absolute directory files landed in |
@@ -364,7 +378,9 @@ fsend report.pdf --server fs.example.com     # this run only, not saved
 
 Without a scheme the server is reached over HTTPS (port 443 by default;
 plain HTTP for `localhost`). `--server` and `FSEND_SERVER` take the same
-forms but never touch the config file — handy in CI.
+forms, except `,<password>`, and never touch the config file — handy in
+CI. A run with either one doesn't use the saved server password; set
+`FSEND_SERVER_PASSWORD` for a password-gated server.
 
 Config is at `~/.config/fsend/config.json` (Linux),
 `~/Library/Application Support/fsend/config.json` (macOS), or
@@ -376,7 +392,7 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | Flag | Purpose |
 |---|---|
 | `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. |
-| `--device-name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming from …` line, the receiver's name in the sender's `… accepted` and summary lines. (`--name` still works.) |
+| `--device-name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming … from …` line, the receiver's name in the sender's `… accepted` and summary lines. (`--name` still works.) |
 | `--server <host[:port]>` | Use this pairing server for this run only; the config file is untouched. Also `FSEND_SERVER`. |
 | `--local` | Local network only: never contact the pairing server, on either side. For when the server is down or must not be used; a receiver that finds no sender on the network gets `E002`. |
 | `-q`, `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
@@ -397,9 +413,9 @@ Config is at `~/.config/fsend/config.json` (Linux),
 | `FSEND_SERVER_PASSWORD_FILE` | `--connect <host:port>,<password>` | Read the server password from this file instead. Used only when `FSEND_SERVER_PASSWORD` is unset. |
 | `FSEND_CODE` | `fsend <code>` | The code to receive, kept out of `ps` on shared machines. Used when no path or code is given (`FSEND_CODE=… fsend`), and by bare `--receive`. |
 | `FSEND_SERVER` | `--server` | Pairing server for this run, without saving it. |
-| `FSEND_THEME` | — | `light` or `dark`: tune colors to your terminal background. Unset, fsend asks the terminal for its background and, without an answer, uses the terminal's own ANSI colors. |
+| `FSEND_THEME` | — | `light` or `dark`: tune colors to your terminal background. Unset, fsend reads `COLORFGBG` if the terminal sets it, otherwise asks the terminal for its background and, without an answer, uses the terminal's own ANSI colors. |
 | `FSEND_PLAIN` | — | Set to `1` for plain output — no colors, animation or Unicode symbols, one line per update — for screen readers and logs. Automatic when the locale isn't UTF-8. |
-| `FSEND_NO_NOTIFY` | — | Set to `1` to silence the bell and desktop notification fsend sends when a transfer that took 10 s or more succeeds. |
+| `FSEND_NO_NOTIFY` | — | Set to `1` to silence the bell and desktop notification fsend sends when a run that lasted 10 s or more succeeds. |
 | `FSEND_NO_CLIPBOARD` | — | Set to `1` to stop the sender copying `fsend <code>` to the clipboard. Password-protected sends never copy it. |
 | `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
 | `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
@@ -515,7 +531,7 @@ failure. For what to *do* about a given error, see
 
 | Code  | When it happens |
 |-------|-----------------|
-| `0`   | Success (or non-fatal warning, e.g. `E016` config corrupted) — or your own "no" at a prompt: declining a transfer (`E006` on the receiver), choosing "skip them" at the existing-files prompt (`E013`), answering `n` to `--uninstall`. The line still names the code; only the exit is 0. |
+| `0`   | Success (or non-fatal warning, e.g. `E016` config corrupted) — or your own "no" at a prompt: declining a transfer (`E006` on the receiver), choosing "skip them" at the existing-files prompt (`E013`), answering `n` to `--uninstall`. These lines print no error code, since a choice isn't a fault. With `--json`, a declined transfer's `done` event still carries `"error":"E006"`, with `exit` 0; after "skip them" it is a normal `"ok":true` event that counts the kept files in `files_kept`. |
 | `1`   | `E001` — server unreachable. |
 | `2`   | `E002` — code not found. |
 | `3`   | `E003` — code already claimed by another receiver. |
