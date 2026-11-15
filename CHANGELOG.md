@@ -43,10 +43,9 @@ The wire protocol is unchanged (protocol 3). This release transfers with
   and run the fresh fsend on it:
   `curl -fsSL https://getfsend.alzina.dev | sh -s -- <code>`, or in
   PowerShell
-  `& ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code <code>`.
-  The sender prints an install line under the share command, for a
-  receiver who doesn't have fsend yet (only when it uses the default
-  server).
+  `iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code <code>"`.
+  The sender prints both lines under the share command, for a receiver
+  who doesn't have fsend yet (only when it uses the default server).
 - **The receive command goes to the clipboard.** The sender copies
   `fsend <code>` with `pbcopy`, `clip.exe`, `wl-copy`, `xclip` or
   `xsel`, and says so only when the copy worked. Over SSH it asks the
@@ -59,7 +58,8 @@ The wire protocol is unchanged (protocol 3). This release transfers with
 - **More `--json` events.** Besides `code` and `done`, both sides now
   emit `peer` (the other device's name and the route), `accepted`,
   `retry` and `progress` (at most once a second). The `code` event
-  carries `install`, the install-and-receive line. All additive to
+  carries `install` and `install_powershell`, the install-and-receive
+  lines. All additive to
   schema `v` 1; see [Usage](docs/usage.md#json-output---json).
 - **`FSEND_SERVER_TRUSTED_PROXIES` (server).** A list of reverse proxies
   (IPs or CIDR ranges) whose `X-Forwarded-For` the server believes, so
@@ -72,9 +72,14 @@ The wire protocol is unchanged (protocol 3). This release transfers with
   "yours is newer by 3 h", "theirs is newer by 2 d" or "same age", and a
   warning appears when replacing would lose newer local changes.
 - **`fsend doctor`** checks more: the device's clock against the
-  server's, whether the machine is behind NAT, IPv6, and on macOS
-  whether the firewall lets other devices connect to fsend.
-- **A code typed as three words** works: `fsend abc defg jkm`.
+  server's, whether the machine is behind NAT, IPv6, whether its own
+  listener answers over TCP and QUIC, and whether the firewall lets
+  other devices connect to fsend: the macOS firewall, ufw, firewalld,
+  nftables and iptables on Linux, and Windows Defender Firewall. When
+  a firewall blocks fsend, it prints the command or setting that opens
+  it. Where the rules can't be read without root, it says so.
+- **A code typed as three words** works: `fsend abc defg jkm`, also
+  after `--receive`.
 - **Installers.** `install.ps1` reads `FSEND_NO_MODIFY_PATH=1`, and both
   installers print the one line that puts fsend on `PATH` in the current
   shell.
@@ -96,12 +101,14 @@ Measured with both ends on one machine, the receiver writing to
 - **Relay**: 9–21 → 26–29 MB/s on macOS. (On Linux the direct route and
   the relay both move about 170 MB/s.) When the network blocks UDP, both
   sides reach the relay in about 2 s instead of 5 to 7.5 s.
-- **Many small files.** 20,000 files of 1 KB: about 11 s → 6 s. A
+- **Many small files.** 20,000 files of 1 KB: 10.3 → 5.6 s on macOS. A
   100,000-entry folder is compared with the receiver's copy in 0.6 s
   instead of 2.5 s, and its listing is sent compressed.
 - **A dropped route recovers sooner.** After a drop, each side goes
   straight back to finding the other instead of retrying the dead route
-  twice more.
+  twice more. The retry doesn't hash again what this run already hashed.
+- **Less memory when streaming** (`--out -`, piped input): about 25 MB
+  allocated per 512 MiB moved, instead of about 850 MB.
 
 ### Changed
 
@@ -111,6 +118,9 @@ Measured with both ends on one machine, the receiver writing to
   one line of numbers. Colors are the terminal's own ANSI colors unless
   fsend knows the background (`FSEND_THEME`, `COLORFGBG`, or the
   terminal's answer when asked). The waiting line fits narrow windows.
+  Lines are cut by display width, so names in CJK scripts or with emoji
+  fit too. Every prompt starts with `?`, and a list never ends in
+  "… and 1 more".
 - **Errors read sentence first**, with the code after it:
   `No sender is waiting on that code. [E002]`. Your own choices print no
   code: Ctrl-C, and "no" or "skip them" at a prompt.
@@ -126,17 +136,30 @@ Measured with both ends on one machine, the receiver writing to
   on-link ranges), each failure delays the next attempt, and after 10
   the sender stops listening on the local network and keeps waiting
   through the server.
+- **A wrong guess of the code always counts.** The receiver now proves
+  it knows the code first, and the sender answers only a correct proof.
+  Before, a peer could take the sender's proof, test one guess with it
+  and leave without being counted. Works with 1.16 on either side.
 - **A receiver that connects and then vanishes no longer uses up the
-  code.** The sender says so and waits again, up to three times.
+  code.** The sender says so and waits again, up to three times. A
+  receiver that gives up tells the server, so the code opens again in
+  about 3 s instead of a minute.
 - **A broken link inside a folder no longer stops the send.** The sender
   skips it, lists it, and exits `E050`; everything else arrives. A
   broken link named on the command line, or a link that loops, still
   stops with `E036`.
 - **A name the receiver can't create skips that file**, not the whole
-  transfer: for example `aux.c` or `12:30.txt` sent to Windows. Both
-  sides list it and exit `E050`.
+  transfer: for example `aux.c` or `12:30.txt` sent to Windows, or a
+  name the filesystem refuses when the file is written (too long, not
+  valid in its encoding). Both sides list it and exit `E050`. With
+  `--out -` nothing is created, so such names pass.
 - **Keep both doesn't pile up copies.** If `name (1).ext` already holds
-  the incoming version, a re-send leaves it alone.
+  the incoming version, a re-send leaves it alone, also with
+  `--checksum`.
+- **The update notice names what works on your install**:
+  `brew upgrade fsend` for Homebrew, the release page with the new
+  package for a `.deb`, `.rpm` or `.apk` install, and `fsend --update`
+  otherwise.
 - **`FSEND_SERVER_PASSWORD` from the environment is sent only to a
   server you chose**, never to the public default server. A password
   saved with `--connect` is unchanged.
@@ -150,6 +173,9 @@ Measured with both ends on one machine, the receiver writing to
 - **An interrupted replace resumes.** Replacing an existing file used to
   start from zero after every interruption.
 - **Folder modification times** are restored on the receiver.
+- **A second `fsend <code>` on the same device** is told at once that
+  the code is already being received there (`E003`). It used to wait
+  90 s for the sender to reconnect.
 - **A file that appears at the destination during the transfer** is kept,
   and the incoming one is skipped and listed. It used to be replaced
   without asking.
