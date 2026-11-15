@@ -43,11 +43,12 @@ GAP_SCENE = 1.25           # pause when the scene changes: long enough to finish
 TAIL = 3.2                 # hold after the last line (settled end card)
 # extra hold before a line (on top of the normal gap), to let a visual land
 GAP_EXTRA = {
-    "demo2": 0.55,         # the code box has to be read before it flies across
-    "demo3": 0.60,         # let the transfer finish before "that's it"
+    "demo2": 0.55,         # the code has to be read before it flies across
+    "demo3": 0.75,         # let the transfer finish before "that's it"
     "routes2": 0.20,       # the stage builds before the first route
     "routes3": 0.55,       # let the local link run for a beat
     "routes4": 0.55,       # let the direct link run for a beat
+    "more1": 0.10,
     "server2": 0.15,
     "outro2": -0.35,       # keep the closing line close to the name
 }
@@ -65,10 +66,10 @@ LINES = [
      {}),
     ("open2", "open", "Private file transfer, straight between two computers.",
      {"straight": "straight"}),
-    ("demo1", "demo", "Point it at a file, and you get a short code.",
+    ("demo1", "demo", "Point it at a file or a folder, and you get a short code.",
      {"code": "short code"}),
-    ("demo2", "demo", "Your friend types the code, and the file lands on their machine.",
-     {"types": "types", "lands": "lands"}),
+    ("demo2", "demo", "The other person types that code, says yes, and the file lands on their machine.",
+     {"types": "types", "yes": "says yes", "lands": "lands"}),
     ("demo3", "demo", "That's it.",
      {}),
     ("trust1", "trust", "End-to-end encrypted. No accounts. No ports to open.",
@@ -82,6 +83,9 @@ LINES = [
      {"introduces": "introduces", "steps": "steps aside"}),
     ("routes4", "routes", "And if a strict network blocks that, the server relays it, sealed and encrypted.",
      {"blocks": "blocks", "relays": "relays", "sealed": "sealed"}),
+    # what it can carry: three small proofs, one per phrase
+    ("more1", "more", "Any size. Whole folders. And if the connection drops, it picks up where it left off.",
+     {"size": "Any size", "folders": "Whole folders", "drops": "drops", "picks": "picks up"}),
     ("server1", "server", "The public server is free.",
      {"free": "free"}),
     ("server2", "server", "Or run your own, with a single command.",

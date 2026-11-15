@@ -128,31 +128,21 @@
     let c = hex2rgb(BRAND);
     for (const k of ACCENT_KEYS) {
       if (t < k.t) break;
-      const p = inOutCubic(ramp(t, k.t, k.t + 0.7));
+      // a key at the very start is the film's first colour, not a change
+      const p = k.t <= 0.001 ? 1 : inOutCubic(ramp(t, k.t, k.t + 0.7));
       c = c.map((v, i) => lerp(v, k.rgb[i], p));
     }
     return c;
   }
 
   // ---- background ---------------------------------------------------------------
-  const DUST = 34;
   function paintBackground(t) {
     const bg = document.getElementById("bg");
     const g1 = bg.querySelector(".g1"), g2 = bg.querySelector(".g2");
     g1.style.transform = `translate(${(-420 + 160 * Math.sin(t * 0.13)).toFixed(1)}px, ${(-860 + 120 * Math.cos(t * 0.11)).toFixed(1)}px)`;
     g2.style.transform = `translate(${(980 + 140 * Math.sin(t * 0.09 + 2)).toFixed(1)}px, ${(-120 + 110 * Math.sin(t * 0.07 + 1)).toFixed(1)}px)`;
-    const grid = bg.querySelector(".grid");
-    grid.style.transform = `rotateX(76deg) translateY(${(-(t * 46) % 120).toFixed(2)}px)`;
-    const dots = bg.querySelector(".dust").children;
-    for (let i = 0; i < dots.length; i++) {
-      const sp = 8 + rnd(i + 3) * 18;
-      const x = rnd(i) * 1920 + 30 * Math.sin(t * 0.3 + i);
-      const y = (((rnd(i + 11) * 1200 - t * sp) % 1200) + 1200) % 1200 - 60;
-      const tw = 0.25 + 0.55 * (0.5 + 0.5 * Math.sin(t * (0.6 + rnd(i + 7)) + i * 2.1));
-      const s = 0.5 + rnd(i + 5) * 1.3;
-      dots[i].style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${s.toFixed(2)})`;
-      dots[i].style.opacity = (tw * 0.55).toFixed(3);
-    }
+    // the dot field drifts a hair, so a held shot is never a still
+    bg.querySelector(".dots").style.backgroundPosition = `${(t * 3.2).toFixed(2)}px ${(-t * 2.1).toFixed(2)}px`;
   }
 
   // ---- build + render -----------------------------------------------------------
@@ -166,7 +156,7 @@
       const layer = el("div", "layer", root);
       layer.style.zIndex = 10 + idx;
       const cam = el("div", "cam", layer);
-      ACCENT_KEYS.push({ t: scene.start, rgb: hex2rgb(BRAND) });
+      ACCENT_KEYS.push({ t: scene.start - 0.0005, rgb: hex2rgb(BRAND) });
       const render = SCENES[scene.name](cam, api(scene, layer, cam));
       built.push({ scene, layer, render });
       if (idx > 0) CUES.push({ t: +(scene.start - 0.28).toFixed(3), type: "whoosh", gain: 1 });
@@ -222,8 +212,6 @@
     const byId = {};
     data.segments.forEach((s) => (byId[s.id] = s));
     TL = { d: data, byId, scenes: data.scenes };
-    const dust = document.querySelector("#bg .dust");
-    for (let i = 0; i < DUST; i++) el("i", "", dust);
     build();
     window.__ready = Promise.all([
       document.fonts.load('800 132px "Inter"'),
