@@ -1,0 +1,12 @@
+table ip filter {
+	chain INPUT {
+		type filter hook input priority filter; policy drop;
+		iifname "lo" counter packets 0 bytes 0 accept
+		ct state related,established counter packets 0 bytes 0 accept
+		ip protocol icmp counter packets 0 bytes 0 accept
+		tcp dport 22 counter packets 0 bytes 0 accept
+		udp dport 50000-50999 counter packets 0 bytes 0 accept
+		ip protocol tcp tcp dport { 80, 443 }  counter packets 0 bytes 0 accept
+		counter packets 0 bytes 0 reject with icmp type host-prohibited
+	}
+}

@@ -26,8 +26,11 @@
 
 .PARAMETER Code
   A share code to receive right after installing. The one-liner can't pass
-  parameters, so use:
+  parameters, so run the script as a block that can:
+    iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code abc-defg-hjk"
+  (the line `fsend` prints for a receiver without it). The longer spelling
     & ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code abc-defg-hjk
+  is the same call.
 
 .PARAMETER NoModifyPath
   Don't add the install dir to your user PATH. Env: FSEND_NO_MODIFY_PATH=1.
@@ -85,12 +88,16 @@ $ProgressPreference = 'SilentlyContinue'
 # Unicode on both delivery paths (`irm` decodes the charset-less release
 # asset as ISO-8859-1; a BOM-less .ps1 file parses as ANSI).
 $mark = if ($PSVersionTable.PSEdition -eq 'Core') {
-    @{ info = '›'; ok = '✓'; warn = '!'; err = '✗' }
+    @{ ok = '✓'; warn = '!'; err = '✗' }
 } else {
-    @{ info = '>'; ok = 'OK'; warn = '!'; err = 'x' }
+    @{ ok = 'OK'; warn = '!'; err = 'x' }
 }
 
-function Info($m) { Write-Host "$($mark.info) $m" }
+# The lines follow the fsend binary's grid: a status marker in column 0,
+# the text from column 2. A step is narration, so it has no marker - an
+# empty gutter, as the binary prints its own neutral lines - and reads as
+# one block with what `fsend --update` prints ahead of it.
+function Info($m) { Write-Host "  $m" }
 function Ok($m)   { Write-Host "$($mark.ok) $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "$($mark.warn) $m" -ForegroundColor Yellow }
 # -Verbose is a PowerShell common parameter (available via CmdletBinding):
@@ -116,7 +123,7 @@ Parameters (or matching env var):
   -Version VERSION   Version to install  (default: latest; env FSEND_VERSION)
   -NoModifyPath      Don't add the install dir to your user PATH (env FSEND_NO_MODIFY_PATH=1)
   -Code CODE         Receive this share code right after installing:
-                       & ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code CODE
+                       iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code CODE"
   -Verbose           Show the individual install steps
   -Help              Show this help and exit
 

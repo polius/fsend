@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,38 @@ func TestSend_Directory(t *testing.T) {
 			filepath.Join(srcRoot, rel),
 			filepath.Join(dst, "tree", rel),
 		)
+	}
+}
+
+// A broken link at the top level of a contents send (`fsend .`) is skipped
+// and reported like one deeper in the tree, instead of stopping the send
+// with E036: the rest arrives, the sender lists the link and exits E050.
+// Named directly, the same link is still E036.
+func TestSend_BrokenLinkAtTopOfContentsSend(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("gone.txt", filepath.Join(src, "latest")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	r := h.runPair(t, []string{src + string(os.PathSeparator) + "."}, dst, []string{"--yes"}, "")
+	if r.senderExitCode != 50 || r.receiverExitCode != 0 {
+		t.Fatalf("exits: sender=%d receiver=%d, want 50 (E050) and 0\n--- sender stderr ---\n%s\n--- receiver stderr ---\n%s",
+			r.senderExitCode, r.receiverExitCode, r.senderErr, r.receiverErr)
+	}
+	if !strings.Contains(r.senderErr, "Skipping latest: broken link to gone.txt") || !strings.Contains(r.senderErr, "latest — broken link to gone.txt") {
+		t.Errorf("the sender should warn about the link up front and list it at the end:\n%s", r.senderErr)
+	}
+	assertFilesEqual(t, filepath.Join(src, "a.txt"), filepath.Join(dst, "a.txt"))
+	if _, err := os.Lstat(filepath.Join(dst, "latest")); err == nil {
+		t.Error("the broken link arrived as something")
+	}
+
+	_, stderr, code := h.runFsend(t, h.newXDG(t), filepath.Join(src, "latest"))
+	if code != 36 || !strings.Contains(stderr, "E036") {
+		t.Errorf("a broken link named directly: exit %d, want 36 (E036)\n%s", code, stderr)
 	}
 }
 
@@ -470,6 +503,52 @@ func TestReceive_SkipExisting_ExitsZero(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(dst, "p.bin")); string(got) != "PREEXISTING" {
 		t.Errorf("destination file was clobbered: %q", got)
+	}
+}
+
+// A name the receiver's filesystem refuses only when the file is written
+// costs that one file, and both sides say so: each lists the name and exits
+// E050, the sender included (it used to exit 0, told nothing). The name
+// here is legal on both ends, but its keep-both copy "… (1).txt" is one
+// byte over the 255 a name may have, which only the rename finds out.
+func TestReceive_NameRefusedAtWriteTime_BothSidesE050(t *testing.T) {
+	requireE2E(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("a 252-character name under the temp dir runs into MAX_PATH; the engine tests cover Windows")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	long := strings.Repeat("n", 248) + ".txt" // 252 bytes; " (1)" makes 256
+	tree := filepath.Join(src, "tree")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRandom(t, filepath.Join(tree, "ok.bin"), 8*1024)
+	writeRandom(t, filepath.Join(tree, long), 8*1024)
+	if err := os.MkdirAll(filepath.Join(dst, "tree"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "tree", long), []byte("PREEXISTING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := h.runPair(t, []string{tree}, dst, []string{"--yes", "--rename"}, "")
+	if r.senderExitCode != 50 || r.receiverExitCode != 50 {
+		t.Fatalf("exits: sender=%d receiver=%d, want 50/50 (E050)\n--- sender stderr ---\n%s\n--- receiver stderr ---\n%s",
+			r.senderExitCode, r.receiverExitCode, r.senderErr, r.receiverErr)
+	}
+	for side, out := range map[string]string{"sender": r.senderErr, "receiver": r.receiverErr} {
+		if !strings.Contains(out, "skipped:") || !strings.Contains(out, long[:60]) || !strings.Contains(out, "doesn't accept the name") {
+			t.Errorf("%s did not list the refused file with its reason:\n%s", side, out)
+		}
+	}
+	if !strings.Contains(r.senderErr, "1 file could not be created on the receiver and was skipped") {
+		t.Errorf("sender summary:\n%s", r.senderErr)
+	}
+	assertFilesEqual(t, filepath.Join(tree, "ok.bin"), filepath.Join(dst, "tree", "ok.bin"))
+	if got, _ := os.ReadFile(filepath.Join(dst, "tree", long)); string(got) != "PREEXISTING" {
+		t.Errorf("the receiver's own file was touched: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".fsend")); err == nil {
+		t.Error(".fsend was left behind")
 	}
 }
 

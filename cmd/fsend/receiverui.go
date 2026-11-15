@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -228,9 +227,9 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	if ui.pathInfo.Kind != connpath.KindUnknown {
 		route = ui.pathInfo.Chip()
 	}
-	fmt.Fprintln(os.Stderr)
+	uxlog.Blank()
 	renderArtifact(os.Stderr, h, summary, ui.sink, sanitizeRemote(h.Hostname), route)
-	fmt.Fprintln(os.Stderr)
+	uxlog.Blank()
 
 	// Nothing would be written — every file is already here, identical — so
 	// there is nothing to consent to. Accepting lets both sides record the
@@ -247,13 +246,13 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	}
 	_, flagged := ui.flagPolicy()
 	if f.yes {
-		fmt.Fprintln(os.Stderr, uxlog.Detail("Accepting (--yes)"))
+		uxlog.Note("Accepting (--yes)")
 		// --yes answers the accept prompt, not the existing-files question —
 		// differing files are kept and the exit will be E013. Scripts reading
 		// --yes as "yes to everything" deserve to hear that now.
 		if summary.Differing > 0 && !flagged {
-			fmt.Fprintf(os.Stderr, "%s Keeping %s — pass --overwrite to replace, or --rename to keep both\n",
-				uxlog.Warn(), uxlog.CountNoun(summary.Differing, "differing file"))
+			uxlog.Status(uxlog.Warn(), "Keeping "+uxlog.CountNoun(summary.Differing, "differing file")+
+				" — pass --overwrite to replace, or --rename to keep both")
 		}
 		return true
 	}
@@ -274,13 +273,14 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		return ui.askWithConflicts(question, summary.Conflicts)
 	}
 	for {
-		fmt.Fprintf(os.Stderr, "%s %s  [Y/n] ", uxlog.Ask(), question)
+		uxlog.Question(question, "[Y/n]")
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
 		}
 		if eof {
-			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — declining. Pass --yes to accept automatically.\n", uxlog.Info())
+			uxlog.Blank()
+			uxlog.Status(uxlog.Info(), "No input to answer the prompt — declining. Pass --yes to accept automatically.")
 			return false
 		}
 		switch line {
@@ -289,7 +289,7 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		case "n", "no":
 			return false
 		}
-		fmt.Fprintln(os.Stderr, "  Please answer y or n.")
+		uxlog.Line("Please answer y or n.")
 	}
 }
 
@@ -299,32 +299,30 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 func (ui *receiverUI) askWithConflicts(question string, conflicts []transfer.Conflict) bool {
 	const preview = 5
 	names := ui.conflictNames(conflicts)
-	fmt.Fprintf(os.Stderr, "%s %s here already %s and %s\n", uxlog.Ask(),
-		uxlog.CountNoun(len(conflicts), "file"), pick(len(conflicts) == 1, "exists", "exist"), differVerb(len(conflicts)))
-	shown := min(len(conflicts), preview)
-	if len(conflicts) == preview+1 {
-		shown = len(conflicts) // never hide exactly one row
-	}
+	uxlog.Status(uxlog.Ask(), fmt.Sprintf("%s here already %s and %s",
+		uxlog.CountNoun(len(conflicts), "file"), pick(len(conflicts) == 1, "exists", "exist"), differVerb(len(conflicts))))
+	shown := uxlog.Shown(len(conflicts), preview)
 	rows := conflictRows(conflicts, names)
 	for _, r := range rows[:shown] {
-		fmt.Fprintf(os.Stderr, "    %s\n", r)
+		uxlog.Item(r)
 	}
 	if len(conflicts) > shown {
-		fmt.Fprintf(os.Stderr, "    %s\n", uxlog.Muted(fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts))))
+		uxlog.Item(uxlog.Muted(fmt.Sprintf("… and %d more — l lists all %d", len(conflicts)-shown, len(conflicts))))
 	}
 	if allLocalNewer(conflicts) {
 		mine := pick(len(conflicts) == 1, "Yours is newer", "All of yours are newer")
-		fmt.Fprintf(os.Stderr, "%s %s — replace would lose your changes\n", uxlog.Warn(), mine)
+		uxlog.Status(uxlog.Warn(), mine+" — replace would lose your changes")
 	}
 	options := "[K]eep both · [r]eplace " + uxlog.Alert("(deletes yours)") + " · [s]kip them · [n]o"
 	for {
-		fmt.Fprintf(os.Stderr, "%s %s  %s ", uxlog.Ask(), question, options)
+		uxlog.Question(question, options)
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok {
 			return false
 		}
 		if eof {
-			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — declining. Pass --yes to accept automatically.\n", uxlog.Info())
+			uxlog.Blank()
+			uxlog.Status(uxlog.Info(), "No input to answer the prompt — declining. Pass --yes to accept automatically.")
 			return false
 		}
 		choice := transfer.ConflictKeep
@@ -338,11 +336,11 @@ func (ui *receiverUI) askWithConflicts(question string, conflicts []transfer.Con
 			return false
 		case "l", "list":
 			for _, r := range rows {
-				fmt.Fprintf(os.Stderr, "    %s\n", r)
+				uxlog.Item(r)
 			}
 			continue
 		default:
-			fmt.Fprintln(os.Stderr, "  Please answer k (keep both), r (replace), s (skip) or n (cancel).")
+			uxlog.Line("Please answer k (keep both), r (replace), s (skip) or n (cancel).")
 			continue
 		}
 		ui.mu.Lock()
@@ -377,21 +375,6 @@ func (ui *receiverUI) conflictNames(conflicts []transfer.Conflict) []string {
 		}
 	}
 	return names
-}
-
-// compactAgo renders an age in the shortest honest unit — "30 s", "4 min",
-// "3 h", "2 d" — for the conflict rows.
-func compactAgo(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%d s", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%d min", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%d h", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%d d", int(d.Hours()/24))
-	}
 }
 
 // sameAgeSlack absorbs filesystem timestamp precision (FAT keeps 2 s, the
@@ -430,13 +413,13 @@ func conflictLabel(c transfer.Conflict) string {
 	}
 	switch d := newer(c); {
 	case d > 0:
-		row += "   yours is newer by " + compactAgo(d)
+		row += uxlog.Gap + "yours is newer by " + uxlog.HumanAge(d)
 	case d < 0:
-		row += "   theirs is newer by " + compactAgo(-d)
+		row += uxlog.Gap + "theirs is newer by " + uxlog.HumanAge(-d)
 	case !c.IncomingModTime.IsZero() && !c.LocalModTime.IsZero():
-		row += "   same age"
+		row += uxlog.Gap + "same age"
 	case !c.LocalModTime.IsZero():
-		row += "   yours modified " + compactAgo(time.Since(c.LocalModTime)) + " ago"
+		row += uxlog.Gap + "yours modified " + uxlog.HumanAge(time.Since(c.LocalModTime)) + " ago"
 	}
 	return row
 }
@@ -462,12 +445,11 @@ func allLocalNewer(conflicts []transfer.Conflict) bool {
 func conflictRows(conflicts []transfer.Conflict, names []string) []string {
 	w := 0
 	for _, n := range names {
-		w = max(w, min(nameColumnCap, utf8.RuneCountInString(n)))
+		w = max(w, min(nameColumnCap, uxlog.Width(n)))
 	}
 	rows := make([]string, len(conflicts))
 	for i, c := range conflicts {
-		pad := strings.Repeat(" ", max(0, w-utf8.RuneCountInString(names[i])))
-		rows[i] = names[i] + pad + "   " + uxlog.Muted(conflictLabel(c))
+		rows[i] = uxlog.PadRight(names[i], w) + uxlog.Gap + uxlog.Muted(conflictLabel(c))
 	}
 	return rows
 }
@@ -758,10 +740,10 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 				len(files), uxlog.CountNoun(len(files)+skippedSame+kept+len(skipped), "file"), saveTargetLabel(ui.outDir))
 		}
 		printRecvSummary(f, headline, total, moved, kept, skippedSame, keptByChoice, elapsed, ui.pathInfo)
-		printSkippedList(f, "", skipped)
+		printSkippedList(f, "", skipped, 0)
 		if !f.quiet {
 			for _, c := range changed {
-				fmt.Fprintf(os.Stderr, "%s %s changed on the sender while it was being sent — the copy may be inconsistent\n", uxlog.Warn(), c)
+				uxlog.Status(uxlog.Warn(), c+" changed on the sender while it was being sent — the copy may be inconsistent")
 			}
 		}
 	}
@@ -819,11 +801,11 @@ func (ui *receiverUI) showText(text string) bool {
 	}
 	q := fmt.Sprintf("Show the text (%s, %s)?", uxlog.HumanBytes(int64(len(text))), uxlog.CountNoun(lines, "line"))
 	for {
-		fmt.Fprintf(os.Stderr, "  %s [Y/n] ", uxlog.Prompt(q))
+		uxlog.Question(q, "[Y/n]")
 		line, eof, ok := readLineCtx(ui.ctx)
 		if !ok || eof {
 			if eof {
-				fmt.Fprintln(os.Stderr)
+				uxlog.Blank()
 			}
 			return false
 		}
@@ -833,7 +815,7 @@ func (ui *receiverUI) showText(text string) bool {
 		case "n", "no":
 			return false
 		}
-		fmt.Fprintln(os.Stderr, "  Please answer y or n.")
+		uxlog.Line("Please answer y or n.")
 	}
 }
 
@@ -876,7 +858,7 @@ func printTextPayload(text string) error {
 			// butt against the payload. Break the line on stderr instead.
 			// When stderr is elsewhere (the terminal), this newline would
 			// only render as a stray blank line before the summary.
-			fmt.Fprintln(os.Stderr)
+			uxlog.Blank()
 		}
 	}
 	return nil
@@ -942,13 +924,13 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	// a re-send where everything was already up to date. Say so plainly instead
 	// of "Saved … 0 B", which reads as if it did work.
 	if total == 0 && moved == 0 && kept == 0 && skippedSame > 0 {
-		fmt.Fprintln(os.Stderr, uxlog.Check(), "Already up to date")
-		fmt.Fprintln(os.Stderr, uxlog.Detail(uxlog.Join(uxlog.CountNoun(skippedSame, "file")+" unchanged", path.Tag())))
+		uxlog.Status(uxlog.Check(), "Already up to date")
+		uxlog.Note(uxlog.Join(uxlog.CountNoun(skippedSame, "file")+" unchanged", path.Tag()))
 		printUpdateNotice(f)
 		return
 	}
-	fmt.Fprintln(os.Stderr, glyph, headline)
-	fmt.Fprintln(os.Stderr, uxlog.Detail(summaryDetail(total, moved, "received", elapsed, path)))
+	uxlog.Status(glyph, headline)
+	uxlog.Note(summaryDetail(total, moved, "received", elapsed, path))
 	// No "(use --overwrite)" here: the remedy already appears once — the
 	// upfront --yes warning or E013's action line — and after an explicit
 	// "n" at the prompt it must not appear at all.
@@ -960,7 +942,7 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 		exceptions = append(exceptions, fmt.Sprintf("%d kept", kept))
 	}
 	if len(exceptions) > 0 {
-		fmt.Fprintln(os.Stderr, uxlog.Detail(uxlog.Join(exceptions...)))
+		uxlog.Note(uxlog.Join(exceptions...))
 	}
 	if kept == 0 && moved > 0 {
 		uxlog.Notify("Received "+uxlog.HumanBytes(total), time.Since(runStart))

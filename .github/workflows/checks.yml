@@ -43,9 +43,9 @@ jobs:
       - run: go vet ./...
       - run: go test -count=1 -timeout 600s ./...
 
-  # Four release targets are 32-bit and integer truncation lint (G115) is
-  # off project-wide, so 32-bit runs the suite too. A 386 binary runs
-  # natively on the x86-64 runner.
+  # Four release targets are 32-bit, so 32-bit runs the suite too: the
+  # integer conversion lint (G115) reads the code, it doesn't run it. A
+  # 386 binary runs natively on the x86-64 runner.
   test-386:
     runs-on: ubuntu-latest
     env:
@@ -201,6 +201,9 @@ jobs:
           distribution: goreleaser
           version: v2.18.3
           install-only: true
+      # The release body comes from CHANGELOG.md (release.yml): its
+      # sections must parse, and the newest version's must extract.
+      - run: python3 scripts/release-notes.py --check
       - run: goreleaser release --snapshot --clean --skip=sign,sbom
       # Reproducible builds: rebuilding the same commit must give the same
       # bytes (no wall-clock dates, paths or build IDs in the output).
@@ -242,6 +245,35 @@ jobs:
       - name: Smoke test
         shell: pwsh
         run: pwsh -NoProfile -File scripts/smoke-install.ps1
+
+  # The terminal UI, driven for real: scripts/validate-ux.py builds the
+  # binary, starts a pairing server on loopback and runs every screen as
+  # a sender and a receiver in ptys, checking the layout, the colors and
+  # the wording. A check the product is known to fail is marked in the
+  # script (EXPECTED_FAILURES) and doesn't fail the job; a marked check
+  # that passes does, so the mark goes away with the fix.
+  ux:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # With multicast the two sides find each other over mDNS and use
+      # the local-network route, as on a real network. Without it they
+      # would pair through the script's server and still pass, on QUIC.
+      # Linux brings lo up without the flag (see the test job).
+      - if: runner.os == 'Linux'
+        run: sudo ip link set lo multicast on
+      - run: python3 scripts/validate-ux.py
 
   # Lint the workflows themselves: actionlint for correctness, zizmor for
   # security (injection, permissions, unpinned actions, credential leaks).
@@ -290,7 +322,7 @@ jobs:
   # job above passed, so new jobs are gated without touching repo settings.
   ci-ok:
     if: always()
-    needs: [test, test-386, test-freebsd, race, lint, govulncheck, fuzz, deadcode, snapshot, install-sh, install-ps1, workflows, coverage]
+    needs: [test, test-386, test-freebsd, race, lint, govulncheck, fuzz, deadcode, snapshot, install-sh, install-ps1, ux, workflows, coverage]
     runs-on: ubuntu-latest
     steps:
       - env:

@@ -34,8 +34,8 @@ short share code.
 
 - **Direct, with no network setup** — on the same network or across NATs that
   can be hole-punched, the bytes go straight from sender to receiver. When no
-  direct path exists, or a network blocks UDP, a relay over HTTPS (TCP 443)
-  takes over. Nothing to configure.
+  direct path exists, a relay takes over, through HTTPS (TCP 443) on networks
+  that block UDP. Nothing to configure.
 - **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the
   share code through a PAKE (CPace) bound to the TLS session, over a
   post-quantum hybrid key exchange (X25519MLKEM768). Even the relay only ever
@@ -76,8 +76,11 @@ curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hjk
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code abc-defg-hjk
+iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code abc-defg-hjk"
 ```
+
+A sender on the default server sees both lines, with the real code,
+under the receive command.
 
 The installers check every archive against the release's checksum file,
 whose Sigstore signature they also verify when `cosign` is installed. The
@@ -181,8 +184,9 @@ See <a href="docs/architecture.md">Architecture</a>.</em></p>
 | [Self-hosting](docs/self-hosting.md) | Run your own pairing server in three steps |
 | [Development](docs/development.md) | Build and test from source |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and what to do about them |
+| [FAQ](docs/faq.md) | Short answers: privacy, routes and ports, speed, verifying a download, updating |
 | [Comparison](docs/comparison.md) | fsend vs croc, magic-wormhole, sendme and LocalSend |
-| [Version compatibility](docs/compatibility.md) | Which versions work together; breaking changes in the [changelog](CHANGELOG.md) |
+| [Version compatibility](docs/compatibility.md) | Which versions work together; release notes in the [changelog](CHANGELOG.md) |
 
 ## Contributing
 

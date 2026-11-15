@@ -37,7 +37,7 @@ func runUninstall(f *flags) error {
 	if err := confirmUninstall(f); err != nil {
 		// "n" is an answer, not a failure: exit 0.
 		if errors.Is(err, errDeclined) {
-			fmt.Fprintf(os.Stderr, "%s Not uninstalled.\n", uxlog.Info())
+			uxlog.Status(uxlog.Info(), "Not uninstalled.")
 			return nil
 		}
 		return err
@@ -47,9 +47,9 @@ func runUninstall(f *flags) error {
 	if cfgPath != "" {
 		dir := filepath.Dir(cfgPath)
 		if err := os.RemoveAll(dir); err == nil {
-			fmt.Fprintf(os.Stderr, "%s Removed config dir: %s\n", uxlog.Check(), dir)
+			uxlog.Status(uxlog.Check(), "Removed config dir: "+dir)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "%s Could not remove %s: %v\n", uxlog.Warn(), dir, err)
+			uxlog.Status(uxlog.Warn(), fmt.Sprintf("Could not remove %s: %v", dir, err))
 		}
 	}
 
@@ -73,37 +73,37 @@ func runUninstall(f *flags) error {
 	if runtime.GOOS == "windows" {
 		keptPath, err := removeBinary(binPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
-			fmt.Fprintf(os.Stderr, "    Delete it manually to finish: %s\n", binPath)
+			uxlog.Status(uxlog.Warn(), fmt.Sprintf("Could not remove binary at %s: %v", binPath, err))
+			uxlog.Line("Delete it manually to finish: " + binPath)
 			return fserrors.ErrUninstallFailed
 		}
-		fmt.Fprintf(os.Stderr, "%s Removed binary: %s\n", uxlog.Check(), binPath)
-		fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
+		uxlog.Status(uxlog.Check(), "Removed binary: "+binPath)
+		uxlog.Line("fsend uninstalled.")
 		if keptPath {
-			fmt.Fprintf(os.Stderr, "  Left %s on your PATH: other files live there.\n", filepath.Dir(binPath))
+			uxlog.Line(fmt.Sprintf("Left %s on your PATH: other files live there.", filepath.Dir(binPath)))
 		}
 		return nil
 	}
 
 	if err := os.Remove(binPath); err != nil {
-		fmt.Fprintf(os.Stderr, "%s Could not remove binary at %s: %v\n", uxlog.Warn(), binPath, err)
-		fmt.Fprintln(os.Stderr, "    Remove it manually, possibly with sudo.")
+		uxlog.Status(uxlog.Warn(), fmt.Sprintf("Could not remove binary at %s: %v", binPath, err))
+		uxlog.Line("Remove it manually, possibly with sudo.")
 		return fserrors.ErrUninstallFailed
 	}
-	fmt.Fprintf(os.Stderr, "%s Removed binary: %s\n", uxlog.Check(), binPath)
+	uxlog.Status(uxlog.Check(), "Removed binary: "+binPath)
 
 	// If the on-PATH name was a symlink, drop the dangling link too.
 	if rawPath != binPath {
 		if err := os.Remove(rawPath); err == nil {
-			fmt.Fprintf(os.Stderr, "%s Removed symlink: %s\n", uxlog.Check(), rawPath)
+			uxlog.Status(uxlog.Check(), "Removed symlink: "+rawPath)
 		}
 	}
 
-	fmt.Fprintln(os.Stderr, "  fsend uninstalled.")
+	uxlog.Line("fsend uninstalled.")
 	// Shell rc files are out of reach here (unlike Windows, where the
 	// helper strips the PATH entry itself), so point at the exact entry.
-	fmt.Fprintf(os.Stderr, "  If your shell rc has a PATH entry for %s, remove it.\n", filepath.Dir(rawPath))
-	fmt.Fprintln(os.Stderr, "  Also remove any \"fsend completion\" line you added.")
+	uxlog.Line(fmt.Sprintf("If your shell rc has a PATH entry for %s, remove it.", filepath.Dir(rawPath)))
+	uxlog.Line("Also remove any \"fsend completion\" line you added.")
 	return nil
 }
 
@@ -148,23 +148,25 @@ func confirmUninstall(f *flags) error {
 	if cfgPath != "" {
 		cfgDir = filepath.Dir(cfgPath)
 	}
-	// Same shape as the receive prompts: two-space indent, no trailing
-	// colon, ASCII list markers (the • glyph has no pipe fallback).
-	fmt.Fprintln(os.Stderr, "  This will remove:")
+	// Same shape as the receive prompts: the list on the grid with ASCII
+	// markers (the • glyph has no pipe fallback), then the question behind
+	// the ? gutter.
+	uxlog.Line("This will remove:")
 	if binPath != "" {
-		fmt.Fprintf(os.Stderr, "    - binary:     %s\n", binPath)
+		uxlog.Item("- binary:     " + binPath)
 	}
 	if cfgDir != "" {
-		fmt.Fprintf(os.Stderr, "    - config dir: %s\n", cfgDir)
+		uxlog.Item("- config dir: " + cfgDir)
 	}
 	for {
-		fmt.Fprint(os.Stderr, "  Continue? [y/N] ")
+		uxlog.Question("Continue?", "[y/N]")
 		line, eof, ok := readLineCtx(ctx)
 		if !ok {
 			return fserrors.ErrUserCancelled
 		}
 		if eof {
-			fmt.Fprintf(os.Stderr, "\n%s No input to answer the prompt — not uninstalling.\n", uxlog.Info())
+			uxlog.Blank()
+			uxlog.Status(uxlog.Info(), "No input to answer the prompt — not uninstalling.")
 			return fserrors.ErrUserCancelled
 		}
 		switch line {
@@ -173,6 +175,6 @@ func confirmUninstall(f *flags) error {
 		case "", "n", "no":
 			return errDeclined
 		}
-		fmt.Fprintln(os.Stderr, "  Please answer y or n.")
+		uxlog.Line("Please answer y or n.")
 	}
 }

@@ -2,8 +2,9 @@
 
 Which fsend versions can transfer to each other, and which can use which
 pairing server. Release notes for every version are on
-[GitHub Releases](https://github.com/polius/fsend/releases); the
-[changelog](../CHANGELOG.md) lists the breaking ones.
+[GitHub Releases](https://github.com/polius/fsend/releases) and, from
+1.17 on, in the [changelog](../CHANGELOG.md), which also lists the
+breaking changes of earlier releases.
 
 ## Between two devices
 
@@ -20,14 +21,16 @@ Within a group every pair works: newer features are negotiated, and a
 side that lacks one falls back to what both support.
 
 Across groups the transfer fails before any file data moves, and the
-error doesn't say "version":
+error doesn't always name the versions:
 
 - **1.16 and later with anything older:** the two sides look for each
   other in different places (1.16 salts codes with the day), so they
-  never meet. The receiver gets `E002` ("code not found"). Through a 1.16
-  or later server, the older side is refused first (see below).
+  never meet. The receiver gets `E002` ("code not found"); from 1.17 its
+  text mentions the version mismatch. Through a 1.16 or later server,
+  the older side is refused first (see below).
 - **1.6 – 1.15 with 1.0 – 1.5:** the two sides connect, then the first
-  message fails the version check with `E034`.
+  message fails the version check: `E034` on the 1.6 – 1.15 side. 1.0 –
+  1.5 has no such code and reports an unexpected error.
 
 Either way, run `fsend --update` on the older device.
 

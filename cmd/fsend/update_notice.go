@@ -63,27 +63,64 @@ func printUpdateNotice(f *flags) {
 		return
 	}
 	if updateCheck.tag != "" {
-		fmt.Fprintf(os.Stderr, "\n%s\n", availableLine(updateCheck.tag, version.Version))
+		uxlog.Blank()
+		printAvailable(updateCheck.tag, version.Version)
 	}
 }
 
-// availableLine is the "a newer release exists" hint, shared by the
-// passive notice and `--update --check` so the two can never disagree.
-// It leads with the info glyph, accents the command (the thing to type)
-// and links the release, so the user can see what changed before
-// updating.
-func availableLine(latest, current string) string {
-	return fmt.Sprintf("%s fsend %s is available (you have %s)\n  %s  ·  %s",
-		uxlog.Info(), latest, strings.TrimPrefix(current, "v"),
-		uxlog.Code(updateCommand()), uxlog.Link(update.ReleaseURL(latest)))
+// printAvailable prints the "a newer release exists" notice, shared by the
+// passive notice and `--update --check` so the two can never disagree: a
+// neutral line naming both versions, and under it what to do about it on
+// this installation.
+func printAvailable(latest, current string) {
+	head, action := availableNotice(latest, current, installedBy())
+	uxlog.Status(uxlog.Info(), head)
+	uxlog.Line(action)
 }
 
-// updateCommand is how this installation is updated: brew's command when
-// brew owns the binary — `fsend --update` there would only refuse with
-// E039 — and fsend's own otherwise.
-func updateCommand() string {
-	if exe, err := os.Executable(); err == nil && managedByHomebrew(resolveBinaryPath(exe)) {
-		return "brew upgrade fsend"
+// availableNotice words the notice for an installation of the given kind.
+// The second line must name something that works: `fsend --update` refuses
+// (E039) on a binary a package manager owns, so brew gets brew's command
+// and a deb, rpm or apk install is pointed at the release page, where the
+// new package is — the packages come from the release, not a repository,
+// so there is no one command to run. The command is accented (the thing to
+// type); the link shows what changed before updating.
+func availableNotice(latest, current string, by installer) (head, action string) {
+	head = fmt.Sprintf("fsend %s is available (you have %s)", latest, strings.TrimPrefix(current, "v"))
+	link := uxlog.Link(update.ReleaseURL(latest))
+	switch {
+	case by.pkg != "":
+		return head, "Install the new ." + by.pkg + ": " + link
+	case by.brew:
+		return head, uxlog.Join(uxlog.Code("brew upgrade fsend"), link)
 	}
-	return "fsend --update"
+	return head, uxlog.Join(uxlog.Code("fsend --update"), link)
+}
+
+// installer says what owns the running binary, which decides how it is
+// updated: Homebrew, a Linux package (pkg is "deb", "rpm" or "apk"), or —
+// the zero value — fsend itself (the install script, a hand-placed binary,
+// go install), where `fsend --update` works.
+type installer struct {
+	brew bool
+	pkg  string
+}
+
+// installedBy inspects the running binary the same way runUpdate's
+// refusals do (managedByHomebrew, packagedAs), so the notice and the
+// refusal agree. An unreadable path counts as fsend's own.
+func installedBy() installer {
+	exe, err := os.Executable()
+	if err != nil {
+		return installer{}
+	}
+	return installerOf(resolveBinaryPath(exe))
+}
+
+// installerOf is installedBy for a given binary path.
+func installerOf(binPath string) installer {
+	if managedByHomebrew(binPath) {
+		return installer{brew: true}
+	}
+	return installer{pkg: packagedAs(binPath)}
 }

@@ -25,7 +25,6 @@ const (
 	gCross                  // ✗ / [FAIL]
 	gWarn                   // ! (bold) / [!]
 	gInfo                   // no glyph — a blank gutter / [i]
-	gStep                   // › / >  (narration marker, as the install scripts print)
 	gRetry                  // ! (bold) / [~]
 	gAsk                    // ? (bold) / [?]
 	gSpin                   // … / [*]  ("waiting" — non-animated; deliberately not a
@@ -36,7 +35,7 @@ const (
 // state. Caller appends the rest of the line.
 //
 // Every glyph is one column wide and sits in column 0, so the text after
-// "<glyph> " starts in column 2 — the grid every line follows (see Line).
+// "<glyph> " starts in column 2 — the grid every line follows (grid.go).
 // When stderr is a real terminal we render the unicode glyph and (when
 // allowed) apply colour. When stderr is a pipe/file we render the ASCII
 // fallback with no colour so log files stay readable.
@@ -73,12 +72,6 @@ func Warn() string { return Marker(gWarn) }
 // notice's text lines up in column 2 with no symbol of its own; "[i]" in
 // logs, where a marker keeps lines greppable.
 func Info() string { return Marker(gInfo) }
-
-// Step returns the step glyph (› or >) — the marker the install scripts
-// (scripts/install.sh, install.ps1) print before each action they take.
-// fsend uses it for its own narration ahead of a re-run installer
-// (--update) so the two outputs read as one continuous block.
-func Step() string { return Marker(gStep) }
 
 // Retry returns the retry glyph: the warning ! on a terminal (a dropped
 // connection is a soft warning; the spinner that follows shows the wait),
@@ -138,12 +131,6 @@ func glyphForKind(k glyphKind) (utf8, ascii string, token colourToken, bold bool
 		// Neutral notices carry no symbol: an empty gutter, text in
 		// column 2 like every other line.
 		return " ", "[i]", colourToken{}, false
-	case gStep:
-		// Default foreground: narration, not information. The › is the
-		// same glyph the install scripts print for every step, so
-		// --update's lines and the installer output that follows them
-		// match.
-		return "›", ">", colourToken{}, false
 	case gRetry:
 		return "!", "[~]", tokenWarning, true
 	case gAsk:

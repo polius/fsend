@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -109,17 +110,56 @@ func (s fsSemantics) sameMtime(local time.Time, remote int64) bool {
 	return d == 0
 }
 
-// moveFile renames src over dst, falling back to copy+sync+rename when they
-// sit on different filesystems (a mount point inside the receive folder).
 // errTargetAppeared: something was created at the target after it was
 // classified as absent; placing the new file would replace it unasked.
 var errTargetAppeared = errors.New("a file appeared at the target during the transfer")
 
-// placeNew moves src to dst only if dst does not exist. A hard link fails on
+// placer moves verified partials onto targets that must still be absent.
+// One per receive, used by one goroutine (the committer).
+type placer struct {
+	// noExcl: the one-call exclusive rename doesn't work on this
+	// filesystem (FAT, a network mount, an old kernel). Remembered so the
+	// rest of the receive doesn't probe it again for every file.
+	noExcl bool
+	// excl overrides renameNoReplace — tests stand in for a filesystem
+	// without it.
+	excl func(src, dst string) error
+}
+
+// placeNew moves src to dst only if dst does not exist. Where the OS has an
+// exclusive rename (renameNoReplace) that is one atomic call; a hard link
+// plus an unlink does the same in two, and costs four times as much per file
+// on APFS, so it is only the fallback (placeByLink).
+func (pl *placer) placeNew(src, dst string) error {
+	var probeErr error
+	if haveRenameNoReplace && !pl.noExcl {
+		excl := renameNoReplace
+		if pl.excl != nil {
+			excl = pl.excl
+		}
+		err := excl(src, dst)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, fs.ErrExist) {
+			return errTargetAppeared
+		}
+		probeErr = err
+	}
+	// Any other failure goes to the portable path, which either places the
+	// file or reports the real cause (a refused name, another filesystem).
+	err := placeByLink(src, dst)
+	if err == nil && probeErr != nil && renameNoReplaceUnsupported(probeErr) {
+		pl.noExcl = true
+	}
+	return err
+}
+
+// placeByLink is placeNew without an exclusive rename. A hard link fails on
 // an existing name atomically; where links aren't available (FAT, exFAT,
 // another filesystem) it checks and renames, which narrows the window to
 // microseconds instead of the whole transfer.
-func placeNew(src, dst string) error {
+func placeByLink(src, dst string) error {
 	err := os.Link(src, dst)
 	if err == nil {
 		_ = os.Remove(src)
@@ -134,6 +174,8 @@ func placeNew(src, dst string) error {
 	return moveFile(src, dst)
 }
 
+// moveFile renames src over dst, falling back to copy+sync+rename when they
+// sit on different filesystems (a mount point inside the receive folder).
 func moveFile(src, dst string) error {
 	err := os.Rename(src, dst)
 	if err == nil || !isCrossDevice(err) {

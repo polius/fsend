@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -249,6 +248,48 @@ const waitMaxConsecFails = 6
 // receiver" forever.
 const firstAcceptTimeout = 60 * time.Second
 
+// A receiver that gives up before authenticating deletes the session it
+// joined (leaveSession). While the sender waits for that receiver's first
+// connection it asks the server every sessionWatchEvery whether the
+// session still exists, and stops waiting sessionGoneGrace after it is
+// gone. The grace covers the other way a session disappears, a server
+// restart: a receiver whose connection is already on its way still
+// completes. Vars so tests can shrink them.
+var (
+	sessionWatchEvery = time.Second
+	sessionGoneGrace  = 2 * time.Second
+)
+
+// watchSessionGone cancels the wait for a joined receiver once the server
+// no longer has the session. It returns when ctx ends. Only a clear "no
+// such session" counts: an unreachable server says nothing about the
+// receiver.
+func watchSessionGone(ctx context.Context, client *signaling.Client, created *signaling.CreateResult, cancel context.CancelFunc) {
+	t := time.NewTicker(sessionWatchEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		// A since past any candidate list: the answer is "nothing new"
+		// while the session lives and 404 once it is gone.
+		rctx, rcancel := context.WithTimeout(ctx, sessionDeleteTimeout)
+		_, err := client.PullCandidates(rctx, created.SessionID, created.RoleToken, 1<<30)
+		rcancel()
+		if !errors.Is(err, fserrors.ErrCodeNotFound) {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(sessionGoneGrace):
+			cancel()
+		}
+		return
+	}
+}
+
 // sessionDeleteTimeout bounds best-effort session cleanup, so an
 // unreachable server can't stall teardown up to the client's full
 // request timeout.
@@ -289,7 +330,10 @@ var errPairedGone = fmt.Errorf("%w: the receiver paired but the connection could
 // quit, lost its network, or never had a working path) has not proved it
 // holds the code, so it does not spend it: the session is re-created and
 // the sender waits again, up to maxVanishedReceivers times per round.
-// onVanished, when non-nil, hears about each such return to waiting.
+// It has not tested a guess either: the sender shows its confirmation tag
+// only to a peer whose own tag was right (quicconn), so going back to
+// waiting gives nothing away. onVanished, when non-nil, hears about each
+// such return to waiting.
 func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *config.Config, onDown func(error), onVanished func()) (*internetSenderPairing, error) {
 	client, _, err := signalingClient(cfg)
 	if err != nil {
@@ -360,13 +404,20 @@ func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *conf
 		// Bring up QUIC on the established PacketConn and authenticate the
 		// first peer. Retries re-Accept on the same listener.
 		acceptCtx, cancelAccept := context.WithTimeout(ctx, firstAcceptTimeout)
+		watched := make(chan struct{})
+		go func() {
+			defer close(watched)
+			watchSessionGone(acceptCtx, client, created, cancelAccept)
+		}()
 		ln, res, teardown, err := senderQUICAccept(acceptCtx, pc, round.key.secret)
 		cancelAccept()
+		<-watched // nothing of the watch runs once the accept has returned
 		if err != nil {
 			endSession()
-			// A failed PAKE is not a vanished receiver: the slot comes from
-			// the whole code, so whoever joined holds the slot but not the
-			// code. Going back to waiting would hand them another guess.
+			// A failed PAKE (a wrong confirmation tag) is not a vanished
+			// receiver: the slot comes from the whole code, so whoever
+			// joined holds the slot but not the code, and has just spent a
+			// guess. Going back to waiting would hand them another.
 			if !errors.Is(err, fserrors.ErrPeerAuthFailed) && waitAgain() {
 				continue
 			}
@@ -543,7 +594,7 @@ func establishInternetDataPath(ctx context.Context, f *flags, client *signaling.
 		return iceConn, icePath, nil
 	}
 	if f != nil && f.debug {
-		fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
+		uxlog.Debug(fmt.Sprintf("ICE failed: %v", iceErr))
 	}
 	if f != nil && f.mode == modeDirect {
 		return nil, connpath.Info{}, fmt.Errorf("%w: ICE failed under --mode=direct: %v", fserrors.ErrConnectFailed, iceErr)
@@ -640,8 +691,8 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 			(errors.Is(err, fserrors.ErrWrongPassword) || errors.Is(err, fserrors.ErrPasswordRequired)) {
 			pwMisses++
 			if !f.quiet {
-				fmt.Fprintf(os.Stderr, "%s %s — still waiting; they can rerun %s with the right password.\n",
-					uxlog.Warn(), passwordMissNotice(err), uxlog.Code("fsend "+code))
+				uxlog.Status(uxlog.Warn(), fmt.Sprintf("%s — still waiting; they can rerun %s with the right password.",
+					passwordMissNotice(err), uxlog.Code("fsend "+code)))
 			}
 			waitSpin = startWaitSpinner(f, "Waiting for receiver")
 			continue
@@ -665,7 +716,7 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 			// as exhausted retries; the receiver may still recover on its
 			// own (network change) or be rerun on the same device. The code
 			// box has long scrolled away, so the line repeats the code.
-			fmt.Fprintf(os.Stderr, "%s %s\n", uxlog.Info(), dropNotice(isReceiverClose(err), code))
+			uxlog.Status(uxlog.Info(), dropNotice(isReceiverClose(err), code))
 		}
 		waitSpin = startWaitSpinner(f, "Waiting for receiver")
 	}
@@ -793,7 +844,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	// fails, the final renderError prints the catalog entry.
 	noticeServerDown := func(err error) {
 		if f.debug {
-			fmt.Fprintln(os.Stderr, "DEBUG: server pairing failed:", err)
+			uxlog.Debug(fmt.Sprintf("server pairing failed: %v", err))
 		}
 		if serverDownErr != nil || f.quiet || lanDisabled {
 			serverDownErr = err
@@ -801,7 +852,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 		}
 		serverDownErr = err
 		waitSpin.Stop()
-		fmt.Fprintln(os.Stderr, uxlog.Warn(), serverPairNotice(err))
+		uxlog.Status(uxlog.Warn(), serverPairNotice(err))
 		waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
 	}
 
@@ -818,7 +869,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 			// The code is still good: nobody proved they held it.
 			if !f.quiet {
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Info(), "A receiver joined but didn't connect. The code still works.")
+				uxlog.Status(uxlog.Info(), "A receiver joined but didn't connect. The code still works.")
 				waitSpin = startWaitSpinner(f, "Waiting for receiver")
 			}
 
@@ -846,7 +897,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				// server path is up, so pairing carries on there.
 				if !f.quiet {
 					waitSpin.Stop()
-					fmt.Fprintln(os.Stderr, uxlog.Warn(), "Stopped taking local-network connections after", maxLANAuthFailures, "failed attempts. Still waiting via the server.")
+					uxlog.Status(uxlog.Warn(), fmt.Sprintf("Stopped taking local-network connections after %d failed attempts. Still waiting via the server.", maxLANAuthFailures))
 					waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
 				}
 				lanDownNoticed = true
@@ -864,7 +915,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				// Pause the spinner so the notice prints on a clean
 				// line, then restart it for the remaining (server) path.
 				waitSpin.Stop()
-				fmt.Fprintln(os.Stderr, uxlog.Info(), "Local-network discovery unavailable — connecting via the server instead.")
+				uxlog.Status(uxlog.Info(), "Local-network discovery unavailable — connecting via the server instead.")
 				waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
 			}
 
@@ -933,8 +984,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	// route. The accept wait itself is a spinner, started in
 	// runSenderTransferLoop.
 	if !f.quiet {
-		fmt.Fprintf(os.Stderr, "%s Receiver connected%s\n",
-			uxlog.Check(), uxlog.Muted(uxlog.Sep+pathInfo.Chip()))
+		uxlog.Status(uxlog.Check(), "Receiver connected"+uxlog.Muted(uxlog.Sep+pathInfo.Chip()))
 	}
 
 	if winner.lan != nil {
@@ -1074,7 +1124,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		onSkip(fi, kept)
 	}
 	unreadable, onUnreadable, onChanged := sourceIssueHooks(f, plan)
-	refused, onRefused := refusalHooks(plan)
+	refused, onRefused, onRefusedMore := refusalHooks(plan)
 	current := firstRes
 	notice := retryNoticeFor(f)
 	opts := retry.Options{OnRetry: func(attempt int, wait time.Duration, lastErr error) {
@@ -1127,7 +1177,14 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 				}
 				res.Close()
 			}()
+			// The engine stops hashing sources the moment the connection
+			// is gone, instead of finishing a prefix nobody will receive.
+			var conn context.Context
+			if res.Conn != nil {
+				conn = res.Conn.Context()
+			}
 			return transfer.Send(ctx, &res.Streams, transfer.SendOptions{
+				Conn:            conn,
 				Hostname:        hostnameOrDefault(f.hostname),
 				OS:              runtime.GOOS,
 				ClientVersion:   version.Version,
@@ -1150,6 +1207,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 					spin.Stop()
 					onRefused(i, why)
 				},
+				OnRefusedMore: onRefusedMore,
 			})
 		})
 	if err != nil {
@@ -1168,6 +1226,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// dropping to the sent bytes. The skipped-file count explains the gap and
 	// reconciles with the receiver's breakdown. printSend* no-op under --quiet.
 	s := stats()
+	refusedRows, refusedMore := refused()
 	printSendSummary(f, sendSubject(plan), conv.Int64(plan.totalBytes), s, elapsed, pathInfo)
 	ev := jsonDoneEvent{Ok: true, Role: "sender",
 		BytesMoved: ptr64(s.moved), DurationMS: msPtr(elapsed), Route: jsonRoute(pathInfo.Kind)}
@@ -1177,7 +1236,7 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 		ev.BytesTotal = ptr64(conv.Int64(plan.totalBytes))
 	}
 	if plan.mode == wire.ModeFiles {
-		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles - len(refused()))
+		ev.FilesSent = ptrInt(plan.totalFiles - s.skippedFiles - len(refusedRows) - refusedMore)
 		ev.FilesSkipped = ptrInt(s.skippedFiles - s.keptFiles)
 		ev.FilesKept = ptrInt(s.keptFiles)
 	}
@@ -1185,13 +1244,14 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// exit E050 so scripts notice.
 	var retErr error
 	if n := len(unreadable()); n > 0 {
-		printSkippedList(f, "could not be read", unreadable())
+		printSkippedList(f, "could not be read", unreadable(), 0)
 		retErr = fmt.Errorf("%w: %d unreadable on the sender", fserrors.ErrFilesSkipped, n)
 	}
-	// Names the receiver's system cannot create: those files only, listed
+	// Names the receiver's system cannot create (refused up front, or by
+	// its filesystem when the file was written): those files only, listed
 	// with the receiver's reason; everything else arrived.
-	if n := len(refused()); n > 0 {
-		printSkippedList(f, "could not be created on the receiver", refused())
+	if n := len(refusedRows) + refusedMore; n > 0 {
+		printSkippedList(f, "could not be created on the receiver", refusedRows, refusedMore)
 		if retErr == nil {
 			retErr = fmt.Errorf("%w: %d refused by the receiver", fserrors.ErrFilesSkipped, n)
 		}

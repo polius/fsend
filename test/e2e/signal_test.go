@@ -357,8 +357,13 @@ func waitForSidecarSize(dir string, minBytes int64, budget time.Duration) bool {
 func waitForResumeKey(xdg string, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		if matches, _ := filepath.Glob(filepath.Join(xdg, "fsend", "resume", "[^.]*")); len(matches) > 0 {
-			return true
+		matches, _ := filepath.Glob(filepath.Join(xdg, "fsend", "resume", "[^.]*"))
+		for _, m := range matches {
+			// The receive lock (<key file>.lock) is there from the start
+			// of the receive; only the key file says the key is saved.
+			if !strings.HasSuffix(m, ".lock") {
+				return true
+			}
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

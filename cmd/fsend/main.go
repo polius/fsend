@@ -213,6 +213,12 @@ func renderError(err error, debug bool) int {
 		// decision, not a failure, and skip the "Use --overwrite" advice
 		// they just declined.
 		add("Kept your local copies — nothing was overwritten.")
+	case errors.Is(err, errReceivingHere):
+		// E003's "another receiver" and "ask for a fresh code" would both
+		// mislead: the other receiver is this device, and its transfer is
+		// under way.
+		add("That code is already being received on this device.")
+		add(uxlog.Row("Wait for the other fsend to finish, or stop it and run this again."))
 	case errorRole == "sender" && errors.Is(err, fserrors.ErrReceiverDeclined):
 		// Not a fault on either side: the receiver said no. Name who.
 		who := sendState.peerName()
@@ -237,18 +243,18 @@ func renderError(err error, debug bool) int {
 		// the argument is a path.
 		switch {
 		case code.LooksLikeCode(detail) && !argsHaveFlag("--send"):
-			add("  If this was a receive code, check it with the sender — codes look like " +
-				uxlog.Code("abc-defg-jkm") + ".")
+			add(uxlog.Row("If this was a receive code, check it with the sender — codes look like " +
+				uxlog.Code("abc-defg-jkm") + "."))
 		// Muscle-memory from other tools: there are no subcommands.
 		case detail == "version":
-			add("  For the fsend version, run: fsend --version")
+			add(uxlog.Row("For the fsend version, run: fsend --version"))
 		default:
 			if hint := subcommandHint(detail); hint != "" {
-				add("  " + hint)
+				add(uxlog.Row(hint))
 			}
 		}
 		if entry.Action != "" {
-			add("  " + entry.Action)
+			add(uxlog.Row(entry.Action))
 		}
 	case detail != "" && errors.Is(err, fserrors.ErrUnsendableSymlink):
 		// Inline the offending link into the message (period stripped, as
@@ -256,20 +262,20 @@ func renderError(err error, debug bool) int {
 		// ../gone (target does not exist)".
 		add(strings.TrimSuffix(entry.Message, ".") + ": " + detail)
 		if entry.Action != "" {
-			add("  " + entry.Action)
+			add(uxlog.Row(entry.Action))
 		}
 	case errors.Is(err, fserrors.ErrUpdateRootRefused):
 		// The opt-in command is the whole point of this refusal — give it
 		// a block of its own, mirroring the installer's root refusal.
 		add(entry.Message)
-		add("  to update anyway, run:")
+		add(uxlog.Row("to update anyway, run:"))
 		add("")
-		add("      " + uxlog.Code("FSEND_ALLOW_ROOT=1 fsend --update"))
+		add(uxlog.CommandRow(uxlog.Code("FSEND_ALLOW_ROOT=1 fsend --update")))
 	case detail != "":
 		add(entry.Message)
-		add("  " + withCommandAccent(detail))
+		add(uxlog.Row(withCommandAccent(detail)))
 		if entry.Action != "" {
-			add("  " + entry.Action)
+			add(uxlog.Row(entry.Action))
 		}
 	default:
 		for _, l := range strings.Split(entry.Format(), "\n") {
@@ -281,18 +287,19 @@ func renderError(err error, debug bool) int {
 	}
 	// After a Ctrl-C the terminal has echoed "^C", leaving the cursor two
 	// columns in; the block belongs in column 0.
-	if errors.Is(err, fserrors.ErrUserCancelled) && uxlog.CanEscape(os.Stderr) {
-		fmt.Fprint(os.Stderr, "\r")
+	if block := strings.Join(lines, "\n"); errors.Is(err, fserrors.ErrUserCancelled) {
+		uxlog.StatusAfterInterrupt(glyph, block)
+	} else {
+		uxlog.Status(glyph, block)
 	}
-	fmt.Fprintf(os.Stderr, "%s %s\n", glyph, strings.Join(lines, "\n"))
 	// The interrupted receiver's partial resumes with the very same code
 	// while the sender waits; spell it out rather than "<code>".
 	if errorRole == "receiver" && receiveResume != "" {
 		switch {
 		case errors.Is(err, fserrors.ErrTransientFailure):
-			fmt.Fprintf(os.Stderr, "  Resume with: %s\n", uxlog.Code(receiveResume))
+			uxlog.Line("Resume with: " + uxlog.Code(receiveResume))
 		case errors.Is(err, fserrors.ErrWrongPassword), errors.Is(err, fserrors.ErrPasswordRequired):
-			fmt.Fprintf(os.Stderr, "  Try again with: %s\n", uxlog.Code(receiveResume+" --password"))
+			uxlog.Line("Try again with: " + uxlog.Code(receiveResume+" --password"))
 		}
 	}
 
@@ -303,7 +310,7 @@ func renderError(err error, debug bool) int {
 		for _, c := range fserrors.Chain(err) {
 			// Sanitized: a peer's ErrorFrame message rides the chain, and
 			// untrusted text must not reach the terminal with ANSI/bidi.
-			fmt.Fprintf(os.Stderr, "  DEBUG: %s\n", sanitizeForDisplay(c, 512))
+			uxlog.Debug(sanitizeForDisplay(c, 512))
 		}
 	}
 	// No-op if the summary already emitted the rich done event.

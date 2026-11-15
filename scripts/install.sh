@@ -49,25 +49,27 @@ if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     esc="$(printf '\033')"
     C_RED="${esc}[31m" C_GRN="${esc}[32m" C_YLW="${esc}[33m" C_RST="${esc}[0m"
     # C_ORG styles a command the user is about to run — the same bold +
-    # accent-orange treatment the fsend binary gives one (uxlog.Code,
-    # tokenAccent #ff9e64): truecolour when the terminal advertises it
-    # (COLORTERM), nearest 256-colour index otherwise. Bold is folded in
-    # like the binary's fgBold; one C_RST clears both.
+    # accent treatment the fsend binary gives one (uxlog.Code). The colour
+    # is the binary's dark accent, the logo orange #e0805a (tokenAccent in
+    # internal/uxlog/glyphs.go): truecolour when the terminal advertises
+    # it (COLORTERM), otherwise 173, the nearest xterm-256 cell, as the
+    # binary's nearest256 picks it. Bold is folded in like the binary's
+    # fgBold; one C_RST clears both.
     case "${COLORTERM:-}" in
-        truecolor|24bit|TrueColor|24BIT) C_ORG="${esc}[1;38;2;255;158;100m" ;;
-        *)                               C_ORG="${esc}[1;38;5;209m" ;;
+        truecolor|24bit|TrueColor|24BIT) C_ORG="${esc}[1;38;2;224;128;90m" ;;
+        *)                               C_ORG="${esc}[1;38;5;173m" ;;
     esac
 else
     C_RED='' C_GRN='' C_YLW='' C_RST='' C_ORG=''
 fi
 
-# The step marker is the plain '›' the fsend binary prints for narration
-# (uxlog.Step): cyan is reserved for the ℹ info glyph, so a step competing
-# in cyan only adds noise. Keeping it colourless also makes the installer's
-# lines read as one continuous block with the narration fsend prints ahead
-# of it under `fsend --update`.
+# The lines follow the fsend binary's grid: a status glyph in column 0, the
+# text from column 2. A step is narration, so it has no glyph — an empty
+# gutter, as the binary prints its own neutral lines (uxlog.Info). The
+# installer's lines then read as one block with the narration fsend prints
+# ahead of it under `fsend --update`, and only ✓ ! ✗ ever sit in the gutter.
 err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
-info() { printf '› %s\n' "$*" >&2; }
+info() { printf '  %s\n' "$*" >&2; }
 warn() { printf '%s!%s %s\n' "$C_YLW" "$C_RST" "$*" >&2; }
 ok()   { printf '%s✓%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
 vinfo() {

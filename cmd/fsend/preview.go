@@ -5,7 +5,6 @@ import (
 	"io"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/polius/fsend/internal/uxlog"
 
@@ -31,12 +30,12 @@ type previewItem struct {
 	from string
 }
 
-// renderPreview writes a size-sorted, truncated file list to w, indented to
-// sit under the artifact summary line. Names must already be sanitized for
+// renderPreview writes a size-sorted, truncated file list to w, as list
+// rows under the artifact summary line. Names must already be sanitized for
 // display. Single-item lists print nothing — the summary line already names
 // the file. The wrapping directory shared by every row is stripped (it's in
 // the headline), and sizes are right-aligned so the list reads as a manifest.
-func renderPreview(w io.Writer, items []previewItem, indent int) {
+func renderPreview(w io.Writer, items []previewItem) {
 	if len(items) <= 1 {
 		return
 	}
@@ -49,36 +48,32 @@ func renderPreview(w io.Writer, items []previewItem, indent int) {
 		return items[i].name < items[j].name
 	})
 
-	pad := strings.Repeat(" ", indent)
-	shown := min(len(items), previewRows)
-	if len(items) == previewRows+1 {
-		// "… and 1 more" costs the row it hides: print it instead.
-		shown = len(items)
-	}
+	out := uxlog.On(w)
+	// "… and 1 more" costs the row it hides: uxlog.Shown prints it instead.
+	shown := uxlog.Shown(len(items), previewRows)
 	// Name first (the row's subject, default text), then the size and any
 	// note as faint detail — except "differs", the one note that needs a
 	// decision. Names pad to one column, capped so a single long path
-	// doesn't push every size off screen.
+	// doesn't push every size off screen; the padding counts display
+	// columns, so names in a wide script still line the sizes up.
 	nameWidth, sizeWidth := 0, 0
 	for _, it := range items[:shown] {
-		nameWidth = max(nameWidth, min(nameColumnCap, utf8.RuneCountInString(rowName(it))))
+		nameWidth = max(nameWidth, min(nameColumnCap, uxlog.Width(rowName(it))))
 		sizeWidth = max(sizeWidth, len(sizeCell(it)))
 	}
 	for _, it := range items[:shown] {
-		name := rowName(it)
-		gap := strings.Repeat(" ", max(0, nameWidth-utf8.RuneCountInString(name)))
-		line := pad + uxlog.Path(name) + gap + "   " + uxlog.Muted(fmt.Sprintf("%*s", sizeWidth, sizeCell(it)))
+		line := uxlog.Path(uxlog.PadRight(rowName(it), nameWidth)) + uxlog.Gap + uxlog.Muted(fmt.Sprintf("%*s", sizeWidth, sizeCell(it)))
 		if it.note != "" {
-			line += "   " + noteText(it.note)
+			line += uxlog.Gap + noteText(it.note)
 		}
-		_, _ = fmt.Fprintln(w, line)
+		out.Item(line)
 	}
 	if more := len(items) - shown; more > 0 {
 		var rest uint64
 		for _, it := range items[shown:] {
 			rest += it.size
 		}
-		_, _ = fmt.Fprintln(w, pad+uxlog.Muted(fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(int64(rest)))))
+		out.Item(uxlog.Muted(fmt.Sprintf("… and %d more (%s)", more, uxlog.HumanBytes(conv.Int64(rest)))))
 	}
 }
 

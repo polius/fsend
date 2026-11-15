@@ -27,15 +27,15 @@ func warnIfConfigCorrupted(err error, quiet bool) {
 	if !ok {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s [%s] %s\n", uxlog.Warn(), entry.Code, entry.Message)
+	uxlog.Status(uxlog.Warn(), "["+entry.Code+"] "+entry.Message)
 	// Load wraps the sentinel with the file and cause ("<path>: not valid
 	// JSON", "open <path>: permission denied") — show it so the user knows
 	// which file to fix and why it was rejected.
 	if detail := strings.TrimPrefix(err.Error(), fserrors.ErrConfigCorrupted.Error()+": "); detail != err.Error() {
-		fmt.Fprintf(os.Stderr, "  %s\n", detail)
+		uxlog.Line(detail)
 	}
 	if entry.Action != "" {
-		fmt.Fprintf(os.Stderr, "  %s\n", entry.Action)
+		uxlog.Line(entry.Action)
 	}
 }
 
@@ -125,7 +125,7 @@ func runConnect(f *flags) error {
 		// and this command is E016's suggested fix — it must rewrite the
 		// file, or the warning recurs forever.
 		if cfg.IsDefault() && loadErr == nil {
-			fmt.Fprintln(os.Stderr, uxlog.Info(), "Already on the default server:", config.DefaultServer)
+			uxlog.Status(uxlog.Info(), "Already on the default server: "+config.DefaultServer)
 			return nil
 		}
 		cfg.Server = ""
@@ -133,7 +133,7 @@ func runConnect(f *flags) error {
 		if err := config.Save(cfg); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
-		fmt.Fprintln(os.Stderr, uxlog.Check(), "Reverted to default server:", config.DefaultServer)
+		uxlog.Status(uxlog.Check(), "Reverted to default server: "+config.DefaultServer)
 		return nil
 	default:
 		if len(args) > 2 {
@@ -156,7 +156,7 @@ func runConnect(f *flags) error {
 		if password != "" {
 			msg += " (password set)"
 		}
-		fmt.Fprintln(os.Stderr, uxlog.Check(), msg)
+		uxlog.Status(uxlog.Check(), msg)
 		warnIfUnresolvable(server)
 		return nil
 	}
@@ -174,8 +174,8 @@ func warnIfUnresolvable(server string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := net.DefaultResolver.LookupHost(ctx, host); err != nil {
-		fmt.Fprintf(os.Stderr, "%s %q does not resolve from here — saved anyway.\n", uxlog.Warn(), host)
-		fmt.Fprintln(os.Stderr, "  Check the address, or revert with: fsend --connect default")
+		uxlog.Status(uxlog.Warn(), fmt.Sprintf("%q does not resolve from here — saved anyway.", host))
+		uxlog.Line("Check the address, or revert with: fsend --connect default")
 	}
 }
 
@@ -292,27 +292,30 @@ func defaultPortFor(scheme, host string) string {
 // convention as `git config` / `gh`); the surrounding guidance stays on
 // stderr so `fsend --connect | grep` sees only the data.
 func printCurrentServer(cfg *config.Config) {
-	fmt.Fprintln(os.Stderr)
+	answer := uxlog.On(os.Stdout)
+	uxlog.Blank()
 	if cfg.IsDefault() {
-		fmt.Println("  Current server:", config.DefaultServer, "(default)")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "  Set a custom server:  fsend --connect <host[:port]>[,<password>]")
+		answer.Line("Current server: " + config.DefaultServer + " (default)")
+		uxlog.Blank()
+		uxlog.Line("Set a custom server:  fsend --connect <host[:port]>[,<password>]")
 	} else {
 		tag := "custom"
 		if cfg.ServerPassword != "" {
 			tag = "custom, password set"
 		}
-		fmt.Printf("  Current server: %s  (%s)\n", cfg.Server, tag)
-		fmt.Println("  Default server:", config.DefaultServer)
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "  Revert to the default:  fsend --connect default")
-		fmt.Fprintln(os.Stderr, "  Set a new server:       fsend --connect <host[:port]>[,<password>]")
+		answer.Line(fmt.Sprintf("Current server: %s  (%s)", cfg.Server, tag))
+		answer.Line("Default server: " + config.DefaultServer)
+		uxlog.Blank()
+		uxlog.Line("Revert to the default:  fsend --connect default")
+		uxlog.Line("Set a new server:       fsend --connect <host[:port]>[,<password>]")
 	}
 	if p, err := config.Path(); err == nil {
-		fmt.Fprintln(os.Stderr, "  Config file:", p)
+		uxlog.Line("Config file: " + p)
 	}
 	if v := os.Getenv("FSEND_SERVER"); v != "" {
-		fmt.Fprintf(os.Stderr, "  %s FSEND_SERVER=%s overrides this for every run in this shell.\n", uxlog.Info(), v)
+		// A neutral notice like any other: its marker belongs in the
+		// gutter, its text in column 2.
+		uxlog.Status(uxlog.Info(), fmt.Sprintf("FSEND_SERVER=%s overrides this for every run in this shell.", v))
 	}
-	fmt.Fprintln(os.Stderr)
+	uxlog.Blank()
 }

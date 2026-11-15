@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -88,7 +90,14 @@ type RecvOptions struct {
 	// TargetDir: raw bytes for a single file or stream, a tar archive for a
 	// folder or several files.
 	Sink io.Writer
+
+	// withoutCaps drops capability bits from what this receiver advertises
+	// and uses — tests stand in for an older build with it.
+	withoutCaps wire.Capability
 }
+
+// caps is the capability bitmap this receiver advertises and honours.
+func (o *RecvOptions) caps() wire.Capability { return wire.CapsSupported &^ o.withoutCaps }
 
 func (o *RecvOptions) policy() ConflictPolicy {
 	if o.Overwrite {
@@ -186,8 +195,14 @@ type receiver struct {
 	ps      *partialStore
 	dirs    *dirUnlocker
 	commit  *committer
+	placer  placer
+	ready   map[string]struct{} // folders readyDir has prepared
 	wantSHA bool
 	plans   []entryPlan
+	// late: files refused only once they were written (the first
+	// wire.MaxWriteRefusals) and how many there were, for the final ack.
+	late      []wire.WriteRefusal
+	lateCount uint32
 }
 
 func newReceiver(s *Streams, opts RecvOptions) *receiver {
@@ -203,8 +218,12 @@ func newReceiver(s *Streams, opts RecvOptions) *receiver {
 func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []wire.ListingEntry) error {
 	s, opts := r.s, r.opts
 	r.ps.sweep()
+	r.cls.ctx = ctx
 	plans, err := r.cls.run(entries)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err() // cut short while hashing partials, not a bad listing
+		}
 		declineTransfer(s, wire.ErrCodeListingInvalid, "invalid listing")
 		return err
 	}
@@ -213,7 +232,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	// --checksum: resolve same-size candidates by content hash before the
 	// breakdown is shown or any decision is made.
 	if opts.Checksum {
-		if err := resolveVerify(s, plans, r.cls.sem, opts.OnHashProgress); err != nil {
+		if err := r.cls.resolveVerify(ctx, s, plans, opts.OnHashProgress); err != nil {
 			return err
 		}
 	}
@@ -234,6 +253,9 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 		}
 		if policy != ConflictKeep {
 			applyPolicy(plans, policy, r.cls)
+			if err := ctx.Err(); err != nil {
+				return err // ended while a partial was being hashed
+			}
 			if err := r.checkSpace(summary.BytesToRecv + summary.DifferingBytes); err != nil {
 				return err
 			}
@@ -243,7 +265,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	decisions := make([]wire.Decision, len(plans))
 	for i := range plans {
 		decisions[i] = planToDecision(&plans[i], policy == ConflictReplace, opts)
-		if !hello.Caps.Has(wire.CapSkipReasons) {
+		if !hello.Caps.Has(wire.CapSkipReasons) || !opts.caps().Has(wire.CapSkipReasons) {
 			decisions[i].Reason = ""
 		}
 	}
@@ -289,7 +311,7 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 	}
 	r.dirs.restore()
 	restoreDirMeta(plans)
-	if err := finishRecv(s); err != nil {
+	if err := finishRecv(s, r.result(hello)); err != nil {
 		return err
 	}
 	if opts.OnManifest != nil {
@@ -311,9 +333,59 @@ func (r *receiver) checkSpace(need uint64) error {
 	return fmt.Errorf("%w: %s", fserrors.ErrDiskFull, msg)
 }
 
-// finishRecv reads the sender's TRANSFER_COMPLETE, acks it, and waits for the
-// sender's FIN so both sides finish before any transport close.
-func finishRecv(s *Streams) error {
+// result is what the final ack carries: nothing (an empty ack, the only
+// form a v3 peer without CapWriteRefusals expects) unless entries were
+// refused at write time and the sender said it reads the report.
+func (r *receiver) result(hello *wire.SenderHello) *wire.TransferResult {
+	if r.lateCount == 0 || !hello.Caps.Has(wire.CapWriteRefusals) || !r.opts.caps().Has(wire.CapWriteRefusals) {
+		return nil
+	}
+	return &wire.TransferResult{Refused: r.lateCount, Entries: r.late}
+}
+
+// skipAtWrite records an entry that could not be saved once its bytes had
+// arrived: it is marked refused, reported locally through OnEntrySkipped
+// under name, and kept for the final ack, so the sender lists it too
+// instead of reporting a clean send. forPeer is the reason as the sender's
+// user should read it, when the local wording ("yours") would mislead.
+//
+// Only files go into the ack. A sender lists and counts files, as it does
+// for names refused up front, and every file under a refused folder is
+// refused in its own right; counting the folders too would spend the
+// bounded list on entries the sender drops (folders are created first)
+// and leave its count of the unnamed rest too high.
+func (r *receiver) skipAtWrite(p *entryPlan, name, reason, forPeer string) {
+	p.disp, p.skipReason = dispRefused, reason
+	if p.entry.Type != wire.EntryDir {
+		r.lateCount++
+		if len(r.late) < wire.MaxWriteRefusals {
+			if forPeer == "" {
+				forPeer = reason
+			}
+			r.late = append(r.late, wire.WriteRefusal{Index: p.entry.Index, Reason: clipReason(forPeer)})
+		}
+	}
+	if r.opts.OnEntrySkipped != nil {
+		r.opts.OnEntrySkipped(name, reason)
+	}
+}
+
+// clipReason cuts a reason to wire.MaxRefusalReason bytes on a rune boundary.
+func clipReason(s string) string {
+	if len(s) <= wire.MaxRefusalReason {
+		return s
+	}
+	n := wire.MaxRefusalReason
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// finishRecv reads the sender's TRANSFER_COMPLETE, acks it (with result,
+// when there is one to report), and waits for the sender's FIN so both
+// sides finish before any transport close.
+func finishRecv(s *Streams, result *wire.TransferResult) error {
 	ft, body, err := wire.ReadControlRaw(s.Control)
 	if err != nil {
 		return fmt.Errorf("recv: read complete: %w", err)
@@ -324,7 +396,13 @@ func finishRecv(s *Streams) error {
 	if ft != wire.TypeTransferComplete {
 		return fmt.Errorf("%w: expected TRANSFER_COMPLETE, got %v", fserrors.ErrProtocolError, ft)
 	}
-	if err := wire.WriteControl(s.Control, wire.TypeTransferAck, nil); err != nil {
+	// A nil *TransferResult must reach WriteControl as an untyped nil: the
+	// empty ack is the frame every v3 peer sends.
+	var payload any
+	if result != nil {
+		payload = result
+	}
+	if err := wire.WriteControl(s.Control, wire.TypeTransferAck, payload); err != nil {
 		return err
 	}
 	drainControl(s)
@@ -359,16 +437,28 @@ const verifyWorkers = 4
 // dispVerify to dispIdentical (match) or dispDiffers. A match also takes the
 // sender's mtime, so the next plain run sees the file as identical. Hashing
 // failures fall to dispDiffers so an unreadable/changed file is re-sent
-// rather than wrongly skipped.
-func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func(done, total uint64)) error {
+// rather than wrongly skipped. The local hashing ends with ctx, or as soon
+// as the sender stops answering: a dropped connection doesn't leave it
+// reading the rest of the tree.
+//
+// A file that differs may already have been kept as "name (1).ext" by an
+// earlier keep-both. Under --checksum that too is decided by content: the
+// sender's root is also requested for every differing file with such
+// candidates, and they are hashed once the first verdicts are in
+// (resolveKept).
+func (c *classifier) resolveVerify(ctx context.Context, s *Streams, plans []entryPlan, progress func(done, total uint64)) error {
+	sem := c.sem
 	var idx []uint32
 	var cand []*entryPlan
 	var total uint64
 	for i := range plans {
-		if plans[i].disp == dispVerify {
-			idx = append(idx, plans[i].entry.Index)
-			cand = append(cand, &plans[i])
-			total += plans[i].entry.Size
+		switch p := &plans[i]; {
+		case p.disp == dispVerify:
+			idx = append(idx, p.entry.Index)
+			cand = append(cand, p)
+			total += p.entry.Size
+		case p.disp == dispDiffers && len(p.keptCands) > 0:
+			idx = append(idx, p.entry.Index) // only its root, for resolveKept
 		}
 	}
 	if len(idx) == 0 {
@@ -376,6 +466,8 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 	}
 
 	// Local hashing runs alongside the request/response rounds.
+	hctx, stopHashing := context.WithCancel(ctx)
+	defer stopHashing()
 	local := make(map[uint32][32]byte, len(cand))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -387,7 +479,7 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 			defer wg.Done()
 			for p := range work {
 				var last int64
-				root, err := hashFileRoot(p.target, func(done int64) { meter.add(done - last); last = done })
+				root, err := hashCache.fileRoot(hctx, p.target, func(done int64) { meter.add(done - last); last = done })
 				if err != nil {
 					continue
 				}
@@ -398,10 +490,14 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 		}()
 	}
 	go func() {
+		defer close(work)
 		for _, p := range cand {
-			work <- p
+			select {
+			case work <- p:
+			case <-hctx.Done():
+				return
+			}
 		}
-		close(work)
 	}()
 
 	remote := make(map[uint32][32]byte, len(idx))
@@ -409,9 +505,15 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 	for start := 0; start < len(idx) && reqErr == nil; start += maxVerifyIDsPerFrame {
 		reqErr = verifyRound(s, idx[start:min(start+maxVerifyIDsPerFrame, len(idx))], remote)
 	}
+	if reqErr != nil {
+		stopHashing()
+	}
 	wg.Wait()
 	if reqErr != nil {
 		return reqErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err // hashing was cut short: no verdict to act on
 	}
 	for _, p := range cand {
 		lr, lok := local[p.entry.Index]
@@ -421,12 +523,87 @@ func resolveVerify(s *Streams, plans []entryPlan, sem fsSemantics, progress func
 			continue
 		}
 		p.disp = dispIdentical
-		if st, err := os.Lstat(p.target); err == nil && !sem.sameMtime(st.ModTime(), p.entry.ModTimeSec) {
-			t := time.Unix(p.entry.ModTimeSec, 0)
-			_ = os.Chtimes(p.target, t, t)
+		takeSenderTime(p.target, p.entry.ModTimeSec, sem)
+	}
+	return c.resolveKept(ctx, plans, remote, progress)
+}
+
+// resolveKept (--checksum) finds, for each differing file, the earlier
+// keep-both copy that holds the incoming version by content — the first
+// candidate whose root equals the sender's — and records it as keptAs, as
+// keptCopy does by size and time without --checksum. Under an up-front
+// keep-both the file then counts as up to date instead of gaining another
+// copy on every run. A matching copy takes the sender's mtime, so a plain
+// run recognises it as well.
+func (c *classifier) resolveKept(ctx context.Context, plans []entryPlan, remote map[uint32][32]byte, progress func(done, total uint64)) error {
+	var todo []*entryPlan
+	var total uint64
+	for i := range plans {
+		p := &plans[i]
+		if _, ok := remote[p.entry.Index]; ok && p.disp == dispDiffers && len(p.keptCands) > 0 && !p.blockedAncestor {
+			todo = append(todo, p)
+			total += p.entry.Size * uint64(len(p.keptCands))
+		}
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	meter := newProgressMeter(total, progress)
+	work := make(chan *entryPlan)
+	var wg sync.WaitGroup
+	for range min(verifyWorkers, len(todo)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range work {
+				want := remote[p.entry.Index]
+				for i, cand := range p.keptCands {
+					path := filepath.Join(c.targetDir, cand)
+					var last int64
+					root, err := hashCache.fileRoot(ctx, path, func(done int64) { meter.add(done - last); last = done })
+					if err != nil || root != want {
+						continue
+					}
+					p.keptAs = cand
+					takeSenderTime(path, p.entry.ModTimeSec, c.sem)
+					// The copies after it are not read.
+					meter.add(conv.Int64(p.entry.Size) * int64(len(p.keptCands)-i-1))
+					break
+				}
+			}
+		}()
+	}
+	for _, p := range todo {
+		work <- p
+	}
+	close(work)
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err // cut short: no verdict to act on
+	}
+	for _, p := range todo {
+		if p.keptAs != "" && c.policy == ConflictRename {
+			// Up to date through the copy: nothing to replace or resume.
+			p.disp, p.replaceResume, p.resumeOffset, p.partial = dispIdentical, false, 0, ""
 		}
 	}
 	return nil
+}
+
+// takeSenderTime gives a file whose content --checksum found equal to the
+// sender's the sender's modification time, unless it has it already, so a
+// plain run sees the two as identical. Its hashes stay remembered under the
+// new time (hashCache.retimed): a retry compares it again and needn't read
+// it again.
+func takeSenderTime(path string, mtime int64, sem fsSemantics) {
+	st, err := os.Lstat(path)
+	if err != nil || sem.sameMtime(st.ModTime(), mtime) {
+		return
+	}
+	t := time.Unix(mtime, 0)
+	if os.Chtimes(path, t, t) == nil {
+		hashCache.retimed(path, st)
+	}
 }
 
 func verifyRound(s *Streams, batch []uint32, into map[uint32][32]byte) error {
@@ -717,17 +894,28 @@ func (r *receiver) openFile(p *entryPlan, restart bool) (*recvFile, error) {
 	return rf, nil
 }
 
-// abandon closes the file; drop also deletes the partial.
+// abandon closes the file. keep leaves the partial for a retry to resume
+// from, with the hashes of the whole blocks written so far remembered, so
+// the retry needn't read them back; otherwise the partial is deleted.
 func (rf *recvFile) abandon(keep bool) {
 	if rf.closed {
 		return
 	}
 	rf.closed = true
-	rf.hasher.discard()
-	_ = rf.f.Close()
-	if !keep {
-		rf.r.ps.remove(rf.plan.rel)
+	if !keep || !canResume(rf.plan.entry.Size) {
+		rf.hasher.discard()
+		_ = rf.f.Close()
+		if !keep {
+			rf.r.ps.remove(rf.plan.rel)
+		}
+		return
 	}
+	// Only the blocks the hasher saw whole: bytes of a write that failed
+	// part-way may be on disk beyond them, unhashed.
+	whole := conv.Int64(rf.hasher.n / hashBlockSize)
+	blocks := rf.hasher.blocks()
+	_ = rf.f.Close()
+	hashCache.rememberBlocks(rf.partial, blocks[:min(whole, int64(len(blocks)))])
 }
 
 func (rf *recvFile) write(data []byte) error {
@@ -914,40 +1102,45 @@ func (c *committer) flush() error {
 func (r *receiver) place(pf pendingFile) (bool, error) {
 	p := pf.plan
 	target := p.target
-	if st, err := os.Lstat(target); err == nil && p.needsConsent() {
-		switch {
-		case st.IsDir():
-			// Never RemoveAll: os.Remove only succeeds on an empty folder.
-			if err := os.Remove(target); err != nil {
-				r.ps.remove(p.rel)
-				p.disp, p.skipReason = dispRefused, "a folder with files is in the way"
-				if r.opts.OnEntrySkipped != nil {
-					r.opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
+	if p.needsConsent() {
+		if st, err := os.Lstat(target); err == nil {
+			switch {
+			case st.IsDir():
+				// Never RemoveAll: os.Remove only succeeds on an empty folder.
+				if err := os.Remove(target); err != nil {
+					r.ps.remove(p.rel)
+					r.skipAtWrite(p, filepath.ToSlash(p.rel), "a folder with files is in the way", "")
+					return false, nil
 				}
-				return false, nil
+			case st.Mode()&os.ModeSymlink != 0:
+				_ = os.Remove(target) // the link itself, never its target
 			}
-		case st.Mode()&os.ModeSymlink != 0:
-			_ = os.Remove(target) // the link itself, never its target
 		}
 	}
 	parent := filepath.Dir(target)
-	r.dirs.unlock(parent)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := r.readyDir(parent); err != nil {
 		return false, r.refuseName(p, err)
 	}
 	// A target that was absent at classification must still be absent: a
 	// file the user created meanwhile is theirs, not ours to replace.
 	place := moveFile
 	if !p.needsConsent() && !p.replaceResume {
-		place = placeNew
+		place = r.placer.placeNew
 	}
-	if err := place(pf.partial, target); err != nil {
+	err := place(pf.partial, target)
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		// The folder was removed since readyDir last saw it: make it again.
+		delete(r.ready, parent)
+		if rerr := r.readyDir(parent); rerr != nil {
+			return false, r.refuseName(p, rerr)
+		}
+		err = place(pf.partial, target)
+	}
+	if err != nil {
 		if errors.Is(err, errTargetAppeared) {
 			r.ps.remove(p.rel)
-			p.disp, p.skipReason = dispRefused, "a file appeared here during the transfer; yours was kept"
-			if r.opts.OnEntrySkipped != nil {
-				r.opts.OnEntrySkipped(filepath.ToSlash(p.rel), p.skipReason)
-			}
+			r.skipAtWrite(p, filepath.ToSlash(p.rel), "a file appeared here during the transfer; yours was kept",
+				"a file appeared there during the transfer; the receiver's was kept")
 			return false, nil
 		}
 		return false, r.refuseName(p, err)
@@ -963,19 +1156,34 @@ func (r *receiver) place(pf pendingFile) (bool, error) {
 	return true, nil
 }
 
+// readyDir makes dir exist and writable, once per receive: the files of a
+// folder share it, and checking it again for each of them was four stat
+// calls per file.
+func (r *receiver) readyDir(dir string) error {
+	if _, ok := r.ready[dir]; ok {
+		return nil
+	}
+	r.dirs.unlock(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if r.ready == nil {
+		r.ready = make(map[string]struct{})
+	}
+	r.ready[dir] = struct{}{}
+	return nil
+}
+
 // refuseName turns a failure to create p into a per-entry refusal when the
 // filesystem rejected the name itself (isNameErr): the partial is dropped,
-// the entry is reported through OnEntrySkipped, and the transfer carries
-// on. Any other error is returned unchanged.
+// the entry is reported on both sides (skipAtWrite), and the transfer
+// carries on. Any other error is returned unchanged.
 func (r *receiver) refuseName(p *entryPlan, err error) error {
 	if !isNameErr(err) {
 		return err
 	}
 	r.ps.remove(p.rel)
-	p.disp, p.skipReason = dispRefused, nameRefusedReason
-	if r.opts.OnEntrySkipped != nil {
-		r.opts.OnEntrySkipped(p.entry.RelativePath, p.skipReason)
-	}
+	r.skipAtWrite(p, p.entry.RelativePath, nameRefusedReason, "")
 	return nil
 }
 
@@ -1312,7 +1520,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 			opts.OnFileDone(target, hex.EncodeToString(sha.Sum(nil)))
 		}
 	}
-	return finishRecv(s)
+	return finishRecv(s, nil)
 }
 
 // streamPayload reads chunks for a single file/stream and writes their bytes
@@ -1328,11 +1536,22 @@ func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(u
 			dec.Close()
 		}
 	}()
+	// Each chunk is written out before the next is read, so one buffer
+	// for the frame and one for its decompressed bytes serve the whole
+	// stream (a fresh pair per chunk was 1 MiB of garbage per MiB moved).
+	raw := getBlock()
+	defer putBlock(raw)
+	var plainBuf []byte
+	defer func() {
+		if plainBuf != nil {
+			putBlock(plainBuf)
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		c, err := wire.ReadChunk(s.Data)
+		c, err := wire.ReadChunkBuf(s.Data, raw)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if reason := tryReadPeerError(s.Control); reason != nil {
@@ -1342,7 +1561,10 @@ func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(u
 			}
 			return fmt.Errorf("recv: chunk: %w", err)
 		}
-		plain, err := decodeChunkPayload(c, &dec, nil)
+		if c.Compressed && plainBuf == nil {
+			plainBuf = getBlock()
+		}
+		plain, err := decodeChunkPayload(c, &dec, plainBuf)
 		if err != nil {
 			return err
 		}
@@ -1431,7 +1653,7 @@ func manifestStatus(p *entryPlan, a wire.DecisionAction) string {
 
 func ackProceed(s *Streams, opts RecvOptions, accepts bool) {
 	ack := &wire.ReceiverHello{
-		MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, Caps: wire.CapsSupported,
+		MinVersion: wire.MinProtocolVersion, MaxVersion: wire.ProtocolVersion, Caps: opts.caps(),
 		Hostname: opts.Hostname, OS: opts.OS, ClientVersion: opts.ClientVersion, Accepts: accepts,
 	}
 	_ = wire.WriteControl(s.Control, wire.TypeHelloAck, ack)

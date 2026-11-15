@@ -78,7 +78,7 @@ func copyCommand(f *flags, text string) (confirmed bool) {
 	}
 	// OSC 52: the terminal (or tmux, or the SSH client's terminal) sets
 	// the clipboard. Unconfirmed, so nothing is announced.
-	_, _ = os.Stderr.WriteString(osc52(text))
+	uxlog.Control(osc52(text))
 	return false
 }
 

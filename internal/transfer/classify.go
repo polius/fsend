@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -57,7 +58,11 @@ type entryPlan struct {
 	// sending every byte again.
 	replaceResume bool
 	// keptAs: an earlier keep-both copy of this exact version (rel path).
-	keptAs     string
+	keptAs string
+	// keptCands (--checksum): the numbered copies beside the target whose
+	// size matches the incoming file. Which of them, if any, holds this
+	// version is decided by content (resolveVerify), then keptAs is set.
+	keptCands  []string
 	skipReason string // dispRefused: why, for the user
 }
 
@@ -120,6 +125,9 @@ type Conflict struct {
 
 // classifier resolves listing entries against the receive directory.
 type classifier struct {
+	// ctx ends the hashing of partials when the transfer does (a dropped
+	// connection, Ctrl-C); nil means no deadline.
+	ctx       context.Context
 	targetDir string
 	checksum  bool
 	sem       fsSemantics
@@ -273,9 +281,36 @@ func (c *classifier) run(entries []wire.ListingEntry) ([]entryPlan, error) {
 	return plans, nil
 }
 
+// context is the classifier's ctx, never nil.
+func (c *classifier) context() context.Context {
+	if c.ctx == nil {
+		return context.Background()
+	}
+	return c.ctx
+}
+
+// prefixBlocks returns the block hashes of the first n bytes of p's
+// partial. A partial that can't be read is dropped, so the file is sent
+// fresh; one whose hashing was cut short by the transfer ending is kept,
+// for the retry.
+func (c *classifier) prefixBlocks(p *entryPlan, progress func(int64)) ([][32]byte, error) {
+	var last int64
+	blocks, _, err := hashCache.hashPrefix(c.context(), p.partial, conv.Int64(p.resumeOffset), func(done int64) {
+		if progress != nil {
+			progress(done - last)
+		}
+		last = done
+	})
+	if err != nil && c.context().Err() == nil {
+		c.ps.remove(p.rel)
+	}
+	return blocks, err
+}
+
 // hashResumePrefixes computes the block hashes of every resume partial's
 // prefix, several files at a time, so the sender can verify them. A partial
-// that can't be read is dropped and its file sent fresh.
+// that can't be read is dropped and its file sent fresh. It returns an
+// error only when the transfer ended while it was hashing.
 func (c *classifier) hashResumePrefixes(plans []entryPlan) error {
 	var total uint64
 	var idx []int
@@ -296,9 +331,8 @@ func (c *classifier) hashResumePrefixes(plans []entryPlan) error {
 		sem <- struct{}{}
 		go func(p *entryPlan) {
 			defer func() { <-sem; wg.Done() }()
-			blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), prog.add)
+			blocks, err := c.prefixBlocks(p, prog.add)
 			if err != nil {
-				c.ps.remove(p.rel)
 				p.disp, p.resumeOffset, p.partial = dispNew, 0, ""
 				return
 			}
@@ -306,20 +340,7 @@ func (c *classifier) hashResumePrefixes(plans []entryPlan) error {
 		}(&plans[i])
 	}
 	wg.Wait()
-	return nil
-}
-
-func hashPartialPrefix(path string, n int64, progress func(int64)) ([][32]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	var last int64
-	return hashBlocks(f, n, func(done int64) {
-		progress(done - last)
-		last = done
-	})
+	return c.context().Err()
 }
 
 // dirHasEntries reports whether dir contains anything.
@@ -360,7 +381,10 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 		if exists && st.Mode().IsRegular() && conv.Uint64(st.Size()) == e.Size {
 			if c.checksum {
 				// Same size — defer the skip/differ verdict to a content hash.
+				// Should it differ, an earlier keep-both copy may hold this
+				// version: note the candidates for the same check.
 				p.disp = dispVerify
+				p.keptCands = c.keptCandidates(rel, e)
 				return p
 			}
 			if c.sem.sameMtime(st.ModTime(), e.ModTimeSec) {
@@ -391,7 +415,11 @@ func (c *classifier) classifyOne(e wire.ListingEntry, rel, target string) entryP
 			// note it now, use it only once the replace is approved.
 			if st.Mode().IsRegular() {
 				// A previous keep-both may already have saved this version.
-				if p.keptAs = c.keptCopy(rel, e); p.keptAs != "" && c.policy == ConflictRename {
+				// Under --checksum a matching size and time is not proof:
+				// the candidates are compared by content in resolveVerify.
+				if c.checksum {
+					p.keptCands = c.keptCandidates(rel, e)
+				} else if p.keptAs = c.keptCopy(rel, e); p.keptAs != "" && c.policy == ConflictRename {
 					p.disp = dispIdentical
 					return p
 				}
@@ -559,10 +587,9 @@ func applyPolicy(plans []entryPlan, policy ConflictPolicy, c *classifier) {
 			// partial (the same check keep-both runs in retarget). The
 			// commit renames over the user's file, which they agreed to.
 			if p.replaceResume && p.disp == dispDiffers && !p.blockedAncestor {
-				if blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), func(int64) {}); err == nil {
+				if blocks, err := c.prefixBlocks(p, nil); err == nil {
 					p.disp, p.prefixBlocks = dispResume, blocks
 				} else {
-					c.ps.remove(p.rel)
 					p.resumeOffset, p.partial = 0, ""
 				}
 			}
@@ -617,10 +644,9 @@ func (c *classifier) retarget(p *entryPlan, rel string) {
 		// An earlier interrupted keep-both run may have left a partial.
 		c.resumeCandidate(p)
 		if p.disp == dispResume {
-			if blocks, err := hashPartialPrefix(p.partial, conv.Int64(p.resumeOffset), func(int64) {}); err == nil {
+			if blocks, err := c.prefixBlocks(p, nil); err == nil {
 				p.prefixBlocks = blocks
 			} else {
-				c.ps.remove(p.rel)
 				p.disp, p.resumeOffset, p.partial = dispNew, 0, ""
 			}
 		}
@@ -632,23 +658,40 @@ func (c *classifier) retarget(p *entryPlan, rel string) {
 // keep-both saved — or "". The numbered copies are contiguous from 1, as
 // freeName creates them; the scan stops at the first gap.
 func (c *classifier) keptCopy(rel string, e wire.ListingEntry) string {
+	for _, cand := range c.numberedCopies(rel, e, true) {
+		return cand
+	}
+	return ""
+}
+
+// keptCandidates is keptCopy for --checksum: every numbered copy whose size
+// matches, whatever its time. The caller compares their content.
+func (c *classifier) keptCandidates(rel string, e wire.ListingEntry) []string {
+	return c.numberedCopies(rel, e, false)
+}
+
+// numberedCopies lists the regular files "name (k).ext" beside rel that
+// have e's size and, with sameTime, its mtime, up to the first gap in the
+// numbering.
+func (c *classifier) numberedCopies(rel string, e wire.ListingEntry, sameTime bool) []string {
 	dir, base := filepath.Split(rel)
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 	if stem == "" {
 		stem, ext = base, ""
 	}
+	var out []string
 	for k := 1; k <= 99; k++ {
 		cand := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, k, ext))
 		st, err := os.Lstat(filepath.Join(c.targetDir, cand))
 		if err != nil {
-			return ""
+			break
 		}
-		if st.Mode().IsRegular() && conv.Uint64(st.Size()) == e.Size && c.sem.sameMtime(st.ModTime(), e.ModTimeSec) {
-			return cand
+		if st.Mode().IsRegular() && conv.Uint64(st.Size()) == e.Size && (!sameTime || c.sem.sameMtime(st.ModTime(), e.ModTimeSec)) {
+			out = append(out, cand)
 		}
 	}
-	return ""
+	return out
 }
 
 // freeName returns "name (n).ext" beside rel, unused on disk and in this

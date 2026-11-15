@@ -124,10 +124,11 @@ var (
 	// privileged install dir needing sudo). A non-zero exit so scripts can
 	// tell a failed uninstall from a clean one.
 	ErrUninstallFailed = errors.New("uninstall failed")
-	// E036 — a symlink in the send set can't be followed to real content:
-	// its target is missing, unreadable, or the link cycles. fsend sends the
-	// pointed-to content, so an unresolvable link is a hard stop (with the
-	// path, so the user can fix or --exclude it).
+	// E036 — a symlink can't be followed to real content: its target is
+	// unreadable, the link cycles, or it is a broken link the user named on
+	// the command line. fsend sends the pointed-to content, so such a link
+	// is a hard stop (with the path, so the user can fix or --exclude it).
+	// A broken link found in a folder is skipped and listed instead (E050).
 	ErrUnsendableSymlink = errors.New("unsendable symlink")
 	// E038 — the transfer succeeded but the --manifest record could not be
 	// written. Distinct from E009 (a failed *file* write): the data landed,
@@ -490,7 +491,8 @@ var catalog = map[error]Entry{
 	ErrUnsendableSymlink: {
 		Code: "E036", Exit: 36,
 		// fsend follows symlinks; only a link it can't resolve to real
-		// content (broken, unreadable, cyclic) is a hard stop.
+		// content (unreadable, cyclic, or broken and named by the user) is
+		// a hard stop.
 		Message: "Cannot follow this symlink.",
 		Action:  "Fix the link, or skip it with --exclude.",
 	},

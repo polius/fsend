@@ -106,6 +106,33 @@ type FileHash struct {
 	Hash  [32]byte
 }
 
+// MaxWriteRefusals bounds TransferResult.Entries, and MaxRefusalReason the
+// bytes of each reason, so the frame stays well inside MaxControlFrameSize
+// however many entries were refused.
+const (
+	MaxWriteRefusals = 256
+	MaxRefusalReason = 120
+)
+
+// TransferResult is the payload of a TRANSFER_ACK that has something to
+// report: files whose bytes arrived but which the receiver could not save
+// (the filesystem refused the name when the file was written). Sent only
+// to a sender that advertised CapWriteRefusals, and only when there is at
+// least one; otherwise the ack stays empty, as every v3 peer sends and
+// expects it. Folders are not reported: the files under one are.
+type TransferResult struct {
+	// Refused counts every such file; Entries lists the first
+	// MaxWriteRefusals of them.
+	Refused uint32
+	Entries []WriteRefusal
+}
+
+// WriteRefusal is one entry of a TransferResult.
+type WriteRefusal struct {
+	Index  uint32 // the entry's listing index
+	Reason string // why, for the sender's user; at most MaxRefusalReason bytes
+}
+
 // ErrorFrame carries a numbered error from one peer to the other.
 type ErrorFrame struct {
 	Code    ErrorCode

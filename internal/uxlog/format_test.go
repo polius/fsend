@@ -1,6 +1,7 @@
 package uxlog
 
 import (
+	"regexp"
 	"testing"
 	"time"
 )
@@ -35,14 +36,57 @@ func TestHumanDuration(t *testing.T) {
 		in   time.Duration
 		want string
 	}{
+		{0, "0 ms"},
+		{400 * time.Microsecond, "<1 ms"},
+		{time.Millisecond, "1 ms"},
 		{500 * time.Millisecond, "500 ms"},
+		{999600 * time.Microsecond, "999 ms"},
+		{time.Second, "1.0 s"},
 		{1500 * time.Millisecond, "1.5 s"},
+		{9949 * time.Millisecond, "9.9 s"},
+		// The decimal tier ends at 10 s: what rounds up to it is written
+		// the way 10 s is, not as "10.0 s".
+		{9960 * time.Millisecond, "10 s"},
+		{10 * time.Second, "10 s"},
 		{30 * time.Second, "30 s"},
 		{90 * time.Second, "1 min 30 s"},
 		{3 * time.Hour, "3 h 00 min"},
 	} {
 		if got := HumanDuration(tc.in); got != tc.want {
 			t.Errorf("HumanDuration(%s) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// HumanAge picks the largest whole unit that fits.
+func TestHumanAge(t *testing.T) {
+	for _, c := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0 s"},
+		{30 * time.Second, "30 s"},
+		{59*time.Second + 900*time.Millisecond, "59 s"},
+		{4 * time.Minute, "4 min"},
+		{3 * time.Hour, "3 h"},
+		{47 * time.Hour, "1 d"},
+		{50 * time.Hour, "2 d"},
+	} {
+		if got := HumanAge(c.d); got != c.want {
+			t.Errorf("HumanAge(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
+// V9: every duration formatter puts one space between the number and the
+// unit, and uses the same units; none falls back to Go's "1m30s".
+func TestDurationsShareOneForm(t *testing.T) {
+	form := regexp.MustCompile(`^\d+(\.\d)? (ms|s|min|h|d)( \d\d (s|min))?$`)
+	for d := time.Duration(0); d < 100*time.Hour; d = d*3/2 + 7*time.Millisecond {
+		for name, got := range map[string]string{"HumanDuration": HumanDuration(d), "HumanAge": HumanAge(d)} {
+			if !form.MatchString(got) {
+				t.Errorf("%s(%v) = %q, not in the form \"<n> <unit>\"", name, d, got)
+			}
 		}
 	}
 }

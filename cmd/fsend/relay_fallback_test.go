@@ -8,8 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +31,8 @@ type relayFixture struct {
 	realUDP  string // the relay's actual UDP address
 	sender   *signaling.CreateResult
 	receiver *server.JoinSessionResponse
+	wsOpens  *atomic.Int32 // WebSocket upgrades the server saw
+	wsFirst  *atomic.Int64 // when the first one arrived, UnixNano
 }
 
 func newRelayFixture(t *testing.T, withWS bool) *relayFixture {
@@ -56,7 +60,15 @@ func newRelayFixture(t *testing.T, withWS bool) *relayFixture {
 		alloc = udpOnlyRelay{rs}
 	}
 	srv := server.New(server.Config{Logger: logger}).WithRelay(alloc, blackhole.LocalAddr().(*net.UDPAddr).Port)
-	ts := httptest.NewServer(srv.Handler())
+	var wsOpens atomic.Int32
+	var wsFirst atomic.Int64
+	h := srv.Handler()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/relay/ws" && wsOpens.Add(1) == 1 {
+			wsFirst.Store(time.Now().UnixNano())
+		}
+		h.ServeHTTP(w, r)
+	}))
 	t.Cleanup(func() {
 		ts.Close()
 		cancel()
@@ -74,7 +86,8 @@ func newRelayFixture(t *testing.T, withWS bool) *relayFixture {
 	if err != nil {
 		t.Fatalf("Join: %v", err)
 	}
-	return &relayFixture{client: client, realUDP: udp.LocalAddr().String(), sender: created, receiver: joined}
+	return &relayFixture{client: client, realUDP: udp.LocalAddr().String(), sender: created, receiver: joined,
+		wsOpens: &wsOpens, wsFirst: &wsFirst}
 }
 
 // udpOnlyRelay hides the relay's WebSocket side, like a server that predates it.
@@ -123,6 +136,54 @@ func TestDialRelay_UDPBlockedFallsBackToTCP(t *testing.T) {
 			}
 			quicTransfer(t, spc, rpc, 4<<20)
 		})
+	}
+}
+
+// The fallback's WebSocket is opened while UDP is still being tried, so a
+// network that blocks UDP pays a registration at the switch, not a TLS
+// handshake on top of the whole UDP wait.
+func TestDialRelay_TCPFallbackOpensDuringTheUDPWait(t *testing.T) {
+	f := newRelayFixture(t, true)
+	relayUDPWait = 800 * time.Millisecond // the fixture restores it
+	old := relayTCPHeadStart
+	relayTCPHeadStart = 50 * time.Millisecond
+	t.Cleanup(func() { relayTCPHeadStart = old })
+
+	start := time.Now()
+	pc, path, err := f.dial(t, f.sender.SessionID, f.sender.RoleToken, false)
+	if err != nil {
+		t.Fatalf("dialRelay: %v", err)
+	}
+	defer pc.Close()
+	if !strings.HasSuffix(path.RelayAddr, "over TCP") {
+		t.Fatalf("path = %q, want the TCP fallback", path.RelayAddr)
+	}
+	opened := time.Unix(0, f.wsFirst.Load()).Sub(start)
+	if f.wsOpens.Load() != 1 || opened >= relayUDPWait {
+		t.Fatalf("WebSocket opened %d time(s), first %v after the start; want once, inside the %v UDP wait",
+			f.wsOpens.Load(), opened, relayUDPWait)
+	}
+	// UDP still gets its whole wait: the fallback must not cut it short.
+	if took := time.Since(start); took < relayUDPWait {
+		t.Fatalf("dialRelay returned after %v, before the %v UDP wait ended", took, relayUDPWait)
+	}
+}
+
+// Where UDP answers, the WebSocket is never opened: the head start is far
+// longer than a round trip.
+func TestDialRelay_UDPAnswersWithoutOpeningTheFallback(t *testing.T) {
+	f := newRelayFixture(t, true)
+	pc, path, err := f.dial(t, f.sender.SessionID, f.sender.RoleToken, true)
+	if err != nil {
+		t.Fatalf("dialRelay: %v", err)
+	}
+	defer pc.Close()
+	if strings.HasSuffix(path.RelayAddr, "over TCP") {
+		t.Fatalf("path = %q, want UDP", path.RelayAddr)
+	}
+	time.Sleep(relayTCPHeadStart + 200*time.Millisecond)
+	if n := f.wsOpens.Load(); n != 0 {
+		t.Fatalf("the fallback's WebSocket was opened %d time(s) although UDP answered", n)
 	}
 }
 

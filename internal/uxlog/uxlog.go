@@ -22,7 +22,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
@@ -99,7 +98,7 @@ func (p *plainProgress) add(n int64) {
 		if p.fileN > 0 {
 			line += fmt.Sprintf("%sfile %d/%d", Sep, p.fileI, p.fileN)
 		}
-		_, _ = fmt.Fprintf(p.w, "  %s\n", line)
+		_, _ = fmt.Fprintln(p.w, Row(line))
 		return
 	}
 	// Unknown total (stdin streams): a bare byte counter is all a long
@@ -112,7 +111,7 @@ func (p *plainProgress) add(n int64) {
 	if p.route != "" {
 		line += Sep + p.route
 	}
-	_, _ = fmt.Fprintf(p.w, "  %s\n", line)
+	_, _ = fmt.Fprintln(p.w, Row(line))
 }
 
 func (p *plainProgress) setLabel(name string) {
@@ -170,7 +169,7 @@ const (
 	pctFurniture  = 6  // "  100%"
 	rateFurniture = 13 // " · 999.9 MB/s"
 	etaFurniture  = 22 // " · 10 h 02 min left"
-	nameMin       = 12 // runes below which the file chip isn't worth showing
+	nameMin       = 12 // columns below which the file chip isn't worth showing
 	nameGrow      = 30 // the name grows to this before the bar takes the rest
 	barGrow       = 20 // the bar grows to this before the name does
 )
@@ -189,7 +188,7 @@ type barLayout struct {
 	bar       int // track width; 0 = no track
 	eta, rate bool
 	counter   bool
-	nameCap   int // file chip's name budget in runes; 0 = no chip
+	nameCap   int // file chip's name budget in columns; 0 = no chip
 }
 
 // layout splits a row by priority — % > ETA > rate > counter > name > bar —
@@ -263,7 +262,7 @@ func terminalWidth(fallback int) int {
 const rateThreshold = 1000 * 1000
 
 // activeProgress is the bar currently drawing on the terminal, if any.
-// Println routes through it so foreign lines (retry notices) land between
+// printLine routes through it so foreign lines (retry notices) land between
 // refresh frames instead of inside one. There is only ever one bar at a
 // time per process.
 var (
@@ -271,10 +270,11 @@ var (
 	activeProgress *Progress
 )
 
-// Println writes a full line to stderr. While a TTY progress bar is
+// printLine writes a full line to stderr — the one exit every grid
+// printer for stderr shares (see grid.go). While a TTY progress bar is
 // live, the line is handed to mpb so it prints above the bar instead of
 // colliding with the in-place redraw.
-func Println(line string) {
+func printLine(line string) {
 	activeMu.Lock()
 	p := activeProgress
 	activeMu.Unlock()
@@ -286,18 +286,6 @@ func Println(line string) {
 	}
 	printlnTo(os.Stderr, line)
 }
-
-// Status prints one line on the grid every line follows: the glyph in
-// column 0 (Check, Cross, Warn, Ask, Info's blank), the text from column 2.
-// Routed through Println, so it lands cleanly above a live bar or spinner.
-func Status(glyph, text string) { Println(glyph + " " + text) }
-
-// Note prints faint detail in column 2, under the line it belongs to — the
-// form a neutral notice takes (no glyph of its own).
-func Note(text string) { Println(Detail(text)) }
-
-// Detail is Note's string form, for callers assembling a block.
-func Detail(text string) string { return "  " + Muted(text) }
 
 // printlnTo writes line, first wiping a live spinner frame so the line
 // starts at column 0; the spinner redraws below it on its next tick.
@@ -632,8 +620,8 @@ func (p *Progress) filePosition() (int, int) {
 }
 
 // chipParts splits the current-file chip into its two tones: the name and
-// the "· file i/N" counter. chipCap is the chip's rune budget from
-// layoutBudgets. Either half may come back empty — the name when there is
+// the "· file i/N" counter. chipCap is the chip's budget in columns, from
+// layout. Either half may come back empty — the name when there is
 // nothing to show, the counter when the name would be squeezed below a
 // readable stub.
 func (p *Progress) chipParts(chipCap int) (name, tail string) {
@@ -642,9 +630,9 @@ func (p *Progress) chipParts(chipCap int) (name, tail string) {
 		return "", ""
 	}
 	if i, n := p.filePosition(); n > 0 {
-		if t := fmt.Sprintf("%sfile %d/%d", Sep, i, n); chipCap-len(t) >= 6 {
+		if t := fmt.Sprintf("%sfile %d/%d", Sep, i, n); chipCap-Width(t) >= 6 {
 			tail = t
-			chipCap -= len(t)
+			chipCap -= Width(t)
 		}
 	}
 	return chipSep + truncateName(label, chipCap), tail
@@ -653,36 +641,37 @@ func (p *Progress) chipParts(chipCap int) (name, tail string) {
 // chipSep separates the bar's chips.
 const chipSep = Sep
 
-// truncateName caps s at max runes with a middle cut: the whole basename
-// stays when it fits ("assets/…/video1.bin"), else the basename itself is
-// cut in the middle, keeping its start and extension ("vid…o1.bin") — a
-// left cut ("…g.bin") hides the part that identifies the file. Runes, not
-// display cells: a name heavy in wide glyphs can overflow the chip's
-// budget, and mpb then trims the line's end rather than wrapping it.
+// truncateName caps s at max display columns with a middle cut: the whole
+// basename stays when it fits ("assets/…/video1.bin"), else the basename
+// itself is cut in the middle, keeping its start and extension
+// ("vid…o1.bin") — a left cut ("…g.bin") hides the part that identifies
+// the file. Columns, not runes (see Width): a name in a wide script must
+// stay inside the chip's budget, or mpb trims the end of the row. A wide
+// character that would straddle a cut is dropped whole, so the result can
+// be a column short of max, never over it.
 func truncateName(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
+	ell := Width("…")
 	switch {
+	case Width(s) <= max:
+		return s
 	case max <= 0:
 		return ""
-	case max == 1:
-		return "…"
+	case max <= ell:
+		return clipHead("…", max)
 	}
-	keep := max - 1
+	keep := max - ell
 	if i := strings.LastIndexByte(s, '/'); i >= 0 {
 		base := s[i+1:]
-		switch n := utf8.RuneCountInString(base); {
+		switch n := Width(base); {
 		case n+1 <= keep-2: // "head…/basename"
-			return string(r[:keep-n-1]) + "…" + s[i:]
+			return clipHead(s[:i], keep-n-1) + "…" + s[i:]
 		case n <= keep: // "…basename"
 			return "…" + base
 		}
-		r = []rune(base) // cut inside the basename itself
+		s = base // cut inside the basename itself
 	}
 	tail := keep * 2 / 3
-	return string(r[:keep-tail]) + "…" + string(r[len(r)-tail:])
+	return clipHead(s, keep-tail) + "…" + clipTail(s, tail)
 }
 
 // SetTotal updates the bar's total. Useful for stdin transfers where the

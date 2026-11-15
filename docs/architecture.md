@@ -116,17 +116,31 @@ The server's whole job was to introduce the peers and broker the ICE
 exchange. Once a hole-punched path works, the bytes flow directly between
 the two machines — and the server never sees one. Throughput is then
 bounded by the slower of the two links, and also by latency and packet
-loss on the path and by CPU on either end. For scale, on an M2 Pro with
-both ends on one machine, `fsend backup.zip` to `fsend --yes --out - <code>`
-moves a 1 GiB file of random data over the local-network route (TCP) at
-about 1.1 GB/s, close to the transfer engine alone (`go test -bench
-LargeFile ./internal/transfer/`: about 1.0–1.4 GB/s), and Go source text
-at about 0.7 GB/s (compression runs on several cores). Over QUIC, which
-the internet routes still use, the same file moves at about 72 MB/s. The sender
-gives ICE up to 5 seconds to find a path (1.5 seconds when neither side
-has a public address, since only peers on one network could then connect
-directly), preparing the relay in the meantime, and tells the receiver
-which it chose so both sides agree.
+loss on the path and by CPU on either end.
+
+For scale, these are the rates fsend itself reaches with both ends on one
+machine, sending 1 GiB of random data with `fsend backup.zip` to
+`fsend --yes --out - <code> > /dev/null`, so no network or disk limits
+them:
+
+| Route | macOS (M2 Pro) | Linux |
+|---|---|---|
+| Local network (TCP) | about 1,150 MB/s | about 1,430 MB/s |
+| Direct between networks (QUIC) | 52–63 MB/s | about 170 MB/s |
+| Relay (QUIC through the server) | 26–29 MB/s | about 170 MB/s |
+
+The local route runs close to the transfer engine alone (`go test -bench
+LargeFile ./internal/transfer/`: about 1.0–1.4 GB/s), and moves Go
+source text at about 0.7 GB/s (compression runs on several cores). The
+internet routes use QUIC in user space, which costs a system call per
+small datagram; a relayed byte also crosses the server's socket twice.
+Before the local route had TCP, it ran over QUIC too, at about 72 MB/s
+on the same Mac.
+
+The sender gives ICE up to 5 seconds to find a path (1.5 seconds when
+neither side has a public address, since only peers on one network could
+then connect directly), preparing the relay in the meantime, and tells
+the receiver which it chose so both sides agree.
 
 ### Relay (fallback)
 
@@ -167,7 +181,10 @@ over UDP within 2 seconds (or sending UDP fails outright), each peer
 attaches to the same relay allocation over a WebSocket on the server's
 HTTPS port (`/v1/relay/ws`, TCP 443 behind the bundled Caddy). Each
 WebSocket message carries one relay frame, so QUIC runs unchanged on top
-and a TCP peer can pair with a UDP peer. No extra port is needed.
+and a TCP peer can pair with a UDP peer. No extra port is needed. The
+WebSocket is opened once UDP has been silent for 0.7 seconds, while UDP is
+still being tried, so the switch itself costs one registration; UDP keeps
+its full 2 seconds, and where it answers the WebSocket is never opened.
 
 This gets fsend through networks that allow only HTTPS. It doesn't help
 when:
@@ -177,7 +194,7 @@ when:
   with `E047`, and the sender warns that the server's certificate isn't
   trusted.
 - **The server is too old** to offer the fallback, or the WebSocket
-  connection fails. The transfer stops with `E042`.
+  connection fails. The receiver stops with `E042`.
 - **The server runs in pairing-only mode** (`FSEND_RELAY_ENABLED=false`).
   There is no relay to fall back to.
 
@@ -202,7 +219,7 @@ server. The sender prints a one-line warning so you know cross-network
 receivers can't reach you right now:
 
 ```
-⚠ Server unavailable; retrying — until then only receivers on your local network can connect.
+! Server unavailable; retrying — until then only receivers on your local network can connect.
 ```
 
 The sender keeps retrying the server in the background. You can keep

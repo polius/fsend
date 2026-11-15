@@ -332,7 +332,7 @@ func publishPathChoice(ctx context.Context, sig *signaling.Client, sessionID, ro
 func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, roleToken string, opts iceconn.Options, controlling bool, debug bool) (net.PacketConn, connpath.Info, error) {
 	debugf := func(format string, args ...any) {
 		if debug {
-			fmt.Fprintf(os.Stderr, "DEBUG: "+format+"\n", args...)
+			uxlog.Debug(fmt.Sprintf(format, args...))
 		}
 	}
 	budget := iceBudget
@@ -458,7 +458,7 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 		dctx, dcancel := context.WithTimeout(ctx, iceBudget)
 		cutoff := time.AfterFunc(noSrflxCutoff, func() {
 			if !srflx.Load() {
-				debugf("ICE: no server-reflexive candidate on either side after %v; using the relay", noSrflxCutoff)
+				debugf("ICE: no server-reflexive candidate on either side after %s; using the relay", uxlog.HumanDuration(noSrflxCutoff))
 				dcancel()
 			}
 		})
@@ -574,13 +574,77 @@ func (c *iceOwningConn) Close() error {
 // relay answers in one RTT. Var so tests can shrink it.
 var relayUDPWait = 2 * time.Second
 
-// relayTCPWait bounds the TCP fallback's dial and registration.
+// relayTCPWait bounds the TCP fallback's dial, and then its registration.
 const relayTCPWait = 15 * time.Second
+
+// relayTCPHeadStart is how long UDP may stay silent before the TCP
+// fallback's WebSocket is opened alongside it. A reachable relay answers
+// in one round trip, so on most networks the WebSocket is never opened;
+// where UDP is blocked it is ready by the time UDP is given up on, and the
+// switch costs a registration instead of a TLS handshake. Opening it
+// decides nothing: the relay routes a peer by its last registration, and
+// only the transport that wins registers. Var so tests can shrink it.
+var relayTCPHeadStart = 700 * time.Millisecond
+
+// wsPrep is the TCP fallback's WebSocket being opened in the background.
+type wsPrep struct {
+	done   chan struct{}
+	now    chan struct{} // closed by wait: stop holding back
+	once   sync.Once
+	cancel context.CancelFunc
+	link   *relay.WSLink
+	err    error
+}
+
+// prepareRelayWS opens the fallback's WebSocket once delay has passed or
+// wait is called, whichever comes first, unless discarded before that.
+func prepareRelayWS(ctx context.Context, client *signaling.Client, sessionID, roleToken string, delay time.Duration) *wsPrep {
+	wctx, cancel := context.WithTimeout(ctx, delay+relayTCPWait)
+	p := &wsPrep{done: make(chan struct{}), now: make(chan struct{}), cancel: cancel}
+	go func() {
+		defer close(p.done)
+		t := time.NewTimer(delay)
+		defer t.Stop()
+		select {
+		case <-t.C:
+		case <-p.now:
+		case <-wctx.Done():
+			p.err = wctx.Err()
+			return
+		}
+		wsURL, hdr := client.RelayWSEndpoint(sessionID, roleToken)
+		p.link, p.err = relay.ConnectWS(wctx, wsURL, hdr)
+	}()
+	return p
+}
+
+// wait returns the open link (or why there is none), opening it now if
+// the delay is still running: UDP has been given up on.
+func (p *wsPrep) wait() (*relay.WSLink, error) {
+	p.once.Do(func() { close(p.now) })
+	<-p.done
+	return p.link, p.err
+}
+
+// discard abandons the WebSocket: UDP answered. Nil-safe.
+func (p *wsPrep) discard() {
+	if p == nil {
+		return
+	}
+	p.cancel()
+	go func() {
+		<-p.done
+		if p.link != nil {
+			p.link.Close()
+		}
+	}()
+}
 
 // dialRelay connects to the relay for alloc and registers this side,
 // returning a net.PacketConn ready for QUIC and the path to show the user.
 // UDP first; if the relay never answers over UDP (or UDP fails outright),
-// the same relay frames go over a WebSocket on the server's HTTPS port.
+// the same relay frames go over a WebSocket on the server's HTTPS port,
+// opened while UDP was still being tried (see relayTCPHeadStart).
 // Shared by sender and receiver.
 func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.RelayAllocateResponse, sessionID, roleToken string) (net.PacketConn, connpath.Info, error) {
 	tok, err := relay.ParseToken(alloc.SessionToken)
@@ -590,12 +654,18 @@ func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.Rela
 	// Stable per side, so a re-dial (or the switch to TCP) reclaims this
 	// side's relay slot.
 	id := relay.PeerIDFor(roleToken)
+	var ws *wsPrep
 	if !forceRelayTCP() {
+		if alloc.TCPFallback {
+			ws = prepareRelayWS(ctx, client, sessionID, roleToken, relayTCPHeadStart)
+		}
 		pc, err := dialRelayUDP(ctx, alloc.RelayAddr, client.ServerHost(), tok, id)
 		switch {
 		case err == nil:
+			ws.discard()
 			return pc, connpath.FromRelay(alloc.RelayAddr), nil
 		case ctx.Err() != nil:
+			ws.discard()
 			return nil, connpath.Info{}, ctx.Err()
 		case !alloc.TCPFallback && errors.Is(err, relay.ErrNoReply):
 			//nolint:staticcheck // ST1005: shown verbatim as E042's detail line
@@ -606,10 +676,17 @@ func dialRelay(ctx context.Context, client *signaling.Client, alloc *server.Rela
 	} else if !alloc.TCPFallback {
 		return nil, connpath.Info{}, fmt.Errorf("%w: this server has no relay TCP fallback", fserrors.ErrConnectFailed)
 	}
-	wsURL, hdr := client.RelayWSEndpoint(sessionID, roleToken)
-	wctx, cancel := context.WithTimeout(ctx, relayTCPWait)
-	defer cancel()
-	pc, err := relay.DialWS(wctx, wsURL, hdr, tok, id)
+	if ws == nil {
+		ws = prepareRelayWS(ctx, client, sessionID, roleToken, 0)
+	}
+	defer ws.cancel() // bounds the dial only; an open link outlives it
+	var pc net.PacketConn
+	link, err := ws.wait()
+	if err == nil {
+		rctx, cancel := context.WithTimeout(ctx, relayTCPWait)
+		defer cancel()
+		pc, err = link.Register(rctx, tok, id)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, connpath.Info{}, ctx.Err()
@@ -716,7 +793,7 @@ func linkViaInternet(ctx context.Context, f *flags, client *signaling.Client, jo
 		prep.discard()
 	} else {
 		if f.debug {
-			fmt.Fprintln(os.Stderr, "DEBUG: ICE failed:", iceErr)
+			uxlog.Debug(fmt.Sprintf("ICE failed: %v", iceErr))
 		}
 		if ctx.Err() != nil {
 			prep.discard()
@@ -748,6 +825,19 @@ func linkViaInternet(ctx context.Context, f *flags, client *signaling.Client, jo
 			_ = pc.Close()
 		},
 	}, nil
+}
+
+// leaveSession ends the server session this receiver joined but never
+// authenticated on (it was cancelled, or found no working path). The
+// sender notices and opens the code again at once (see watchSessionGone);
+// without this the session stays claimed until the sender's own timeout,
+// and a rerun of the same command in that minute is told the code belongs
+// to another receiver. Best effort, bounded, on a fresh context: ours is
+// usually the one that was just cancelled.
+func leaveSession(client *signaling.Client, joined *server.JoinSessionResponse) {
+	ctx, cancel := context.WithTimeout(context.Background(), sessionDeleteTimeout)
+	defer cancel()
+	_ = client.Delete(ctx, joined.SessionID, joined.RoleToken)
 }
 
 // relayPrep is a relay allocation and dial running in the background while
@@ -832,19 +922,20 @@ func retryNoticeFor(f *flags) func(attempt int, wait time.Duration, lastErr erro
 	if f.quiet {
 		return nil
 	}
-	// uxlog.Println coordinates with a live progress bar so the notice
+	// uxlog.Status coordinates with a live progress bar so the notice
 	// prints above it instead of colliding with the in-place redraw.
 	return func(attempt int, wait time.Duration, lastErr error) {
 		// The raw jittered duration ("618.167744ms") is debugging noise
-		// on a user-facing line.
-		wait = wait.Round(100 * time.Millisecond)
+		// on a user-facing line: round it, then render it like every
+		// other duration on screen ("600 ms", "2.8 s").
+		in := uxlog.HumanDuration(wait.Round(100 * time.Millisecond))
 		if f.debug {
-			uxlog.Println(fmt.Sprintf("%s Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
-				uxlog.Retry(), shortErr(lastErr), wait, attempt, retry.DefaultAttempts))
+			uxlog.Status(uxlog.Retry(), fmt.Sprintf("Connection interrupted (%s) — retrying in %s (attempt %d/%d)",
+				shortErr(lastErr), in, attempt, retry.DefaultAttempts))
 			return
 		}
-		uxlog.Println(fmt.Sprintf("%s Connection interrupted — retrying in %s (attempt %d/%d)",
-			uxlog.Retry(), wait, attempt, retry.DefaultAttempts))
+		uxlog.Status(uxlog.Retry(), fmt.Sprintf("Connection interrupted — retrying in %s (attempt %d/%d)",
+			in, attempt, retry.DefaultAttempts))
 	}
 }
 
@@ -855,11 +946,7 @@ func shortErr(err error) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	const max = 60
-	if len(s) > max {
-		s = s[:max-1] + "…"
-	}
-	return s
+	return uxlog.Clip(s, 60)
 }
 
 func hostnameOrDefault(s string) string {
@@ -879,8 +966,8 @@ func printPath(f *flags, info connpath.Info) {
 	if f.quiet || !f.debug {
 		return
 	}
-	fmt.Fprintln(os.Stderr, uxlog.Check(), info.Headline())
+	uxlog.Status(uxlog.Check(), info.Headline())
 	if d := info.Detail(); d != "" {
-		fmt.Fprintln(os.Stderr, "    ICE candidate pair:", d)
+		uxlog.Debug("ICE candidate pair: " + d)
 	}
 }

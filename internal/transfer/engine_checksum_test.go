@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,5 +112,134 @@ func TestChecksum_FreshDestination(t *testing.T) {
 	}
 	if !bytes.Equal(mustRead(t, filepath.Join(dst, "a.txt")), []byte("one")) {
 		t.Error("a.txt mismatch")
+	}
+}
+
+// dirNames lists dir's entries, comma-separated.
+func dirNames(t *testing.T, dir string) string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	return strings.Join(names, ",")
+}
+
+// Keep-both under --checksum: a differing file an earlier run kept as
+// "f (1).txt" is not copied again, whether the local edit kept the size (the
+// case that gained a copy on every run) or changed it, from --rename and
+// from the prompt, and even after the copy's time drifted. The kept copy is
+// recognised by content, never by size and time.
+func TestChecksum_KeepBothDoesNotDuplicate(t *testing.T) {
+	for _, tc := range []struct {
+		name, mine string
+		viaPrompt  bool
+	}{
+		{"same-size edit, --rename", "MINE!!", false},
+		{"same-size edit, prompt", "MINE!!", true},
+		{"other-size edit, --rename", "mine, edited", false},
+		{"other-size edit, prompt", "mine, edited", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, dst := t.TempDir(), t.TempDir()
+			sp := filepath.Join(src, "f.txt")
+			writeFile(t, sp, []byte("theirs"))
+			writeFile(t, filepath.Join(dst, "f.txt"), []byte(tc.mine))
+			run := func() (keptAs string, skipped int) {
+				se, re := checksumTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+					o.Accept = func(_ wire.SenderHello, s ClassifySummary) bool {
+						if len(s.Files) == 1 {
+							keptAs = s.Files[0].KeptAs
+						}
+						return true
+					}
+					o.OnSkip = func(uint32) { skipped++ }
+					if tc.viaPrompt {
+						o.ResolveConflicts = func([]Conflict) ConflictPolicy { return ConflictRename }
+					} else {
+						o.Conflict = ConflictRename
+					}
+				})
+				if se != nil || re != nil {
+					t.Fatalf("send=%v recv=%v", se, re)
+				}
+				return keptAs, skipped
+			}
+			if keptAs, _ := run(); keptAs != "" {
+				t.Fatalf("first run already reports a kept copy %q", keptAs)
+			}
+			if got := dirNames(t, dst); got != "f (1).txt,f.txt" {
+				t.Fatalf("after the first run: %s", got)
+			}
+			for i := range 2 {
+				if i == 1 {
+					// Another tool touched the copy: its time no longer matches.
+					drift := time.Unix(1_600_000_000, 0)
+					if err := os.Chtimes(filepath.Join(dst, "f (1).txt"), drift, drift); err != nil {
+						t.Fatal(err)
+					}
+				}
+				keptAs, skipped := run()
+				if keptAs != "f (1).txt" || skipped != 1 {
+					t.Errorf("run %d: keptAs=%q skipped=%d, want f (1).txt counted up to date", i+2, keptAs, skipped)
+				}
+				if got := dirNames(t, dst); got != "f (1).txt,f.txt" {
+					t.Errorf("run %d left %s, want the one kept copy", i+2, got)
+				}
+			}
+			if b := mustRead(t, filepath.Join(dst, "f.txt")); string(b) != tc.mine {
+				t.Errorf("the user's file changed: %q", b)
+			}
+			if b := mustRead(t, filepath.Join(dst, "f (1).txt")); string(b) != "theirs" {
+				t.Errorf("the kept copy changed: %q", b)
+			}
+		})
+	}
+}
+
+// The other direction: a numbered copy with the incoming file's size and
+// time but other content is not the incoming version. The default check
+// takes it for one; --checksum must not, and saves the real one beside it.
+func TestChecksum_KeepBothIgnoresALookalikeCopy(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	sp := filepath.Join(src, "f.txt")
+	writeFile(t, sp, []byte("theirs"))
+	writeFile(t, filepath.Join(dst, "f.txt"), []byte("MINE!!"))
+	writeFile(t, filepath.Join(dst, "f (1).txt"), []byte("decoy!")) // same size as "theirs"
+	st, err := os.Stat(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(dst, "f (1).txt"), st.ModTime(), st.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	se, re := checksumTransfer(t, []string{sp}, dst, func(o *RecvOptions) { o.Conflict = ConflictRename })
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v", se, re)
+	}
+	if got := dirNames(t, dst); got != "f (1).txt,f (2).txt,f.txt" {
+		t.Fatalf("files = %s, want the incoming version saved as f (2).txt", got)
+	}
+	if b := mustRead(t, filepath.Join(dst, "f (2).txt")); string(b) != "theirs" {
+		t.Errorf("f (2).txt = %q", b)
+	}
+	if b := mustRead(t, filepath.Join(dst, "f (1).txt")); string(b) != "decoy!" {
+		t.Errorf("the lookalike changed: %q", b)
+	}
+	// And the next run finds the real copy behind the lookalike.
+	skipped := 0
+	se, re = checksumTransfer(t, []string{sp}, dst, func(o *RecvOptions) {
+		o.Conflict = ConflictRename
+		o.OnSkip = func(uint32) { skipped++ }
+	})
+	if se != nil || re != nil || skipped != 1 {
+		t.Fatalf("second run: send=%v recv=%v skipped=%d", se, re, skipped)
+	}
+	if got := dirNames(t, dst); got != "f (1).txt,f (2).txt,f.txt" {
+		t.Errorf("second run left %s", got)
 	}
 }

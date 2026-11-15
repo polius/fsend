@@ -6,7 +6,8 @@ full list of codes, see [Usage → Exit codes](usage.md#exit-codes).
 
 Wondering what the server can see, or whether your ISP can read the file?
 The short answer is no — everything is end-to-end encrypted between the
-two machines. See [Security](security.md) for the details.
+two machines. See [Security](security.md) for the details, and the
+[FAQ](faq.md) for short answers to common questions.
 
 ## Connecting
 
@@ -45,7 +46,7 @@ What to try:
 ### The server's certificate is not trusted (`E047`)
 
 ```text
-✗ [E047] The server's certificate is not trusted.
+✗ The server's certificate is not trusted. [E047]
   A Wi-Fi login page or a filtering proxy may be intercepting the
   connection. Sign in to the network (open any website), or try
   another network.
@@ -63,15 +64,16 @@ exiting.
 ### The code doesn't work on the receiver (`E002`, `E003`, `E004`)
 
 ```text
-✗ [E003] That code has already been claimed by another receiver.
+✗ That code has already been claimed by another receiver. [E003]
   Ask the sender to generate a fresh code.
 ```
 
 | Code | Meaning | Fix |
 |---|---|---|
-| `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. Case, spaces and a missing hyphen are fine. |
+| `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. Case and spaces are fine, and the hyphens can be left out (both, not just one). |
 | `E002` | No sender is waiting on that code (after about 6 seconds of trying) | It was mistyped, the sender stopped, or it was used more than ten minutes ago. Have the sender run again for a fresh code. If a second line says this device's clock is off, fix the date and time: codes are salted with the UTC day. A sender and receiver on either side of 1.16 can't find each other either: run `fsend --version` on both ([compatibility](compatibility.md)). |
 | `E003` | Another receiver already connected with this code | Each code works for one receiver. (A receiver resuming its own dropped transfer on the same device doesn't hit this.) Have the sender run again and share the new code. |
+| `E003`, "already being received on this device" | Another `fsend` on this device is receiving that code right now | Wait for it to finish, or stop it and run the command again. Nothing is wrong with the code. |
 
 Codes can't be reused — a new send always produces a new code to share.
 After a receiver connects, the server remembers the code as used for ten
@@ -99,7 +101,7 @@ dropped receiver to come back.)
 ### "This version of fsend is too old for the pairing server" (`E060`)
 
 ```text
-✗ [E060] This version of fsend is too old for the pairing server.
+✗ This version of fsend is too old for the pairing server. [E060]
   Update fsend, then try again:
     fsend --update
 ```
@@ -131,7 +133,7 @@ Run `fsend doctor` on both machines to see which part fails.
 ### The network blocks UDP (`E042`)
 
 ```text
-✗ [E042] This network seems to block the UDP traffic fsend uses.
+✗ This network seems to block the UDP traffic fsend uses. [E042]
   Try another network (a phone hotspot works), or ask the network admin
   to allow outbound UDP port 443. `fsend doctor` checks both paths.
 ```
@@ -152,17 +154,48 @@ the server is too old to offer it.
 
 ### `fsend doctor` reports a problem (`E043`)
 
-`fsend doctor` exits `43` when any check is degraded. Each `⚠` line (or
-`[!]` in plain output) says what it affects and what still works:
+`fsend doctor` exits `43` when any check is degraded. Each `!` line (or
+`[!]` in plain output) says what it affects and what still works, and
+the fainter lines under it say how to fix it:
 
 | Line | What it means |
 |---|---|
 | `server … unreachable` | Cross-network transfers fail; same-LAN transfers are unaffected. |
 | `UDP` | The relay didn't answer over UDP; relayed transfers will use the TCP fallback. |
 | `TCP … no TCP fallback for its relay` | The server predates the fallback; on a network that blocks UDP, cross-network transfers will fail. |
+| `listener … did not answer` / `cannot open` | fsend's local-network listener doesn't work even from this machine (the port can't be bound, or something drops the connection). Transfers to devices on your network go through the server. |
+| `firewall … blocks` | This machine's firewall keeps other devices from connecting to fsend when you send. Transfers still complete through the server; the lines under the row give the command or setting that opens it. |
 | `mDNS` (LAN answer) | Multicast is blocked here; receivers on other devices will pair through the server instead. |
 
-See [Usage → `fsend doctor`](usage.md#fsend-doctor) for every check.
+A row with no mark (`[i]` in plain output) is not a problem: doctor
+could not find something out, most often a Linux firewall whose rules
+need root to read. It says how to check, and never changes the exit
+code.
+
+See [Usage → `fsend doctor`](usage.md#fsend-doctor) for every check, and
+there [what the listener check can and cannot prove](usage.md#the-listener-check).
+
+### Transfers on the same network go through the server
+
+Both devices are on one network, yet the route shows `direct` or `relay`
+instead of `local network`, or the transfer takes a moment longer to
+start. The receiver could not connect to the sender's listener. Run
+`fsend doctor` on the **sending** machine:
+
+- **`firewall` shows `!`** — the sender's firewall blocks the listener
+  (UDP and TCP ports 50000–50999). The row prints the fix; see
+  [Usage → The firewall check](usage.md#the-firewall-check). On Windows
+  the usual cause is having cancelled the "allow access?" prompt the
+  first time fsend ran, which leaves a block rule behind.
+- **`firewall` has no mark** — doctor couldn't read the rules (Linux,
+  without root). Run `sudo fsend doctor`, or open the ports it names.
+- **`listener` and `firewall` both pass** — the firewall on this machine
+  isn't the reason. A passing `listener` is tested from the machine
+  itself, so it can't see what sits between two devices: Wi-Fi "client
+  isolation" (guest networks), separate VLANs, or a VPN that takes over
+  local traffic. Try another network, or a cable.
+- **`mDNS` shows `!`** — the devices can't discover each other, so the
+  receiver never learns where the listener is.
 
 ### "Could not verify the other side" (`E022`)
 
@@ -202,37 +235,56 @@ rest of the transfer completed.
 - To replace differing files, receive again with `--overwrite`.
 - The accept prompt shows the breakdown (new / up to date / differ) before
   you confirm; `--manifest <file>` records the exact per-file outcome.
-- Byte-identical files are always skipped silently — this only fires on
-  real differences.
+- Identical files are always skipped silently. Without `--checksum`,
+  identical means the same size and modification time, so a copy with
+  the same bytes but another timestamp counts as differing.
 - To keep both copies, receive again with `--rename` (the incoming file
   is saved as `name (1).ext`).
-- If you chose "skip them" at the prompt yourself, the line renders as
-  the neutral "Kept your local copies" and fsend exits 0 — your choice,
-  not a failure. Unattended runs (`--yes`) that keep files still exit 13.
-- The sender sees the same outcome: "N files kept by receiver", and
-  "Nothing sent" with a warning glyph when no bytes moved at all.
+- If you chose "skip them" at the prompt yourself, there is no error
+  line: the summary reads "Saved 0 of 1 file" with "1 kept" under it, and
+  fsend exits 0. It was your choice, not a failure. Unattended runs
+  (`--yes`) that keep files still exit 13.
+- The sender's summary says the same ("1 kept by the receiver", and
+  "Nothing sent" when no bytes moved at all). The sender exits 0.
 
 ### "Some files were skipped" (`E050`)
 
 ```text
-✓ Saved 2 of 3 files to ./ — 10 B in 7ms  ·  local network
-⚠ 1 file was skipped:
+✓ Saved 2 of 3 files to ./
+  10 B · 8 ms · local network
+! 1 file was skipped:
     proj/locked.txt — the sender could not read it
-✗ [E050] Some files were skipped — everything else arrived.
+✗ Some files were skipped — everything else arrived. [E050]
   The skipped files and the reason are listed above. Fix the cause and
   run fsend again; files that already arrived are not sent twice.
 ```
 
 The transfer finished, but some entries didn't make it. Both sides list
-them with a reason:
+them with a reason (a broken link is listed by the sender, which is the
+side that left it out):
 
 - **The sender couldn't read the file** — permissions, or it vanished
   or shrank while being sent. Fix it on the sender and send again.
+- **A broken link in a folder being sent** — its target is missing, so
+  there is nothing to send for it. Fix or remove the link, or leave it
+  out with `--exclude`.
 - **The name can't be placed on the receiver** — two incoming names
   that your filesystem treats as the same (`Report.pdf` and
   `report.pdf` on a case-insensitive disk, or the NFC and NFD spellings
   of an accented name), or a name reserved for fsend (`.fsend`). Rename
   one on the sender, or receive onto a case-sensitive filesystem.
+- **The receiver's system can't create the name.** On Windows: a
+  reserved device name (`aux.c`, `con.txt`), one of `< > : " | ? * \`,
+  or a trailing dot or space. On any system: a name the filesystem
+  refuses when the file is written (longer than 255 bytes, or not valid
+  in its encoding; a keep-both copy `name (1).ext` can cross the length
+  limit when the original just fits). Only that file is skipped. Rename
+  it on the sender, pack the folder into an archive first, or receive
+  with `--out -`, which writes a tar stream to stdout and creates
+  nothing under these names.
+- **A file appeared at the destination during the transfer.** fsend keeps
+  the file that is there and skips the incoming one. Receive again to be
+  asked what to do with it.
 
 Re-sending is cheap: files that already arrived are skipped as up to
 date.
@@ -262,11 +314,16 @@ protecting you.
 
 ### Sending stopped on a symlink (`E036`, sender side)
 
-fsend follows symlinks to send their target's content, so a link it can't
-resolve halts the send before any code is generated. The message names the
-offending link — fix it, or skip it with `--exclude`:
+fsend follows symlinks to send their target's content. A link it can't
+resolve halts the send before any code is generated when you named the
+link yourself, or when skipping it could not be right. The message names
+the offending link — fix it, or skip it with `--exclude`:
 
-- **Broken** (the target doesn't exist) or **unreadable** (permissions).
+- **Broken** (the target doesn't exist) and named on the command line.
+  A broken link found in a folder you send — at any depth, including
+  the top level of `fsend .` — is skipped and listed instead, and the
+  sender exits `E050`.
+- **Unreadable** (permissions on the target).
 - **Cyclic** — a link that loops back into the folder (`a → b → a`, or a
   link to a parent directory), which would otherwise recurse forever.
 
@@ -284,12 +341,21 @@ The progress line ends with the route — `local network`, `direct` or
   hole-punching fails. See [How it works](architecture.md).
 - **The relay runs over TCP.** On a network that blocks UDP, the relay is
   reached over the TCP fallback, which can be slower still.
+- **The local route is on QUIC instead of TCP.** On one network the
+  receiver first connects over TCP, which is far faster on a fast link.
+  When a firewall on the sender blocks TCP on fsend's port (one port
+  between 50000 and 50999), or the sender runs a release before 1.17,
+  the transfer uses QUIC over UDP. The receiver's `--debug` output says
+  which: `route: TCP` or `route: QUIC`. The same happens when local
+  discovery is blocked and the two devices pair through the server: the
+  route still reads `local network`, but it runs over QUIC.
 - **One side's upload is the bottleneck.** A direct transfer can't beat
   the slower of the two links, and high latency or packet loss on the
   path lowers it further.
 - **The disk or CPU is.** Many small files each need a sync (batched,
   but not free), `--checksum` reads everything already on disk, and
-  resuming hashes the existing partial before it continues.
+  resuming hashes the existing partial before it continues (a retry
+  within the same run reuses the hashes it already has).
 
 ## Anything else
 

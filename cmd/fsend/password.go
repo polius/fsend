@@ -21,17 +21,17 @@ import (
 // a plain call) so it can be swapped out in tests without faking fds.
 var stdinIsTTY = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
-// readPasswordHidden prompts on stderr and reads a single line from the
-// controlling terminal without echo. Falls back to plain stdin when
-// stdin is not a TTY (e.g. inside a pipeline) — callers that need
-// true no-echo should require the env var instead.
+// readPasswordHidden prompts on stderr (label, as a uxlog.Entry line) and
+// reads a single line from the controlling terminal without echo. Falls
+// back to plain stdin when stdin is not a TTY (e.g. inside a pipeline) —
+// callers that need true no-echo should require the env var instead.
 //
 // Empty input gets one re-prompt with a hint, then surfaces as a usage
 // error (mapped to E024) so the user sees a clean message instead of
 // the E099 catchall.
-func readPasswordHidden(ctx context.Context, prompt string) (string, error) {
+func readPasswordHidden(ctx context.Context, label string) (string, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		pw, err := readPasswordOnce(ctx, prompt)
+		pw, err := readPasswordOnce(ctx, label)
 		if err != nil {
 			// EOF on a piped stdin (or a closed terminal) means the
 			// caller can't supply input — surface as a usage error,
@@ -45,7 +45,7 @@ func readPasswordHidden(ctx context.Context, prompt string) (string, error) {
 			return pw, nil
 		}
 		if attempt == 0 {
-			fmt.Fprintln(os.Stderr, "  Password cannot be empty — try again.")
+			uxlog.Line("Password cannot be empty — try again.")
 		}
 	}
 	return "", fmt.Errorf("%w: password cannot be empty", fserrors.ErrUsage)
@@ -55,7 +55,7 @@ func readPasswordHidden(ctx context.Context, prompt string) (string, error) {
 // cancellation (Ctrl-C at the prompt), returning context.Canceled. The
 // abandoned ReadPassword goroutine cannot run its own deferred terminal
 // restore, so we capture the terminal state up front and restore it here.
-func readPasswordHiddenCtx(ctx context.Context, prompt string, quiet bool) (string, error) {
+func readPasswordHiddenCtx(ctx context.Context, label string, quiet bool) (string, error) {
 	fd := int(os.Stdin.Fd())
 	var oldState *term.State
 	if term.IsTerminal(fd) {
@@ -67,7 +67,7 @@ func readPasswordHiddenCtx(ctx context.Context, prompt string, quiet bool) (stri
 	}
 	ch := make(chan result, 1)
 	go func() {
-		pw, err := readPasswordHidden(ctx, prompt)
+		pw, err := readPasswordHidden(ctx, label)
 		ch <- result{pw, err}
 	}()
 	select {
@@ -79,7 +79,7 @@ func readPasswordHiddenCtx(ctx context.Context, prompt string, quiet bool) (stri
 		// another newline here showed up as a stray blank line. --quiet
 		// suppresses that notice, so break the line ourselves then.
 		if quiet {
-			fmt.Fprintln(os.Stderr)
+			uxlog.Blank()
 		}
 		return "", context.Canceled
 	case r := <-ch:
@@ -123,7 +123,7 @@ func resolvePassword(ctx context.Context, f *flags, sender bool) error {
 		f.passArg = pw
 		return nil
 	}
-	pw, err := readPasswordHiddenCtx(ctx, "  "+uxlog.Prompt("Enter the password the sender shared: "), f.quiet)
+	pw, err := readPasswordHiddenCtx(ctx, "Enter the password the sender shared:", f.quiet)
 	if err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func promptPasswordWithSuggestionCtx(ctx context.Context, quiet bool) (string, e
 		// As in readPasswordHiddenCtx: signalContext already broke the
 		// line unless --quiet suppressed its notice.
 		if quiet {
-			fmt.Fprintln(os.Stderr)
+			uxlog.Blank()
 		}
 		return "", context.Canceled
 	case r := <-ch:
@@ -167,8 +167,8 @@ func promptPasswordWithSuggestion(br *bufio.Reader) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generating suggested password: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "  Suggested password: %s\n", suggested)
-	fmt.Fprint(os.Stderr, "  "+uxlog.Prompt("Press Enter to use it, or type your own: "))
+	uxlog.Line("Suggested password: " + suggested)
+	uxlog.Entry("Press Enter to use it, or type your own:")
 
 	line, err := br.ReadString('\n')
 	if err != nil && line == "" {
@@ -254,8 +254,8 @@ wheat whale whistle willow window winter wizard wolf wombat yacht yodel yogurt z
 // readPasswordOnce performs a single hidden-input read. Returns "" with
 // no error on empty input so the caller can re-prompt without conflating
 // "empty" with "I/O failure".
-func readPasswordOnce(ctx context.Context, prompt string) (string, error) {
-	fmt.Fprint(os.Stderr, prompt)
+func readPasswordOnce(ctx context.Context, label string) (string, error) {
+	uxlog.Entry(label)
 	fd := int(os.Stdin.Fd())
 	if term.IsTerminal(fd) {
 		// Last gate before raw mode: past this point the read owns the
@@ -264,7 +264,7 @@ func readPasswordOnce(ctx context.Context, prompt string) (string, error) {
 			return "", err
 		}
 		b, err := term.ReadPassword(fd)
-		fmt.Fprintln(os.Stderr)
+		uxlog.Blank()
 		if err != nil {
 			return "", err
 		}

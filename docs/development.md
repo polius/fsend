@@ -35,7 +35,8 @@ The E2E suite builds its own binary in a temp dir and runs an isolated
 server on loopback — no shell wrapper needed. It takes roughly 70–110 s
 (about 105 s on an M-series laptop, including the build); much of that
 is tests waiting out real timeouts. CI runs every gating `go test` with
-`-count=1 -timeout 600s`, so it never reuses cached results.
+`-count=1` and a timeout (600 s; 900 s in the FreeBSD VM), so it never
+reuses cached results.
 
 The LAN discovery tests skip on a machine without working multicast.
 Set `FSEND_TEST_REQUIRE_MULTICAST=1` to make them fail instead; CI does,
@@ -47,8 +48,10 @@ so discovery can't pass there by not running.
 and Intel), Windows (x86-64 and ARM), 32-bit x86 and a FreeBSD VM (plus
 `-race` on amd64 and arm64), golangci-lint, govulncheck, fuzzing, a dead-code check, a
 snapshot release build of every target (checked to be byte-identical on
-rebuild), the install-script smoke tests, workflow linting (actionlint,
-zizmor) and the coverage gate. A final **`ci-ok`** job fails unless
+rebuild), a lint of the changelog the release notes come from, the
+install-script smoke tests, the terminal UI audit
+([below](#ux-colour-audit), on Linux and macOS), workflow linting
+(actionlint, zizmor) and the coverage gate. A final **`ci-ok`** job fails unless
 every other job passed; it is the one check to mark as required on the
 branch, so new jobs are gated without changing repository settings.
 
@@ -81,8 +84,54 @@ go through it.
 column 0 (or nothing, for a neutral line), the text starts in column 2,
 and nested lists start in column 4. The share command is the one line
 indented further (column 6), alone, so a triple-click copies a runnable
-command. `uxlog.Status`, `uxlog.Note` and `uxlog.Detail` print on the
-grid; new messages should use them rather than choose an indent.
+command. The printers in `internal/uxlog/grid.go` own the indent and are
+the only way a line reaches the screen — pick the role, never write
+leading spaces:
+
+| printer | prints |
+| --- | --- |
+| `Status(glyph, text)` | the glyph in column 0 (`Check`, `Cross`, `Warn`, `Ask`, `Retry`, an arrow, or `Info`'s blank), text from column 2 |
+| `Line(text)` | a neutral line: text from column 2 |
+| `Note(text)`, `NoteWrapped(text)` | faint detail from column 2; the second breaks between words on a narrow terminal |
+| `Item(text)` | a list row, from column 4 |
+| `On(w).Command(text)` | the command to copy, from column 6 |
+| `Question(text, options)` | a prompt with choices: `? Save to ./  [Y/n] `, cursor left on the line |
+| `Entry(label)` | a prompt for typed text: `? Enter the password the sender shared: ` |
+| `Blank()`, `Debug(text)` | an empty line; a `--debug` line (`  DEBUG: …`) |
+
+They write to stderr and cooperate with what is drawing there (a line
+lands above a live bar and wipes a live spinner's frame first).
+`uxlog.On(w)` gives the same printers for another writer (stdout for a
+query's answer, a buffer in a test); `Row`, `Detail`, `ItemRow` and
+`CommandRow` are the string forms, for a block assembled before it is
+printed (an error and its advice). `uxlog.Gap` separates two columns of
+one row. `TestGridIsTheOnlyWayToPrint` (`cmd/fsend/grid_guard_test.go`)
+parses the package and fails on a `fmt.Print*`/`Fprint*` call, a write to
+`os.Stderr`, a cobra command's own printers (`cmd.Println`), the `println`
+builtin, a string literal with an indent of its own, or a glyph that is
+not one of uxlog's; the functions that write a machine payload or a
+stdout page (JSON, the bare code, `--help`) are listed there with the
+reason. `cmd/fsend/doctor*.go` is not scanned yet.
+
+**Width.** A line that is clipped or padded is measured in terminal
+columns, not runes (`uxlog.Width`, `Clip`, `PadRight`): a CJK ideograph or
+an emoji takes two, a combining mark none, so a device or file name in a
+wide script can't push the spinner or the bar past the terminal's edge.
+The measure is go-runewidth's, the one the progress bar (mpb) uses. Like
+mpb it counts the East Asian Ambiguous class (`…`, `·`, `→`) as two
+columns in a CJK locale, where some terminals draw them wide: the cost is
+a line clipped a little early, never one that wraps.
+`RUNEWIDTH_EASTASIAN=0|1` overrides the guess.
+
+**Durations.** One form: a number, a space, a unit — `188 ms`, `4.8 s`,
+`42 s`, `1 min 05 s`, `2 h 03 min`. `uxlog.HumanDuration` renders every
+measured or announced time (a transfer, a retry's wait, a probe's round
+trip); `uxlog.HumanAge` the rough ones (`30 s`, `4 min`, `3 h`, `2 d`).
+Never print a `time.Duration` with `%s`: Go's form has no space.
+
+**Lists.** A list that is cut ends "… and N more", and N is never 1 —
+that line costs the row it would save. `uxlog.Shown(n, limit)` gives the
+number of rows to print.
 
 **Weights.** Bold for the subject of a line (the file a summary is
 about, the destination a prompt names), default text for the sentence,
@@ -95,7 +144,9 @@ grey or bright-black. Terminals that ignore SGR 2 show default text.
 line that wants an answer, `→` / `←` for the direction of a transfer, and
 the braille spinner. Every monospace font carries these; ⚠ ℹ ⟳ ⇢ ⇣ are
 missing from common ones and get drawn from a fallback font, so they are
-not used. Neutral notices have no glyph. Pipes and plain mode get ASCII
+not used. Neutral notices and narration ("Checking the latest release...",
+the install scripts' steps) have no glyph: an empty gutter. Every prompt
+starts with `?`. Pipes and plain mode get ASCII
 markers (`[OK]`, `[FAIL]`, `[!]`, `[?]`, `[i]`) and no escapes.
 
 **Colour roles.** Six, borrowed from the family opencode's themes use:
@@ -120,7 +171,8 @@ column is chosen per process:
    (`bgquery_unix.go`). Every terminal answers DA1, in order, so its reply
    marks the end of the exchange; a terminal that stays silent for 0.3 s
    (a pty with no emulator) is given up on. Only for a foreground job with
-   a colour terminal on stderr.
+   a colour terminal on stderr. Unix only: on Windows the background
+   stays unknown unless declared (1 or 2).
 4. Otherwise **unknown**: the terminal's own ANSI colours (SGR 31–36).
    The user's theme has tuned those for its background and their eyes,
    which is why gh, cargo, git and docker use them.
@@ -157,10 +209,52 @@ raw SGR stream and asserted against the design tokens in
 green-means-success rule are checked at 60, 80 and 100 columns for an
 unknown, dark and light background (the fake terminal can answer the
 OSC 11 query); degradation contracts (NO_COLOR, piped stderr, ASCII
-fallbacks) must hold byte-clean. Unix only. Run it before
-merging any change that touches `internal/uxlog` or the CLI's stderr
-surfaces — it is a manual gate, not wired into CI, because its
-assertions are design choices (exact hues) that are meant to evolve.
+fallbacks) must hold byte-clean. The screen rules ride along wherever the
+grid is checked: every prompt starts with `?`, every duration has a space
+before its unit, no list hides exactly one row, and clipped lines fit the
+terminal in display columns (CJK device and file names at 40 and 60).
+Scenarios also cover the install-and-receive lines at 40 to 100 columns
+and the update notice for each kind of install (the install script,
+Homebrew, deb/rpm/apk: a versioned build with a seeded check cache, no
+network). Unix only. It takes about five minutes.
+With working multicast the two sides find each other over mDNS and use
+the local-network route; without it they pair through the script's
+server and the checks still pass, on the QUIC path. (On Linux, loopback
+has multicast off by default: `sudo ip link set lo multicast on`.)
+
+CI runs it on Linux and macOS (the `ux` job). Its assertions include
+design choices (exact hues), so a deliberate change to the UI changes
+the script in the same pull request.
+
+```sh
+python3 scripts/validate-ux.py s14 s21   # only these scenarios
+```
+
+A check that fails because of a known problem in the product is listed
+in `EXPECTED_FAILURES` at the top of the script, with the reason. It is
+reported as `XFAIL` and doesn't fail the run. When such a check passes
+it is reported as `XPASS` and the run fails, so the entry is removed in
+the same change that fixes the product.
+
+## Releasing
+
+The body of a GitHub release is the section of
+[`CHANGELOG.md`](../CHANGELOG.md) for that version, not a list of commit
+titles. To release `1.17.0`:
+
+1. Rename `## Unreleased` in `CHANGELOG.md` to `## 1.17.0` and commit.
+2. Read the notes as they will appear:
+   `python3 scripts/release-notes.py v1.17.0`.
+3. Tag that commit `v1.17.0` and push the tag.
+
+`.github/workflows/release.yml` then runs `scripts/release-notes.py`
+first. A tag with no section, or an empty one, stops the release there
+with a message that says what to do. Otherwise the tests run and
+goreleaser publishes with those notes (`--release-notes`). The script
+joins wrapped lines, pins relative links to the tag, and adds a footer
+with install, verification and compatibility links and the comparison
+with the previous tag. CI lints the changelog on every pull request
+(`python3 scripts/release-notes.py --check`).
 
 
 ## LAN smoke test (no server needed)

@@ -31,8 +31,9 @@ type Source struct {
 // fsend is a send tool, so the recipient receives the pointed-to file/dir, not
 // a dangling link. A symlink whose target is unreadable or cyclic is a hard
 // error (ErrUnsendableSymlink); so is a missing target named on the command
-// line, while one inside a folder is skipped (WalkReport lists it). No file contents are read here; the
-// BLAKE3 root is computed inline at send time.
+// line, while one found in a folder — the top level of a contents send
+// (`fsend .`) included — is skipped (WalkReport lists it). No file contents
+// are read here; the BLAKE3 root is computed inline at send time.
 //
 // RelativePath is rooted at each argument's base name, so `~/proj/foo` lands
 // as `foo/...`. Duplicate roots are rejected up front; case-only pairs are
@@ -49,9 +50,11 @@ type WalkSkip struct {
 }
 
 // WalkReport is Walk that also returns what it skipped: a dangling symlink
-// inside a folder (node_modules/.bin is full of them) costs that entry, as
-// an unreadable file does, instead of stopping the send. One named on the
-// command line is still an error (E036): the user pointed at it.
+// found in a folder (node_modules/.bin is full of them) costs that entry, as
+// an unreadable file does, instead of stopping the send — at any depth, so
+// `fsend .` treats the links at its top level as `fsend dir` treats those
+// in dir. One named on the command line is still an error (E036): the user
+// pointed at it.
 func WalkReport(paths []string, excludes []string) (out []Source, skips []WalkSkip, err error) {
 	if len(paths) == 0 {
 		return nil, nil, fmt.Errorf("walk: no paths provided")
@@ -88,7 +91,7 @@ func WalkReport(paths []string, excludes []string) (out []Source, skips []WalkSk
 				if err != nil {
 					return nil, nil, fmt.Errorf("walk: lstat %s: %w", cAbs, err)
 				}
-				if err := addEntry(&out, &skips, seen, nil, "", cAbs, c.Name(), cst, m); err != nil {
+				if err := addEntry(&out, &skips, seen, nil, "", cAbs, c.Name(), cst, m, false); err != nil {
 					return nil, nil, err
 				}
 			}
@@ -120,7 +123,7 @@ func WalkReport(paths []string, excludes []string) (out []Source, skips []WalkSk
 			return nil, nil, fmt.Errorf("%w: %s and %s would both arrive as %q — rename one before sending", fserrors.ErrUsage, prev, raw, root)
 		}
 		roots[root] = raw
-		if err := addEntry(&out, &skips, seen, nil, "", abs, root, st, m); err != nil {
+		if err := addEntry(&out, &skips, seen, nil, "", abs, root, st, m, true); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -138,7 +141,9 @@ func WalkReport(paths []string, excludes []string) (out []Source, skips []WalkSk
 // forever. srcPrefix is the real-source path of the parent directory when we're
 // inside a followed symlink (empty in the user's real tree); it lets every
 // symlink-derived file carry its true origin for the preview annotation.
-func addEntry(out *[]Source, skips *[]WalkSkip, seen map[string]string, stack []os.FileInfo, srcPrefix, abs, rel string, st os.FileInfo, m excludeMatcher) error {
+// named marks an entry the user named on the command line, as opposed to
+// one found in a folder: a broken link is an error only when named.
+func addEntry(out *[]Source, skips *[]WalkSkip, seen map[string]string, stack []os.FileInfo, srcPrefix, abs, rel string, st os.FileInfo, m excludeMatcher, named bool) error {
 	if m.match(rel) {
 		return nil
 	}
@@ -161,7 +166,7 @@ func addEntry(out *[]Source, skips *[]WalkSkip, seen map[string]string, stack []
 		linkTarget = target
 		resolved, err := os.Stat(abs)
 		if err != nil {
-			if len(stack) > 0 && errors.Is(err, fs.ErrNotExist) {
+			if !named && errors.Is(err, fs.ErrNotExist) {
 				*skips = append(*skips, WalkSkip{Path: filepath.ToSlash(rel), Reason: "broken link to " + target})
 				return nil
 			}
@@ -217,7 +222,7 @@ func addEntry(out *[]Source, skips *[]WalkSkip, seen map[string]string, stack []
 			if err != nil {
 				return fmt.Errorf("walk: lstat %s: %w", cAbs, err)
 			}
-			if err := addEntry(out, skips, seen, stack, src, cAbs, cRel, cst, m); err != nil {
+			if err := addEntry(out, skips, seen, stack, src, cAbs, cRel, cst, m, false); err != nil {
 				return err
 			}
 		}

@@ -473,10 +473,10 @@ func closeOnFailure(c *quic.Conn, errp *error) {
 }
 
 // peerRejected reports whether err is the peer closing with
-// closeHandshakeFailed. Only meaningful once both PAKE shares have
-// crossed: a peer can judge the code only after it has ours, and its
-// close can then overtake its confirmation tag. Earlier, the same close
-// is a peer giving up (cancelled, timed out), not a wrong code.
+// closeHandshakeFailed. Only meaningful to a receiver whose confirmation
+// tag is out: the sender judges the code from that tag, and its close
+// then takes the place of its own. At any other point the same close is
+// a peer giving up (cancelled, timed out), not a wrong code.
 func peerRejected(err error) bool {
 	var appErr *quic.ApplicationError
 	return errors.As(err, &appErr) && appErr.Remote && appErr.ErrorCode == closeHandshakeFailed

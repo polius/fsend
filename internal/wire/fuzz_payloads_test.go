@@ -19,6 +19,7 @@ func FuzzDecodePayloads(f *testing.F) {
 		[]uint32{0, 1, 2},
 		[]FileHash{{Index: 3}},
 		&ErrorFrame{Code: ErrCodeDiskFull, Message: "needs 1 GB"},
+		&TransferResult{Refused: 2, Entries: []WriteRefusal{{Index: 7, Reason: "this filesystem doesn't accept the name"}}},
 	} {
 		var buf bytes.Buffer
 		if err := WriteControl(&buf, TypeError, p); err != nil {
@@ -31,7 +32,7 @@ func FuzzDecodePayloads(f *testing.F) {
 		targets := []any{
 			new(SenderHello), new(ReceiverHello), new(PasswordChallenge), new(PasswordResponse),
 			new(PasswordVerified), new([]ListingEntry), new([]Decision), new([]uint32),
-			new([]FileHash), new(ErrorFrame),
+			new([]FileHash), new(ErrorFrame), new(TransferResult),
 		}
 		for _, v := range targets {
 			_ = Decode(body, v)

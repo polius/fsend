@@ -137,6 +137,10 @@ grep -q "✓ checksum verified" "$WORK/out1" || fail "scenario1: no verification
 grep -q "fsend v$VER installed" "$WORK/out1" || fail "scenario1: no outro line"
 grep -qF "export PATH=\"$H1/.local/bin:\$PATH\"" "$H1/.profile" \
     || fail "scenario1: PATH line not appended to .profile"
+# A step is narration: an empty gutter, text from column 2, never a marker
+# of its own (the binary's grid has six glyphs; a step is none of them).
+grep -q "^  installing fsend v$VER " "$WORK/out1" || fail "scenario1: step line not in column 2"
+if grep -q '^[›>] ' "$WORK/out1"; then fail "scenario1: a step marker is back"; fi
 pass "fresh install: latest resolution, checksum, rc PATH line, outro"
 
 # 2. pinned version, with and without the v prefix.

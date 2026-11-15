@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
-	"os"
+	"net"
 	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -16,37 +15,33 @@ const socketfilterfw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
 var runFirewallTool = func(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, socketfilterfw, args...).Output() //nolint:gosec // G204: fixed tool; args are flags and this binary's own path
+	out, err := exec.CommandContext(ctx, socketfilterfw, args...).Output() //nolint:gosec // G204: a fixed tool; args are flags and this binary's own path
 	return string(out), err
 }
 
 // firewallCheck reports whether the macOS firewall lets other devices on
-// the network reach fsend's local listener. A blocked listener is the most
-// common reason a same-network transfer goes through the server instead.
-// ok is false when the firewall can't be queried.
-func firewallCheck() (doctorCheck, bool) {
+// the network reach fsend's local listener (macFirewallCheck judges what
+// the tool printed). A blocked listener is the most common reason a
+// same-network transfer goes through the server instead. answered says
+// whether the listener self-test got through. ok is false when the
+// firewall can't be queried.
+func firewallCheck(_ net.IP, answered bool) (doctorCheck, bool) {
 	state, err := runFirewallTool("--getglobalstate")
 	if err != nil {
 		return doctorCheck{}, false
 	}
-	if !strings.Contains(state, "enabled") {
-		return doctorCheck{true, "firewall", "macOS firewall is off"}, true
+	if on, _ := macFirewallOn(state); !on {
+		return macFirewallCheck(state, "", "", "", nil, answered), true
 	}
-	const blocked = " — devices on this network can't connect to this one directly, so transfers to them go through the server"
-	if all, err := runFirewallTool("--getblockall"); err == nil && strings.Contains(all, "enabled") {
-		return doctorCheck{false, "firewall", "macOS firewall blocks all incoming connections" + blocked}, true
-	}
-	exe, err := os.Executable()
-	if err != nil {
+	blockAll, _ := runFirewallTool("--getblockall")
+	apps, err := runFirewallTool("--listapps")
+	if err != nil && !macBlockAll(blockAll) {
 		return doctorCheck{}, false
 	}
-	app, err := runFirewallTool("--getappblocked", exe)
-	if err != nil {
-		return doctorCheck{}, false
+	exes := exePaths()
+	appBlocked := ""
+	if len(exes) > 0 {
+		appBlocked, _ = runFirewallTool("--getappblocked", exes[0])
 	}
-	if strings.Contains(app, "blocked") {
-		return doctorCheck{false, "firewall", "macOS firewall blocks incoming connections to fsend" + blocked +
-			" (allow fsend in System Settings → Network → Firewall → Options)"}, true
-	}
-	return doctorCheck{true, "firewall", "macOS firewall allows incoming connections to fsend"}, true
+	return macFirewallCheck(state, blockAll, appBlocked, apps, exes, answered), true
 }
