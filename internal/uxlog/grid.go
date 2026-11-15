@@ -134,7 +134,7 @@ func CommandRow(text string) string { return colCommand + text }
 // after it: the ? glyph in column 0, the question from column 2, then the
 // options ("[Y/n]"), as in
 //
-//	? Save to ./Downloads/?  [Y/n] _
+//	? Save to ./Downloads/  [Y/n] _
 //
 // Every line that waits for an answer starts with ?, so a glance down the
 // gutter finds it.
