@@ -159,6 +159,48 @@ func TestTCP_SenderShowsNoTagToAPeerThatWithholdsIts(t *testing.T) {
 	}
 }
 
+// A wrong tag on the TCP route is counted and answered with a close, and
+// not one byte of the sender's tag. This is the route where the order
+// shows: TCP delivers what was written before a close, where a QUIC close
+// may drop it, so a sender that wrote its tag and then checked ours would
+// be caught here and could pass the QUIC test above.
+func TestTCP_SenderCountsAWrongTagAndAnswersWithAClose(t *testing.T) {
+	ln, addr := tcpListener(t, "abc-defg-hjk")
+	nc, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc := tls.Client(nc, tcpTLS(ReceiverTLSConfig()))
+	defer tc.Close()
+	if err := tc.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tc.Write([]byte{tcpRoleControl}); err != nil {
+		t.Fatal(err)
+	}
+	conn := newTCPConn(tc)
+	ctrl := &tcpCtrlStream{c: conn}
+	peer, _ := rawShares(t, tc.ConnectionState(), func() io.ReadWriter { return ctrl }, "xyz-pqrs-tuv", roleReceiver)
+	if _, err := ctrl.Write(peer.myTag); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = ctrl.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := io.ReadAll(ctrl)
+	if len(got) != 0 || !peerRejected(err) {
+		t.Fatalf("after a wrong tag: read %d byte(s), err %v; want the handshake-failed close and no tag", len(got), err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err = ln.Accept(ctx); !errors.Is(err, fserrors.ErrPeerAuthFailed) {
+		t.Fatalf("got %v, want ErrPeerAuthFailed", err)
+	}
+	if n, pen := failsRun(ln); n != 1 || !pen {
+		t.Fatalf("failsRun = %d, penalised = %v; want 1 and a penalty", n, pen)
+	}
+}
+
 // A receiver whose tag went unanswered reports ErrUnconfirmed, whichever
 // way the sender left: the peer may have used the tag to test a guess.
 // It is not a wrong code (a dropped link looks the same).
