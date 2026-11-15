@@ -68,11 +68,11 @@ curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-jkm
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://getfsend.alzina.dev/windows))) -Code abc-defg-jkm
+iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code abc-defg-jkm"
 ```
 
-When the sender uses the default server, it prints an install line of
-this kind under the share command.
+When the sender uses the default server, it prints both lines, with the
+real code, under the share command.
 
 ## How long does a code live? What happens after wrong guesses?
 
@@ -159,8 +159,10 @@ route and goes through the server instead. If it blocks only TCP there,
 the transfer uses QUIC over UDP, which is much slower on a fast link.
 macOS and Windows may ask whether fsend may accept incoming connections
 the first time you send; say yes for local transfers. `fsend doctor`
-checks, among other things, the server, the relay over UDP and TCP, and
-local discovery.
+checks, among other things, the server, the relay over UDP and TCP,
+local discovery, whether its own listener answers, and whether the
+firewall (macOS, ufw, firewalld, nftables or iptables, Windows Defender
+Firewall) lets other devices reach it.
 
 A server operator opens 80/tcp, 443/tcp and 443/udp
 ([Self-hosting](self-hosting.md#before-you-start)).
