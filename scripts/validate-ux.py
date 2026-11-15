@@ -25,8 +25,8 @@ flow (wrong → correct), decline, text send, error rendering, NO_COLOR,
 terminal, Ctrl-C while waiting, a late second receiver, shell
 completion, notifications, usage-error paths, plain mode, the prompts
 outside the main flow, wide (CJK) names at 40 columns, skipped-file
-lists and the install-and-receive hint. Exit status: 0 when every check
-passes.
+lists, the install-and-receive hint and the update notice for each
+kind of install. Exit status: 0 when every check passes.
 
 Unix only (uses pty). Run from the repo root:
 
@@ -752,7 +752,7 @@ def s7_errors():
     two = PtyRun([H.bin, '--receive', 'abc', 'defg'], d, runtime=6)
     two.start(); two.join()
     has_text(s, '--receive with words that spell no code says what it takes', two.text,
-             '--receive takes one code (abc-defg-jkm, or its three words), not 2 arguments [E024]')
+             '--receive takes one code (abc-defg-jkm, or its three words) [E024]')
     glob_ok(s, 'that is still a usage error (24)', two.status == 24, f'exit {two.status}')
     out2 = PtyRun([H.bin, 'abc-defg-jk'], d, runtime=6)
     out2.start(); out2.join()
@@ -1334,12 +1334,89 @@ def s26_install_hint():
             '"event":"code"' in first and 'install' not in first, first[:80])
 
 
+def s27_update_notice():
+    """D2: the notice after a transfer names the action that works for the
+    way this fsend was installed. `fsend --update` refuses (E039) on a
+    binary that Homebrew or a deb/rpm/apk package owns, so those are told
+    what to do instead. A versioned build is installed four ways under the
+    harness's temp dir; the "newer release" comes from a seeded check
+    cache (fresh, so nothing is looked up; a dead proxy makes sure)."""
+    s = 'S27 update notice per install'
+    root = os.path.join(H.tmp, 'installs')
+    os.makedirs(root)
+    built = os.path.join(root, 'fsend-1.0.0')
+    subprocess.run(['go', 'build', '-ldflags', '-X github.com/polius/fsend/internal/version.Version=1.0.0',
+                    '-o', built, './cmd/fsend'], cwd=ROOT, check=True)
+    with open(os.path.join(H.home, '.config', 'fsend', 'update-check.json'), 'w') as f:
+        json.dump({'checked_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'latest': '9.9.9'}, f)
+    env = {'FSEND_NO_UPDATE_CHECK': '0', 'HTTPS_PROXY': 'http://127.0.0.1:9',
+           'HTTP_PROXY': 'http://127.0.0.1:9', 'NO_PROXY': ''}
+    link = 'https://github.com/polius/fsend/releases/tag/v9.9.9'
+    # (label, where the binary lives, what it is run as, package marker, action line, the command in it)
+    installs = [
+        ('install script', 'own/bin/fsend', None, None, f'fsend --update · {link}', 'fsend --update'),
+        ('Homebrew', 'brew/Cellar/fsend/1.0.0/bin/fsend', 'brew/bin/fsend', None,
+         f'brew upgrade fsend · {link}', 'brew upgrade fsend'),
+        ('deb', 'deb/usr/bin/fsend', None, 'deb', f'Install the new .deb: {link}', None),
+        ('rpm', 'rpm/usr/bin/fsend', None, 'rpm', f'Install the new .rpm: {link}', None),
+        ('apk', 'apk/usr/bin/fsend', None, 'apk', f'Install the new .apk: {link}', None),
+    ]
+    for label, rel, via, marker, action, command in installs:
+        binary = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(binary))
+        shutil.copy2(built, binary)
+        run_as = binary
+        if via:
+            # As brew links it: bin/fsend -> ../Cellar/fsend/<version>/bin/fsend.
+            run_as = os.path.join(root, via)
+            os.makedirs(os.path.dirname(run_as))
+            os.symlink(os.path.relpath(binary, os.path.dirname(run_as)), run_as)
+        if marker:
+            share = os.path.join(os.path.dirname(os.path.dirname(binary)), 'share', 'fsend')
+            os.makedirs(share)
+            with open(os.path.join(share, 'package-manager'), 'w') as f:
+                f.write(marker + '\n')
+        d = fresh('s27-' + label.replace(' ', '-').lower())
+        snd = PtyRun([run_as, 'small.txt'], d, runtime=30, env=env, cols=100)
+        snd.start()
+        m = snd.wait_for(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
+        if not m:
+            snd.stop()
+            RESULTS.append((s, f'{label}: sender produced no code', 'TIMEOUT', False))
+            continue
+        time.sleep(0.5)
+        rcv = PtyRun([H.bin, m.group(1), '--yes', '--out', 'recv_out'], d, runtime=20)
+        rcv.start(); rcv.join(); snd.join(timeout=8); snd.stop()
+        t = snd.text
+        lines = [pl for pl, _ in screen_lines(t)]
+        has_text(s, f'{label}: the notice follows the summary', t, '\n  fsend 9.9.9 is available (you have 1.0.0)')
+        glob_ok(s, f'{label}: the action for this install, alone in column 2', '  ' + action in lines,
+                repr([l for l in lines if 'releases/tag' in l][:1]))
+        if command:
+            check(s, f'{label}: the command to type is accent + bold', t, 'releases/tag', command, ORANGE, True)
+        if command != 'fsend --update':
+            lacks_text(s, f'{label}: never sent to fsend --update, which refuses here', t, 'fsend --update')
+        check(s, f'{label}: the release link is the link colour', t, 'releases/tag', link, CYAN)
+        wide = [l for l in lines if cols_of(l) > 79 and l[:1] not in SPINNER]
+        glob_ok(s, f'{label}: the notice fits 80 columns', not [l for l in wide if 'releases/tag' in l or 'is available' in l],
+                repr(wide[:1]) if wide else None)
+        grid_ok(s, t, label)
+        ansi_only(s, t)
+    # The refusal the notice must agree with: --update on the packaged
+    # binary is E039 and names the same way out (the release's package).
+    refused = PtyRun([os.path.join(root, 'deb/usr/bin/fsend'), '--update'], H.tmp, runtime=6, env=env)
+    refused.start(); refused.join()
+    has_text(s, 'deb: --update refuses (E039), before any lookup', refused.text, '[E039]')
+    has_text(s, 'deb: the refusal points at the package too', refused.text, 'installing the new one')
+    glob_ok(s, 'deb: --update exits 39', refused.status == 39, f'exit {refused.status}')
+
+
 SCENARIOS = (s1_single_file, s2_folder, s3_conflict, s4_password, s5_decline,
              s6_text, s7_errors, s8_no_color, s9_help, s10_piped, s11_themes,
              s12_narrow, s13_cancel, s14_late_arriver, s15_completion, s16_notify,
              s17_plain, s18_spinner_width, s19_detected_background, s20_visual_system,
              s21_cancel_resume, s22_clipboard, s23_prompts, s24_wide_names,
-             s25_skipped_lists, s26_install_hint)
+             s25_skipped_lists, s26_install_hint, s27_update_notice)
 
 
 def main():
