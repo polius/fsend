@@ -115,13 +115,13 @@ const (
 )
 
 // TransferResult is the payload of a TRANSFER_ACK that has something to
-// report: entries whose bytes arrived but which the receiver could not
-// save (the filesystem refused the name when the file was written). Sent
-// only to a sender that advertised CapWriteRefusals, and only when there
-// is at least one; otherwise the ack stays empty, as every v3 peer sends
-// and expects it.
+// report: files whose bytes arrived but which the receiver could not save
+// (the filesystem refused the name when the file was written). Sent only
+// to a sender that advertised CapWriteRefusals, and only when there is at
+// least one; otherwise the ack stays empty, as every v3 peer sends and
+// expects it. Folders are not reported: the files under one are.
 type TransferResult struct {
-	// Refused counts every such entry; Entries lists the first
+	// Refused counts every such file; Entries lists the first
 	// MaxWriteRefusals of them.
 	Refused uint32
 	Entries []WriteRefusal

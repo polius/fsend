@@ -31,6 +31,12 @@ type refusalRun struct {
 
 func runWriteRefusal(t *testing.T, names []string, dst string, senderWithout, receiverWithout wire.Capability) *refusalRun {
 	t.Helper()
+	return runWriteRefusalOf(t, sourcesFor(t, names), dst, senderWithout, receiverWithout)
+}
+
+// runWriteRefusalOf is runWriteRefusal for a listing built by the test.
+func runWriteRefusalOf(t *testing.T, sources []Source, dst string, senderWithout, receiverWithout wire.Capability) *refusalRun {
+	t.Helper()
 	run := &refusalRun{refusals: refusals{recv: map[string]string{}, send: map[uint32]string{}}}
 	ctrlA, ctrlB := net.Pipe()
 	dataA, dataB := net.Pipe()
@@ -42,7 +48,7 @@ func runWriteRefusal(t *testing.T, names []string, dst string, senderWithout, re
 	go func() {
 		defer wg.Done()
 		s := &Streams{Control: ctrlA, Data: dataA}
-		run.sendErr = Send(ctx, s, SendOptions{Mode: wire.ModeFiles, Sources: sourcesFor(t, names), withoutCaps: senderWithout,
+		run.sendErr = Send(ctx, s, SendOptions{Mode: wire.ModeFiles, Sources: sources, withoutCaps: senderWithout,
 			OnRefused:     func(i uint32, why string) { run.mu.Lock(); run.send[i] = why; run.mu.Unlock() },
 			OnRefusedMore: func(n int) { run.mu.Lock(); run.more = n; run.mu.Unlock() }})
 		s.Close()
@@ -185,6 +191,93 @@ func TestWriteRefusal_ReportIsBounded(t *testing.T) {
 	}
 	if n := len(ackBody(t, run.recvControl)); n > wire.MaxControlFrameSize/2 {
 		t.Errorf("the report is %d bytes", n)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "good.txt")); err != nil {
+		t.Errorf("good.txt did not arrive: %v", err)
+	}
+}
+
+// inFolders lists each folder as an entry of its own followed by one file
+// in it, as a walk does: folder i is dirs[i], its file "f.txt".
+func inFolders(t *testing.T, dirs []string) []Source {
+	t.Helper()
+	files := make([]string, len(dirs))
+	for i, d := range dirs {
+		files[i] = d + "/f.txt"
+	}
+	var out []Source
+	for i, f := range sourcesFor(t, files) {
+		out = append(out, Source{AbsPath: filepath.Dir(f.AbsPath), Entry: wire.ListingEntry{
+			RelativePath: dirs[i], Type: wire.EntryDir, Mode: 0o755, ModTimeSec: f.Entry.ModTimeSec}}, f)
+	}
+	for i := range out {
+		out[i].Entry.Index = uint32(i)
+	}
+	return out
+}
+
+// A folder whose name the filesystem refuses is listed on the receiver,
+// but the report to the sender is about files: the ones under it, each in
+// its own right. The folders, which are created before any file arrives,
+// neither use up the bounded list nor inflate the count of the rest.
+func TestWriteRefusal_FoldersAreNotInTheReport(t *testing.T) {
+	const extra = 44
+	dirs := []string{"fine"}
+	for i := range wire.MaxWriteRefusals + extra {
+		dirs = append(dirs, strings.TrimSuffix(tooLong(fmt.Sprintf("%04d-", i)), ".txt"))
+	}
+	dst := t.TempDir()
+	run := runWriteRefusalOf(t, inFolders(t, dirs), dst, 0, 0)
+	if run.sendErr != nil || run.recvErr != nil {
+		t.Fatalf("send=%v recv=%v, want both to finish", run.sendErr, run.recvErr)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "fine", "f.txt")); err != nil {
+		t.Errorf("fine/f.txt did not arrive: %v", err)
+	}
+	// The receiver lists every refused folder and every file under one.
+	if want := 2 * (wire.MaxWriteRefusals + extra); len(run.recv) != want {
+		t.Errorf("receiver listed %d entries, want %d", len(run.recv), want)
+	}
+	var result wire.TransferResult
+	if err := wire.Decode(ackBody(t, run.recvControl), &result); err != nil {
+		t.Fatalf("decoding the ack: %v", err)
+	}
+	if result.Refused != wire.MaxWriteRefusals+extra || len(result.Entries) != wire.MaxWriteRefusals {
+		t.Errorf("the ack reports %d refused and names %d, want %d files and %d names",
+			result.Refused, len(result.Entries), wire.MaxWriteRefusals+extra, wire.MaxWriteRefusals)
+	}
+	for _, e := range result.Entries {
+		if e.Index%2 == 0 {
+			t.Fatalf("the ack names entry %d, a folder", e.Index)
+		}
+	}
+	if len(run.send) != wire.MaxWriteRefusals || run.more != extra {
+		t.Errorf("sender heard %d names and %d more, want %d and %d", len(run.send), run.more, wire.MaxWriteRefusals, extra)
+	}
+}
+
+// A refused folder with nothing in it leaves nothing to tell the sender:
+// the ack stays empty, as it is for an empty folder refused up front.
+func TestWriteRefusal_EmptyFolderAloneAcksEmpty(t *testing.T) {
+	src := t.TempDir()
+	sources := []Source{
+		{AbsPath: src, Entry: wire.ListingEntry{Index: 0, RelativePath: strings.Repeat("d", 300), Type: wire.EntryDir, Mode: 0o755}},
+	}
+	sources = append(sources, sourcesFor(t, []string{"good.txt"})...)
+	sources[1].Entry.Index = 1
+	dst := t.TempDir()
+	run := runWriteRefusalOf(t, sources, dst, 0, 0)
+	if run.sendErr != nil || run.recvErr != nil {
+		t.Fatalf("send=%v recv=%v, want both to finish", run.sendErr, run.recvErr)
+	}
+	if len(run.recv) != 1 {
+		t.Errorf("receiver listed %v, want the folder", run.recv)
+	}
+	if b := ackBody(t, run.recvControl); len(b) != 0 {
+		t.Errorf("the ack carries %d bytes for a folder with no files", len(b))
+	}
+	if len(run.send) != 0 || run.more != 0 {
+		t.Errorf("sender reported %v (+%d)", run.send, run.more)
 	}
 	if _, err := os.Stat(filepath.Join(dst, "good.txt")); err != nil {
 		t.Errorf("good.txt did not arrive: %v", err)

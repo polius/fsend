@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -154,5 +155,37 @@ func TestRenameNoReplace_ExistingName(t *testing.T) {
 	}
 	if got := string(mustRead(t, dst)); got != "incoming x" {
 		t.Errorf("target = %q", got)
+	}
+}
+
+// A target folder is prepared once per receive, not once per file. If it
+// goes away while files are still arriving (the user tidying up, a sync
+// tool), the next file makes it again, as the per-file MkdirAll used to.
+func TestEngine_FolderRemovedMidReceiveIsMadeAgain(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	const late = 40
+	for i := range commitMaxFiles + late { // two commit batches
+		writeFile(t, filepath.Join(src, "tree", "d", fmt.Sprintf("f%03d.txt", i)), []byte("x"))
+	}
+	folder := filepath.Join(dst, "tree", "d")
+	removed := false
+	se, re := fileTransfer(t, []string{filepath.Join(src, "tree")}, dst, func(o *RecvOptions) {
+		// Fires once the first batch is in place.
+		o.OnFileDone = func(string, string) {
+			if !removed {
+				removed = true
+				if err := os.RemoveAll(folder); err != nil {
+					t.Errorf("removing the folder: %v", err)
+				}
+			}
+		}
+	})
+	if se != nil || re != nil {
+		t.Fatalf("send=%v recv=%v, want the receive to carry on", se, re)
+	}
+	// The first batch went with the folder; the files after it are there.
+	ents, err := os.ReadDir(folder)
+	if err != nil || len(ents) != late {
+		t.Fatalf("%d files in the folder made again (%v), want the %d that arrived after it was removed", len(ents), err, late)
 	}
 }

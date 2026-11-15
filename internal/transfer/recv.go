@@ -199,7 +199,7 @@ type receiver struct {
 	ready   map[string]struct{} // folders readyDir has prepared
 	wantSHA bool
 	plans   []entryPlan
-	// late: entries refused only once they were written (the first
+	// late: files refused only once they were written (the first
 	// wire.MaxWriteRefusals) and how many there were, for the final ack.
 	late      []wire.WriteRefusal
 	lateCount uint32
@@ -348,14 +348,22 @@ func (r *receiver) result(hello *wire.SenderHello) *wire.TransferResult {
 // under name, and kept for the final ack, so the sender lists it too
 // instead of reporting a clean send. forPeer is the reason as the sender's
 // user should read it, when the local wording ("yours") would mislead.
+//
+// Only files go into the ack. A sender lists and counts files, as it does
+// for names refused up front, and every file under a refused folder is
+// refused in its own right; counting the folders too would spend the
+// bounded list on entries the sender drops (folders are created first)
+// and leave its count of the unnamed rest too high.
 func (r *receiver) skipAtWrite(p *entryPlan, name, reason, forPeer string) {
 	p.disp, p.skipReason = dispRefused, reason
-	r.lateCount++
-	if len(r.late) < wire.MaxWriteRefusals {
-		if forPeer == "" {
-			forPeer = reason
+	if p.entry.Type != wire.EntryDir {
+		r.lateCount++
+		if len(r.late) < wire.MaxWriteRefusals {
+			if forPeer == "" {
+				forPeer = reason
+			}
+			r.late = append(r.late, wire.WriteRefusal{Index: p.entry.Index, Reason: clipReason(forPeer)})
 		}
-		r.late = append(r.late, wire.WriteRefusal{Index: p.entry.Index, Reason: clipReason(forPeer)})
 	}
 	if r.opts.OnEntrySkipped != nil {
 		r.opts.OnEntrySkipped(name, reason)
@@ -515,10 +523,7 @@ func (c *classifier) resolveVerify(ctx context.Context, s *Streams, plans []entr
 			continue
 		}
 		p.disp = dispIdentical
-		if st, err := os.Lstat(p.target); err == nil && !sem.sameMtime(st.ModTime(), p.entry.ModTimeSec) {
-			t := time.Unix(p.entry.ModTimeSec, 0)
-			_ = os.Chtimes(p.target, t, t)
-		}
+		takeSenderTime(p.target, p.entry.ModTimeSec, sem)
 	}
 	return c.resolveKept(ctx, plans, remote, progress)
 }
@@ -560,12 +565,9 @@ func (c *classifier) resolveKept(ctx context.Context, plans []entryPlan, remote 
 						continue
 					}
 					p.keptAs = cand
-					if st, err := os.Lstat(path); err == nil && !c.sem.sameMtime(st.ModTime(), p.entry.ModTimeSec) {
-						t := time.Unix(p.entry.ModTimeSec, 0)
-						_ = os.Chtimes(path, t, t)
-					}
+					takeSenderTime(path, p.entry.ModTimeSec, c.sem)
 					// The copies after it are not read.
-					meter.add(conv.Int64(p.entry.Size * uint64(len(p.keptCands)-i-1)))
+					meter.add(conv.Int64(p.entry.Size) * int64(len(p.keptCands)-i-1))
 					break
 				}
 			}
@@ -586,6 +588,22 @@ func (c *classifier) resolveKept(ctx context.Context, plans []entryPlan, remote 
 		}
 	}
 	return nil
+}
+
+// takeSenderTime gives a file whose content --checksum found equal to the
+// sender's the sender's modification time, unless it has it already, so a
+// plain run sees the two as identical. Its hashes stay remembered under the
+// new time (hashCache.retimed): a retry compares it again and needn't read
+// it again.
+func takeSenderTime(path string, mtime int64, sem fsSemantics) {
+	st, err := os.Lstat(path)
+	if err != nil || sem.sameMtime(st.ModTime(), mtime) {
+		return
+	}
+	t := time.Unix(mtime, 0)
+	if os.Chtimes(path, t, t) == nil {
+		hashCache.retimed(path, st)
+	}
 }
 
 func verifyRound(s *Streams, batch []uint32, into map[uint32][32]byte) error {
@@ -894,10 +912,10 @@ func (rf *recvFile) abandon(keep bool) {
 	}
 	// Only the blocks the hasher saw whole: bytes of a write that failed
 	// part-way may be on disk beyond them, unhashed.
-	whole := int(rf.hasher.n / hashBlockSize)
+	whole := conv.Int64(rf.hasher.n / hashBlockSize)
 	blocks := rf.hasher.blocks()
 	_ = rf.f.Close()
-	hashCache.rememberBlocks(rf.partial, blocks[:min(whole, len(blocks))])
+	hashCache.rememberBlocks(rf.partial, blocks[:min(whole, int64(len(blocks)))])
 }
 
 func (rf *recvFile) write(data []byte) error {
@@ -1518,11 +1536,22 @@ func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(u
 			dec.Close()
 		}
 	}()
+	// Each chunk is written out before the next is read, so one buffer
+	// for the frame and one for its decompressed bytes serve the whole
+	// stream (a fresh pair per chunk was 1 MiB of garbage per MiB moved).
+	raw := getBlock()
+	defer putBlock(raw)
+	var plainBuf []byte
+	defer func() {
+		if plainBuf != nil {
+			putBlock(plainBuf)
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		c, err := wire.ReadChunk(s.Data)
+		c, err := wire.ReadChunkBuf(s.Data, raw)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if reason := tryReadPeerError(s.Control); reason != nil {
@@ -1532,7 +1561,10 @@ func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(u
 			}
 			return fmt.Errorf("recv: chunk: %w", err)
 		}
-		plain, err := decodeChunkPayload(c, &dec, nil)
+		if c.Compressed && plainBuf == nil {
+			plainBuf = getBlock()
+		}
+		plain, err := decodeChunkPayload(c, &dec, plainBuf)
 		if err != nil {
 			return err
 		}

@@ -45,7 +45,7 @@ const (
 	// listing batch compressed with zstd.
 	CapCompressedListing Capability = 1 << 1
 	// CapWriteRefusals: the sender reads a TransferResult in TRANSFER_ACK,
-	// so the receiver reports the entries it could not save once their
+	// so the receiver reports the files it could not save once their
 	// bytes had arrived (a name its filesystem refused at write time).
 	CapWriteRefusals Capability = 1 << 2
 

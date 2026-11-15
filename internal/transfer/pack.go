@@ -32,8 +32,19 @@ type packed struct {
 	buf  []byte
 }
 
+// chunkEncoder is the zstd encoder every transfer in this process compresses
+// its chunks with (EncodeAll is safe for concurrent use). It is built once:
+// each of its workers keeps a history buffer of twice the window, so an
+// encoder per transfer with the default 8 MiB window allocated about
+// 130 MB for every transfer, and again for every retry. A chunk is at most
+// 1 MiB, so that is all the window it can use: the bytes on the wire are
+// the same as with the default.
+var chunkEncoder = sync.OnceValues(func() (*zstd.Encoder, error) {
+	return zstd.NewWriter(nil, zstd.WithEncoderConcurrency(packWorkers()), zstd.WithWindowSize(wire.MaxChunkSize))
+})
+
 func newChunkPacker(w io.Writer) (*chunkPacker, error) {
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(packWorkers()))
+	enc, err := chunkEncoder()
 	if err != nil {
 		return nil, fmt.Errorf("send: zstd writer: %w", err)
 	}
@@ -92,7 +103,6 @@ func (b *compressBackoff) result(shrank bool) {
 // and compression uses more than one core.
 func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *zstd.Encoder) {
 	defer close(p.done)
-	defer func() { _ = enc.Close() }()
 	n := packWorkers()
 	jobs := make(chan *packJob, n)
 	order := make(chan *packJob, n) // bounds the chunks in flight
@@ -102,6 +112,8 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *zstd.Encoder
 		workers.Go(func() {
 			for j := range jobs {
 				if j.try {
+					// A pooled block has room for a chunk that doesn't
+					// shrink (blockSlack), so EncodeAll stays inside it.
 					j.z = enc.EncodeAll(j.c.buf, getBlock()[:0])
 				}
 				close(j.done)

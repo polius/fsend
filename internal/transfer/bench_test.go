@@ -1,8 +1,11 @@
 package transfer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"net"
 	"os"
 	"path"
@@ -103,6 +106,108 @@ func BenchmarkLargeFile(b *testing.B) {
 	for b.Loop() {
 		benchTransfer(b, []string{p}, b.TempDir())
 	}
+}
+
+// textBytes returns n bytes of made-up prose, which zstd shrinks to about a
+// third: the compressing path, where BenchmarkLargeFile's random bytes skip
+// it.
+func textBytes(n int) []byte {
+	words := strings.Fields("the of and to in is that it for as with was on be by at this have from or one had not " +
+		"but what all were when we there can an your which their said if do will each about how up out them then " +
+		"she many some so these would other into has more her two like him see time could no make than first been " +
+		"its who now people my made over did down only way find use may water long little very after words called")
+	r := rand.New(rand.NewPCG(1, 2))
+	b := make([]byte, 0, n+16)
+	for len(b) < n {
+		b = append(b, words[r.IntN(len(words))]...)
+		if r.IntN(12) == 0 {
+			b = append(b, '.', '\n')
+		} else {
+			b = append(b, ' ')
+		}
+	}
+	return b[:n]
+}
+
+// BenchmarkLargeFileText streams one 512 MiB file of text end to end: every
+// chunk is compressed, on several cores.
+func BenchmarkLargeFileText(b *testing.B) {
+	src := b.TempDir()
+	p := filepath.Join(src, "big.txt")
+	const size = 512 << 20
+	if err := os.WriteFile(p, textBytes(size), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(size)
+	b.ResetTimer()
+	for b.Loop() {
+		benchTransfer(b, []string{p}, b.TempDir())
+	}
+}
+
+// benchStreams runs one transfer over loopback TCP with the given options.
+func benchStreams(tb testing.TB, so SendOptions, ro RecvOptions) {
+	tb.Helper()
+	ca, cb := tcpPair(tb)
+	da, db := tcpPair(tb)
+	sender := &Streams{Control: ca, Data: da}
+	receiver := &Streams{Control: cb, Data: db}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	var wg sync.WaitGroup
+	var se, re error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		se = Send(ctx, sender, so)
+		sender.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		re = Recv(ctx, receiver, ro)
+		receiver.Close()
+	}()
+	wg.Wait()
+	if se != nil || re != nil {
+		tb.Fatalf("send=%v recv=%v", se, re)
+	}
+}
+
+// BenchmarkStream moves 512 MiB of incompressible bytes through the stream
+// paths, where nothing touches the disk: a piped stdin (`… | fsend`) into
+// `--out -`, and a file into `--out -`. Run with -benchmem: both used to
+// allocate a fresh buffer for every chunk received.
+func BenchmarkStream(b *testing.B) {
+	const size = 512 << 20
+	data := randBytes(size)
+	p := filepath.Join(b.TempDir(), "big.bin")
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		b.Fatal(err)
+	}
+	sources, err := Walk([]string{p}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Run("stdin-to-stdout", func(b *testing.B) {
+		b.SetBytes(size)
+		for b.Loop() {
+			benchStreams(b, SendOptions{Mode: wire.ModeStream, Stream: bytes.NewReader(data), DisplayName: "stdin"},
+				RecvOptions{Sink: io.Discard})
+		}
+	})
+	b.Run("file-to-stdout", func(b *testing.B) {
+		b.SetBytes(size)
+		for b.Loop() {
+			benchStreams(b, SendOptions{Mode: wire.ModeFiles, Sources: sources}, RecvOptions{Sink: io.Discard})
+		}
+	})
+	b.Run("stdin-to-file", func(b *testing.B) {
+		b.SetBytes(size)
+		for b.Loop() {
+			benchStreams(b, SendOptions{Mode: wire.ModeStream, Stream: bytes.NewReader(data), DisplayName: "stdin"},
+				RecvOptions{TargetDir: b.TempDir()})
+		}
+	})
 }
 
 // deepTree lists n files spread over folders six levels deep, as a large

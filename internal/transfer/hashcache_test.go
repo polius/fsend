@@ -39,7 +39,7 @@ func (c *cutConn) Write(p []byte) (int, error) {
 // attempt runs one transfer of src into dst. cutAfter > 0 drops the
 // connection once that many data bytes have gone out. It returns both
 // errors and the offset the transfer resumed from (0 when it didn't).
-func attempt(t *testing.T, src, dst string, cutAfter int64, checksum bool) (se, re error, resumedAt uint64) {
+func attempt(t *testing.T, src, dst string, cutAfter int64, checksum bool) (resumedAt uint64, se, re error) {
 	t.Helper()
 	sources, err := Walk([]string{src}, nil)
 	if err != nil {
@@ -71,7 +71,7 @@ func attempt(t *testing.T, src, dst string, cutAfter int64, checksum bool) (se, 
 		s.Close()
 	}()
 	wg.Wait()
-	return se, re, resumedAt
+	return resumedAt, se, re
 }
 
 // The effect the cache exists for: a transfer dropped part-way and retried
@@ -88,12 +88,12 @@ func TestRetry_DoesNotHashThePrefixAgain(t *testing.T) {
 			data := randBytes(size)
 			writeFile(t, src, data)
 
-			se, re, _ := attempt(t, src, dst, 16<<20, false)
+			_, se, re := attempt(t, src, dst, 16<<20, false)
 			if se == nil || re == nil {
 				t.Fatalf("the cut attempt finished: send=%v recv=%v", se, re)
 			}
 			before := hashedBytes.Load()
-			se, re, off := attempt(t, src, dst, 0, false)
+			off, se, re := attempt(t, src, dst, 0, false)
 			if se != nil || re != nil {
 				t.Fatalf("retry: send=%v recv=%v", se, re)
 			}
@@ -123,7 +123,7 @@ func TestRetry_ChangedSourceIsHashedAgain(t *testing.T) {
 	src, dst := filepath.Join(t.TempDir(), "big.bin"), t.TempDir()
 	data := randBytes(size)
 	writeFile(t, src, data)
-	if se, re, _ := attempt(t, src, dst, 8<<20, false); se == nil || re == nil {
+	if _, se, re := attempt(t, src, dst, 8<<20, false); se == nil || re == nil {
 		t.Fatalf("the cut attempt finished: send=%v recv=%v", se, re)
 	}
 
@@ -153,7 +153,7 @@ func TestRetry_ChangedSourceIsHashedAgain(t *testing.T) {
 		// freshHashCache turned off for the test.
 		t.Skip("this filesystem's timestamps don't tell the two versions apart")
 	}
-	se, re, off := attempt(t, src, dst, 0, false)
+	off, se, re := attempt(t, src, dst, 0, false)
 	if se != nil || re != nil {
 		t.Fatalf("retry: send=%v recv=%v", se, re)
 	}
@@ -176,7 +176,7 @@ func TestRetry_TamperedPartialIsHashedAgain(t *testing.T) {
 			src, dst := filepath.Join(t.TempDir(), "big.bin"), t.TempDir()
 			data := randBytes(size)
 			writeFile(t, src, data)
-			if se, re, _ := attempt(t, src, dst, 8<<20, false); se == nil || re == nil {
+			if _, se, re := attempt(t, src, dst, 8<<20, false); se == nil || re == nil {
 				t.Fatalf("the cut attempt finished: send=%v recv=%v", se, re)
 			}
 			partials, _ := filepath.Glob(filepath.Join(PartialDir(dst), "*.partial"))
@@ -211,7 +211,7 @@ func TestRetry_TamperedPartialIsHashedAgain(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			se, re, off := attempt(t, src, dst, 0, false)
+			off, se, re := attempt(t, src, dst, 0, false)
 			if se != nil || re != nil {
 				t.Fatalf("retry: send=%v recv=%v", se, re)
 			}
@@ -238,7 +238,7 @@ func TestRetry_ChecksumRootsComeFromTheFirstSend(t *testing.T) {
 	// A first --checksum run into a folder that already holds one of the
 	// files, so the sender sees a verify round and remembers what it sends.
 	writeFile(t, filepath.Join(dst, "tree", "f0.bin"), mustRead(t, filepath.Join(root, "f0.bin")))
-	if se, re, _ := attempt(t, root, dst, 0, true); se != nil || re != nil {
+	if _, se, re := attempt(t, root, dst, 0, true); se != nil || re != nil {
 		t.Fatalf("first run: send=%v recv=%v", se, re)
 	}
 	sources, err := Walk([]string{root}, nil)
@@ -256,6 +256,114 @@ func TestRetry_ChecksumRootsComeFromTheFirstSend(t *testing.T) {
 	}
 	if read := hashedBytes.Load() - before; read != 0 {
 		t.Errorf("the sender read %d bytes to hash files it had just sent", read)
+	}
+}
+
+// --checksum gives a file it found identical the sender's modification
+// time. That is the receiver's own change, not a new version: a retry
+// compares the file again without reading it again, while a file somebody
+// else changed afterwards is read.
+func TestRetry_ChecksumKeepsHashesOfFilesItRetimed(t *testing.T) {
+	freshHashCache(t)
+	src, dst := t.TempDir(), t.TempDir()
+	root := filepath.Join(src, "tree")
+	const files, size = 4, 3 << 20
+	old := time.Now().Add(-48 * time.Hour)
+	for i := range files {
+		name := fmt.Sprintf("f%d.bin", i)
+		data := randBytes(size)
+		writeFile(t, filepath.Join(root, name), data)
+		// The same bytes are already there, under another time.
+		writeFile(t, filepath.Join(dst, "tree", name), data)
+		if err := os.Chtimes(filepath.Join(dst, "tree", name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := hashedBytes.Load()
+	if _, se, re := attempt(t, root, dst, 0, true); se != nil || re != nil {
+		t.Fatalf("first run: send=%v recv=%v", se, re)
+	}
+	if read := hashedBytes.Load() - before; read != 2*files*size {
+		t.Fatalf("the first run read %d bytes, want every file once per side (%d)", read, 2*files*size)
+	}
+	f0 := filepath.Join(dst, "tree", "f0.bin")
+	want, err := os.Stat(filepath.Join(root, "f0.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(f0); err != nil || st.ModTime().Unix() != want.ModTime().Unix() {
+		t.Fatalf("f0.bin did not take the sender's time: %v", err)
+	}
+
+	before = hashedBytes.Load()
+	if _, se, re := attempt(t, root, dst, 0, true); se != nil || re != nil {
+		t.Fatalf("second run: send=%v recv=%v", se, re)
+	}
+	if read := hashedBytes.Load() - before; read != 0 {
+		t.Errorf("the second run read %d bytes to compare files it had just compared", read)
+	}
+
+	// Another program rewrites one of them and puts the time back: on a
+	// system with change times that file, and only that file, is read.
+	st, err := os.Stat(f0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changeTime(st) == 0 {
+		return // not detectable here: the state is identity, size and time
+	}
+	other := randBytes(size)
+	if err := os.WriteFile(f0, other, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(f0, st.ModTime(), st.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if now, err := os.Stat(f0); err != nil || changeTime(now) == changeTime(st) {
+		t.Skip("this filesystem's change time is too coarse to show the edit")
+	}
+	before = hashedBytes.Load()
+	if _, se, re := attempt(t, root, dst, 0, true); se != nil || re != nil {
+		t.Fatalf("third run: send=%v recv=%v", se, re)
+	}
+	if read := hashedBytes.Load() - before; read != size {
+		t.Errorf("after one file was rewritten the run read %d bytes, want that file (%d)", read, size)
+	}
+	if !bytes.Equal(mustRead(t, f0), other) {
+		t.Error("the rewritten file was replaced without consent")
+	}
+}
+
+// What the receiver remembers of its own partial is what it wrote last, and
+// only whole blocks. A partial rewritten to the same size inside one tick
+// of a coarse clock (FAT keeps two seconds) shows the timestamps it had:
+// the hashes of the bytes it holds now must still win.
+func TestBlockCache_RememberedPartialIsTheLastWritten(t *testing.T) {
+	freshHashCache(t)
+	p := filepath.Join(t.TempDir(), "x.partial")
+	writeFile(t, p, make([]byte, 2*hashBlockSize+5))
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := [][32]byte{{1}, {2}, {3}}
+	hashCache.rememberBlocks(p, first)
+	if got := hashCache.get(p, identify(fi), 9); len(got) != 2 || got[0] != first[0] || got[1] != first[1] {
+		t.Fatalf("remembered %v, want the two whole blocks", got)
+	}
+	// The file is, as far as its timestamps show, in the state it was.
+	second := [][32]byte{{7}, {8}}
+	hashCache.rememberBlocks(p, second)
+	if got := hashCache.get(p, identify(fi), 9); len(got) != 2 || got[0] != second[0] || got[1] != second[1] {
+		t.Errorf("after a rewrite the cache holds %v, want the hashes of what was written last", got)
+	}
+	// Nothing is kept for a path that is not a regular file any more.
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	hashCache.rememberBlocks(p, first)
+	if got := hashCache.get(p, identify(fi), 9); got != nil {
+		t.Errorf("a removed partial is remembered: %v", got)
 	}
 }
 

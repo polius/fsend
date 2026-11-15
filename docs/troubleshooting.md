@@ -305,7 +305,8 @@ The progress line ends with the route — `local network`, `direct` or
   path lowers it further.
 - **The disk or CPU is.** Many small files each need a sync (batched,
   but not free), `--checksum` reads everything already on disk, and
-  resuming hashes the existing partial before it continues.
+  resuming hashes the existing partial before it continues (a retry
+  within the same run reuses the hashes it already has).
 
 ## Anything else
 

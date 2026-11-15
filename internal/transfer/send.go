@@ -281,7 +281,8 @@ func finishSend(s *Streams) (*wire.TransferResult, error) {
 // caller. The report is peer input: an entry counts only if it is a file
 // this sender was asked to send, and only once, and the unlisted remainder
 // is capped by the files sent, so a receiver can't invent or inflate
-// refusals. Folders are left out, as for a name refused up front: every
+// refusals. Folders are not part of it (the receiver leaves them out, and
+// one named anyway is dropped here), as for a name refused up front: every
 // file under a refused folder is in the report itself.
 func reportWriteRefusals(result *wire.TransferResult, decisions map[uint32]wire.Decision, opts SendOptions) {
 	if result == nil {

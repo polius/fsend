@@ -31,16 +31,23 @@ const inlineHashMax = 64 << 10
 // hashSem bounds concurrent block hashing process-wide.
 var hashSem = make(chan struct{}, runtime.GOMAXPROCS(0))
 
+// blockSlack is the room a pooled block has past hashBlockSize, for the
+// zstd framing of a chunk that doesn't compress: 37 bytes measured on a
+// full chunk, and zstd's own bound is size/256. Without it the compressed
+// copy of every incompressible chunk outgrew its block and was allocated
+// afresh (and, at the wrong size for the pool, thrown away).
+const blockSlack = hashBlockSize >> 8
+
 // blockPool recycles hashBlockSize buffers across reads, hashing and chunks.
 var blockPool = sync.Pool{New: func() any {
-	b := make([]byte, hashBlockSize)
+	b := make([]byte, hashBlockSize+blockSlack)
 	return &b
 }}
 
 func getBlock() []byte { return (*blockPool.Get().(*[]byte))[:hashBlockSize] }
 
 func putBlock(b []byte) {
-	if cap(b) == hashBlockSize {
+	if cap(b) == hashBlockSize+blockSlack {
 		b = b[:hashBlockSize]
 		blockPool.Put(&b)
 	}

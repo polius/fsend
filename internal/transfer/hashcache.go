@@ -25,8 +25,10 @@ import (
 // which a tool that resets the modification time can't forge. Timestamps
 // can't tell two changes within one clock tick apart, so a file touched
 // in the moments before it was hashed is not cached at all (settled).
-// The one exception is the receiver's own partial, which it wrote itself
-// in its owner-only state folder (rememberBlocks).
+// The exceptions are changes this process makes itself: the receiver's
+// partial, which it wrote in its owner-only state folder (rememberBlocks),
+// and the modification time --checksum sets on a file it has just found
+// identical (retimed).
 type blockCache struct {
 	mu    sync.Mutex
 	files map[string]*cachedBlocks
@@ -137,12 +139,44 @@ func entryCost(path string, e *cachedBlocks) int { return len(path) + 32*len(e.b
 // path, as it is now, for a file this process has just written itself: the
 // hashes are of the bytes it wrote, not read back. Used for the receiver's
 // partial when a connection drops, so the retry needn't read it again.
+// They replace whatever was known of the file: it may have been rewritten
+// (a restart) to the same size within one tick of a coarse clock, which
+// its timestamps would not show.
 func (c *blockCache) rememberBlocks(path string, blocks [][32]byte) {
+	c.mu.Lock()
+	if e := c.files[path]; e != nil {
+		c.drop(path, e)
+	}
+	c.mu.Unlock()
 	fi, err := os.Lstat(path)
 	if err != nil || !fi.Mode().IsRegular() {
 		return
 	}
 	c.put(path, identify(fi), blocks[:min(len(blocks), int(fi.Size()/hashBlockSize))])
+}
+
+// retimed carries what is known of the file at path over a change of its
+// modification time made by this process; was is the file just before that
+// change. --checksum gives a file it found identical the sender's time,
+// which would otherwise make the file look changed and have a retry hash
+// it a second time. The hashes are kept only if they are those of the file
+// as was describes it, and it is still that file at that size.
+func (c *blockCache) retimed(path string, was os.FileInfo) {
+	now, err := os.Lstat(path)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.files[path]
+	if e == nil {
+		return
+	}
+	if !e.id.same(identify(was)) || !os.SameFile(was, now) || was.Size() != now.Size() {
+		c.drop(path, e)
+		return
+	}
+	e.id = identify(now)
 }
 
 // hashPrefix returns the block hashes of the first n bytes of the file at
