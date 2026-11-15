@@ -22,6 +22,24 @@ import (
 // as UDP. It returns a registered Conn, ready for QUIC. ctx bounds the
 // dial and registration only.
 func DialWS(ctx context.Context, wsURL string, header http.Header, tok Token, id PeerID) (*Conn, error) {
+	l, err := ConnectWS(ctx, wsURL, header)
+	if err != nil {
+		return nil, err
+	}
+	return l.Register(ctx, tok, id)
+}
+
+// WSLink is the TCP fallback's WebSocket, open but not registered: the
+// relay still routes this peer wherever it registered last, so holding
+// one changes nothing until Register. That lets a caller open it while
+// UDP is still being tried and have it ready if UDP turns out blocked.
+type WSLink struct {
+	pc *wsPacketConn
+}
+
+// ConnectWS opens the WebSocket to wsURL without registering. ctx bounds
+// the dial only.
+func ConnectWS(ctx context.Context, wsURL string, header http.Header) (*WSLink, error) {
 	// On success the body is the upgraded connection, owned by ws;
 	// wsDialErr closes it on failure.
 	ws, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose
@@ -29,14 +47,22 @@ func DialWS(ctx context.Context, wsURL string, header http.Header, tok Token, id
 		return nil, wsDialErr(resp, err)
 	}
 	ws.SetReadLimit(MaxDatagram)
-	pc := newWSPacketConn(ws, wsURL)
-	c := NewClient(pc, pc.addr, tok).WithPeerID(id)
+	return &WSLink{pc: newWSPacketConn(ws, wsURL)}, nil
+}
+
+// Register registers this peer over the link and returns the Conn, ready
+// for QUIC. The link is consumed: on failure it is closed.
+func (l *WSLink) Register(ctx context.Context, tok Token, id PeerID) (*Conn, error) {
+	c := NewClient(l.pc, l.pc.addr, tok).WithPeerID(id)
 	if err := c.Register(ctx); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
 	return c, nil
 }
+
+// Close drops a link that was never registered.
+func (l *WSLink) Close() { _ = l.pc.Close() }
 
 // ProbeWS checks the relay's TCP fallback end to end: it opens a WebSocket
 // to wsURL, has the server echo a message, and returns the response

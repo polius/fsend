@@ -87,6 +87,9 @@ type recvLink struct {
 	close func()
 	relay *relayProbe // non-nil on the relay path
 	lan   bool        // found by mDNS
+	// leave, when set, tells the pairing server this receiver gave up on
+	// the session it joined (see leaveSession).
+	leave func()
 }
 
 // runReceive executes the receive-side flow: find the sender (same-LAN
@@ -126,6 +129,15 @@ func runReceive(f *flags, c string) error {
 	if err != nil {
 		return err
 	}
+
+	// One fsend per code on this device: a second would read the first
+	// one's resume key and wait for a sender that is busy (see
+	// errReceivingHere). Taken before any prompt or network work.
+	unlock, err := lockReceive(c)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	// The signal handler must be installed before any interactive prompt:
 	// resolvePassword reads with echo off, and a default-disposition
@@ -189,6 +201,9 @@ func runReceive(f *flags, c string) error {
 		}
 
 		err = receiveOver(ctx, f, rs, ui, sink, link, round < maxRepairRounds)
+		if err != nil && !rs.resumed && link.leave != nil {
+			link.leave()
+		}
 		link.close()
 		if err == nil {
 			forgetResumeKey(c)
@@ -281,7 +296,13 @@ func discoverSender(ctx context.Context, f *flags, rs *recvSession, spin *uxlog.
 			return nil, err
 		}
 		cancelLAN()
-		return linkViaInternet(ctx, f, client, joined)
+		link, err := linkViaInternet(ctx, f, client, joined)
+		if err != nil {
+			leaveSession(client, joined)
+			return nil, err
+		}
+		link.leave = func() { leaveSession(client, joined) }
+		return link, nil
 	}
 }
 
@@ -336,18 +357,30 @@ func dialLANRoute(ctx context.Context, f *flags, addr, secret string, quicConnec
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	// The sender ran the PAKE and judged the code (or the version): QUIC
-	// would only spend a second attempt, and a second failure, on the same
-	// answer. A failed data connection (quicconn.ErrTCPData) came after a
-	// good PAKE, so QUIC is still worth trying.
-	if (errors.Is(err, fserrors.ErrPeerAuthFailed) || errors.Is(err, fserrors.ErrIncompatibleVersion)) &&
-		!errors.Is(err, quicconn.ErrTCPData) {
+	if tcpAnswerIsFinal(err) {
 		return nil, err
 	}
 	if f.debug && !f.quiet {
 		fmt.Fprintln(os.Stderr, "    route: QUIC (no TCP route:", err, ")")
 	}
 	return quicconn.DialTimeout(ctx, addr, secret, quicConnect)
+}
+
+// tcpAnswerIsFinal reports whether a failed TCP dial already settled the
+// matter, so QUIC to the same address must not be tried.
+func tcpAnswerIsFinal(err error) bool {
+	// The sender ran the PAKE and judged the code (or the version): QUIC
+	// would only spend a second attempt, and a second failure, on the same
+	// answer. A failed data connection (quicconn.ErrTCPData) came after a
+	// good PAKE, so QUIC is still worth trying.
+	if (errors.Is(err, fserrors.ErrPeerAuthFailed) || errors.Is(err, fserrors.ErrIncompatibleVersion)) &&
+		!errors.Is(err, quicconn.ErrTCPData) {
+		return true
+	}
+	// The address took our confirmation tag and never answered. Whoever is
+	// there has had its one test of the code; QUIC would hand it a second.
+	// The caller still has the server path, or its retries.
+	return errors.Is(err, quicconn.ErrUnconfirmed)
 }
 
 // errRouteGone marks a failed re-dial that should go straight to

@@ -145,6 +145,59 @@ func TestPairing_LateSecondReceiverGetsE003(t *testing.T) {
 	}
 }
 
+// The same on one device: a second `fsend <code>` while the first is at
+// the prompt is told at once that this device is already receiving it. It
+// used to find the first one's resume key and wait a minute and a half
+// for the sender to "reconnect".
+func TestPairing_SecondReceiverOnTheSameDeviceGetsE003(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "p.bin")
+	writeRandom(t, srcFile, 64*1024)
+
+	s := h.startSender(t, h.newXDG(t), srcFile)
+	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
+	code := s.waitForCode(t, 5*time.Second)
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pr.Close(); _ = pw.Close() }()
+	recvXDG := h.newXDG(t)
+	_, _, firstDone := startReceiver(t, recvXDG, dst, pr, code)
+	if !waitForStderr(s, "Receiver connected", 10*time.Second) {
+		t.Fatalf("receiver never paired\n%s", s.stderr.String())
+	}
+
+	start := time.Now()
+	_, rErr, exit := h.runFsendIn(t, recvXDG, t.TempDir(), "--yes", code)
+	took := time.Since(start)
+	if exit != 3 {
+		t.Fatalf("second receiver exit = %d, want 3 (E003)\n%s", exit, rErr)
+	}
+	if took > 3*time.Second {
+		t.Errorf("second receiver took %v to hear E003", took)
+	}
+	if !strings.Contains(rErr, "already being received on this device") || !strings.Contains(rErr, "E003") {
+		t.Errorf("unclear wording:\n%s", rErr)
+	}
+
+	// The first receiver is untouched: it accepts and finishes, and the
+	// lock goes with it, so the same command can run again afterwards.
+	if _, err := pw.WriteString("y\n"); err != nil {
+		t.Fatal(err)
+	}
+	if exit, _ := waitExit(t, firstDone, time.Now(), 20*time.Second, &safeBuffer{}); exit != 0 {
+		t.Fatalf("first receiver exit = %d after the second was turned away", exit)
+	}
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "p.bin"))
+	_, rErr, exit = h.runFsendIn(t, recvXDG, t.TempDir(), "--yes", code)
+	if exit == 3 && strings.Contains(rErr, "on this device") {
+		t.Fatalf("the lock outlived the first receiver:\n%s", rErr)
+	}
+}
+
 // A mistyped code fails fast with wording that says no sender is there.
 func TestPairing_UnknownCodeFailsFast(t *testing.T) {
 	requireE2E(t)

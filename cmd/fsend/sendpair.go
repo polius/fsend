@@ -249,6 +249,48 @@ const waitMaxConsecFails = 6
 // receiver" forever.
 const firstAcceptTimeout = 60 * time.Second
 
+// A receiver that gives up before authenticating deletes the session it
+// joined (leaveSession). While the sender waits for that receiver's first
+// connection it asks the server every sessionWatchEvery whether the
+// session still exists, and stops waiting sessionGoneGrace after it is
+// gone. The grace covers the other way a session disappears, a server
+// restart: a receiver whose connection is already on its way still
+// completes. Vars so tests can shrink them.
+var (
+	sessionWatchEvery = time.Second
+	sessionGoneGrace  = 2 * time.Second
+)
+
+// watchSessionGone cancels the wait for a joined receiver once the server
+// no longer has the session. It returns when ctx ends. Only a clear "no
+// such session" counts: an unreachable server says nothing about the
+// receiver.
+func watchSessionGone(ctx context.Context, client *signaling.Client, created *signaling.CreateResult, cancel context.CancelFunc) {
+	t := time.NewTicker(sessionWatchEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		// A since past any candidate list: the answer is "nothing new"
+		// while the session lives and 404 once it is gone.
+		rctx, rcancel := context.WithTimeout(ctx, sessionDeleteTimeout)
+		_, err := client.PullCandidates(rctx, created.SessionID, created.RoleToken, 1<<30)
+		rcancel()
+		if !errors.Is(err, fserrors.ErrCodeNotFound) {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(sessionGoneGrace):
+			cancel()
+		}
+		return
+	}
+}
+
 // sessionDeleteTimeout bounds best-effort session cleanup, so an
 // unreachable server can't stall teardown up to the client's full
 // request timeout.
@@ -289,7 +331,10 @@ var errPairedGone = fmt.Errorf("%w: the receiver paired but the connection could
 // quit, lost its network, or never had a working path) has not proved it
 // holds the code, so it does not spend it: the session is re-created and
 // the sender waits again, up to maxVanishedReceivers times per round.
-// onVanished, when non-nil, hears about each such return to waiting.
+// It has not tested a guess either: the sender shows its confirmation tag
+// only to a peer whose own tag was right (quicconn), so going back to
+// waiting gives nothing away. onVanished, when non-nil, hears about each
+// such return to waiting.
 func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *config.Config, onDown func(error), onVanished func()) (*internetSenderPairing, error) {
 	client, _, err := signalingClient(cfg)
 	if err != nil {
@@ -360,13 +405,15 @@ func pairOverInternet(ctx context.Context, f *flags, round *sendRound, cfg *conf
 		// Bring up QUIC on the established PacketConn and authenticate the
 		// first peer. Retries re-Accept on the same listener.
 		acceptCtx, cancelAccept := context.WithTimeout(ctx, firstAcceptTimeout)
+		go watchSessionGone(acceptCtx, client, created, cancelAccept)
 		ln, res, teardown, err := senderQUICAccept(acceptCtx, pc, round.key.secret)
 		cancelAccept()
 		if err != nil {
 			endSession()
-			// A failed PAKE is not a vanished receiver: the slot comes from
-			// the whole code, so whoever joined holds the slot but not the
-			// code. Going back to waiting would hand them another guess.
+			// A failed PAKE (a wrong confirmation tag) is not a vanished
+			// receiver: the slot comes from the whole code, so whoever
+			// joined holds the slot but not the code, and has just spent a
+			// guess. Going back to waiting would hand them another.
 			if !errors.Is(err, fserrors.ErrPeerAuthFailed) && waitAgain() {
 				continue
 			}

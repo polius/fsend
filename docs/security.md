@@ -32,7 +32,12 @@ export). Both peers export a value unique to their TLS session and use it
 as the CPace session id, then exchange key-confirmation tags that cover
 the exporter, the full PAKE transcript and the direction (the tag the
 sender sends differs from the one it expects, so a tag can't be reflected
-back). That binding is what defeats a man-in-the-middle:
+back). The receiver's tag goes first, and the sender answers only a
+correct one. A tag lets whoever reads it test one guess of the code, so a
+sender that answered first would hand that test to any peer that
+connected. This way a guess against a sender is always a wrong tag, which
+the sender sees and counts; a peer that leaves without sending a tag has
+learned nothing. That binding is what defeats a man-in-the-middle:
 
 - A **passive eavesdropper** sees only TLS ciphertext.
 - An **active MITM** that terminates TLS itself — including a malicious
@@ -196,10 +201,15 @@ about 45 bits. What makes a short code safe to use as the whole secret:
   slot is tombstoned for ten minutes, so another receiver using the code
   in that window gets `E003` ("already claimed"); after that it gets
   `E002`. A receiver that joins but never completes the handshake
-  (it quit, or had no working path) doesn't spend the code: the sender
-  re-creates its session and waits again. After 10 failed handshakes on
-  the local network in one pairing round, the sender stops listening
-  there and keeps waiting via the server.
+  (it quit, or had no working path) doesn't spend the code, and has
+  learned nothing about it: the sender re-creates its session and waits
+  again, up to three times per round. A receiver that gives up tells the
+  server, so the code opens again within a few seconds; one that just
+  disappears is waited for up to a minute first. A wrong confirmation
+  tag is different: it is a guess, and it ends the round on the server
+  path. After 10 failed handshakes on the local network in one pairing
+  round, the sender stops listening there and keeps waiting via the
+  server.
 - **Resume only from the original device.** The receiver saves its
   resume key in the fsend config directory (mode `0600`, kept up to 24
   hours, deleted when the transfer completes), so rerunning the same
