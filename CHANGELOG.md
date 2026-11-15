@@ -7,7 +7,7 @@ that needed action; the full notes of those releases are on GitHub. See
 [Version compatibility](docs/compatibility.md) for which versions work
 together.
 
-## Unreleased
+## 1.17.0
 
 The wire protocol is unchanged (protocol 3). This release transfers with
 1.16 in both directions and works with a 1.16 server.
