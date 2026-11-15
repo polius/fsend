@@ -104,8 +104,9 @@ query's answer, a buffer in a test); `Row`, `Detail`, `ItemRow` and
 printed (an error and its advice). `uxlog.Gap` separates two columns of
 one row. `TestGridIsTheOnlyWayToPrint` (`cmd/fsend/grid_guard_test.go`)
 parses the package and fails on a `fmt.Print*`/`Fprint*` call, a write to
-`os.Stderr`, a string literal with an indent of its own, or a glyph that
-is not one of uxlog's; the functions that write a machine payload or a
+`os.Stderr`, a cobra command's own printers (`cmd.Println`), the `println`
+builtin, a string literal with an indent of its own, or a glyph that is
+not one of uxlog's; the functions that write a machine payload or a
 stdout page (JSON, the bare code, `--help`) are listed there with the
 reason. `cmd/fsend/doctor*.go` is not scanned yet.
 
@@ -205,7 +206,15 @@ raw SGR stream and asserted against the design tokens in
 green-means-success rule are checked at 60, 80 and 100 columns for an
 unknown, dark and light background (the fake terminal can answer the
 OSC 11 query); degradation contracts (NO_COLOR, piped stderr, ASCII
-fallbacks) must hold byte-clean. Unix only. Run it before
+fallbacks) must hold byte-clean. The screen rules ride along wherever the
+grid is checked: every prompt starts with `?`, every duration has a space
+before its unit, no list hides exactly one row, and clipped lines fit the
+terminal in display columns (CJK device and file names at 40 and 60).
+Scenarios also cover the install-and-receive lines at 40 to 100 columns
+and the update notice for each kind of install (the install script,
+Homebrew, deb/rpm/apk — a versioned build with a seeded check cache, no
+network). Name scenarios to run a subset: `scripts/validate-ux.py s23 s27`.
+Unix only. Run it before
 merging any change that touches `internal/uxlog` or the CLI's stderr
 surfaces — it is a manual gate, not wired into CI, because its
 assertions are design choices (exact hues) that are meant to evolve.
