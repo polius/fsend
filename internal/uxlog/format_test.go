@@ -36,6 +36,9 @@ func TestHumanDuration(t *testing.T) {
 		in   time.Duration
 		want string
 	}{
+		{0, "0 ms"},
+		{400 * time.Microsecond, "<1 ms"},
+		{time.Millisecond, "1 ms"},
 		{500 * time.Millisecond, "500 ms"},
 		{999600 * time.Microsecond, "999 ms"},
 		{time.Second, "1.0 s"},

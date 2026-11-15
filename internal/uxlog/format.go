@@ -35,8 +35,9 @@ func HumanBytes(n int64) string {
 
 // HumanDuration renders a duration in compact form, with a space before
 // the unit like every size ("300 MB in 4.8 s"). Sub-second durations show
-// milliseconds; then seconds with one decimal, whole seconds, minutes and
-// seconds, and past an hour hours and minutes.
+// milliseconds ("<1 ms" below one: a measured time is never "0 ms", which
+// reads as nothing measured); then seconds with one decimal, whole
+// seconds, minutes and seconds, and past an hour hours and minutes.
 //
 // It is the one formatter for a measured or announced time on screen — a
 // transfer's elapsed time, a retry's wait, a probe's round trip — so
@@ -44,6 +45,9 @@ func HumanBytes(n int64) string {
 // or %v: Go's own form has no space and other units ("1m30s"). Rough ages
 // use HumanAge, which shares the units.
 func HumanDuration(d time.Duration) string {
+	if d > 0 && d < time.Millisecond {
+		return "<1 ms"
+	}
 	if d < time.Second {
 		return fmt.Sprintf("%d ms", d.Milliseconds())
 	}
