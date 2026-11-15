@@ -158,14 +158,28 @@ func TestPairOverInternet_SessionGoneGraceLetsTheReceiverFinish(t *testing.T) {
 	const code = "abc-defg-jkm"
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	done := make(chan error, 1)
+	// The sender's side stays up until the receiver has its answer: the
+	// sender returns once its own confirmation is queued, and tearing the
+	// path down at that moment can drop it before it is on the wire.
+	type paired struct {
+		p   *internetSenderPairing
+		err error
+	}
+	done := make(chan paired, 1)
 	go func() {
 		p, err := pairOverInternet(ctx, &flags{quiet: true}, &sendRound{key: codeKey(code)},
 			&config.Config{Server: ts.URL}, func(error) {}, nil)
-		if err == nil {
-			p.cleanup()
+		done <- paired{p, err}
+	}()
+	var sender *paired
+	defer func() {
+		if sender == nil {
+			r := <-done
+			sender = &r
 		}
-		done <- err
+		if sender.err == nil {
+			sender.p.cleanup()
+		}
 	}()
 
 	rc := signaling.New(ts.URL, "test")
@@ -193,18 +207,21 @@ func TestPairOverInternet_SessionGoneGraceLetsTheReceiverFinish(t *testing.T) {
 	res, err := link.dial(ctx, code)
 	if err != nil {
 		// What the sender was doing says which side dropped the ball.
-		sender := "still waiting"
+		state := "still waiting"
 		select {
-		case serr := <-done:
-			sender = fmt.Sprintf("returned %v", serr)
+		case r := <-done:
+			sender = &r
+			state = fmt.Sprintf("returned %v", r.err)
 		default:
 		}
 		t.Fatalf("handshake inside the grace period: %v (sender %s; %d session(s) created, %d watch polls, %d answered 404)",
-			err, sender, atomic.LoadInt32(&creates), atomic.LoadInt32(&polls), atomic.LoadInt32(&told))
+			err, state, atomic.LoadInt32(&creates), atomic.LoadInt32(&polls), atomic.LoadInt32(&told))
 	}
 	defer res.Close()
-	if err := <-done; err != nil {
-		t.Fatalf("the sender gave up on a receiver that was still coming: %v", err)
+	r := <-done
+	sender = &r
+	if r.err != nil {
+		t.Fatalf("the sender gave up on a receiver that was still coming: %v", r.err)
 	}
 	if got := atomic.LoadInt32(&creates); got != 1 {
 		t.Errorf("Create called %d times, want 1", got)
