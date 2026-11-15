@@ -337,8 +337,8 @@ What the tools check for you:
   `https://github.com/polius/fsend/releases/latest/download/install.sh`
   and `/windows` to `…/install.ps1`. Whoever controls that domain chooses
   what the one-liner runs, so it is a trust root next to GitHub. To trust
-  GitHub alone, use those release URLs directly (the README lists both
-  commands).
+  GitHub alone, put those release URLs in the same commands:
+  `curl -fsSL <url> | sh`, or `irm <url> | iex` in PowerShell.
 - **Homebrew** installs carry the same attestation; the cask's caveats
   show `gh attestation verify "$(brew --prefix)/bin/fsend" --repo polius/fsend`.
 

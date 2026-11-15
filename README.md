@@ -68,36 +68,6 @@ brew install polius/tap/fsend
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
-**Someone sent you a code and you don't have fsend yet?** Add the code to
-install and receive in one go:
-
-```bash
-curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-hjk
-```
-
-```powershell
-iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code abc-defg-hjk"
-```
-
-A sender on the default server sees both lines, with the real code,
-under the receive command.
-
-The installers check every archive against the release's checksum file,
-whose Sigstore signature they also verify when `cosign` is installed. The
-binaries themselves carry no Apple or Microsoft code signature — see
-[Security → Release integrity](docs/security.md#release-integrity).
-
-`getfsend.alzina.dev` only redirects to the latest release's install
-scripts on GitHub. To fetch them from GitHub directly:
-
-```bash
-curl -fsSL https://github.com/polius/fsend/releases/latest/download/install.sh | sh
-```
-
-```powershell
-irm https://github.com/polius/fsend/releases/latest/download/install.ps1 | iex
-```
-
 **Update or remove:** `fsend --update` installs the latest release, and
 `fsend --uninstall` removes fsend and its settings. A Homebrew or package
 install is left to brew or the package manager.
