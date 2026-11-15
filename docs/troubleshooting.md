@@ -46,7 +46,7 @@ What to try:
 ### The server's certificate is not trusted (`E047`)
 
 ```text
-✗ [E047] The server's certificate is not trusted.
+✗ The server's certificate is not trusted. [E047]
   A Wi-Fi login page or a filtering proxy may be intercepting the
   connection. Sign in to the network (open any website), or try
   another network.
@@ -64,7 +64,7 @@ exiting.
 ### The code doesn't work on the receiver (`E002`, `E003`, `E004`)
 
 ```text
-✗ [E003] That code has already been claimed by another receiver.
+✗ That code has already been claimed by another receiver. [E003]
   Ask the sender to generate a fresh code.
 ```
 
@@ -101,7 +101,7 @@ dropped receiver to come back.)
 ### "This version of fsend is too old for the pairing server" (`E060`)
 
 ```text
-✗ [E060] This version of fsend is too old for the pairing server.
+✗ This version of fsend is too old for the pairing server. [E060]
   Update fsend, then try again:
     fsend --update
 ```
@@ -133,7 +133,7 @@ Run `fsend doctor` on both machines to see which part fails.
 ### The network blocks UDP (`E042`)
 
 ```text
-✗ [E042] This network seems to block the UDP traffic fsend uses.
+✗ This network seems to block the UDP traffic fsend uses. [E042]
   Try another network (a phone hotspot works), or ask the network admin
   to allow outbound UDP port 443. `fsend doctor` checks both paths.
 ```
@@ -250,10 +250,11 @@ rest of the transfer completed.
 ### "Some files were skipped" (`E050`)
 
 ```text
-✓ Saved 2 of 3 files to ./ — 10 B in 7ms  ·  local network
-⚠ 1 file was skipped:
+✓ Saved 2 of 3 files to ./
+  10 B · 8 ms · local network
+! 1 file was skipped:
     proj/locked.txt — the sender could not read it
-✗ [E050] Some files were skipped — everything else arrived.
+✗ Some files were skipped — everything else arrived. [E050]
   The skipped files and the reason are listed above. Fix the cause and
   run fsend again; files that already arrived are not sent twice.
 ```

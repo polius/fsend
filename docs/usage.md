@@ -32,42 +32,52 @@ Two machines, one command each. **On the sender:**
 
 ```console
 $ fsend report.pdf
-  ⇢  Sending report.pdf  ·  1 file  ·  2.4 MB
 
-  On the other machine, run:
+→ Sending report.pdf
+  1 file · 2.4 MB
+
+  On the other machine, run
 
       fsend abc-defg-jkm
 
-  The code works for one receiver, while this stays open.
+  One receiver · valid while this runs
 
-⠋ Waiting for receiver  ·  3s  ·  Ctrl-C to cancel
+  No fsend there yet? This installs it and receives:
+    curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-jkm
+    iex "& {$(irm https://getfsend.alzina.dev/windows)} -Code abc-defg-jkm"
+
+⠋ Waiting for receiver · 4 s · Ctrl-C to cancel
 ```
 
 Share that code (`abc-defg-jkm`) with the receiver any way you like —
-chat, email, out loud. **On the receiver**, run it; fsend shows who's
-sending and what, then asks before writing anything:
+chat, email, out loud. The two lines under it are for a receiver who
+doesn't have fsend yet: the first for macOS and Linux, the second for
+PowerShell on Windows. **On the receiver**, run the command; fsend
+shows who's sending and what, then asks before writing anything:
 
 ```console
 $ fsend abc-defg-jkm
-  ⇣  Incoming from mbp  ·  local network
 
-      report.pdf  ·  1 file  ·  2.4 MB
+← Incoming report.pdf from macbook
+  1 file · 2.4 MB · local network
 
-  Save to ./? [Y/n] y
-✓ Saved ./report.pdf — 2.4 MB in 188ms (12.7 MB/s)  ·  local network
+? Save to ./  [Y/n] y
+✓ Saved ./report.pdf
+  2.4 MB · 8 ms · local network
 ```
 
 Meanwhile the sender reports who accepted and finishes with a matching
-line:
+summary:
 
 ```console
-✓ Receiver connected  ·  local network
-✓ mbp accepted
-✓ Sent report.pdf to mbp — 2.4 MB in 344ms (7 MB/s)  ·  local network
+✓ Receiver connected · local network
+✓ desktop accepted
+✓ Sent report.pdf to desktop
+  2.4 MB · 11 ms · local network
 ```
 
 The file lands in the current directory (use `--out <dir>` to change
-that, or `--yes` to skip the prompt). The trailing chip names the route:
+that, or `--yes` to skip the prompt). The last line names the route:
 `local network`, `direct`, or `relay via <server>`. That's the whole
 flow — everything below is detail.
 
