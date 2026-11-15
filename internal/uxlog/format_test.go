@@ -37,7 +37,14 @@ func TestHumanDuration(t *testing.T) {
 		want string
 	}{
 		{500 * time.Millisecond, "500 ms"},
+		{999600 * time.Microsecond, "999 ms"},
+		{time.Second, "1.0 s"},
 		{1500 * time.Millisecond, "1.5 s"},
+		{9949 * time.Millisecond, "9.9 s"},
+		// The decimal tier ends at 10 s: what rounds up to it is written
+		// the way 10 s is, not as "10.0 s".
+		{9960 * time.Millisecond, "10 s"},
+		{10 * time.Second, "10 s"},
 		{30 * time.Second, "30 s"},
 		{90 * time.Second, "1 min 30 s"},
 		{3 * time.Hour, "3 h 00 min"},

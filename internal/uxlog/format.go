@@ -48,7 +48,12 @@ func HumanDuration(d time.Duration) string {
 		return fmt.Sprintf("%d ms", d.Milliseconds())
 	}
 	if d < 10*time.Second {
-		return fmt.Sprintf("%.1f s", d.Seconds())
+		// 9.96 s rounds up into the next tier, which has no decimal:
+		// "10 s", not a lone "10.0 s".
+		if s := fmt.Sprintf("%.1f", d.Seconds()); s != "10.0" {
+			return s + " s"
+		}
+		return "10 s"
 	}
 	if d < time.Minute {
 		return fmt.Sprintf("%d s", int(d.Seconds()))
