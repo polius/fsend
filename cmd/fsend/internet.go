@@ -458,7 +458,7 @@ func iceEstablish(parent context.Context, sig *signaling.Client, sessionID, role
 		dctx, dcancel := context.WithTimeout(ctx, iceBudget)
 		cutoff := time.AfterFunc(noSrflxCutoff, func() {
 			if !srflx.Load() {
-				debugf("ICE: no server-reflexive candidate on either side after %v; using the relay", noSrflxCutoff)
+				debugf("ICE: no server-reflexive candidate on either side after %s; using the relay", uxlog.HumanDuration(noSrflxCutoff))
 				dcancel()
 			}
 		})

@@ -19,7 +19,9 @@ import (
 // it that way: it parses the package's non-test source and fails on
 //
 //   - a write that bypasses uxlog: any fmt.Print*/Fprint* call, an
-//     os.Stderr method that writes, os.Stderr handed to io/bufio;
+//     os.Stderr method that writes, os.Stderr handed to io/bufio, a
+//     cobra command's own printers (cmd.Println, cmd.PrintErrln), the
+//     print/println builtins;
 //   - a hand-written indent: a string literal that begins with two spaces,
 //     or with one where it is the text given to a uxlog printer, or that
 //     has an indented second line; strings.Repeat of spaces;
@@ -144,6 +146,10 @@ func TestGridGuardRules(t *testing.T) {
 		{"any writer via fmt", `fmt.Fprintf(w, "%s\n", x)`, "fmt.Fprintf"},
 		{"stderr method", `os.Stderr.WriteString("x")`, "os.Stderr.WriteString"},
 		{"stderr via io", `io.WriteString(os.Stderr, "x")`, "os.Stderr"},
+		{"cobra's stderr printer", `cmd.PrintErrln("x")`, "cmd.PrintErrln"},
+		{"cobra's stdout printer", `cmd.Printf("%s\n", x)`, "cmd.Printf"},
+		{"cobra's printer on a call's result", `cmd.Root().PrintErrf("%s\n", x)`, "PrintErrf"},
+		{"the println builtin", `println("x")`, "println"},
 		{"two-space indent", `uxlog.Line("  nested")`, "indent"},
 		{"indent kept in a variable", `pad := "    "; _ = pad`, "indent"},
 		{"indented second line", `x := "first\n  second"; _ = x`, "indent"},
@@ -219,6 +225,10 @@ func gridViolations(node ast.Node, rawWriter, rawText bool, usedWriter, usedText
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.CallExpr:
+			if id, ok := n.Fun.(*ast.Ident); ok && (id.Name == "print" || id.Name == "println") {
+				add(n.Pos(), "the %s builtin writes to stderr past the grid: use a uxlog printer", id.Name)
+				return true
+			}
 			pkg, fn := callee(n)
 			switch {
 			case pkg == "fmt" && (strings.HasPrefix(fn, "Print") || strings.HasPrefix(fn, "Fprint")):
@@ -229,6 +239,13 @@ func gridViolations(node ast.Node, rawWriter, rawText bool, usedWriter, usedText
 				}
 			case pkg == "os.Stderr" && fn != "Fd" && fn != "Stat":
 				add(n.Pos(), "os.Stderr.%s writes past the grid: use a uxlog printer", fn)
+			case pkg != "uxlog" && isPrintMethod(fn):
+				// A cobra command's printers (cmd.Println, cmd.PrintErrf):
+				// a second way to stdout and stderr.
+				if pkg == "" {
+					pkg = "(a command)"
+				}
+				add(n.Pos(), "%s.%s writes past the grid: use a uxlog printer", pkg, fn)
 			case pkg == "io" || pkg == "bufio":
 				for _, a := range n.Args {
 					if isStderr(a) {
@@ -307,6 +324,16 @@ func callee(c *ast.CallExpr) (pkg, fn string) {
 		}
 	}
 	return "", fn
+}
+
+// isPrintMethod recognises the names of cobra's command printers (and of
+// any other value that prints the way fmt does).
+func isPrintMethod(fn string) bool {
+	switch fn {
+	case "Print", "Println", "Printf", "PrintErr", "PrintErrln", "PrintErrf":
+		return true
+	}
+	return false
 }
 
 // isPrinterName recognises the local names this package gives a

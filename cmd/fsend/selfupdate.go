@@ -16,6 +16,16 @@ import (
 	"github.com/polius/fsend/internal/version"
 )
 
+// The three steps of an update that leave the process — the release
+// lookup, the installer's download and its run — are variables, so a test
+// can drive runUpdate and read what it prints with no network and no
+// installer.
+var (
+	latestRelease  = update.Latest
+	fetchInstaller = update.FetchInstaller
+	execInstaller  = runInstaller
+)
+
 // runUpdate replaces the running binary with the latest release by
 // running that release's own installer (runInstaller, per-OS) pinned to
 // the version and to the directory the binary lives in. fsend verifies
@@ -72,7 +82,7 @@ func runUpdate(check bool) error {
 	// Narration is a neutral line: no glyph of its own (the gutter marks
 	// outcomes), and the installer's own steps follow in the same form.
 	uxlog.Status(uxlog.Info(), "Checking the latest release...")
-	latest, err := update.Latest(context.Background())
+	latest, err := latestRelease(context.Background())
 	if err != nil {
 		return fmt.Errorf("%w: could not look up the latest release: %v", fserrors.ErrUpdateFailed, err)
 	}
@@ -92,7 +102,7 @@ func runUpdate(check bool) error {
 		return fmt.Errorf("%w: %v", fserrors.ErrUpdateFailed, err)
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
-	script, signed, err := update.FetchInstaller(context.Background(), latest, installerAsset, tmp)
+	script, signed, err := fetchInstaller(context.Background(), latest, installerAsset, tmp)
 	if err != nil {
 		return fmt.Errorf("%w: verifying the installer: %v", fserrors.ErrUpdateFailed, err)
 	}
@@ -102,7 +112,7 @@ func runUpdate(check bool) error {
 		uxlog.Status(uxlog.Check(), "Installer checksum verified")
 		uxlog.Note("Install cosign to also check the release signature")
 	}
-	if err := runInstaller(binPath, script, latest); err != nil {
+	if err := execInstaller(binPath, script, latest); err != nil {
 		return fmt.Errorf("%w: %s", fserrors.ErrUpdateFailed, installerFailureDetail(err))
 	}
 	return nil

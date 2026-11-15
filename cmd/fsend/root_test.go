@@ -79,7 +79,7 @@ func TestRootCmd_RejectsInvalidFlagCombinations(t *testing.T) {
 		{
 			"force_receive_two_args",
 			[]string{"--receive", "abc-defg-jkm", "extra"},
-			"--receive takes one code (abc-defg-jkm, or its three words), not 2 arguments",
+			"--receive takes one code (abc-defg-jkm, or its three words)",
 		},
 		{
 			"text_empty_string",
@@ -614,8 +614,8 @@ func TestDispatch_ForceReceiveCodeAsSeparateWords(t *testing.T) {
 	if err := run("abc", "defg", "jkm"); !received(err) {
 		t.Errorf("--receive with a file named like one word: got %v, want it received", err)
 	}
-	// Words that do not spell a code stay a usage error (E024), and say
-	// what --receive takes.
+	// Words that do not spell a code stay a usage error (E024, as every
+	// multi-argument --receive was), and say what --receive takes.
 	for _, args := range [][]string{
 		{"abc", "defg"},
 		{"abc", "defg", "jkm", "xyz"},
@@ -623,7 +623,8 @@ func TestDispatch_ForceReceiveCodeAsSeparateWords(t *testing.T) {
 		{"report.pdf", "notes.txt"},
 	} {
 		err := run(args...)
-		if !errors.Is(err, fserrors.ErrUsage) || !strings.Contains(err.Error(), "--receive takes one code") {
+		if !errors.Is(err, fserrors.ErrUsage) ||
+			!strings.HasSuffix(err.Error(), "--receive takes one code (abc-defg-jkm, or its three words)") {
 			t.Errorf("fsend --receive %q: got %v, want the usage error", args, err)
 		}
 	}

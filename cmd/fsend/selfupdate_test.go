@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/polius/fsend/internal/fserrors"
+	"github.com/polius/fsend/internal/uxlog"
 	"github.com/polius/fsend/internal/version"
 )
 
@@ -28,6 +30,100 @@ func TestRunUpdate_DevBuildRefused(t *testing.T) {
 	// build that has no release to compare with either.
 	if err := runUpdate(true); !errors.Is(err, fserrors.ErrUpdateDevBuild) {
 		t.Fatalf("--check got %v, want wrapping ErrUpdateDevBuild", err)
+	}
+}
+
+// stubUpdate points runUpdate at a release lookup, a download and an
+// installer of the test's own, on a build that reports version current.
+// It returns the directory runUpdate will name (the test binary's), and a
+// pointer to what the installer was run with.
+func stubUpdate(t *testing.T, current, latest string, signed bool) (dir string, ran *[]string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe = resolveBinaryPath(exe)
+	if managedByHomebrew(exe) || packagedAs(exe) != "" {
+		t.Skip("the test binary sits in a package manager's tree: runUpdate refuses before printing")
+	}
+	// A test run as root (a container) must not stop at the root refusal.
+	t.Setenv("FSEND_ALLOW_ROOT", "1")
+	origVersion, origLatest, origFetch, origExec := version.Version, latestRelease, fetchInstaller, execInstaller
+	t.Cleanup(func() {
+		version.Version, latestRelease, fetchInstaller, execInstaller = origVersion, origLatest, origFetch, origExec
+	})
+	version.Version = current
+	latestRelease = func(context.Context) (string, error) { return latest, nil }
+	fetchInstaller = func(_ context.Context, v, name, dir string) (string, bool, error) {
+		return filepath.Join(dir, name), signed, nil
+	}
+	ran = new([]string)
+	execInstaller = func(binPath, script, v string) error {
+		*ran = []string{binPath, filepath.Base(script), v}
+		// What the installer itself prints (scripts/install.sh, under
+		// FSEND_UPDATE=1): its steps in column 2, its outcome behind ✓.
+		uxlog.Line("installing fsend v" + v)
+		return nil
+	}
+	return filepath.Dir(exe), ran
+}
+
+// V7: `fsend --update` narrates on the grid with the six glyphs only. Its
+// two steps are neutral lines (an empty gutter; "[i]" on a pipe, as
+// here), not lines behind a "›" of their own; the verification is an
+// outcome and takes the tick; the installer's steps follow in column 2.
+func TestRunUpdate_Narration(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		signed bool
+		verify string
+	}{
+		{"checksum only", false, "[OK] Installer checksum verified\n  Install cosign to also check the release signature\n"},
+		{"signed", true, "[OK] Release signature verified\n"},
+	} {
+		dir, ran := stubUpdate(t, "1.0.0", "1.1.0", c.signed)
+		var err error
+		got := captureStderr(t, func() { err = runUpdate(false) })
+		if err != nil {
+			t.Fatalf("%s: runUpdate: %v", c.name, err)
+		}
+		want := "[i] Checking the latest release...\n" +
+			"[i] Updating fsend 1.0.0 → 1.1.0 in " + dir + "\n" +
+			"  what's new: https://github.com/polius/fsend/releases/tag/v1.1.0\n" +
+			c.verify +
+			"  installing fsend v1.1.0\n"
+		if got != want {
+			t.Errorf("%s: --update printed\n%s\nwant\n%s", c.name, got, want)
+		}
+		if strings.ContainsAny(got, "›>") {
+			t.Errorf("%s: a step marker is back:\n%s", c.name, got)
+		}
+		if len(*ran) != 3 || filepath.Dir((*ran)[0]) != dir || (*ran)[1] != installerAsset || (*ran)[2] != "1.1.0" {
+			t.Errorf("%s: installer run with %q", c.name, *ran)
+		}
+	}
+}
+
+// Nothing newer: one line of narration, then the tick. And --check, which
+// only looks, ends in the same notice a transfer prints.
+func TestRunUpdate_UpToDateAndCheck(t *testing.T) {
+	_, ran := stubUpdate(t, "1.1.0", "1.1.0", false)
+	var err error
+	got := captureStderr(t, func() { err = runUpdate(false) })
+	if want := "[i] Checking the latest release...\n[OK] fsend 1.1.0 is already the latest version.\n"; err != nil || got != want {
+		t.Errorf("up to date: err %v, printed\n%s\nwant\n%s", err, got, want)
+	}
+	stubUpdate(t, "1.0.0", "1.1.0", false)
+	got = captureStderr(t, func() { err = runUpdate(true) })
+	want := "[i] Checking the latest release...\n" +
+		"[i] fsend 1.1.0 is available (you have 1.0.0)\n" +
+		"  fsend --update · https://github.com/polius/fsend/releases/tag/v1.1.0\n"
+	if err != nil || got != want {
+		t.Errorf("--check: err %v, printed\n%s\nwant\n%s", err, got, want)
+	}
+	if *ran != nil {
+		t.Errorf("an installer ran without an update to install: %q", *ran)
 	}
 }
 

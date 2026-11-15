@@ -769,8 +769,10 @@ func dispatch(cmd *cobra.Command, f *flags) error {
 		if c, ok := joinCode(f.posArgs); ok {
 			return startReceive(f, c)
 		}
-		return fmt.Errorf("%w: --receive takes one code (abc-defg-jkm, or its three words), not %d arguments",
-			fserrors.ErrUsage, len(f.posArgs))
+		// Says what is accepted and no more: counting the arguments back
+		// ("not 3 arguments") would puzzle someone who typed three words
+		// with a typo in one. One line at 80 columns.
+		return fmt.Errorf("%w: --receive takes one code (abc-defg-jkm, or its three words)", fserrors.ErrUsage)
 	}
 
 	// --text is unambiguously send mode. An explicitly empty value
