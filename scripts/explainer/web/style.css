@@ -61,20 +61,18 @@ html, body {
   width: 1400px; height: 1400px;
   background: radial-gradient(circle, rgba(70, 92, 160, 0.42) 0%, rgba(70, 92, 160, 0.12) 32%, transparent 64%);
 }
-/* a perspective grid floor: reads as "a network", costs one transformed layer */
-#bg .floor { position: absolute; left: 0; right: 0; top: 560px; height: 520px; perspective: 520px; perspective-origin: 50% 0%; overflow: hidden;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.5) 30%, #000 62%, rgba(0,0,0,0.75) 100%); }
-#bg .floor .grid {
-  position: absolute; left: -1600px; width: 5120px; top: -40px; height: 1800px;
-  transform-origin: 50% 0%;
-  background-image:
-    linear-gradient(rgba(255,255,255,0.075) 2px, transparent 2px),
-    linear-gradient(90deg, rgba(255,255,255,0.075) 2px, transparent 2px);
-  background-size: 120px 120px;
+/* a quiet dot field, strongest behind the subject: depth without lines that
+   cross the type */
+#bg .dots {
+  position: absolute; inset: 0;
+  background-image: radial-gradient(circle, rgba(255,255,255,0.15) 1.5px, transparent 2.1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(72% 78% at 50% 48%, #000 0%, rgba(0,0,0,0.5) 48%, transparent 92%);
 }
-#bg .dust i {
-  position: absolute; left: 0; top: 0; width: 6px; height: 6px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(255,255,255,0.9), rgba(255,255,255,0) 70%);
+/* a low wash of the accent under the stage, so the frame has a floor */
+#bg .horizon {
+  position: absolute; left: -15%; right: -15%; bottom: -640px; height: 980px; border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 17%, transparent), transparent);
 }
 #bg .vignette {
   position: absolute; inset: 0;
@@ -150,6 +148,10 @@ html, body {
 .term .f { color: var(--faint); }
 .term .a { color: var(--brand-l); }
 .term .ok { color: var(--green); }
+.term b { font-weight: 700; color: #fff; }
+.term .ar { color: var(--brand); font-weight: 700; }
+.term .q { color: #b69cff; font-weight: 700; }
+.term .cd { color: var(--brand-l); font-weight: 700; }
 .term .caret { display: inline-block; width: 0.6em; height: 1.1em; vertical-align: -0.18em; background: var(--ink); margin-left: 2px; }
 .term .codebox {
   margin: 14px 0 12px; padding: 18px 26px; border-radius: 16px;
@@ -175,6 +177,35 @@ html, body {
   background: linear-gradient(180deg, color-mix(in srgb, var(--brand) 92%, #fff), var(--brand));
   box-shadow: 0 20px 50px -14px color-mix(in srgb, var(--brand) 80%, transparent), 0 0 0 1.5px rgba(255,255,255,0.35) inset;
 }
+
+/* the film's highlight behind a line of a terminal */
+.spot {
+  position: absolute; border-radius: 14px; opacity: 0; pointer-events: none;
+  background: color-mix(in srgb, var(--brand) 13%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--brand) 55%, transparent);
+  box-shadow: 0 0 44px -8px color-mix(in srgb, var(--brand) 60%, transparent);
+}
+
+/* ---- proofs (more) --------------------------------------------------------- */
+.pcard { position: relative; overflow: hidden; border-color: color-mix(in srgb, var(--brand) calc(var(--on, 0) * 65%), rgba(255,255,255,0.12)); }
+.pcard::before {
+  content: ""; position: absolute; left: 10%; right: 10%; top: -150px; height: 300px; border-radius: 50%; opacity: var(--on, 0);
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--brand) 34%, transparent), transparent);
+}
+.pnum { position: absolute; left: 0; right: 0; top: 62px; text-align: center; font-family: var(--mono); font-weight: 700; font-size: 150px; line-height: 1; letter-spacing: -0.04em; color: var(--ink); }
+.punit { position: absolute; left: 0; right: 0; top: 222px; text-align: center; font-family: var(--mono); font-weight: 600; font-size: 40px; color: var(--brand-l); letter-spacing: 0.08em; }
+.pladder { position: absolute; left: 0; right: 0; bottom: 34px; display: flex; justify-content: center; gap: 30px; font-family: var(--mono); font-size: 22px; font-weight: 700; letter-spacing: 0.16em; color: var(--dim); }
+.pladder i { font-style: normal; }
+.ptree { position: absolute; left: 50px; right: 50px; top: 62px; font-family: var(--mono); font-size: 29px; line-height: 2.15; }
+.prow { display: flex; align-items: baseline; white-space: pre; color: var(--dim); }
+.prow .root { color: var(--ink); font-weight: 700; }
+.prow .cnt { margin-left: auto; font-size: 23px; color: var(--faint); }
+.prow .tick { width: 44px; text-align: right; color: var(--green); font-weight: 700; display: inline-block; transform-origin: 70% 50%; }
+.ptrack { position: absolute; left: 50px; right: 50px; top: 196px; height: 18px; border-radius: 9px; background: rgba(255,255,255,0.09); }
+.pfill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 9px; background: linear-gradient(90deg, var(--brand), var(--brand-l)); }
+.pmark { position: absolute; left: 62%; top: -12px; bottom: -12px; width: 3px; border-radius: 2px; background: var(--ink); opacity: 0; }
+.ppct { position: absolute; left: 50px; top: 74px; font-family: var(--mono); font-weight: 700; font-size: 86px; line-height: 1; letter-spacing: -0.03em; }
+.pstate { position: absolute; left: 50px; right: 50px; top: 252px; font-family: var(--mono); font-size: 27px; font-weight: 600; color: var(--dim); white-space: nowrap; }
 
 /* ---- big statements (trust) ------------------------------------------------ */
 .stmt { display: flex; align-items: center; gap: 40px; font-weight: 800; font-size: 118px; letter-spacing: -0.05em; line-height: 1; white-space: nowrap; }

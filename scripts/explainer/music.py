@@ -10,7 +10,7 @@ over it later, in build.py.
   open    pad swell + riser  ->  hit  ->  pad, sub, sparse pluck
   demo    kick, bass, offbeat hats
   trust   + 16th hats, claps
-  routes  + 16th pluck arpeggio
+  routes  + 16th pluck arpeggio (carries through "more")
   server  breakdown: no kick, closed filter, riser into the end card
   outro   hit, a held tonic chord, the arp rings out
 

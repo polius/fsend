@@ -1,6 +1,6 @@
 # fsend explainer
 
-The fsend promo: a **~57-second, 1920×1080, 60 fps MP4** with a neural
+The fsend promo: a **~65-second, 1920×1080, 60 fps MP4** with a neural
 voice-over, an original synthesized score, and sound design cued from the
 picture.
 
@@ -11,9 +11,16 @@ Design rules the film follows, so any future edit stays on-model:
 
 - **One idea per shot.** Every screen says one thing, in big type, and the
   narration says the same thing at the same moment.
-- **Show the product, not slides.** The demo is two real-looking terminals with
-  real `fsend` output; the share code physically flies from one to the other,
-  and the file follows the same arc.
+- **Show the product, not slides.** The demo is two terminals printing what
+  `fsend` really prints, line for line (compare `docs/usage.md`, "Your first
+  transfer"); the numbers agree with the clock (104 MB at 52 MB/s takes the two
+  seconds it takes on screen). Anything the film adds on top, like the
+  highlight behind the share code, is drawn outside the terminal's own text.
+  The share code physically flies from one to the other, and the file follows
+  the same arc. Commands are real too: the self-host scene runs
+  `docker compose up -d`, as `docs/self-hosting.md` does.
+- **Readable with the sound off.** Every scene carries its point as type on
+  screen, because a README video often plays muted.
 - **The three routes share one stage.** Your laptop, their laptop, the server.
   The stage morphs between local → direct → relay (the network splits, the
   server introduces and steps aside, a wall blocks and the relay takes over),
@@ -55,7 +62,8 @@ Scene arc, timed to the narration:
 
 ```
 open (cursor types the name, logo hit)  →  demo (send / receive)  →  trust
-     →  routes (local → direct → relay, one stage)  →  self-host  →  outro
+     →  routes (local → direct → relay, one stage)
+     →  more (any size, folders, resume)  →  self-host  →  outro
 ```
 
 ---
@@ -124,7 +132,7 @@ To look at stills while iterating on the visuals (fast — 1×, no encode):
 To regenerate the README thumbnail:
 
 ```sh
-.venv/bin/python capture.py --poster 5.8                # -> docs/assets/video-poster.png
+.venv/bin/python capture.py --poster 6.36               # -> docs/assets/video-poster.png
 ```
 
 ---
@@ -135,7 +143,7 @@ To regenerate the README thumbnail:
 |---|---|
 | `narration.py` | the script + pacing. **Start here** to change the wording. |
 | `web/engine.js` | the renderer: `render(t)`, scene layers + cameras, push-through cuts with a light sweep, the background, accent colour keys, the cue registry |
-| `web/scenes.js` | the six scenes and everything that animates inside them |
+| `web/scenes.js` | the seven scenes and everything that animates inside them |
 | `web/style.css` | palette, type, terminal, glass cards |
 | `web/fonts/` | Inter + JetBrains Mono (both OFL), committed for offline builds |
 | `capture.py` | http server + Playwright frame loop (`--preview`, `--poster`, `--cues`) |
@@ -164,6 +172,8 @@ To regenerate the README thumbnail:
 
 ## Notes
 
+- The background is deliberately quiet: two slow glows, a dot field and a
+  low wash of the accent. Nothing in it draws a line across the type.
 - **Rendering cost is fill-rate bound.** Soft light is drawn with radial
   gradients, never `filter: blur()` on large layers (the software rasterizer
   re-runs it every frame); short blurs only appear during cuts and reveals.

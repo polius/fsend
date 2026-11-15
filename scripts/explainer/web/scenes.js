@@ -151,83 +151,105 @@
   }
 
   /* ====================================================================== *
-   *  DEMO — one command to send, one to receive
+   *  DEMO — one command to send, one to receive. The screens are fsend's
+   *  own: every line here is what the real program prints.
    * ====================================================================== */
   function demo(cam, api) {
     const layer = api.layer;
-    cam.style.transformOrigin = "960px 520px";
+    cam.style.transformOrigin = "960px 540px";
+    const FILE_NAME = "trip-video.mp4", SIZE = "104 MB", RATE_TXT = "52.0 MB/s", ROUTE = "direct";
     // the share code finds its way across first; the file follows the same arc
     const arcSvg = svg("svg", { width: 1920, height: 1080, style: "position:absolute;inset:0;overflow:visible" }, cam);
     const arcPath = svg("path", { d: "", fill: "none", stroke: "var(--brand)", "stroke-width": 3,
       "stroke-linecap": "round", "stroke-dasharray": "2 14", opacity: 0 }, arcSvg);
-    // the comet tail behind the flying code (a dash that slides along the arc)
     const trail = svg("path", { d: "", fill: "none", stroke: "var(--brand-l)", "stroke-width": 5,
       "stroke-linecap": "round", pathLength: 1000, opacity: 0 }, arcSvg);
     const dots = [...Array(26)].map(() => svg("circle", { r: 5, fill: "#ffd9c7" }, arcSvg));
 
-    const TW = 860, TH = 470, TY = 262, LX = 70, RX = 990;
-    const roleL = at(cam, LX + TW / 2, 226, "role", "<b></b>You");
-    const roleR = at(cam, RX + TW / 2, 226, "role", "<b></b>Your friend");
-    const S = terminal(cam, LX, TY, TW, TH, "you@laptop — zsh");
-    const R = terminal(cam, RX, TY, TW, TH, "friend@desktop — zsh");
+    const TW = 880, SH = 730, RH = 444, SY0 = 92, LX = 60, RX = 980, RY0 = SY0 + (SH - RH) / 2;
+    const S = terminal(cam, LX, SY0, TW, SH, "you@laptop: ~");
+    const R = terminal(cam, RX, RY0, TW, RH, "friend@desktop: ~/Downloads");
+    [S, R].forEach((T) => { T.body.style.fontSize = "26px"; T.body.style.lineHeight = "1.55"; });
+    const spot = el("div", "spot", cam);            // the film's highlight, not fsend's
 
     const sCmd = line(S.body);
     line(S.body);
-    const sInfo = line(S.body);
-    sInfo.innerHTML = `  Sending <b>drone-4k.mov</b>  <span class="d">· 2.3 GB</span>`;
-    const box = el("div", "codebox", S.body, `<div class="lbl">On the other machine, run:</div><div class="code">fsend <span class="cv">${CODE}</span></div>`);
-    const codeSpan = box.querySelector(".cv");
-    const sStat = line(S.body);
+    const sHead = line(S.body), sMeta = line(S.body);
+    sHead.innerHTML = `<span class="ar">→</span> Sending <b>${FILE_NAME}</b>`;
+    sMeta.innerHTML = `  1 file · ${SIZE}`;
+    line(S.body);
+    const sRun = line(S.body);
+    sRun.innerHTML = `  On the other machine, run`;
+    line(S.body);
+    const sCode = line(S.body);
+    sCode.innerHTML = `      <span class="cmdtxt"><b>fsend</b> <span class="cd cv">${CODE}</span></span>`;
+    const codeSpan = sCode.querySelector(".cv");
+    line(S.body);
+    const sNote = line(S.body);
+    sNote.innerHTML = `  One receiver · valid while this runs`;
+    line(S.body);
+    const sA = line(S.body), sB = line(S.body), sC = line(S.body), sD = line(S.body);
+    sB.innerHTML = `<span class="ok">✓</span> desktop accepted`;
+    sD.innerHTML = `  ${SIZE} · 2.0 s · ${RATE_TXT} · ${ROUTE}`;
 
     const rCmd = line(R.body);
     line(R.body);
-    const rInfo = line(R.body);
-    rInfo.innerHTML = `  Incoming <b>drone-4k.mov</b>  <span class="d">· 2.3 GB</span>`;
-    const rAsk = line(R.body);
-    rAsk.innerHTML = `  <span class="d">from laptop · save to ~/Downloads?</span> <span class="a">Y</span>`;
+    const rHead = line(R.body), rMeta = line(R.body);
+    rHead.innerHTML = `<span class="ar">←</span> Incoming <b>${FILE_NAME}</b> from laptop`;
+    rMeta.innerHTML = `  1 file · ${SIZE} · ${ROUTE}`;
     line(R.body);
-    const rBar = line(R.body);
-    const rDone = line(R.body, "ok");
-    rDone.textContent = "  ✓ Saved  ~/Downloads/drone-4k.mov";
-    const okFlash = bloom(cam, RX + TW / 2, TY + TH / 2, 1100, "color-mix(in srgb, var(--green) 30%, transparent)");
+    const rAsk = line(R.body), rBar = line(R.body), rSum = line(R.body);
+    rSum.innerHTML = `  ${SIZE} · 2.0 s · ${RATE_TXT} · ${ROUTE}`;
+    const okFlash = bloom(cam, RX + TW / 2, RY0 + RH / 2, 1100, "color-mix(in srgb, var(--green) 30%, transparent)");
 
     const fly = at(cam, 0, 0, "flycode", CODE);
 
     // captions ride outside the camera
     const caps = [["One command to send.", ""], ["One to receive.", ""], ["That’s it.", "grad"]].map(([txt, cls]) => {
-      const c = at(layer, 960, 880, "headline " + cls);
+      const c = at(layer, 960, 952, "headline " + cls);
       return words(c, txt);
     });
 
     // geometry, measured once fonts are in (before the camera ever moves)
-    let P0 = [480, 560], P2 = [1500, 360];
+    const RPROMPT = `<span class="p2">friend@desktop</span><span class="f">:~/Downloads$</span> `;
+    let P0 = [330, 486], P2 = [1500, 350];
     afterFonts(() => {
       const r = codeSpan.getBoundingClientRect();
       P0 = [r.left + r.width / 2, r.top + r.height / 2];
+      const c = sCode.querySelector(".cmdtxt").getBoundingClientRect();
+      Object.assign(spot.style, { left: c.left - 26 + "px", top: c.top - 12 + "px", width: c.width + 52 + "px", height: c.height + 24 + "px" });
       // where the code will sit in the friend's prompt, measured in its own font
-      setHTML(rCmd, `<span class="p2">friend@pc</span> <span class="f">~ $</span> fsend <span class="cv">${CODE}</span>`);
+      setHTML(rCmd, `${RPROMPT}fsend <span class="cv">${CODE}</span>`);
       const cr = rCmd.querySelector(".cv").getBoundingClientRect();
       P2 = [cr.left + cr.width / 2, cr.top + cr.height / 2];
       setHTML(rCmd, "");
-      const d = `M ${P0[0]} ${P0[1]} Q 960 ${Math.min(P0[1], P2[1]) - 330} ${P2[0]} ${P2[1]}`;
+      const d = `M ${P0[0]} ${P0[1]} Q 960 ${Math.min(P0[1], P2[1]) - 300} ${P2[0]} ${P2[1]}`;
       arcPath.setAttribute("d", d);
       trail.setAttribute("d", d);
     });
     const arcAt = (u) => {
-      const c = [960, Math.min(P0[1], P2[1]) - 330];
+      const c = [960, Math.min(P0[1], P2[1]) - 300];
       const a = (1 - u) * (1 - u), b = 2 * u * (1 - u), d = u * u;
       return [a * P0[0] + b * c[0] + d * P2[0], a * P0[1] + b * c[1] + d * P2[1]];
     };
+    // fsend's own bar: ━ filled, ╸ the tip, ─ what is left
+    const pbar = (p, w = 12) => {
+      const f = Math.min(w, Math.floor(clamp(p) * w));
+      return `<span class="a">${"━".repeat(f)}${f < w ? "╸" : ""}</span><span class="f">${"─".repeat(Math.max(0, w - f - 1))}</span>`;
+    };
+    const moving = (p) => `${pbar(p)}  ${String(Math.round(p * 100)).padStart(2)}%  ${(104 * p).toFixed(1)} MB of ${SIZE} · ${RATE_TXT}`;
 
     // ---- the beats ----
-    const CMD = "fsend drone-4k.mov", RATE = 0.052, T0 = 0.35;
+    const CMD = "fsend " + FILE_NAME, RATE = 0.05, T0 = 0.4;
     const ENTER = T0 + CMD.length * RATE + 0.12;
-    const CODE_IN = api.on("demo1", "code") - 0.25;
+    const CODE_IN = api.on("demo1", "code") - 0.3;
     const r0 = api.segStart("demo2");
     const RT0 = r0 + 0.05, RCMD = "fsend ";
-    const FLY0 = api.on("demo2", "types") - 0.15, FLY1 = FLY0 + 0.75;
-    const RENTER = FLY1 + 0.22;
-    const X0 = RENTER + 0.35, X1 = api.on("demo2", "lands") + 0.12;
+    const FLY0 = api.on("demo2", "types") - 0.3, FLY1 = FLY0 + 0.7;
+    const RENTER = FLY1 + 0.18;
+    const ASK = RENTER + 0.4, YES = Math.max(ASK + 0.25, api.on("demo2", "yes") + 0.12);
+    // 104 MB at 52 MB/s: the two seconds the summary reports are the two on screen
+    const X0 = YES + 0.3, X1 = X0 + 2.0;
     const that = api.segStart("demo3");
     typeCues(api, T0, CMD, RATE);
     api.cue("enter", ENTER, 0.9);
@@ -236,45 +258,56 @@
     api.cue("swish", FLY0, 1);
     api.cue("pop", FLY1 - 0.05, 0.8);
     api.cue("enter", RENTER, 0.9);
+    api.cue("key", YES, 0.9);
     api.cue("stream", X0, 1);
     api.cue("chime", X1, 1);
 
     return function (t) {
-      // camera: start on the sender, pan out to both as the friend joins
-      camera(cam, t, [[0, 1.16, 530, -10], [r0 - 0.7, 1.0, 0, -10, 1.1], [that - 0.3, 1.05, 0, -20, 1.4]]);
+      // camera: on the sender, in on the code, out to both as the other person joins
+      camera(cam, t, [[0, 1.12, 515, 0], [CODE_IN - 0.15, 1.3, 598, 62, 1.0],
+                      [r0 - 0.75, 1.0, 0, 0, 1.15], [that - 0.3, 1.035, 0, -6, 1.6]]);
 
-      reveal(roleL, ramp(t, -0.2, 0.3), { dy: 12 });
-      // the friend's terminal arrives when the friend is mentioned
-      reveal(roleR, ramp(t, r0 - 0.45, r0 + 0.1), { dy: 12 });
-      reveal(R.node, ramp(t, r0 - 0.7, r0 + 0.05), { dy: 0, dx: 140, scale: 0.97 });
+      // the other terminal arrives when the other person is mentioned
+      reveal(R.node, ramp(t, r0 - 0.7, r0 + 0.05), { dy: 0, dx: 160, scale: 0.97 });
 
       // sender
       const sc = typed(CMD, t, T0, RATE);
-      setHTML(sCmd, `<span class="p">you@laptop</span> <span class="f">~ $</span> ${sc}${t < ENTER && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
-      reveal(sInfo, ramp(t, ENTER + 0.1, ENTER + 0.35), { dy: 10 });
-      reveal(box, ramp(t, CODE_IN, CODE_IN + 0.45), { dy: 16, scale: 0.94 });
-      // the code catches the light when it is named
+      setHTML(sCmd, `<span class="p">you@laptop</span><span class="f">:~$</span> ${sc}${t < ENTER && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
+      reveal(sHead, ramp(t, ENTER + 0.08, ENTER + 0.3), { dy: 8 });
+      reveal(sMeta, ramp(t, ENTER + 0.12, ENTER + 0.34), { dy: 8 });
+      reveal(sRun, ramp(t, CODE_IN - 0.12, CODE_IN + 0.15), { dy: 8 });
+      reveal(sCode, ramp(t, CODE_IN, CODE_IN + 0.4), { dy: 10 });
+      reveal(sNote, ramp(t, CODE_IN + 0.25, CODE_IN + 0.55), { dy: 8 });
+      // the code is lit while it matters: from its reveal until it has crossed
+      const lit = ramp(t, CODE_IN + 0.1, CODE_IN + 0.5) * (1 - ramp(t, FLY1, FLY1 + 0.6));
+      spot.style.opacity = lit.toFixed(3);
       const glint = ramp(t, CODE_IN + 0.3, CODE_IN + 1.1);
-      codeSpan.style.textShadow = glint > 0 && glint < 1 ? `0 0 ${(28 * Math.sin(Math.PI * glint)).toFixed(1)}px var(--brand)` : "none";
-      let stat;
-      if (t < X0) stat = `<span class="a">${SPIN[Math.floor(Math.max(0, t) * 12) % 10]}</span> <span class="d">Waiting for receiver…</span>`;
-      else if (t < X1) stat = `${bar(ramp(t, X0, X1), 16)} <span class="d">${Math.round(100 * inOutSine(ramp(t, X0, X1)))}%</span>`;
-      else stat = `<span class="ok">✓ Sent  2.3 GB</span>`;
-      setHTML(sStat, "  " + stat);
-      reveal(sStat, ramp(t, CODE_IN + 0.35, CODE_IN + 0.7), { dy: 10 });
+      codeSpan.style.textShadow = glint > 0 && glint < 1 ? `0 0 ${(26 * Math.sin(Math.PI * glint)).toFixed(1)}px var(--brand)` : "none";
+      const CONN = RENTER + 0.25;
+      if (t < CONN) {
+        setHTML(sA, `<span class="a">${SPIN[Math.floor(Math.max(0, t) * 12) % 10]}</span> Waiting for receiver · ${Math.max(1, Math.floor(t - ENTER))} s · Ctrl-C to cancel`);
+        reveal(sA, ramp(t, CODE_IN + 0.4, CODE_IN + 0.7), { dy: 8 });
+      } else {
+        setHTML(sA, `<span class="ok">✓</span> Receiver connected · ${ROUTE}`);
+        reveal(sA, 1);
+      }
+      reveal(sB, ramp(t, YES + 0.1, YES + 0.3), { dy: 8 });
+      const p = ramp(t, X0, X1);
+      setHTML(sC, t < X1 ? moving(p) : `<span class="ok">✓</span> Sent <b>${FILE_NAME}</b> to desktop`);
+      reveal(sC, ramp(t, X0 - 0.1, X0 + 0.1), { dy: 8 });
+      reveal(sD, ramp(t, X1 + 0.05, X1 + 0.3), { dy: 8 });
 
-      // receiver
-      // the code lands highlighted, then settles into plain text
+      // receiver: the code lands highlighted, then settles into plain text
       const hot = t >= FLY1 ? Math.exp(-(t - FLY1) * 2.5) : 0;
-      const rc = typed(RCMD, t, RT0, RATE) + (t >= FLY1 ? `<span style="color:color-mix(in srgb, var(--brand-l) ${Math.round(40 + 60 * hot)}%, var(--ink))">${CODE}</span>` : "");
-      setHTML(rCmd, `<span class="p2">friend@pc</span> <span class="f">~ $</span> ${rc}${t < RENTER && t > r0 - 0.5 && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
-      reveal(rInfo, ramp(t, RENTER + 0.1, RENTER + 0.3), { dy: 10 });
-      reveal(rAsk, ramp(t, RENTER + 0.2, RENTER + 0.4), { dy: 10 });
-      const p = inOutSine(ramp(t, X0, X1));
-      const mbps = Math.round(380 + 60 * Math.sin(t * 9) + 30 * Math.sin(t * 23));
-      setHTML(rBar, `  ${bar(p, 18)} <span class="d">${String(Math.round(p * 100)).padStart(3)}%  ${t < X1 ? mbps + " MB/s" : ""}</span>`);
-      reveal(rBar, ramp(t, X0 - 0.1, X0 + 0.15), { dy: 10 });
-      reveal(rDone, ramp(t, X1, X1 + 0.3), { dy: 10, ease: outBack });
+      const rc = typed(RCMD, t, RT0, RATE) + (t >= FLY1 ? `<span style="color:color-mix(in srgb, var(--brand-l) ${Math.round(100 * hot)}%, var(--ink))">${CODE}</span>` : "");
+      setHTML(rCmd, `${RPROMPT}${rc}${t < RENTER && t > r0 - 0.5 && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
+      reveal(rHead, ramp(t, RENTER + 0.12, RENTER + 0.32), { dy: 8 });
+      reveal(rMeta, ramp(t, RENTER + 0.16, RENTER + 0.36), { dy: 8 });
+      setHTML(rAsk, `<span class="q">?</span> Save to ./  [Y/n] ${t >= YES ? "y" : (blink(t, 0.9) ? '<span class="caret"></span>' : "")}`);
+      reveal(rAsk, ramp(t, ASK, ASK + 0.2), { dy: 8 });
+      setHTML(rBar, t < X1 ? moving(p) : `<span class="ok">✓</span> Saved <b>./${FILE_NAME}</b>`);
+      reveal(rBar, ramp(t, X0 - 0.1, X0 + 0.1), { dy: 8 });
+      reveal(rSum, ramp(t, X1 + 0.05, X1 + 0.3), { dy: 8 });
       okFlash.style.opacity = (t > X1 ? 0.9 * Math.exp(-(t - X1) * 1.6) : 0).toFixed(3);
 
       // the flying code: lifts off the sender, arcs over, lands in the prompt
@@ -283,10 +316,10 @@
       if (u <= 0 || u >= 1) fly.style.opacity = 0;
       else {
         const [x, y] = arcAt(e);
-        const sc = lerp(1, 0.64, e) * (1 + 0.3 * Math.sin(Math.PI * e));
+        const fs = 1 + 0.35 * Math.sin(Math.PI * e);
         fly.parentElement.style.left = x.toFixed(1) + "px";
         fly.parentElement.style.top = y.toFixed(1) + "px";
-        fly.style.transform = `scale(${sc.toFixed(3)}) rotate(${(-5 * Math.sin(Math.PI * 2 * e)).toFixed(2)}deg)`;
+        fly.style.transform = `scale(${fs.toFixed(3)}) rotate(${(-4 * Math.sin(Math.PI * 2 * e)).toFixed(2)}deg)`;
         fly.style.opacity = Math.min(1, u * 12, (1 - u) * 14).toFixed(3);
       }
       const tail = 260 * Math.sin(Math.PI * u);
@@ -300,7 +333,7 @@
       arcPath.setAttribute("opacity", (0.45 * on).toFixed(3));
       arcPath.setAttribute("stroke-dashoffset", (-(t * 90) % 16).toFixed(2));
       dots.forEach((d, i) => {
-        const uu = (i / dots.length + (t - X0) * 1.25) % 1;
+        const uu = (((i / dots.length + (t - X0) * 1.25) % 1) + 1) % 1;
         const [x, y] = arcAt(uu);
         d.setAttribute("cx", x.toFixed(1)); d.setAttribute("cy", y.toFixed(1));
         d.setAttribute("opacity", (on * Math.sin(Math.PI * uu) * (0.5 + 0.5 * rnd(i))).toFixed(3));
@@ -308,8 +341,8 @@
       });
 
       // captions
-      kin(caps[0], t, 0.25, 0.07, 0.55, r0 - 0.4);
-      kin(caps[1], t, r0 - 0.05, 0.07, 0.55, that - 0.45);
+      kin(caps[0], t, 0.25, 0.07, 0.55, CODE_IN - 0.45);
+      kin(caps[1], t, r0 + 0.25, 0.07, 0.55, that - 0.45);
       kin(caps[2], t, that - 0.1, 0.09, 0.6);
     };
   }
@@ -602,6 +635,103 @@
   }
 
   /* ====================================================================== *
+   *  MORE — what it carries: three small proofs, one per phrase
+   * ====================================================================== */
+  function more(cam, api) {
+    const CW = 520, CH = 372, CY = 452, XS = [370, 960, 1550];
+    const M = { size: api.on("more1", "size"), folders: api.on("more1", "folders"),
+                drops: api.on("more1", "drops"), picks: api.on("more1", "picks") };
+    const T0 = [M.size - 0.3, M.folders - 0.3, M.drops - 0.95];
+    const cards = [["Any size.", "No limit, no upload step"], ["Whole folders.", "Sent again? Only what changed moves"],
+                   ["Resumable.", "Picks up where it left off"]].map(([title, sub], i) => {
+      const wrap = at(cam, XS[i], CY, "proof");
+      const card = el("div", "glass pcard", wrap);
+      Object.assign(card.style, { width: CW + "px", height: CH + "px" });
+      const ttl = at(cam, XS[i], CY + CH / 2 + 74, "headline");
+      ttl.style.fontSize = "62px";
+      const tw = words(ttl, title);
+      const sb = at(cam, XS[i], CY + CH / 2 + 142, "sub");
+      sb.style.fontSize = "30px"; sb.textContent = sub;
+      return { wrap, card, tw, sb };
+    });
+
+    // 1 — a size that keeps climbing
+    const c1 = cards[0].card;
+    const num = el("div", "pnum", c1), unit = el("div", "punit", c1);
+    const ladder = el("div", "pladder", c1);
+    const rungs = ["KB", "MB", "GB", "TB"].map((u) => el("i", "", ladder, u));
+    // 2 — a folder tree, ticked off row by row
+    const c2 = cards[1].card;
+    const tree = el("div", "ptree", c2);
+    const rows = [["photos/", ""], ["├─ 2024/", "1,204 files"], ["├─ 2025/", "2,310 files"], ["└─ raw/", "418 files"]].map(([a, b], i) => {
+      const r = el("div", "prow", tree, `<span class="${i ? "" : "root"}">${a}</span><span class="cnt">${b}</span><span class="tick">✓</span>`);
+      return r;
+    });
+    // 3 — a transfer that drops and carries on
+    const c3 = cards[2].card;
+    const track = el("div", "ptrack", c3), fill = el("div", "pfill", track), mark = el("div", "pmark", track);
+    const pct = el("div", "ppct", c3), state = el("div", "pstate", c3);
+
+    rows.forEach((_, i) => api.cue("tick", M.folders + 0.1 + i * 0.17, 0.55));
+    cards.forEach((_, i) => api.cue("pop", T0[i] + 0.1, 0.75));
+    api.cue("deny", M.drops, 0.9);
+    api.cue("swish", M.picks - 0.1, 0.7);
+    const DONE = Math.max(M.picks + 1.25, api.segEnd("more1") - 0.25);
+    api.cue("chime", DONE, 0.7);
+
+    const human = (kb) => {
+      const units = ["KB", "MB", "GB", "TB"];
+      let i = 0, v = kb;
+      while (v >= 1000 && i < 3) { v /= 1000; i++; }
+      return [v >= 100 ? Math.round(v).toString() : v >= 10 ? v.toFixed(0) : v.toFixed(1), units[i], i];
+    };
+
+    return function (t) {
+      camera(cam, t, [[0, 1.0, 0, 6], [0, 1.045, 0, 0, 6.5]]);
+      cards.forEach((c, i) => {
+        // all three take their place at once, dimmed; each lights on its phrase
+        const lit = ramp(t, T0[i], T0[i] + 0.45);
+        reveal(c.wrap, ramp(t, -0.2 + i * 0.1, 0.45 + i * 0.1), { dy: 60, scale: 0.94, alpha: lerp(0.3, 1, lit) });
+        kin(c.tw, t, T0[i] + 0.2, 0.06, 0.5);
+        reveal(c.sb, ramp(t, T0[i] + 0.5, T0[i] + 0.95), { dy: 12 });
+        // the phrase being spoken is the bright one
+        const nextT = T0[i + 1];
+        const live = ramp(t, T0[i] + 0.1, T0[i] + 0.5) * (nextT == null ? 1 : 1 - 0.75 * ramp(t, nextT, nextT + 0.5));
+        c.card.style.setProperty("--on", live.toFixed(3));
+      });
+
+      // 1: 4 KB -> 2 TB on a log scale
+      const sp = inOutSine(ramp(t, M.size - 0.05, M.size + 2.3));
+      const [v, u, ui] = human(4 * Math.pow(5e8, sp));
+      setText(num, v); setText(unit, u);
+      rungs.forEach((r, i) => { r.style.opacity = i === ui ? 1 : 0.28; r.style.color = i === ui ? "var(--brand-l)" : ""; });
+
+      // 2
+      rows.forEach((r, i) => {
+        reveal(r, ramp(t, 0.15 + i * 0.08, 0.5 + i * 0.08), { dy: 10 });
+        const k = ramp(t, M.folders + 0.1 + i * 0.17, M.folders + 0.3 + i * 0.17);
+        r.querySelector(".tick").style.opacity = k.toFixed(3);
+        r.querySelector(".tick").style.transform = `scale(${(k <= 0 ? 0 : spring(k * 1.3, 9, 5)).toFixed(3)})`;
+      });
+
+      // 3: runs to 62%, drops, holds, carries on from 62%
+      const a = 0.62 * outCubic(ramp(t, T0[2] + 0.25, M.drops - 0.05));
+      const b = 0.38 * inOutSine(ramp(t, M.picks + 0.15, DONE));
+      const prog = a + b;
+      const lost = t >= M.drops && t < M.picks, back = t >= M.picks, done = t >= DONE;
+      fill.style.width = (prog * 100).toFixed(2) + "%";
+      fill.style.background = lost ? "var(--red)" : done ? "var(--green)" : "";
+      const shake = lost && t < M.drops + 0.35 ? Math.sin((t - M.drops) * 70) * 7 * (1 - (t - M.drops) / 0.35) : 0;
+      track.style.transform = `translateX(${shake.toFixed(1)}px)`;
+      mark.style.opacity = (ramp(t, M.drops, M.drops + 0.2) * (1 - ramp(t, DONE - 0.3, DONE))).toFixed(3);
+      setText(pct, Math.round(prog * 100) + "%");
+      setHTML(state, done ? `<span style="color:var(--green)">✓ Saved</span>`
+        : back ? `<span style="color:var(--brand-l)">↻ Resumed at 62%</span>`
+        : lost ? `<span style="color:var(--red)">✕ Connection lost</span>` : `<span>Sending…</span>`);
+    };
+  }
+
+  /* ====================================================================== *
    *  SERVER — free to use, or yours to run
    * ====================================================================== */
   function server(cam, api) {
@@ -615,16 +745,16 @@
     const subl = el("div", "abs sub", cam); Object.assign(subl.style, { left: "170px", top: "650px" });
     subl.innerHTML = `Docker image · <span style="font-family:var(--mono);color:var(--ink)">poliuscorp/fsend</span>`;
 
-    const T = terminal(cam, 1010, 340, 760, 340, "you@vps — zsh");
+    const T = terminal(cam, 960, 330, 800, 360, "you@vps: ~/fsend-server");
     const cmd = line(T.body);
-    line(T.body);
     const o1 = line(T.body), o2 = line(T.body), o3 = line(T.body);
-    o1.innerHTML = `  <span class="ok">✓</span> pairing  <span class="d">:8080/tcp</span>`;
-    o2.innerHTML = `  <span class="ok">✓</span> relay    <span class="d">:443/udp</span>`;
-    o3.innerHTML = `  <span class="a">●</span> <span class="d">ready</span>`;
+    o1.innerHTML = ` <span class="ok">✔</span> Network fsend-server_default  <span class="ok">Created</span>`;
+    o2.innerHTML = ` <span class="ok">✔</span> Container fsend               <span class="ok">Started</span>`;
+    o3.innerHTML = ` <span class="ok">✔</span> Container fsend-caddy         <span class="ok">Started</span>`;
+    T.body.style.fontSize = "27px";
 
-    const C = "fsend server", RATE = 0.06;
-    const c0 = api.on("server2", "command") - 0.55;
+    const C = "docker compose up -d", RATE = 0.05;
+    const c0 = api.on("server2", "command") - 0.75;
     const enter = c0 + C.length * RATE + 0.1;
     typeCues(api, c0, C, RATE);
     api.cue("enter", enter, 0.9);
@@ -638,7 +768,7 @@
       reveal(subl, ramp(t, api.on("server2", "command"), api.on("server2", "command") + 0.5), { dy: 14 });
       reveal(T.node, ramp(t, -0.1, 0.6), { dy: 50, scale: 0.96 });
       halo.style.opacity = (0.6 + 0.4 * ramp(t, enter, enter + 0.4)).toFixed(3);
-      setHTML(cmd, `<span class="p">you@vps</span> <span class="f">~ $</span> ${typed(C, t, c0, RATE)}${t < enter && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
+      setHTML(cmd, `<span class="p">you@vps</span><span class="f">:~/fsend-server$</span> ${typed(C, t, c0, RATE)}${t < enter && blink(t, 0.9) ? '<span class="caret"></span>' : ""}`);
       [o1, o2, o3].forEach((o, i) => reveal(o, ramp(t, enter + 0.15 + i * 0.14, enter + 0.4 + i * 0.14), { dy: 10 }));
     };
   }
@@ -660,7 +790,7 @@
       return { p, t0: api.on("outro2", k) - 0.1 };
     });
     const url = at(cam, 960, 900, "url");
-    url.innerHTML = `github.com/polius/fsend<b>·</b>open source`;
+    url.innerHTML = `github.com/polius/fsend<b>·</b>open source<b>·</b>MIT`;
     const CUR = (a) => `<span style="display:inline-block;width:0.6em;height:1.05em;vertical-align:-0.16em;background:var(--ink);opacity:${a}"></span>`;
     afterFonts(() => {
       setHTML(inst, `<span class="dl">$</span><span>${IC}${CUR(1)}</span>`);
@@ -694,6 +824,7 @@
     };
   }
 
+  window.SCENES.more = more;
   window.SCENES.open = open;
   window.SCENES.demo = demo;
   window.SCENES.trust = trust;

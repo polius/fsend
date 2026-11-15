@@ -166,11 +166,11 @@ fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as ta
 <p align="center">
   <a href="https://pol.alzina.dev/videos/fsend.mp4">
     <img src="docs/assets/video-poster.png"
-      alt="Watch the fsend video — a one-minute walkthrough of how it works">
+      alt="Watch the fsend video — a 65-second walkthrough of how it works">
   </a>
 </p>
 
-<p align="center"><em>One minute: pairing with a share code, then the local, direct and relay
+<p align="center"><em>Sixty-five seconds: pairing with a share code, then the local, direct and relay
 routes fsend tries to move the bytes. Plays as an MP4 in your browser; prefer reading?
 See <a href="docs/architecture.md">Architecture</a>.</em></p>
 
