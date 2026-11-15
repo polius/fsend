@@ -191,7 +191,7 @@ when:
   with `E047`, and the sender warns that the server's certificate isn't
   trusted.
 - **The server is too old** to offer the fallback, or the WebSocket
-  connection fails. The transfer stops with `E042`.
+  connection fails. The receiver stops with `E042`.
 - **The server runs in pairing-only mode** (`FSEND_RELAY_ENABLED=false`).
   There is no relay to fall back to.
 

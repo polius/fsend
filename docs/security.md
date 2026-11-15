@@ -122,8 +122,10 @@ What a server operator can observe:
   which can't be linked back to the code.
 - **IP addresses and timing:** your public IP and port, and the ICE
   candidates each peer publishes (the LAN addresses and ports your peer
-  may connect to directly). VPN, container, VM and link-local interfaces
-  are never published.
+  may connect to directly). Link-local addresses are never published,
+  and neither are the interfaces fsend recognizes by name as VPN,
+  container or VM interfaces (`utun`, `tun`, `wg`, `tailscale`,
+  `docker`, `veth`, `vmnet` and similar).
 - **Your fsend version** (sent with each pairing request) and the wire
   protocol version.
 - **On the relay path:** the volume and timing of the encrypted traffic.
@@ -143,7 +145,7 @@ All of those travel inside the peer-to-peer TLS session.
 | The share code | ✗ never — only a derived slot (see below) |
 | Slot, session ID, role tokens | ✓ in memory, for the life of the session |
 | Your IP | ✓ in memory, for pairing — not written to disk at the default log level |
-| Your local addresses | ✓ the LAN addresses your peer may connect to directly (ICE host candidates), relayed in memory during pairing. VPN, container, VM and link-local interfaces are never published |
+| Your local addresses | ✓ the LAN addresses your peer may connect to directly (ICE host candidates), relayed in memory during pairing. Link-local addresses and the VPN, container and VM interfaces fsend recognizes by name are not published |
 | Your fsend version | ✓ sent with every pairing request |
 
 ### What it writes to disk
@@ -246,8 +248,8 @@ about confidentiality (the traffic is already end-to-end encrypted):
   source address) sent to that address, and only a `REGISTER` that echoes
   it registers the peer. A spoofed source never sees the cookie, so it
   can't aim the relay at a third party. Control replies are fixed-size,
-  so they don't amplify, and challenge replies are rate-limited per
-  source prefix.
+  so they don't amplify. Challenge replies are rate-limited per
+  allocation, and STUN replies per source prefix.
 - **Two peers per allocation.** Each side registers under a stable
   private peer ID derived from its role token; a third ID is refused.
   A peer whose address changes (a network switch) re-registers with a

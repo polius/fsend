@@ -70,7 +70,7 @@ exiting.
 
 | Code | Meaning | Fix |
 |---|---|---|
-| `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. Case, spaces and a missing hyphen are fine. |
+| `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. Case and spaces are fine, and the hyphens can be left out (both, not just one). |
 | `E002` | No sender is waiting on that code (after about 6 seconds of trying) | It was mistyped, the sender stopped, or it was used more than ten minutes ago. Have the sender run again for a fresh code. If a second line says this device's clock is off, fix the date and time: codes are salted with the UTC day. A sender and receiver on either side of 1.16 can't find each other either: run `fsend --version` on both ([compatibility](compatibility.md)). |
 | `E003` | Another receiver already connected with this code | Each code works for one receiver. (A receiver resuming its own dropped transfer on the same device doesn't hit this.) Have the sender run again and share the new code. |
 
@@ -203,8 +203,9 @@ rest of the transfer completed.
 - To replace differing files, receive again with `--overwrite`.
 - The accept prompt shows the breakdown (new / up to date / differ) before
   you confirm; `--manifest <file>` records the exact per-file outcome.
-- Byte-identical files are always skipped silently — this only fires on
-  real differences.
+- Identical files are always skipped silently. Without `--checksum`,
+  identical means the same size and modification time, so a copy with
+  the same bytes but another timestamp counts as differing.
 - To keep both copies, receive again with `--rename` (the incoming file
   is saved as `name (1).ext`).
 - If you chose "skip them" at the prompt yourself, there is no error

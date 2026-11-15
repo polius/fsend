@@ -34,8 +34,8 @@ short share code.
 
 - **Direct, with no network setup** — on the same network or across NATs that
   can be hole-punched, the bytes go straight from sender to receiver. When no
-  direct path exists, or a network blocks UDP, a relay over HTTPS (TCP 443)
-  takes over. Nothing to configure.
+  direct path exists, a relay takes over, through HTTPS (TCP 443) on networks
+  that block UDP. Nothing to configure.
 - **End-to-end encrypted** — TLS 1.3 between the peers, authenticated by the
   share code through a PAKE (CPace) bound to the TLS session, over a
   post-quantum hybrid key exchange (X25519MLKEM768). Even the relay only ever

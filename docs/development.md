@@ -35,7 +35,8 @@ The E2E suite builds its own binary in a temp dir and runs an isolated
 server on loopback — no shell wrapper needed. It takes roughly 70–110 s
 (about 105 s on an M-series laptop, including the build); much of that
 is tests waiting out real timeouts. CI runs every gating `go test` with
-`-count=1 -timeout 600s`, so it never reuses cached results.
+`-count=1` and a timeout (600 s; 900 s in the FreeBSD VM), so it never
+reuses cached results.
 
 The LAN discovery tests skip on a machine without working multicast.
 Set `FSEND_TEST_REQUIRE_MULTICAST=1` to make them fail instead; CI does,
