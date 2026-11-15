@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -126,23 +127,31 @@ func TestPairOverInternet_ReceiverThatLeavesFreesTheCode(t *testing.T) {
 // not cost a receiver whose connection is already on its way: the sender
 // keeps accepting for the grace period.
 func TestPairOverInternet_SessionGoneGraceLetsTheReceiverFinish(t *testing.T) {
-	// A grace far longer than a handshake takes, also where the code's
-	// key stretch is slow (the 32-bit CI job needs seconds for it): the
-	// test ends as soon as the receiver is in, not when the grace does.
+	// A grace far longer than a handshake takes, also on a loaded CI
+	// runner: the test ends as soon as the receiver is in, not when the
+	// grace does.
 	origEvery, origGrace := sessionWatchEvery, sessionGoneGrace
 	sessionWatchEvery, sessionGoneGrace = 20*time.Millisecond, 45*time.Second
 	t.Cleanup(func() { sessionWatchEvery, sessionGoneGrace = origEvery, origGrace })
 
 	_, baseURL := newSignalingTestServer(t)
-	var creates, gone int32
+	// polls counts the sender's watch polls (their since is past any
+	// candidate list); told counts those the server answered with "no
+	// such session".
+	var creates, polls, told int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/session" {
 			atomic.AddInt32(&creates, 1)
 		}
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/candidates") && strings.Contains(r.URL.RawQuery, "since=1073741824") {
-			atomic.AddInt32(&gone, 1)
+		watch := r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/candidates") && strings.Contains(r.URL.RawQuery, "since=1073741824")
+		if watch {
+			atomic.AddInt32(&polls, 1)
 		}
-		proxyTo(t, baseURL, w, r)
+		rec := &statusWriter{ResponseWriter: w}
+		proxyTo(t, baseURL, rec, r)
+		if watch && rec.status == http.StatusNotFound {
+			atomic.AddInt32(&told, 1)
+		}
 	}))
 	defer ts.Close()
 
@@ -168,20 +177,30 @@ func TestPairOverInternet_SessionGoneGraceLetsTheReceiverFinish(t *testing.T) {
 	defer link.close()
 	// The watch only runs while the sender waits for the first connection:
 	// its first poll says the sender's side of the path is up too.
-	for atomic.LoadInt32(&gone) < 1 && ctx.Err() == nil {
+	for atomic.LoadInt32(&polls) < 1 && ctx.Err() == nil {
 		time.Sleep(10 * time.Millisecond)
 	}
 	// "The server restarted": the session is gone, the receiver is not.
 	if err := rc.Delete(ctx, joined.SessionID, joined.RoleToken); err != nil {
 		t.Fatal(err)
 	}
-	seen := atomic.LoadInt32(&gone)
-	for atomic.LoadInt32(&gone) < seen+1 && ctx.Err() == nil {
-		time.Sleep(10 * time.Millisecond) // the sender has now seen the 404
+	// Wait until the sender has been told. Not "one more poll": the watch
+	// stops polling at the first 404, so a poll that lands between the
+	// Delete and a count taken here would be the last one there is.
+	for atomic.LoadInt32(&told) < 1 && ctx.Err() == nil {
+		time.Sleep(10 * time.Millisecond)
 	}
 	res, err := link.dial(ctx, code)
 	if err != nil {
-		t.Fatalf("handshake inside the grace period: %v", err)
+		// What the sender was doing says which side dropped the ball.
+		sender := "still waiting"
+		select {
+		case serr := <-done:
+			sender = fmt.Sprintf("returned %v", serr)
+		default:
+		}
+		t.Fatalf("handshake inside the grace period: %v (sender %s; %d session(s) created, %d watch polls, %d answered 404)",
+			err, sender, atomic.LoadInt32(&creates), atomic.LoadInt32(&polls), atomic.LoadInt32(&told))
 	}
 	defer res.Close()
 	if err := <-done; err != nil {
@@ -228,4 +247,15 @@ func TestWatchSessionGone_IgnoresAnUnreachableServer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a deleted session did not end the wait")
 	}
+}
+
+// statusWriter remembers the status a handler wrote.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
