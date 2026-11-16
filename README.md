@@ -162,8 +162,8 @@ The same test over the route each tool uses between networks:
 
 | Between networks | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|:---:|:---:|:---:|:---:|:---:|
-| One 1 GiB file | **21 s** | 34 s | **21 s** | 25 s | — |
-| 5,000 files of 20 KiB | **2.5 s** | 9.8 s | 5.8 s | 35 s | — |
+| One 1 GiB file | **21 s** | 34 s | **21 s** | 25 s | LAN only |
+| 5,000 files of 20 KiB | **2.5 s** | 9.8 s | 5.8 s | 35 s | LAN only |
 
 Every row, the method and the sources are in the
 [full comparison](docs/comparison.md).
