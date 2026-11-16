@@ -1,9 +1,7 @@
 # Usage
 
-Reference for the `fsend` CLI and its `server` subcommand. For inline
-help, run `fsend --help` (the common flags), `fsend help advanced` (every
-other flag, environment variables and exit status), or
-`fsend server --help`.
+`fsend --help` shows the common flags. `fsend help advanced` shows the
+rest, the environment variables and the exit codes.
 
 ## Quick reference
 
@@ -11,24 +9,21 @@ other flag, environment variables and exit status), or
 |---|---|
 | Send a file | `fsend report.pdf` |
 | Send a folder | `fsend ./project` |
-| Send multiple files | `fsend a.txt b.txt c.txt` |
-| Send from stdin | `cat file.bin \| fsend` |
-| Send a literal string | `fsend --text "hello world"` |
+| Send several files | `fsend a.txt b.txt c.txt` |
+| Send from a pipe | `cat file.bin \| fsend` |
+| Send text | `fsend --text "hello world"` |
 | Receive | `fsend abc-defg-jkm` |
-| Receive without prompt | `fsend --yes abc-defg-jkm` |
+| Receive without a prompt | `fsend --yes abc-defg-jkm` |
 | Use your own server | `fsend --connect fs.example.com:443` |
-| Use a server for one run | `fsend report.pdf --server fs.example.com` |
-| Reset to default server | `fsend --connect default` |
-| Show current server | `fsend --connect` |
+| Back to the public server | `fsend --connect default` |
 
-`fsend` picks send or receive automatically — an `abc-defg-jkm` shape
-means receive, anything else means send. If an arg is both a valid code
-and a real path, you'll be asked. Use `--send` / `--receive` to commit
-up front in scripts.
+fsend picks send or receive from the argument: a code means receive,
+anything else means send. If an argument is both a code and a file, it
+asks. In scripts, use `--send` or `--receive`.
 
 ## Your first transfer
 
-Two machines, one command each. **On the sender:**
+**On the sender:**
 
 ```console
 $ fsend report.pdf
@@ -49,11 +44,11 @@ $ fsend report.pdf
 ⠋ Waiting for receiver · 4 s · Ctrl-C to cancel
 ```
 
-Share that code (`abc-defg-jkm`) with the receiver any way you like —
-chat, email, out loud. The two lines under it are for a receiver who
-doesn't have fsend yet: the first for macOS and Linux, the second for
-PowerShell on Windows. **On the receiver**, run the command; fsend
-shows who's sending and what, then asks before writing anything:
+Share the code any way you like. The two install lines are for a
+receiver without fsend: the first for macOS and Linux, the second for
+Windows PowerShell.
+
+**On the receiver:**
 
 ```console
 $ fsend abc-defg-jkm
@@ -66,20 +61,8 @@ $ fsend abc-defg-jkm
   2.4 MB · 8 ms · local network
 ```
 
-Meanwhile the sender reports who accepted and finishes with a matching
-summary:
-
-```console
-✓ Receiver connected · local network
-✓ desktop accepted
-✓ Sent report.pdf to desktop
-  2.4 MB · 11 ms · local network
-```
-
-The file lands in the current directory (use `--out <dir>` to change
-that, or `--yes` to skip the prompt). The last line names the route:
-`local network`, `direct`, or `relay via <server>`. That's the whole
-flow — everything below is detail.
+The last line names the route: `local network`, `direct` or
+`relay via <server>`.
 
 ## Sending
 
@@ -87,61 +70,33 @@ flow — everything below is detail.
 fsend [file|dir]... [flags]
 ```
 
-Share the code (`abc-defg-jkm`) with the receiver. The code works for
-one receiver, for as long as the sender keeps running (each pairing round
-waits up to an hour). Piped stdin (a pipe or a non-empty redirected file)
-is sent without a positional argument; an empty or `/dev/null` stdin shows
-help instead. When stdout isn't a terminal, the bare code is also printed
-there (`code=$(fsend f)`).
+- The code works for **one receiver**, while the sender keeps running.
+- Piped input is sent without an argument: `tar c ./build | fsend`.
+- When stdout isn't a terminal, the code is also printed there:
+  `code=$(fsend file)`.
+- The sender copies `fsend <code>` to the clipboard (never with
+  `--password`).
 
-A file inside a folder that the sender can't read (permissions), or any
-file that vanishes or shrinks mid-send, is skipped and listed on both
-sides; everything else still transfers, and both sides exit `E050`. A
-file or folder named on the command line that can't be read, or a
-subfolder that can't be listed, stops the send with `E010` before a code
-is issued. A file that changes while it's
-being read is still sent, with a warning on both sides that the copy may
-be inconsistent. One transfer can hold up to 4,000,000 files and
-folders; past that the sender refuses before issuing a code (`E051`).
-
-| Flag | Purpose |
+| Flag | What it does |
 |---|---|
-| `--text <string>` | Send a literal string instead of a file. The receiver prints it to stdout; nothing is saved to disk. To keep it: `fsend <code> > note.txt`. |
-| `--password[=<password>]` | Require the receiver to supply this password. Bare `--password` prompts interactively with a random four-word default; supply it inline as `--password=<password>`. Also `FSEND_PASSWORD`. |
-| `--exclude <glob,…>` | Skip entries when bundling a directory. |
-| `--as <name>` | File name the receiver saves a piped stream as (`pg_dump db \| fsend --as db.sql`). Default: `fsend-stdin-<random>`. |
-| `--preview` | List what would be sent as CSV (`path,size`) and exit — no code, no transfer. Redirect with `> files.csv` to inspect. |
+| `--text <string>` | Sends text. The receiver prints it instead of saving a file. |
+| `--password[=<pw>]` | Requires a password. Bare `--password` prompts, with a random default. Also `FSEND_PASSWORD`. |
+| `--exclude <glob,…>` | Skips matching entries in a folder: `--exclude 'node_modules,*.log'`. |
+| `--as <name>` | Name for a piped stream: `pg_dump db \| fsend --as db.sql`. |
+| `--preview` | Lists what would be sent (CSV: `path,size`) and exits. |
 
-```sh
-fsend report.pdf
-fsend ./project --exclude 'node_modules,*.log,.git'
-tar c ./build | fsend
-fsend --text "the wifi password is hunter2"
-fsend ./secret.tar.gz --password         # prompts with a random default
-```
+**Files that can't be sent:**
 
-### Symlinks
+- A file in a folder that can't be read, or that vanishes mid-send, is
+  skipped. Both sides list it and exit `E050`.
+- A file named on the command line that can't be read stops the send
+  with `E010`.
+- A file that changes while being read is still sent, with a warning.
+- One transfer holds up to 4,000,000 files and folders (`E051` above).
 
-fsend **follows** symlinks: it sends what the link points to, so the
-receiver gets a real file — not a link that dangles on their machine. A
-folder containing
-
-```text
-report.pdf
-latest -> report.pdf      # a symlink
-```
-
-arrives with `latest` as a **real copy** of `report.pdf` (both files land —
-the link's bytes are sent too). This works even when the target is outside
-the folder you're sending.
-
-A broken link (its target is missing) found in a folder you send is
-skipped: fsend names it before printing the code and again after the
-transfer, sends everything else, and the sender exits `E050`. That holds
-at any depth, including the top level of `fsend .`. A broken link you
-name on the command line, a link whose target can't be read and a link
-that loops back into the folder stop the send with `E036` — fix it, or
-skip it with `--exclude`.
+**Symlinks** are followed: the receiver gets a real copy of the target.
+A broken link inside a folder is skipped (`E050`). A broken link named on
+the command line, or a link loop, stops the send with `E036`.
 
 ## Receiving
 
@@ -149,68 +104,38 @@ skip it with `--exclude`.
 fsend <code> [flags]
 ```
 
-By default the receiver sees the sender's device name and what they're
-sending, then confirms. Pass `--yes` to skip. (A short `--text` is
-printed on a terminal without asking.) Codes are forgiving: any
-case, spaces, underscores or dots for hyphens (`abc defg jkm`, also
-typed as three words: `fsend abc defg jkm`), no hyphens at all
-(`abcdefgjkm`), surrounding quotes and a trailing full stop all work —
-unless a file by that exact name exists, which is sent instead. To keep
-the code out of the process list on a shared machine,
-use `FSEND_CODE=abc-defg-jkm fsend`, or bare `fsend --receive` to be asked
-for it.
+The receiver sees who is sending what, then confirms. Codes are
+forgiving: any case, spaces or dots instead of hyphens, or no hyphens at
+all. `fsend abc defg jkm` works too.
 
-Before the prompt, fsend checks there is enough free space for what it
-is about to write; if not, it stops with `E008` before anything is
-written.
+To keep the code out of the process list, use
+`FSEND_CODE=abc-defg-jkm fsend`, or `fsend --receive` to be asked for it.
 
-| Flag | Purpose |
+| Flag | What it does |
 |---|---|
-| `-y`, `--yes` | Auto-accept. Files that already exist and differ are kept (exit `E013`) unless you also pass `--overwrite` or `--rename`. |
-| `-o`, `--out <dir>` | Receive into this directory (created if missing, like `mkdir -p`). Default: cwd. |
-| `-o -`, `--out -` | Stream the payload to stdout instead of saving it. A single file, text or piped stream arrives as raw bytes; a folder or several files arrive as a plain (uncompressed) tar stream: `fsend <code> -o - \| tar x`. Retries are disabled: emitted bytes can't be rewound. |
-| `--overwrite` | Replace existing files whose contents **differ**. A folder is never deleted to make room for a file, unless it is empty. (Identical files are skipped either way.) |
-| `--rename` | Keep both: save each differing file next to yours as `name (1).ext`. |
-| `--manifest <file>` | After receiving, write a CSV record (`path,size,status,sha256`) to `<file>` — what fsend did with each file (`new` / `identical` / `overwritten` / `renamed` / `kept` / `resumed` / `skipped`) and the SHA-256 of the content written (empty when no bytes moved this run, e.g. identical or kept files). |
-| `--checksum` | Decide what's already present by hashing **contents** (BLAKE3) instead of comparing size + mtime — like rsync's `-c`. See [below](#when-a-file-already-exists). |
-| `--password[=<password>]` | Supply the sender's password non-interactively as `--password=<password>`. Also `FSEND_PASSWORD`. |
+| `-y`, `--yes` | Accepts without asking. Existing files that differ are kept (`E013`), unless you add `--overwrite` or `--rename`. |
+| `-o`, `--out <dir>` | Saves into `<dir>`, created if needed. Default: the current folder. |
+| `-o -` | Writes to stdout. A folder arrives as a tar stream: `fsend <code> -o - \| tar x`. |
+| `--overwrite` | Replaces existing files that differ. |
+| `--rename` | Keeps both, saving the new one as `name (1).ext`. |
+| `--checksum` | Compares file contents instead of size and date. Slower, but catches every change. |
+| `--manifest <file>` | Writes a CSV of what happened to each file, with its SHA-256. |
+| `--password=<pw>` | The sender's password. Also `FSEND_PASSWORD`. |
 
-```sh
-fsend abc-defg-jkm
-fsend --yes --out ~/Downloads abc-defg-jkm
-fsend --yes --out - abc-defg-jkm > dump.sql   # pipe-to-pipe with the sender's `… | fsend`
-FSEND_PASSWORD=swordfish fsend --yes abc-defg-jkm
-```
+fsend checks for free space before writing (`E008` if there isn't
+enough).
 
-### Password attempts
-
-When the sender required a password and the receiver didn't supply one,
-the receiver is prompted interactively and gets **3 attempts**. A wrong
-password supplied non-interactively (`--password=<password>` or
-`FSEND_PASSWORD`) aborts the attempt **on the first try** — with no human
-present to retry, failing fast beats hanging a script. The sender keeps
-waiting with a warning, so the receiver can rerun the same command with
-the right password **on the same device** (the code itself is already
-spent; see [Resuming](#resuming-an-interrupted-transfer)). After three
-such rounds the sender gives up and a fresh code is needed.
+**Passwords.** Typed at the prompt, you get 3 tries. Given with
+`--password=` or `FSEND_PASSWORD`, a wrong one fails at once. The sender
+keeps waiting, so you can retry on the same device.
 
 ### When a file already exists
 
-Re-send a folder and fsend only transfers what's new or changed. How it
-decides:
+Re-sending a folder moves only what's new or changed. By default a file
+with the same name, size and date counts as identical. `--checksum`
+compares contents instead.
 
-- **Default (fast):** fsend matches files by name, then treats one with
-  the same **size and modification time** as identical and skips it
-  without reading it.
-- **`--checksum` (thorough):** compares the file's **contents** (a BLAKE3
-  hash) instead. Slower — it reads the files already on disk — but it
-  catches a file that changed in place without its size or timestamp
-  changing.
-
-Identical files (by the rule in use) are always skipped silently, and
-if everything is already up to date there is no prompt at all. When some
-files *do* differ, the accept prompt lists them (the first five when
-there are more than six; `l` lists all) and asks once what to do:
+When files differ, fsend asks once:
 
 ```console
 ? 1 file here already exists and differs
@@ -219,110 +144,55 @@ there are more than six; `l` lists all) and asks once what to do:
 ? Save to ./  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
 ```
 
-Each row says which copy is newer (`yours is newer by 3 h`, `theirs is
-newer by 2 d`, or `same age`). The warning line appears only when every
-local copy is the newer one.
+- **Keep both** (default): saves the new copy as `a (1).txt`.
+- **Replace**: overwrites yours. A non-empty folder is never deleted.
+- **Skip them**: keeps yours and receives the rest.
+- **No**: declines the transfer.
 
-- **Keep both** (the default, also `y` or Enter) saves the incoming copy
-  as `a (1).txt`. If a copy from an earlier run already holds the
-  incoming version, no second copy is made.
-- **Replace** overwrites your copy. A folder is never deleted to make
-  room for a file, unless it is empty.
-- **Skip them** keeps your copies and receives everything else. That's
-  your decision, so fsend exits 0.
-- **No** declines the whole transfer (also exit 0).
+**Names that can't be saved** are skipped, listed on both sides, and
+both exit `E050`:
 
-Without a terminal to ask (`--yes`), differing files are kept and the
-receiver exits `E013`, unless you pass `--overwrite` (replace) or
-`--rename` (keep both). `--manifest <file>` records the exact per-file
-outcome after a receive.
+- Two names your disk treats as one (`Report.pdf` and `report.pdf` on a
+  case-insensitive disk). The first is saved.
+- A name the system refuses, like `aux.c` on Windows or one longer than
+  255 bytes.
 
-Two names that your filesystem treats as one — `Report.pdf` and
-`report.pdf` on a case-insensitive disk, or the NFC and NFD spellings of
-`café` on macOS — would overwrite each other, so fsend saves the first,
-skips the other, lists it, and exits `E050`. fsend probes the receiving
-folder's actual behaviour rather than guessing from the OS. The name
-`.fsend` is reserved for partial downloads (see below).
-
-A name the receiving system can't create costs that one file, never the
-transfer: a name Windows doesn't allow (`aux.c`, `notes:draft`,
-`what?.txt`), or one the filesystem refuses when the file is written
-(longer than 255 bytes, invalid UTF-8 on macOS). The file is skipped,
-both sides list it with the reason, and both exit `E050`. With `--out -`
-nothing is created on disk, so such names go into the stream unchanged.
+The name `.fsend` is reserved for partial downloads.
 
 ### Verifying what you received
 
-fsend verifies every file against a BLAKE3 root sent by the sender
-before it keeps it. For an independent check, `--manifest <file>` records
-the SHA-256 of each file written this run; compare it against
-`shasum -a 256 <file>` on the sender. (The terminal doesn't print hashes.)
-
-The route (`local network`, `direct`, or `relay via <server>`) is
-named on the sender's "Receiver connected" line, on the receiver's
-"Incoming" block and in both summaries. (Plain output, piped or
-`FSEND_PLAIN=1`, repeats it on each progress line.) A successful run
-that lasted 10 seconds or more, the wait for the other side included,
-rings the terminal bell and raises a desktop notification (when stderr
-is a terminal and `--quiet` is not set; `FSEND_NO_NOTIFY=1` turns it
-off).
+fsend checks every file against a hash sent by the sender before keeping
+it. For your own check, `--manifest` records each file's SHA-256 to
+compare with `shasum -a 256` on the sender.
 
 ### Resuming an interrupted transfer
 
-If a transfer is interrupted, fsend keeps what it already received in a
-hidden `.fsend/` folder inside the receive directory and continues from
-there next time — only the missing bytes transfer. Short drops (a Wi-Fi
-blip, a network change) are retried automatically without you doing
-anything.
+Partial data is kept in a hidden `.fsend/` folder. Only the missing bytes
+move next time, and short network drops are retried on their own.
 
-While the sender's fsend is **still running**, rerun the same
-`fsend <code>` **on the same device** — the sender is back to waiting,
-and the transfer resumes. This works because after the first successful
-handshake both sides switch from the code to a resume key only they
-hold; the receiver saves it in its config directory for up to 24 hours.
-The code itself is spent: anyone else who tries it gets `E003` for the
-next ten minutes (then `E002`), so nobody can step into your dropped
-transfer.
+- **Sender still running:** run the same `fsend <code>` again on the
+  same device. The code works only for that device now; anyone else gets
+  `E003`.
+- **Sender has exited:** the sender runs its command again and gets a
+  new code. The receiver runs the new code **in the same folder**.
 
-Once the sender has exited, resuming is a fresh send with a new code:
-
-1. **Sender** runs the original command again. fsend issues a *new* code.
-2. **Share the new code** with the receiver (the old one no longer works).
-3. **Receiver** runs the new code **in the same directory** as before.
-   fsend finds the partial in `.fsend/` and picks up where it stopped.
-
-Before resuming, the sender checks the receiver's whole partial against
-its own file. If the source changed or the prefix doesn't match, that
-file is sent again from the start — you never resume onto stale data.
-Partials untouched for seven days are removed by the next receive into
-that folder, and the `.fsend/` folder is removed once it is empty.
+If the source file changed, it is sent again from the start. Partials
+untouched for 7 days are deleted.
 
 ## Scripting
 
-`--quiet` makes fsend scriptable: on send it prints **only the share code**
-to stdout (progress, prompts, and summaries go to stderr), then blocks
-until a receiver connects. Capture the code from stdout:
+With `--quiet`, the sender prints only the code on stdout. Everything
+else goes to stderr. The receiver needs `--yes` with it.
 
 ```sh
-fsend file1.txt --quiet > code.txt    # prints the code, then waits
-```
-
-On receive, pair `--quiet` with `--yes` (nothing else can answer the
-prompt) and pass any password via `FSEND_PASSWORD`:
-
-```sh
+fsend file.txt --quiet > code.txt
 FSEND_PASSWORD=swordfish fsend "$(cat code.txt)" --quiet --yes --out ~/incoming
 ```
 
 ### JSON output (`--json`)
 
-`--json` turns stdout into NDJSON — one JSON object per line, nothing
-else. Human output (progress, prompts, summaries) stays on stderr, so
-`--json` composes with or without `--quiet`. Exit codes are unchanged.
-
-The **sender** emits the share code as soon as it is issued, then the
-transfer's progress and a final summary; the **receiver** emits the same
-minus the code:
+`--json` prints one JSON object per line on stdout. Human output stays on
+stderr, and exit codes don't change.
 
 ```json
 {"v":1,"event":"code","code":"abc-defg-jkm"}
@@ -333,149 +203,123 @@ minus the code:
 ```
 
 | Event | When | Fields |
-| --- | --- | --- |
-| `code` | Sender: the code is issued | `code`; `install`, the one-liner that installs fsend and receives with the code, for `sh`; `install_powershell`, the same for a Windows receiver, to run in PowerShell (both omitted when the send uses a server of its own) |
-| `peer` | The other side connected; once per peer | `name` (its device name), `route` |
-| `accepted` | The receiver agreed: on the sender when the receiver's decisions arrive, on the receiver when it says yes | — |
-| `retry` | A dropped connection is retried | `attempt`, `of` (the cap), `wait_ms` |
-| `progress` | While data moves, at most once a second | `bytes` (so far, resumed data included), `total` (omitted for a stdin stream), `file` (when several files move) |
-| `done` | Once, at the end | below |
+|---|---|---|
+| `code` | Sender: the code is ready | `code`, and `install` / `install_powershell` (the install-and-receive lines; only with the default server) |
+| `peer` | The other side connected | `name`, `route` |
+| `accepted` | The receiver said yes | — |
+| `retry` | A dropped connection is retried | `attempt`, `of`, `wait_ms` |
+| `progress` | While data moves, at most once a second | `bytes`, `total` (not for a pipe), `file` |
+| `done` | At the end | see below |
 
-Fields of `done`:
+`done` fields:
 
 | Field | Meaning |
-| --- | --- |
-| `ok` / `error` / `exit` | Outcome; `error` is the catalog code (e.g. `"E013"`) and matches the exit code table below |
-| `role` | `"sender"` or `"receiver"`; omitted when the command fails before either path is entered (e.g. a flag-parse error) |
-| `bytes_total` | Per role: the sender reports the full offered size; the receiver reports the bytes it accepted for writing (up-to-date and kept files count 0) — the two sides can differ for the same session |
-| `bytes_moved` | Bytes that crossed the wire this run (a re-send of unchanged files moves 0) |
-| `files_sent`, `files_skipped`, `files_kept` | Sender counts (`files_skipped` = files the receiver already had; `files_kept` = differing files it kept) |
-| `files_saved`, `files_up_to_date`, `files_kept` | Receiver counts |
-| `duration_ms`, `route` | Timed from the first byte; `route` is `local`, `direct`, or `relay` |
-| `dir` | Receiver: absolute directory files landed in |
-| `text` | Receiver: a `--text` payload rides here instead of raw stdout |
+|---|---|
+| `ok`, `error`, `exit` | The outcome. `error` is the code, such as `"E013"`. |
+| `role` | `sender` or `receiver`. Missing if the run failed before either started. |
+| `bytes_total` | Sender: the size offered. Receiver: the bytes it accepted. |
+| `bytes_moved` | Bytes that crossed the network in this run. |
+| `files_sent`, `files_skipped`, `files_kept` | Sender counts. |
+| `files_saved`, `files_up_to_date`, `files_kept` | Receiver counts. |
+| `duration_ms`, `route` | Time from the first byte; `local`, `direct` or `relay`. |
+| `dir` | Receiver: the folder files were saved in. |
+| `text` | Receiver: the text of a `--text` send. |
 
-On a failure before any summary exists (bad code, unreachable server),
-the `done` event carries only `ok`/`error`/`exit` — plus `role` when the
-failure happened after a send or receive path was entered. Fields are
-only ever **added** to this schema; `v` bumps on the first breaking
-change.
-
-`--json` is rejected with `--preview` (already CSV) and with `--out -`
-(stdout carries the received bytes).
+An early failure carries only `ok`, `error` and `exit`. New fields may
+be added; `v` changes only on a breaking change. `--json` can't be
+combined with `--preview` or `--out -`.
 
 ## Chaining through a middle machine
 
-If the sender and receiver can't reach each other but a third machine can
-reach both, splice two transfers on it: `--out -` streams a received
-payload to stdout, and a piped `fsend` sends stdin. The bytes flow
-`A → B → C` through the pipe — B never writes them to disk, and each hop
-is separately paired and encrypted:
+If A and C can't reach each other but B reaches both, chain two
+transfers on B. B never writes the data to disk, but it does decrypt it,
+so only use a machine you trust.
 
 ```sh
 fsend file.bin                          # A: prints code A
-fsend <codeA> --out - --yes | fsend     # B: relays A's stream; prints code B
+fsend <codeA> --out - --yes | fsend     # B: prints code B
 fsend <codeB> --out - > file.bin        # C: saves it
 ```
 
-The pipe carries one raw stream — no names — so redirect to the name you
-want on C. A folder sent from A leaves B as a tar stream (that's what
-`--out -` does with folders), so on C unpack it with
-`fsend <codeB> --out - | tar x`. Because B decrypts each hop to
-re-send it, only chain through a machine you trust.
+A folder leaves B as a tar stream: on C, use
+`fsend <codeB> --out - | tar x`.
 
 ## Choosing a server (`--connect`)
 
-The default pairing server is `fsend.alzina.dev` — best-effort, free,
-not guaranteed. Switch any time:
+The default server is `fsend.alzina.dev`: free, best effort.
 
 ```sh
-fsend --connect fs.example.com:443           # persisted
-fsend --connect fs.example.com:443,mySecret  # password-gated server
-fsend --connect default                      # back to the public default
-fsend --connect                              # show current
-fsend --connect http://10.0.0.5:8080         # plain HTTP (LAN-only server)
-fsend report.pdf --server fs.example.com     # this run only, not saved
+fsend --connect fs.example.com:443           # save a server
+fsend --connect fs.example.com:443,mySecret  # with a password
+fsend --connect default                      # back to the public server
+fsend --connect                              # show the current one
+fsend report.pdf --server fs.example.com     # this run only
 ```
 
-Without a scheme the server is reached over HTTPS (port 443 by default;
-plain HTTP for `localhost`). `--server` and `FSEND_SERVER` take the same
-forms, except `,<password>`, and never touch the config file — handy in
-CI. A run with either one doesn't use the saved server password; set
-`FSEND_SERVER_PASSWORD` for a password-gated server.
+Without a scheme, fsend uses HTTPS. `--server` and `FSEND_SERVER` never
+change the config file, and don't use its saved password (set
+`FSEND_SERVER_PASSWORD`).
 
-Config is at `~/.config/fsend/config.json` (Linux),
-`~/Library/Application Support/fsend/config.json` (macOS), or
-`%LOCALAPPDATA%\fsend\config.json` (Windows). See
-[Self-hosting](self-hosting.md) to run your own.
+The config file is at:
 
-## Shared flags
+- Linux: `~/.config/fsend/config.json`
+- macOS: `~/Library/Application Support/fsend/config.json`
+- Windows: `%LOCALAPPDATA%\fsend\config.json`
 
-| Flag | Purpose |
+To run your own server, see [Self-hosting](self-hosting.md).
+
+## Other flags
+
+| Flag | What it does |
 |---|---|
-| `--send` / `--receive` | Force mode instead of auto-detecting from the argument. Mutually exclusive; handy in scripts. `--receive` takes the code in any of its forgiving spellings, its three words included (`fsend --receive abc defg jkm`), and never reads them as files. |
-| `--device-name <string>` | Override the device name shown to the peer (default: hostname) — the sender's name in the receiver's `Incoming from …` line, the receiver's name in the sender's `… accepted` and summary lines. (`--name` still works.) |
-| `--server <host[:port]>` | Use this pairing server for this run only; the config file is untouched. Also `FSEND_SERVER`. |
-| `--local` | Local network only: never contact the pairing server, on either side. For when the server is down or must not be used; a receiver that finds no sender on the network gets `E002`. |
-| `-q`, `--quiet` | Suppress non-error output. On send, prints **just the share code** to stdout (see [Scripting](#scripting)); on receive, requires `--yes`. |
-| `--debug` | Verbose logging to stderr. Also `FSEND_DEBUG=1`. |
-| `--update` | Update fsend to the latest release by re-running the installer in place. Reports when already up to date. |
-| `--update --check` | Report whether a newer release exists — printing the same hint as the once-a-day notice, with the release-notes link — and exit without installing. Exits 0 either way. |
-| `--uninstall` | Remove the binary and **recursively delete** the fsend config directory (see [`--connect`](#choosing-a-server---connect) for the per-OS path). `--yes` skips confirmation. |
-| `--help` / `-h` | Show inline help. `fsend help advanced` shows the rest. |
-| `--version` / `-v` | Print version. |
+| `--send`, `--receive` | Forces send or receive. |
+| `--device-name <name>` | The name the other side sees. Default: the hostname. |
+| `--server <host>` | Uses this server for one run. Also `FSEND_SERVER`. |
+| `--local` | Local network only. Never contacts the server. |
+| `-q`, `--quiet` | Errors only. The sender still prints the code. |
+| `--debug` | Detailed logs on stderr. Also `FSEND_DEBUG=1`. |
+| `--update` | Updates fsend. `--update --check` only reports. |
+| `--uninstall` | Removes fsend and its config folder. `--yes` skips the question. |
+| `-h`, `--help` / `-v`, `--version` | Help and version. |
 
 ## Environment variables
 
-| Variable | Equivalent flag | Purpose |
-|---|---|---|
-| `FSEND_PASSWORD` | `--password` | Supply the transfer password out-of-band. |
-| `FSEND_PASSWORD_FILE` | `--password` | Read the transfer password from this file (trailing newline trimmed). Used only when `FSEND_PASSWORD` is unset; keeps the secret out of both argv and the environment. |
-| `FSEND_SERVER_PASSWORD` | `--connect <host:port>,<password>` | Shared secret for a self-hosted pairing server. Never sent to the public default server. |
-| `FSEND_SERVER_PASSWORD_FILE` | `--connect <host:port>,<password>` | Read the server password from this file instead. Used only when `FSEND_SERVER_PASSWORD` is unset. |
-| `FSEND_CODE` | `fsend <code>` | The code to receive, kept out of `ps` on shared machines. Used when no path or code is given (`FSEND_CODE=… fsend`), and by bare `--receive`. |
-| `FSEND_SERVER` | `--server` | Pairing server for this run, without saving it. |
-| `FSEND_THEME` | — | `light` or `dark`: tune colors to your terminal background. Unset, fsend reads `COLORFGBG` if the terminal sets it, otherwise asks the terminal for its background and, without an answer, uses the terminal's own ANSI colors. |
-| `FSEND_PLAIN` | — | Set to `1` for plain output — no colors, animation or Unicode symbols, one line per update — for screen readers and logs. Automatic when the locale isn't UTF-8. |
-| `FSEND_NO_NOTIFY` | — | Set to `1` to silence the bell and desktop notification fsend sends when a run that lasted 10 s or more succeeds. |
-| `FSEND_NO_CLIPBOARD` | — | Set to `1` to stop the sender copying `fsend <code>` to the clipboard. Password-protected sends never copy it. |
-| `FSEND_DEBUG` | `--debug` | Set to `1` (any value except `0`/`false`) for verbose stderr logging. |
-| `FSEND_NO_UPDATE_CHECK` | — | Set to `1` (any value except `0`/`false`) to disable the once-a-day check for a newer release. |
-| `NO_COLOR` | — | Set to any non-empty value to disable ANSI colors ([no-color.org](https://no-color.org)). |
-| `FORCE_COLOR` | — | Set to `1` (any value except `0`/`false`) to force ANSI colors on, even when output isn't a terminal. Colors only — spinners and progress bars still require a terminal. |
-| `TERM` | — | `TERM=dumb` disables all ANSI escapes: colors, spinners, progress rendering. |
+Flags win over variables.
 
-Flags always win when both are set.
+| Variable | What it does |
+|---|---|
+| `FSEND_PASSWORD` | The transfer password. |
+| `FSEND_PASSWORD_FILE` | Reads the transfer password from a file. |
+| `FSEND_SERVER_PASSWORD` | Password for your own server. Never sent to the public one. |
+| `FSEND_SERVER_PASSWORD_FILE` | Reads that password from a file. |
+| `FSEND_CODE` | The code to receive, kept out of the process list. |
+| `FSEND_SERVER` | The server for this run. |
+| `FSEND_THEME` | `light` or `dark`, to match your terminal. |
+| `FSEND_PLAIN=1` | Plain output: no colors, animation or symbols. For screen readers and logs. |
+| `FSEND_NO_NOTIFY=1` | No bell or desktop notification after a run of 10 s or more. |
+| `FSEND_NO_CLIPBOARD=1` | Doesn't copy the receive command to the clipboard. |
+| `FSEND_NO_UPDATE_CHECK=1` | Doesn't check for new releases. |
+| `FSEND_DEBUG=1` | Same as `--debug`. |
+| `NO_COLOR`, `FORCE_COLOR`, `TERM=dumb` | The usual color switches. |
 
-While a transfer runs, fsend checks GitHub in the background at most once a
-day for a newer release (never delaying the exit) and, if one exists, prints
-a two-line hint after the summary with the release
-link so you can see what changed — and the action that actually works for
-this install: `fsend --update`, or `brew upgrade fsend` on a
-Homebrew-managed binary, or "Install the new .deb" (`.rpm`, `.apk`) with
-the release page on a packaged install — never an `fsend --update` that
-would only refuse with [E039](#exit-codes). `fsend --update --check`
-prints the same two lines. The
-check is skipped when stderr isn't a terminal (so piped or scripted runs
-never trigger it) or `--quiet` is set, and can be turned off entirely with
-`FSEND_NO_UPDATE_CHECK=1`.
+Once a day, fsend checks for a new release in the background. If there
+is one, it prints a short notice with the right update command for your
+install. It never checks when output isn't a terminal or with `--quiet`.
 
 ## `fsend doctor`
 
-A read-only diagnostic covering what a transfer depends on. Each
-warning says what it affects and what still works. Exits `0` when every
-check passes and `43` (`E043`) when any is degraded, so scripts can gate
-on it. It checks the saved server, or `FSEND_SERVER` when set:
+Checks everything a transfer depends on. Each problem says what it
+affects and how to fix it. Exits `0` when all checks pass, `43` (`E043`)
+otherwise.
 
 ```text
 $ fsend doctor
 fsend doctor — checking what a transfer depends on
 
 ✓ config   server fsend.alzina.dev:443 (default)
-✓ config   FSEND_SERVER overrides it: fs.example.com:443
 ✓ server   reachable in 152 ms
 ✓ clock    matches the server's
-✓ UDP      relay fs.example.com:443 answered in 54 ms
+✓ UDP      relay fsend.alzina.dev:443 answered in 54 ms
 ✓ TCP      relay fallback over TCP works (echo in 61 ms)
 ✓ NAT      behind NAT, public address 203.0.113.7 — direct paths need hole
            punching; when it fails, transfers use the relay
@@ -488,228 +332,141 @@ fsend doctor — checking what a transfer depends on
 ✓ mDNS     local roundtrip ok in 3 ms
 ✓ mDNS     answered on the LAN in 30 ms
 
-✓ All 13 checks passed. Transfers will try your local network first.
+✓ All 12 checks passed. Transfers will try your local network first.
 ```
 
-A row is one of three things: `✓` a check that passed, `!` a problem
-(with what it costs and, in the fainter lines under it, how to fix it),
-or a row with no mark, for something doctor could not find out — a
-firewall whose rules need root to read, say. A row with no mark is not
-counted and never fails the run.
+`✓` passed, `!` is a problem. A row with no mark is something doctor
+couldn't find out, such as firewall rules that need root. It doesn't
+count as a failure.
 
-A run on Linux as an ordinary user, against a server that predates the
-TCP fallback (shown as it prints when piped or with `FSEND_PLAIN=1`,
-where the marks become `[OK]`, `[!]` and `[i]`, and nothing is wrapped):
-
-```text
-fsend doctor — checking what a transfer depends on
-
-[OK] config   server fsend.alzina.dev:443 (default)
-[OK] server   reachable in 152 ms
-[OK] clock    matches the server's
-[OK] UDP      relay fsend.alzina.dev:443 answered in 54 ms
-[!] TCP      this server has no TCP fallback for its relay — on a network that blocks UDP, cross-network transfers will fail
-[OK] network  LAN address 192.168.1.85
-[OK] IPv6     no global address (IPv4 only) — fine; direct paths use IPv4
-[OK] listener answered at 192.168.1.85:50664 over TCP in 2 ms and QUIC in 1 ms
-              dialled from this machine: the connection never left it, so this shows the listener works, not that other devices get past a firewall
-[i] firewall ufw is on and blocks incoming connections by default; its rules can't be read without root
-             `sudo ufw status` lists them. fsend listens on UDP and TCP 50000-50999; to open them:
-             sudo ufw allow 50000:50999/udp && sudo ufw allow 50000:50999/tcp
-[OK] mDNS     answered on the LAN in 34 ms (loopback has no multicast on this system; not needed)
-
-[FAIL] Some checks found a problem — see the warnings above. [E043]
-  Each one says what it affects and what still works.
-```
-
-| Check | Meaning |
+| Check | What it tests |
 |---|---|
-| `config` | Which pairing server is configured (custom vs default; the server password is never printed). |
-| `server` | HTTPS reachability of that server's `/health`. Unreachable → cross-network transfers fail, LAN transfers are unaffected. |
-| `clock` | This device's clock against the server's `Date` header. Codes are salted with the UTC day, so a clock more than a few minutes off is flagged: such a device still pairs through the server, but its codes can't be found on the local network. |
-| `UDP` | The server's relay answers a STUN request over UDP. No reply → the network blocks UDP, and relayed transfers need the TCP fallback. |
-| `TCP` | The relay's TCP fallback (a WebSocket on the server's HTTPS port) echoes a message. Used automatically when UDP is blocked. |
-| `NAT` | Whether this machine is behind NAT, from the public address the relay saw. Informational. Telling NAT types apart would need a second STUN server. No row when the relay is on your own network. |
-| `network` | The local LAN address fsend would announce. VPN/container interfaces are skipped. |
-| `IPv6` | Whether this machine has a global IPv6 address. Informational. |
-| `listener` | A self-test of the socket receivers on your network connect to. See [below](#the-listener-check). |
-| `firewall` | Whether this machine's firewall lets devices on the network connect to that listener. See [below](#the-firewall-check). |
-| `mDNS` (roundtrip) | fsend's mDNS machinery tested over loopback — deterministic, the OS cannot filter it. A miss here means LAN discovery is unavailable entirely. |
-| `mDNS` (LAN answer) | Multicast across the physical interface. Blocked → discovering *other* devices falls back to the pairing server (transfers still complete; same-device transfers keep working). |
+| `config` | Which server is set. |
+| `server` | The server answers. If not, transfers between networks fail; local ones still work. |
+| `clock` | Your clock against the server's. A wrong clock breaks local discovery. |
+| `UDP` | The relay answers over UDP. If not, the relay falls back to TCP. |
+| `TCP` | The relay's TCP fallback works, for networks that block UDP. |
+| `NAT` | Whether you're behind NAT. Information only. |
+| `network` | The local address fsend announces. |
+| `IPv6` | Whether you have a public IPv6 address. Information only. |
+| `listener` | fsend's local listener answers. See [below](#the-listener-check). |
+| `firewall` | Your firewall lets other devices reach it. See [below](#the-firewall-check). |
+| `mDNS` | Local discovery works on this machine and on the network. |
 
 ### The listener check
 
-When you send, fsend listens on your local network for the receiver: on
-one port between 50000 and 50999 (derived from the code), over UDP for
-QUIC and over TCP, which receivers try first because it is faster.
-`listener` opens that listener exactly as a send does and connects to it
-the way a receiver does, through this machine's LAN address rather than
-loopback, over both routes and all the way through the handshake.
+When you send, fsend listens on one port between 50000 and 50999 (picked
+from the code), over TCP and UDP. This check opens that listener and
+connects to it from this machine, like a receiver would.
 
-- **What a pass shows:** fsend can bind the port for UDP and TCP, the LAN
-  address reaches it, and both routes complete (TLS, then the code
-  exchange). A failure names the route and why, and is a real finding:
-  if the listener does not answer even from this machine, no other
-  device will reach it either.
-- **What a pass cannot show:** that *another* device gets in. The
-  connection never leaves this machine, so it crosses neither the Wi-Fi
-  access point or switch between two devices (client isolation, VLANs)
-  nor, on Linux and Windows, the firewall: the same test passes on a
-  Linux machine whose ufw or firewalld turns every other device away.
-  macOS is the exception — its application firewall screens these
-  connections like any incoming one — so there a pass also means the
-  firewall lets fsend accept connections.
-
-No test run from one machine alone can do better without special
-privileges. That is why the `firewall` row reads the rules, and why only
-a real transfer from a second device settles it: when it ends with
-`local network`, the two devices connected directly.
+A pass shows the listener works. It can't show that **another** device
+gets through your Wi-Fi or firewall: the connection never leaves this
+machine. On macOS it does show the firewall allows fsend. Only a real
+transfer from a second device proves the rest.
 
 ### The firewall check
 
-`firewall` answers one question — can a device on this network connect
-to fsend's listener (UDP and TCP 50000–50999 here), and if not, what do
-you change — from what each system lets an ordinary user read:
+Reads your firewall's rules and says whether other devices can reach
+fsend's ports (TCP and UDP 50000–50999):
 
-| System | What is read | Without root or admin |
-|---|---|---|
-| macOS | The application firewall (`socketfilterfw`): on or off, "block all incoming connections", and whether fsend is allowed. The firewall knows apps by code signature rather than by path, so a fsend it has no entry for counts as allowed when the listener check got through (see above). | Everything. |
-| Windows | Windows Defender Firewall: whether it is on for the network type in use (domain, private, public), "block all incoming connections", and the rules for this `fsend.exe` — including the block rule Windows leaves behind when its "allow access?" prompt is cancelled, the usual reason a Windows sender is unreachable. Group Policy settings are honoured. Third-party firewalls are not inspected. | Everything. |
-| Linux, ufw | Whether ufw is on, its default policy, and its rules for the port range. | On/off and the default policy. The rules file is root-only, so the row says the rules are unread and prints the command that opens the ports. |
-| Linux, firewalld | The zone of the LAN interface: its target, open ports and rich rules. | Depends on polkit: a desktop session can usually read it, an ssh session cannot. Unread → the row says so and names the zone. |
-| Linux, nftables / iptables | With neither ufw nor firewalld active, the kernel's own rules. doctor follows a new connection to the port range through them and reports a verdict only when the rules settle it; rules it cannot model (named sets, marks) make the row say "unclear". | Nothing: these need root. The row says so; `sudo fsend doctor` reads them. |
+- **macOS** and **Windows:** fully, without admin rights.
+- **Linux (ufw, firewalld):** what an ordinary user can read. Otherwise
+  it says the rules are unread.
+- **Linux (nftables, iptables):** needs `sudo fsend doctor`.
 
-On other systems (the BSDs) there is no `firewall` row.
-
-When a firewall blocks the listener, transfers to devices on your
-network still complete: the receiver pairs through the server, and the
-two sides usually still find a direct path. They just start slower and
-miss the fast TCP route. The row prints the fix:
+If the firewall blocks fsend, local transfers still work through the
+server, just slower. To open the ports:
 
 ```sh
 # ufw
 sudo ufw allow 50000:50999/udp && sudo ufw allow 50000:50999/tcp
 
-# firewalld (use the zone the row names)
+# firewalld (use the zone doctor names)
 sudo firewall-cmd --zone=public --add-port=50000-50999/udp --add-port=50000-50999/tcp
 sudo firewall-cmd --runtime-to-permanent
-
-# nftables (the row names your table and chain)
-sudo nft insert rule inet filter input udp dport 50000-50999 accept
-sudo nft insert rule inet filter input tcp dport 50000-50999 accept
 ```
 
-On macOS, allow fsend in System Settings → Network → Firewall →
-Options. On Windows, choose **Allow** when Windows asks about fsend, or
-run in an administrator terminal:
+On macOS: System Settings → Network → Firewall → Options, allow fsend.
+On Windows: choose **Allow** when Windows asks, or run as administrator:
 
 ```bat
 netsh advfirewall firewall add rule name="fsend" dir=in action=allow program="C:\path\to\fsend.exe" enable=yes
 ```
 
-The listener accepts only devices on your local network, and every
-connection still has to prove it knows the code, so opening these ports
-exposes nothing to the internet.
+This exposes nothing to the internet: the listener accepts only local
+devices, and each one must know the code.
 
 ## `fsend server`
 
-Same binary, run with the `server` subcommand. Configured entirely via
-environment variables.
+The same binary runs the pairing server. It's configured with
+environment variables; see [Self-hosting](self-hosting.md).
 
 ```text
-fsend server                 Run the server
-fsend server --health-check  Probe /health (exit 0 if healthy)
-fsend server --help          Show help
+fsend server                 Runs the server
+fsend server --health-check  Exits 0 if the server is healthy
 ```
-
-### Server environment variables
-
-Full table with defaults, units, and notes:
-[Self-hosting → Configuration](self-hosting.md#configuration).
-
-Quick LAN-only run (no TLS — local testing only):
-
-```sh
-docker run -p 443:443/udp -p 127.0.0.1:8080:8080/tcp poliuscorp/fsend server
-```
-
-Internet-exposed deployments need a TLS-terminating reverse proxy in
-front of `:8080`. The file data on UDP/443 is already end-to-end
-encrypted, but the HTTP pairing channel carries session slots and bearer
-tokens in plaintext, so it has to run behind TLS. See
-[Self-hosting](self-hosting.md) for the ready-made Caddy + Docker stack.
 
 ## Exit codes
 
-Stable from v1.0.0. `0` means success; non-zero codes map to a specific
-failure. For what to *do* about a given error, see
+`0` is success. It's also used for your own "no" at a prompt, such as
+declining a transfer. For what to do about an error, see
 [Troubleshooting](troubleshooting.md).
 
-| Code  | When it happens |
-|-------|-----------------|
-| `0`   | Success (or non-fatal warning, e.g. `E016` config corrupted) — or your own "no" at a prompt: declining a transfer (`E006` on the receiver), choosing "skip them" at the existing-files prompt (`E013`), answering `n` to `--uninstall`. These lines print no error code, since a choice isn't a fault. With `--json`, a declined transfer's `done` event still carries `"error":"E006"`, with `exit` 0; after "skip them" it is a normal `"ok":true` event that counts the kept files in `files_kept`. |
-| `1`   | `E001` — server unreachable. |
-| `2`   | `E002` — code not found. |
-| `3`   | `E003` — code already claimed by another receiver. |
-| `4`   | `E004` — invalid code format. |
-| `6`   | `E006` — the receiver declined the transfer (sender side). |
-| `7`   | `E007` — no receiver paired within the hour a pairing round lasts (sender side). |
-| `8`   | `E008` — disk full. |
-| `9`   | `E009` — could not write the target file. |
-| `10`  | `E010` — could not read the source file. |
-| `11`  | `E011` — file arrived corrupted; hash didn't match. |
-| `12`  | `E012` — path traversal rejected. |
-| `13`  | `E013` — one or more files differed and were kept without being asked (`--yes`, no terminal; transfer otherwise completed); use `--overwrite` to replace them or `--rename` to keep both. |
-| `14`  | `E014` — could not reach the other side, even via the fallback relay. |
-| `15`  | `E015` — the two sides couldn't agree how to transfer (protocol mismatch). |
-| `17`  | `E017` — rate limited. |
-| `18`  | `E018` — default server retired. |
-| `19`  | `E019` — a partial download didn't match its source. Current releases resend that file from the start instead, so you shouldn't see this. |
-| `20`  | `E020` — transient transfer failure (retries exhausted). |
-| `21`  | `E021` — wrong transfer password. |
-| `22`  | `E022` — could not verify the other side (code mismatch or tampering). |
-| `23`  | `E023` — server-set transfer-size limit reached. |
-| `24`  | `E024` — invalid usage (bad flag, bad arg shape). |
-| `25`  | `E025` — source file or directory not found. |
-| `27`  | `E027` — could not open the local-network port (port in use, mDNS init failed). |
-| `28`  | `E028` — pairing server requires a password (missing or wrong). |
-| `29`  | `E029` — server closed the connection because no data was flowing. |
-| `30`  | `E030` — `fsend server` could not start (port in use or no permission to bind). |
-| `31`  | `E031` — transfer requires a password the receiver didn't have (`--password` / `FSEND_PASSWORD`). |
-| `32`  | `E032` — the other side cancelled the transfer. |
-| `33`  | `E033` — `fsend --update` could not complete. |
-| `34`  | `E034` — the other device is running an incompatible fsend version. |
-| `35`  | `E035` — `fsend --uninstall` could not remove the binary. |
-| `36`  | `E036` — a symlink can't be followed: a broken link named on the command line, an unreadable target, or a link cycle. (A broken link found in a folder is skipped: `E050`.) |
-| `37`  | `E037` — the server's relay spent its daily byte budget; forwarding is paused until 00:00 UTC. |
-| `38`  | `E038` — files received, but the `--manifest` record could not be written. |
-| `39`  | `E039` — `fsend --update`/`--uninstall` on a binary a package manager owns (Homebrew, or the deb/rpm/apk packages); the line under it says what to run instead. |
-| `40`  | `E040` — `fsend --update` as root; opt in with `FSEND_ALLOW_ROOT=1` on single-user machines (containers). |
-| `41`  | `E041` — `fsend --update` from a development build; there is no release to compare against. Install a release build. |
-| `42`  | `E042` — the network blocks UDP and the relay's TCP fallback failed too (or the server doesn't offer it). |
-| `43`  | `E043` — `fsend doctor` found at least one degraded check. |
-| `46`  | `E046` — no longer raised (older senders stopped after 10 failed handshakes on their code). |
-| `47`  | `E047` — the pairing server's TLS certificate isn't trusted (captive portal or intercepting proxy). |
-| `50`  | `E050` — the transfer finished, but some files were skipped (unreadable or a broken link on the sender, or a name that can't be placed on the receiver). |
-| `51`  | `E051` — more than 4,000,000 files and folders in one transfer. |
-| `60`  | `E060` — the pairing server refused this fsend as too old (HTTP 426). Run `fsend --update`. |
-| `61`  | `E061` — `fsend server` stopped because its relay UDP socket failed; the restart policy should bring it back. |
-| `99`  | `E099` — unexpected error. Run with `--debug` and file an issue. |
-| `130` | `E026` — cancelled by user (Ctrl-C / SIGTERM). |
-| `141` | The output pipe closed early (e.g. `fsend <code> --out - \| head`). Shell convention (128+SIGPIPE); nothing is printed. |
-
-`5` is unused. `16` isn't in this list because `E016` (corrupt config) is
-a non-fatal warning that exits `0` — see the `0` row above.
+| Code | Meaning |
+|---|---|
+| `1` | `E001` Server unreachable. |
+| `2` | `E002` Code not found. |
+| `3` | `E003` Code already used by another receiver. |
+| `4` | `E004` Invalid code. |
+| `6` | `E006` The receiver declined (sender side). |
+| `7` | `E007` No receiver within an hour. |
+| `8` | `E008` Disk full. |
+| `9` | `E009` Couldn't write a file. |
+| `10` | `E010` Couldn't read a file. |
+| `11` | `E011` A file arrived corrupted. |
+| `12` | `E012` Unsafe path rejected. |
+| `13` | `E013` Differing files were kept (`--yes`). Use `--overwrite` or `--rename`. |
+| `14` | `E014` Couldn't reach the other side, even through the relay. |
+| `15` | `E015` The two sides couldn't agree on how to transfer. |
+| `17` | `E017` Rate limited. |
+| `18` | `E018` The default server was retired. |
+| `19` | `E019` A partial download didn't match its source. |
+| `20` | `E020` Transfer failed after retries. |
+| `21` | `E021` Wrong transfer password. |
+| `22` | `E022` Couldn't verify the other side. |
+| `23` | `E023` The server's size limit was reached. |
+| `24` | `E024` Invalid usage. |
+| `25` | `E025` File or folder not found. |
+| `27` | `E027` Couldn't open the local-network port. |
+| `28` | `E028` The server needs a password. |
+| `29` | `E029` The server closed an idle connection. |
+| `30` | `E030` `fsend server` couldn't start. |
+| `31` | `E031` The transfer needs a password. |
+| `32` | `E032` The other side cancelled. |
+| `33` | `E033` `--update` failed. |
+| `34` | `E034` The other device runs an incompatible version. |
+| `35` | `E035` `--uninstall` couldn't remove the binary. |
+| `36` | `E036` A symlink can't be followed. |
+| `37` | `E037` The relay used its daily budget. |
+| `38` | `E038` The `--manifest` file couldn't be written. |
+| `39` | `E039` Installed by a package manager; use it to update or remove. |
+| `40` | `E040` `--update` as root. Set `FSEND_ALLOW_ROOT=1` to allow it. |
+| `41` | `E041` `--update` from a development build. |
+| `42` | `E042` UDP is blocked and the TCP fallback failed. |
+| `43` | `E043` `fsend doctor` found a problem. |
+| `46` | `E046` No longer used. |
+| `47` | `E047` The server's certificate isn't trusted (captive portal or proxy). |
+| `50` | `E050` Done, but some files were skipped. |
+| `51` | `E051` More than 4,000,000 files and folders. |
+| `60` | `E060` This fsend is too old for the server. |
+| `61` | `E061` `fsend server` stopped: its relay socket failed. |
+| `99` | `E099` Unexpected error. Run with `--debug` and open an issue. |
+| `130` | `E026` Cancelled (Ctrl-C). |
+| `141` | The output pipe closed early (e.g. `\| head`). |
 
 ## Share codes
 
-Codes look like `abc-defg-jkm` — three groups (3-4-3) from a 23-letter
-alphabet (`i`, `l`, `o` are excluded for legibility). They're
-system-generated and work for exactly one receiver: once a receiver has
-connected, the code is spent and only that device can resume. Each
-pairing round lasts up to an hour, and the code dies when the sender
-exits.
-
-To require a password before the receiver can download, add `--password`
-when sending. For the full model — entropy, TTL, rate-limiting, channel
-binding — see [Security → Share codes](security.md#share-codes).
+Codes look like `abc-defg-jkm`: three groups of letters, without `i`,
+`l` or `o`. A code works for one receiver and dies when the sender
+exits. For how codes are protected, see
+[Security → Share codes](security.md#share-codes).
