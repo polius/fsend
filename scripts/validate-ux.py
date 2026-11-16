@@ -359,6 +359,9 @@ class PtyRun(threading.Thread):
         self.fd = None
         self.done = False
         self.status = None
+        # Seconds from the fork to the child's exit (or the runtime cap).
+        # The child starts after the fork, so its own clock reads less.
+        self.elapsed = None
 
     def child_env(self):
         e = dict(os.environ)
@@ -384,13 +387,14 @@ class PtyRun(threading.Thread):
         return e
 
     def run(self):
+        start = time.time()
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(self.cwd)
             os.execvpe(self.argv[0], self.argv, self.child_env())
         self.pid, self.fd = pid, fd
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 30, self.cols, 0, 0))
-        start, fi = time.time(), 0
+        fi = 0
         while time.time() - start < self.runtime:
             try:
                 r, _, _ = select.select([fd], [], [], 0.2)
@@ -441,6 +445,7 @@ class PtyRun(threading.Thread):
                 self.status = os.waitstatus_to_exitcode(st)
                 break
             time.sleep(0.2)
+        self.elapsed = time.time() - start
         try:
             os.close(fd)
         except OSError:
@@ -646,7 +651,14 @@ def s1_single_file():
     has_text(s, 'sender summary names subject + peer', sp, 'Sent small.txt to ')
     has_text(s, 'receiver names the saved file', rv, 'Saved ./recv_out/small.txt')
     lacks_text(s, 'no progress bar under 1 MB', rv, '100%')
-    glob_ok(s, 'no notification for a short run', '\x1b]9;' not in sp and '\x07' not in sp)
+    # The sender's run includes waiting for the receiver to answer, so a
+    # slow runner can push it past NotifyAfter (10 s), where the bell is
+    # right. Only a run that ended sooner must stay silent; S16 covers the
+    # long one.
+    if snd.elapsed is not None and snd.elapsed < 10:
+        glob_ok(s, 'no notification for a short run', '\x1b]9;' not in sp and '\x07' not in sp)
+    else:
+        RESULTS.append((s, f'no notification for a short run (skipped: the run took {snd.elapsed or 0:.1f} s)', 'n/a', True))
     ansi_only(s, sp + rv)
     grid_ok(s, sp + rv)
 
