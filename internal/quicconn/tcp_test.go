@@ -21,18 +21,30 @@ import (
 )
 
 // tcpListener is a QUIC listener serving the TCP route on the same port.
-// The UDP port it gets may be taken for TCP by another process: then it
-// tries another, as the sender would serve QUIC alone.
+// It takes the TCP port first and asks for the same one over UDP. The other
+// order fails on Windows whenever the UDP port the system hands out lies in
+// a range reserved for TCP (Hyper-V and WinNAT reserve blocks of them), and
+// one run can land there many times in a row. A port TCP gets from the
+// system is never in such a range.
 func tcpListener(t *testing.T, secret string) (*Listener, string) {
 	t.Helper()
+	// Listeners whose port was taken for UDP stay open until a port works,
+	// so the system can't hand out the same one again.
+	var taken []net.Listener
+	defer func() {
+		for _, tl := range taken {
+			_ = tl.Close()
+		}
+	}()
+	var lastErr error
 	for range 10 {
-		ln, err := ListenAddr("127.0.0.1:0", secret)
+		tl, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		tl, err := net.Listen("tcp", ln.ln.Addr().String())
+		ln, err := ListenAddr(tl.Addr().String(), secret)
 		if err != nil {
-			_ = ln.Close()
+			taken, lastErr = append(taken, tl), err
 			continue
 		}
 		t.Cleanup(func() { _ = ln.Close() })
@@ -41,7 +53,7 @@ func tcpListener(t *testing.T, secret string) (*Listener, string) {
 		}
 		return ln, tl.Addr().String()
 	}
-	t.Fatal("no port free for both UDP and TCP")
+	t.Fatalf("no port free for both UDP and TCP: %v", lastErr)
 	return nil, ""
 }
 
