@@ -1,385 +1,195 @@
-# Running your own pairing server
+# Run your own pairing server
 
-> **Do you need this? Probably not.** The `fsend` CLI is just a local
-> binary — there's nothing to host to *use* fsend, and it works out of the
-> box. This page is only about the **pairing server**: an optional service
-> that helps two peers find each other **across the internet**, and relays
-> the transfer when a direct connection can't be made. On the same network
-> it isn't needed — peers discover each other over the LAN (mDNS) and the
-> bytes go straight across, even with the server offline. (A sender
-> still registers its code with the server unless it runs with
-> `--local`.)
+**You probably don't need this.** fsend works out of the box with the
+free public server at `fsend.alzina.dev` (best effort, no uptime
+guarantee). On the same network, fsend doesn't need a server at all.
 
-By default, fsend uses a free pairing server at `fsend.alzina.dev`, run by
-the maintainer on a best-effort basis (no uptime guarantee). It does two
-jobs:
+The server does two jobs:
 
-- **Pairing (always)** — both peers post a one-way slot derived from the
-  share code, and the server tells each where the other is. It never
-  learns the code or anything about your files.
-- **Relay (fallback only)** — when NAT topology blocks a direct
-  connection, it forwards the **encrypted** bytes between the two sides,
-  over UDP or, for clients on networks that block UDP, over a WebSocket
-  on the HTTPS port. It can't decrypt them, but they do pass through it.
+- **Pairing.** It helps two devices find each other across the internet.
+  It never learns the code or anything about your files.
+- **Relay.** When no direct path exists, it forwards the encrypted data.
+  It can't read it.
 
-Run your own when you want:
-
-- **Control** — set your own rate limits, require an access password, tune
-  any knob, instead of living with a shared instance's fixed policy.
-- **Isolation** — an org-internal or air-gapped deployment, where even
-  relayed (encrypted) traffic stays on infrastructure you control.
-- **Reliability** — uptime you manage yourself, rather than a free server
-  with no guarantee.
-
-Clients point at it with `fsend --connect host:443`. The same `fsend`
-binary is also the server, so there's nothing extra to build — this guide
-deploys it with Docker Compose, behind Caddy for automatic TLS.
+Run your own for your own limits, a password, uptime you control, or to
+keep relayed traffic on your own machines. The `fsend` binary is also the
+server. This guide runs it with Docker Compose, behind Caddy for HTTPS.
 
 ## Before you start
 
-You'll need:
+You need:
 
-- A publicly reachable host (a public IP) with **Docker** and **Docker
-  Compose v2** (the legacy `docker-compose` 1.27 or later also works).
-- A domain or subdomain you control, with an `A` record pointing at that
-  host — e.g. `fs.example.com`. Add an `AAAA` record only if Docker itself
-  has IPv6 enabled (`"ipv6": true` and `"ip6tables": true` in
-  `daemon.json`, plus `enable_ipv6: true` on the compose network). Without
-  that, Docker's userland proxy can relay IPv6 clients over IPv4, so the
-  server sees the bridge gateway instead of the client: STUN answers carry
-  the wrong address and every IPv6 client shares one rate-limit identity.
-  Host networking (`network_mode: host` on the `fsend` service) also
-  avoids it; drop the `sysctls` entry then, and since the image runs as
-  uid 65532, either move the relay to a high port (`FSEND_RELAY_ADDR=:8443`)
-  or set `net.ipv4.ip_unprivileged_port_start=443` on the host.
-- Three inbound ports open:
-  - `80/tcp` — Let's Encrypt certificate issuance
-  - `443/tcp` — HTTPS signaling, and the relay's TCP fallback
-  - `443/udp` — UDP relay (file data) and STUN
+- A server with a public IP address.
+- Docker with Compose v2.
+- A domain name with an `A` record pointing at the server, for example
+  `fs.example.com`.
 
-## What you're deploying
+### Ports to open
 
-Two containers on one host. Caddy terminates TLS on TCP/443 and proxies
-HTTP signaling to fsend's `:8080`; UDP/443 goes straight to the fsend
-container, so Caddy is never in the UDP data path. (The Caddyfile turns
-off Caddy's HTTP/3 for that reason: UDP/443 belongs to the relay.) The
-fsend container runs as uid 65532 (non-root) from a `scratch` image,
-with a read-only filesystem and no capabilities; base images are pinned
-by digest.
+Open these three inbound ports in your firewall and in your cloud
+provider's security group:
 
-**TCP fallback.** Clients on networks that block UDP reach the relay over
-a WebSocket at `/v1/relay/ws` on the same HTTPS endpoint. Caddy's
-`reverse_proxy` passes the upgrade through as-is, so there is no extra
-port or config: the fallback rides TCP/443, and fsend pairs a TCP peer
-with a UDP peer in the same allocation. The server pings each WebSocket
-every 15 s, which keeps it alive through the Caddyfile's 30 s timeouts.
-Behind another proxy (nginx, Traefik), make sure WebSocket upgrades are
-passed through on `/v1/relay/ws` and idle timeouts exceed 15 s; behind a
-CDN that can't carry UDP, set `FSEND_RELAY_PUBLIC_ADDR` to the server's
-public IP address and port so clients can still reach the UDP relay
-directly. Relayed transfers over TCP pass
-through Caddy, so they cost it some CPU.
+| Port | Protocol | What it's for |
+|---|---|---|
+| **80** | TCP | Getting the HTTPS certificate (Let's Encrypt) |
+| **443** | TCP | Pairing, and the relay for networks that block UDP |
+| **443** | UDP | The relay, and finding direct paths (STUN) |
 
-```
-                ┌───────────────── Your VM ──────────────────┐
-                │                                            │
-  tcp/443  ────►│  ┌─────────┐                ┌───────────┐  │
-  sig. + relay  │  │  Caddy  │ ──http:8080──► │  fsend    │  │
-                │  │ (TLS)   │                │  server   │  │
-  tcp/80   ────►│  │ + ACME  │                │           │  │
-  cert renewal  │  └─────────┘                │           │  │
-                │                             │ :443 udp  │  │
-  udp/443  ─────────────── direct ───────────►│  (relay)  │  │
-  QUIC data     │                             └───────────┘  │
-                │                                            │
-                └────────────────────────────────────────────┘
-```
+Port 443 is needed for **both TCP and UDP**. Opening only TCP is the
+most common mistake: transfers then work, but they're slower and
+connect directly less often.
 
-TCP/443 carries signaling and the relay's WebSocket fallback; UDP/443
-carries the relay and STUN. They share a number but are different
-protocols, so both bind at once.
+## Set it up
 
-## Deploy
-
-### 1. Download the compose stack
+**1. Download the two files:**
 
 ```sh
 mkdir fsend-server && cd fsend-server
-curl -fsSL https://raw.githubusercontent.com/polius/fsend/main/deploy/compose/docker-compose.yml -O
-curl -fsSL https://raw.githubusercontent.com/polius/fsend/main/deploy/compose/Caddyfile -O
+curl -fsSLO https://raw.githubusercontent.com/polius/fsend/main/deploy/compose/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/polius/fsend/main/deploy/compose/Caddyfile
 ```
 
-### 2. Start the stack
+**2. Start it with your domain:**
 
 ```sh
-export FSEND_DOMAIN=fs.example.com   # ← your domain
+export FSEND_DOMAIN=fs.example.com
 docker compose up -d
 ```
 
-On first start, Caddy requests a Let's Encrypt certificate and renews it
-indefinitely after that — there's no manual cert handling, ever.
+Caddy gets the HTTPS certificate on the first start and renews it on its
+own.
 
-### 3. Verify
+**3. Check it:**
 
 ```sh
 curl https://fs.example.com/health
 # {"status":"ok"}
 ```
 
-Or open `https://fs.example.com/` in a browser — the root path returns a
-plain-text "fsend server is up and running" banner. The probe endpoints stay
-reachable without the password, so monitoring never needs the secret:
+No `ok`? See [Troubleshooting](#troubleshooting).
 
-| Path | Meaning |
-|---|---|
-| `/health` | Legacy combined probe. Same as `/readyz` (kept for existing monitors and the Docker `HEALTHCHECK`). |
-| `/healthz` | **Liveness** — always `200` while the process is up. Use for "restart me". |
-| `/readyz` | **Readiness** — `503` while a wired relay's read loop is dead, so an orchestrator stops routing here instead of trusting a zombie. Use for "don't send me traffic". |
-| `/` | Human-readable banner. |
+## Use it from your devices
 
-No OK response? See [Troubleshooting](#troubleshooting).
-
-## Use your server from clients
-
-Run this **once** on every client that should use your server instead of
-the default:
+Run this once on each device:
 
 ```sh
 fsend --connect fs.example.com:443
 ```
 
-It's saved to the client's
-[config file](usage.md#choosing-a-server---connect), so every later
-`fsend` uses your server automatically — no need to repeat the flag.
-Switch back to the public default any time with `fsend --connect default`.
-To try a server without saving it, pass `--server fs.example.com` (or set
-`FSEND_SERVER`) on a single run; `fsend doctor --server fs.example.com`
-checks it end to end, including the UDP relay and the TCP fallback.
+Every later `fsend` uses your server. To check it end to end, run
+`fsend doctor`. To go back to the public server, run
+`fsend --connect default`.
 
 ## Require a password (optional)
 
-By default, anyone who knows the address can use the server. To lock it
-down, set `FSEND_SERVER_PASSWORD` in `docker-compose.yml` (it ships
-commented out) and restart:
+By default, anyone who knows the address can use your server. To limit
+it, set a password in `docker-compose.yml`:
 
 ```yaml
     environment:
       FSEND_SERVER_PASSWORD: "your-secret"
 ```
 
-Use a long random value (`openssl rand -base64 24`). Wrong guesses are
-counted in metrics (`sessions_rejected_total.unauthorized`) but are not
-throttled or locked out, so the password's length is its protection. The
-server warns at startup about passwords shorter than 16 characters.
+Then run `docker compose up -d` again. Use a long random value, such as
+the output of `openssl rand -base64 24`. Wrong guesses aren't rate
+limited, so length is what protects it.
 
-```sh
-docker compose up -d
-```
-
-Now every endpoint except `/`, `/health`, `/healthz`, and `/readyz` requires the
-password, and clients append it to `--connect`, comma-separated — or export the
-same variable client-side to keep it out of argv in scripts:
+Devices then connect with the password after a comma:
 
 ```sh
 fsend --connect fs.example.com:443,your-secret
-# or
-export FSEND_SERVER_PASSWORD=your-secret
 ```
 
-A stored `--connect` password wins over the env var. Connecting without it —
-or with the wrong one — fails with `E028`.
+Without it, they get `E028`. `/health` stays open, so monitoring needs
+no password.
 
-## Operations
+## Day to day
 
-- **Logs.** `docker compose logs -f fsend` for the server,
-  `docker compose logs -f caddy` for TLS and the proxy. The default log
-  level (`info`) records lifecycle events and one route-only line per
-  failed request — no per-transfer lines, no IPs, no slots, no share codes.
-  `FSEND_LOG_LEVEL=debug` adds IPs and request paths.
-- **Update.** `docker compose pull && docker compose up -d`. The image
-  tracks `poliuscorp/fsend:latest` unless you pin a release with
-  `FSEND_VERSION=1.17.0` for immutable, reproducible upgrades. On stop the
-  server first lets in-flight relay transfers finish (up to 30s) while
-  pairing keeps working, then stops signaling (up to 5s); a second
-  `SIGTERM`/Ctrl-C skips the wait. The compose file sets
-  `stop_grace_period: 40s` to cover both (keep it if you edit the file —
-  Docker's 10s default would SIGKILL mid-drain).
-- **Codes survive a redeploy.** The server keeps nothing on disk, but a
-  sender waiting on a code notices the restart on its next poll and
-  registers the same code again on the new process, so the code keeps
-  working. (A 1.16 sender run with `--mode direct` doesn't, and gets
-  `E007`.) The relay's daily byte count (`FSEND_RELAY_MAX_BYTES_PER_DAY`)
-  starts again from zero.
-- **Single instance only.** Pairing state, relay allocations and used-code
-  tombstones live in one process's memory, so run exactly one `fsend`
-  server per hostname: two replicas behind a load balancer would split
-  senders and receivers across processes that can't see each other's
-  codes. Scale up the VM instead of out.
-- **Backup.** Nothing to back up. Pairing state lives in RAM and evicts
-  within an hour; certificates live in the `caddy_data` volume, and Caddy
-  reissues them automatically if you lose it. That reissue is the recovery
-  time worth knowing: a lost `caddy_data` means Caddy re-runs an ACME
-  challenge on the next start, so expect a short window where TLS isn't
-  ready yet — and if you rebuild often without the volume, Let's Encrypt
-  rate limits can stretch it to hours. Keep the volume across restarts.
-- **Tuning.** Every knob is an environment variable — see
-  [Configuration](#configuration).
-
-## Metrics
-
-Metrics are off by default. Set `FSEND_METRICS_ADDR` to serve them on a
-**separate listener** that the public signaling port never exposes:
-
-```yaml
-    environment:
-      FSEND_METRICS_ADDR: ":9090"   # not published; reachable on the compose network
-```
-
-That listener serves two paths:
-
-- `GET /metrics` — Prometheus text format (also accepted by OpenMetrics
-  scrapers). Names are `fsend_<field>`, e.g. `fsend_sessions_created_total`,
-  `fsend_sessions_rejected_total{reason="rate_limit"}`,
-  `fsend_relay_forwarded_bytes_total`, `fsend_build_info{version="…"}`.
-- `GET /metrics.json` — the same snapshot as JSON, plus two relay
-  counters that the Prometheus output doesn't have
-  (`datagrams_oversize_total`, `tcp_fallback_total`):
-
-```json
-{
-  "version": "1.14.1",
-  "uptime_seconds": 84213,
-  "sessions_active": 3,
-  "sessions_created_total": 1284,
-  "sessions_paired_total": 901,
-  "sessions_rejected_total": { "rate_limit": 12, "concurrency_limit": 3, "unauthorized": 0 },
-  "relay": {
-    "forwarding": true,
-    "healthy": true,
-    "transfers_active": 1,
-    "transfers_total": 412,
-    "transfers_capped_total": 4,
-    "bytes_forwarded_total": 5839201023,
-    "peak_transfer_bytes": 940000000,
-    "budget_bytes_today": 0,
-    "datagrams_oversize_total": 0,
-    "tcp_fallback_total": 37
-  }
-}
-```
-
-Every value is an **aggregate count or gauge** — there is no per-IP,
-per-session, or per-code data, so it can't leak anything the server doesn't
-store. It does name the running build, though, which is why it stays off
-the public port.
-
-| Field | What it tells you |
-|---|---|
-| `version` | Build currently running. |
-| `uptime_seconds` | Seconds since the process started — spot restarts. |
-| `sessions_active` | Pairing sessions live right now — current load. |
-| `sessions_created_total` | Sessions a sender opened since boot — total usage. |
-| `sessions_paired_total` | Sessions a receiver successfully joined. Compared to `sessions_created_total`, the gap is sessions no receiver joined through the server: abandoned codes, and also every transfer that paired over the local network. |
-| `sessions_rejected_total.rate_limit` | Sessions refused by the per-IP rate cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE`) — bursts or brute-force. |
-| `sessions_rejected_total.concurrency_limit` | Sessions refused by the per-IP concurrency cap (`FSEND_SERVER_MAX_SESSIONS_PER_IP`). |
-| `sessions_rejected_total.unauthorized` | Wrong/missing `FSEND_SERVER_PASSWORD` — brute-force or misconfigured clients (always `0` on an open server). |
-| `relay.forwarding` | Whether the relay carries data (`false` in pairing + STUN-only mode). |
-| `relay.healthy` | Relay read loop alive — mirrors `/health`'s 503 signal. |
-| `relay.transfers_active` | Relay transfers moving bytes right now. |
-| `relay.transfers_total` | Relay transfers that actually forwarded data since boot. Divide by `sessions_paired_total` for your relay-fallback rate; the rest connected directly (P2P). A climbing ratio means hole-punching is failing more often. |
-| `relay.transfers_capped_total` | Transfers cut off for hitting the per-session byte cap — raise the cap if this climbs. |
-| `relay.bytes_forwarded_total` | Cumulative bytes relayed since boot — what the relay is costing you. |
-| `relay.peak_transfer_bytes` | Largest single transfer so far; compare to your byte cap to see headroom. |
-| `relay.budget_bytes_today` | Bytes forwarded so far in the current UTC day (same count as the budget). Counted only when `FSEND_RELAY_MAX_BYTES_PER_DAY` is set; otherwise it stays `0`. Approaching your configured `FSEND_RELAY_MAX_BYTES_PER_DAY` is your early warning; reaching it means the breaker has tripped and transfers are being refused until 00:00 UTC. |
-
-| `relay.datagrams_oversize_total` | Datagrams dropped for being larger than the relay accepts (JSON only). |
-| `relay.tcp_fallback_total` | Relay connections accepted over the WebSocket (TCP) fallback (JSON only). |
-
-In pairing-only mode the `relay` block is still there, with
-`forwarding` set to `false`.
-
-**Access.** Bind `FSEND_METRICS_ADDR` to loopback (`127.0.0.1:9090`) when
-the scraper runs on the host, or leave the port unpublished in Docker and
-attach the scraper to the compose network. There is no authentication on
-this listener; never publish it.
+- **Update:** `docker compose pull && docker compose up -d`. To pin a
+  version, set `FSEND_VERSION=1.17.0` before running it. Waiting codes
+  survive the restart.
+- **Logs:** `docker compose logs -f fsend`. By default the server logs no
+  IP addresses or codes. `FSEND_LOG_LEVEL=debug` adds IP addresses.
+- **Backups:** nothing to back up. Keep the `caddy_data` volume, so
+  Caddy doesn't have to request a new certificate.
+- **One server per domain.** Don't run two copies behind a load
+  balancer: they can't see each other's codes. Use a bigger machine
+  instead.
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
+| Problem | Fix |
 |---|---|
-| `docker compose up` errors out asking for `FSEND_DOMAIN` | You forgot `export FSEND_DOMAIN=…`. Set it and rerun. |
-| Caddy logs show "obtain certificate failed" (ACME error) | DNS A-record not yet pointing at this host, or `80/tcp` blocked at the firewall. |
-| `curl` to `/health` works but `fsend doctor` shows the `UDP` check failing, or cross-network transfers are slow or fail with `E042` | `443/udp` blocked at the firewall — many setups open TCP only and forget UDP. Clients then hole-punch less often (no STUN) and relay over the slower TCP fallback. |
-| `fsend doctor` says the server has no TCP fallback | The server predates it, or a proxy in front of fsend blocks the WebSocket upgrade on `/v1/relay/ws`. |
-| Old clients fail with `E060` | You set `FSEND_MIN_CLIENT_VERSION`, or the clients speak an older wire protocol than this server. They need `fsend --update`. |
-| Pairing starts but the transfer hangs or drops | A reverse proxy in front of fsend (not the bundled Caddy) is buffering long-poll signaling. Caddy is configured for 30s read/write; nginx/Traefik need the same. |
-| Clients hit `E028` ("The server requires a password.") | You set `FSEND_SERVER_PASSWORD` on the server. Clients must connect with `fsend --connect host:443,<password>`. |
+| `docker compose up` asks for `FSEND_DOMAIN` | Run `export FSEND_DOMAIN=…` first. |
+| Caddy logs "obtain certificate failed" | The `A` record doesn't point at the server yet, or port 80/TCP is closed. |
+| `/health` works, but `fsend doctor` fails the UDP check, or transfers between networks are slow or fail with `E042` | Port 443/UDP is closed. |
+| Devices get `E028` | The server has a password. Connect with `fsend --connect host:443,<password>`. |
+| Old clients get `E060` | They're too old for this server. Run `fsend --update` on them. |
+| Behind your own nginx or Traefik, transfers hang | The proxy must allow WebSocket upgrades on `/v1/relay/ws`, with timeouts over 30 s. |
 
 ## Configuration
 
-All optional; defaults shown. Set them under the `fsend` service's
-`environment:` block in `docker-compose.yml`.
+Every setting is optional. Set them under `environment:` in
+`docker-compose.yml`, then run `docker compose up -d`. At startup the
+server prints its settings and marks the ones you changed with `*`.
 
-On startup the server prints its effective configuration, marking with a
-`*` every setting you changed from its default — a quick way to confirm
-your overrides were picked up (the password value is never printed, only
-whether one is set):
+**Limits** (recommended on a public server; the compose file has them
+commented out):
 
-```
-fsend server configuration (2 of 14 customized; * = changed from default):
-    FSEND_LOG_LEVEL                              info
-    FSEND_LOG_FORMAT                             text
-    FSEND_METRICS_ADDR                           (none)
-  * FSEND_SERVER_PASSWORD                        (set)
-    FSEND_SERVER_ADDR                            :8080
-    FSEND_SERVER_TRUSTED_PROXIES                 (none)
-  * FSEND_SERVER_MAX_SESSIONS_PER_IP             10
-    FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE  0 (unlimited)
-    FSEND_MIN_CLIENT_VERSION                     (none)
-    FSEND_RELAY_ENABLED                          true
-    FSEND_RELAY_ADDR                             :443
-    FSEND_RELAY_PUBLIC_ADDR                      (none)
-    FSEND_RELAY_MAX_BYTES_PER_SESSION            0 (unlimited)
-    FSEND_RELAY_MAX_BYTES_PER_DAY                0 (unlimited)
-```
-
-An `FSEND_*` name the server doesn't know (a typo such as
-`FSEND_SERVER_MAX_SESSION_PER_IP`) is logged as a warning right after this
-block, so it can't silently leave a cap unset.
-
-Variables fall into three groups: **server-wide** controls (logging and
-auth, which apply to every endpoint), the **pairing / control plane** (its
-TCP listener and per-IP session limits), and the **relay / data plane**
-(the UDP listener — which also answers STUN — and its byte limits).
-
-| Variable | Default | Notes |
+| Variable | Default | What it does |
 |---|---|---|
-| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. Any other value fails startup, like every other `FSEND_*` variable (an unknown `FSEND_*` name is logged as a warning). Only `debug` logs client IPs and request paths (which carry slots). |
-| `FSEND_LOG_FORMAT` | `text` | `json` emits one JSON object per line, for log shippers. |
-| `FSEND_METRICS_ADDR` | _(off)_ | Extra listener for `/metrics` (Prometheus) and `/metrics.json` — see [Metrics](#metrics). Never publish it. |
-| `FSEND_SERVER_PASSWORD` | _(unset)_ | Shared secret restricting all endpoints except `/`, `/health`, `/healthz`, and `/readyz` — see [Require a password](#require-a-password-optional). |
-| `FSEND_SERVER_PASSWORD_FILE` | _(unset)_ | Read the password from this file (trailing newline trimmed) instead of `FSEND_SERVER_PASSWORD` — for Docker secrets / systemd credentials. Used only when `FSEND_SERVER_PASSWORD` is unset. |
-| `FSEND_SERVER_ADDR` | `:8080` | TCP signaling listener. |
-| `FSEND_SERVER_TRUSTED_PROXIES` | _(none; compose: the private ranges)_ | Reverse proxies (IPs or CIDR ranges, comma-separated) whose `X-Forwarded-For` the server believes. A request from a listed proxy is keyed on the rightmost forwarded address that isn't itself listed, so each client gets its own per-IP limits. Unset, forwarded headers are ignored and every client behind a proxy shares the proxy's address. List only addresses nothing but your proxy can connect from. The compose stack lists the private ranges because only Caddy reaches `:8080` there. |
-| `FSEND_SERVER_MAX_SESSIONS_PER_IP` | `0` (unlimited) | **Concurrency cap** — how many sessions one source IP may have **alive at once**. A session gates relay allocation too, so this caps relay access as well. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). Behind a reverse proxy, also set `FSEND_SERVER_TRUSTED_PROXIES`, or the cap applies to all clients together. |
-| `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` | `0` (unlimited) | **Rate cap** — how many **new** sessions one source IP may **create per minute**. Distinct from the concurrency cap above: this limits inflow over time, that limits standing count. A waiting sender's own polls don't count. Defaults to unlimited; **set a positive value to enable this DoS protection** (recommended on a public server). Behind a reverse proxy, also set `FSEND_SERVER_TRUSTED_PROXIES`, or the cap applies to all clients together. |
-| `FSEND_MIN_CLIENT_VERSION` | _(none)_ | Refuse fsend releases below this version (e.g. `1.15.0`): they get HTTP 426 and `E060` ("too old for the pairing server"). Clients on an older wire protocol than the server speaks are always refused this way. Development builds are not checked. |
-| `FSEND_RELAY_ENABLED` | `true` | Set `false` for **pairing + STUN only**: the server still helps peers hole-punch a direct path, but carries no file data. See [Pairing-only mode](#pairing-only-mode-no-relay). |
-| `FSEND_RELAY_ADDR` | `:443` | UDP relay listener — also the STUN endpoint, so it stays in use even when forwarding is off. The server tells clients to dial `<request-host>:<this port>` unless `FSEND_RELAY_PUBLIC_ADDR` is set. |
-| `FSEND_RELAY_PUBLIC_ADDR` | _(unset)_ | `host:port` advertised to clients for STUN and the relay, overriding `<request-host>:<FSEND_RELAY_ADDR port>`. Set it when signaling is behind a CDN proxy (e.g. Cloudflare's orange cloud, which can't carry UDP). The host must be the name clients use for the server, or a public IP address: clients refuse a relay on a different hostname and use the TCP fallback instead. |
-| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap — wire bytes after compression. Defaults to unlimited; set a value to bound per-transfer bandwidth. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500MB`, `1GB`) or a plain byte count (`1000000000`). |
-| `FSEND_RELAY_MAX_BYTES_PER_DAY` | `0` (unlimited) | **Egress budget** — outbound bytes the relay forwards **per UTC day** across all sessions. The Denial-of-Wallet ceiling: once spent, the relay stops forwarding and refuses new transfers until 00:00 UTC. Bounds a distributed abuser that the per-IP caps can't. Each byte is counted once, so a 1 MB file sent over the relay uses about 1 MB of budget. Only relay-fallback transfers count — same-network and direct transfers don't, and STUN doesn't. Accepts `B`, `KB`, `MB`, `GB`, `TB` suffixes (decimal, e.g. `500GB`, `2TB`) or a plain byte count; default unlimited — **set a value to bound your bandwidth bill**. |
+| `FSEND_SERVER_MAX_SESSIONS_PER_IP` | unlimited | Codes one IP address can have open at once. |
+| `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` | unlimited | New codes one IP address can open per minute. |
+| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | unlimited | Most data one relayed transfer may use, e.g. `50GB`. |
+| `FSEND_RELAY_MAX_BYTES_PER_DAY` | unlimited | Most data the relay forwards per UTC day, e.g. `1TB`. Caps your bandwidth bill. |
+| `FSEND_MIN_CLIENT_VERSION` | none | Refuses older fsend versions, e.g. `1.15.0`. They get `E060`. |
 
-### Pairing-only mode (no relay)
+**Access and logging:**
 
-Set `FSEND_RELAY_ENABLED=false` to run the server as a pure matchmaker: it
-answers STUN (so peers can still hole-punch directly across NATs) but never
-forwards a single byte of file data. Use this when you want to help peers
-find each other without paying for — or being liable for — relayed traffic.
+| Variable | Default | What it does |
+|---|---|---|
+| `FSEND_SERVER_PASSWORD` | none | Requires a password. See [above](#require-a-password-optional). |
+| `FSEND_SERVER_PASSWORD_FILE` | none | Reads the password from a file instead (Docker secrets). |
+| `FSEND_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `FSEND_LOG_FORMAT` | `text` | `json` for log collectors. |
+| `FSEND_METRICS_ADDR` | off | Serves metrics on a separate port. See [Metrics](#metrics). |
 
-The trade-off: when hole-punching fails (typically symmetric NAT on both
-ends), there is no fallback. Those transfers fail with `E014` ("Could
-not reach the other side."); `--debug` adds that the server has relay
-forwarding disabled. Same-LAN and
-direct-internet transfers are unaffected. The UDP listener still binds (STUN
-needs it); only forwarding is off.
+**Network** (the compose file already sets what it needs):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FSEND_RELAY_ENABLED` | `true` | `false` turns the relay off. The server still pairs devices and helps them connect directly, but transfers that need a relay fail with `E014`. |
+| `FSEND_SERVER_ADDR` | `:8080` | Where the server listens for pairing (behind Caddy). |
+| `FSEND_RELAY_ADDR` | `:443` | Where the relay listens (UDP). |
+| `FSEND_RELAY_PUBLIC_ADDR` | none | The relay address to give devices, as `host:port`. Set it when a CDN that can't carry UDP (such as Cloudflare's proxy) sits in front of the server. |
+| `FSEND_SERVER_TRUSTED_PROXIES` | none (compose: private ranges) | Proxies whose `X-Forwarded-For` header is trusted, so the per-IP limits see the real client. |
+
+## Metrics
+
+Metrics are off by default. Set `FSEND_METRICS_ADDR: ":9090"` to serve
+them on a separate port, reachable from the compose network:
+
+- `/metrics`: Prometheus format (names start with `fsend_`).
+- `/metrics.json`: the same, as JSON.
+
+They're totals only, with nothing per user or per code. That port has no
+password, so **never publish it**.
+
+The most useful ones:
+
+| Metric | What it tells you |
+|---|---|
+| `sessions_active` | Codes open right now. |
+| `sessions_created_total` | Codes opened since the server started. |
+| `sessions_paired_total` | Codes a receiver joined through the server. |
+| `sessions_rejected_total` | Codes refused, by reason (`rate_limit`, `concurrency_limit`, `unauthorized`). |
+| `relay.transfers_total` | Transfers that needed the relay. |
+| `relay.bytes_forwarded_total` | Data the relay has forwarded. |
+| `relay.budget_bytes_today` | Data forwarded today, against `FSEND_RELAY_MAX_BYTES_PER_DAY`. |
+
+## IPv6
+
+Add an `AAAA` record only if Docker has IPv6 turned on (`"ipv6": true`
+and `"ip6tables": true` in `daemon.json`, and `enable_ipv6: true` on the
+compose network). Otherwise IPv6 clients reach the server through
+Docker's IPv4 proxy, and the server sees the wrong address for them.
