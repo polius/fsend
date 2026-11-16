@@ -20,41 +20,31 @@ import (
 	"github.com/polius/fsend/internal/wire"
 )
 
-// tcpListener is a QUIC listener serving the TCP route on the same port.
-// It takes the TCP port first and asks for the same one over UDP. The other
-// order fails on Windows whenever the UDP port the system hands out lies in
-// a range reserved for TCP (Hyper-V and WinNAT reserve blocks of them), and
-// one run can land there many times in a row. A port TCP gets from the
-// system is never in such a range.
+// tcpListener is a QUIC listener that also serves the TCP route. It returns
+// the listener and the TCP address.
+//
+// The two get a port each from the system, not one shared port as on a real
+// sender. Windows reserves port ranges per protocol (Hyper-V, WinNAT), so a
+// port it hands out for UDP can be refused for TCP, and the reverse ("bind:
+// An attempt was made to access a socket in a way forbidden by its access
+// permissions"), many times in a row. No test here needs the ports to match:
+// they dial TCP at the returned address and QUIC at ln.ln.Addr().
 func tcpListener(t *testing.T, secret string) (*Listener, string) {
 	t.Helper()
-	// Listeners whose port was taken for UDP stay open until a port works,
-	// so the system can't hand out the same one again.
-	var taken []net.Listener
-	defer func() {
-		for _, tl := range taken {
-			_ = tl.Close()
-		}
-	}()
-	var lastErr error
-	for range 10 {
-		tl, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		ln, err := ListenAddr(tl.Addr().String(), secret)
-		if err != nil {
-			taken, lastErr = append(taken, tl), err
-			continue
-		}
-		t.Cleanup(func() { _ = ln.Close() })
-		if err := ln.ServeTCP(tl); err != nil {
-			t.Fatal(err)
-		}
-		return ln, tl.Addr().String()
+	ln, err := ListenAddr("127.0.0.1:0", secret)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("no port free for both UDP and TCP: %v", lastErr)
-	return nil, ""
+	t.Cleanup(func() { _ = ln.Close() })
+	tl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ln.ServeTCP(tl); err != nil {
+		_ = tl.Close()
+		t.Fatal(err)
+	}
+	return ln, tl.Addr().String()
 }
 
 // pairTCP dials the TCP route and accepts it.
