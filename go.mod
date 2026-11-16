@@ -8,10 +8,10 @@ require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/adrg/xdg v0.5.3
 	github.com/coder/websocket v1.8.15
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.4
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/pion/ice/v4 v4.4.8
+	github.com/pion/ice/v4 v4.4.9
 	github.com/pion/mdns/v2 v2.2.2
 	github.com/pion/stun/v4 v4.0.1
 	github.com/pion/transport/v5 v5.1.5
@@ -22,9 +22,9 @@ require (
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.62.0
-	golang.org/x/sys v0.49.0
-	golang.org/x/term v0.47.0
-	golang.org/x/text v0.43.0
+	golang.org/x/sys v0.50.0
+	golang.org/x/term v0.48.0
+	golang.org/x/text v0.44.0
 )
 
 require (
