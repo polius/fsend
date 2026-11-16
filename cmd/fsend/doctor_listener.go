@@ -124,19 +124,30 @@ func probeLANListener(ip net.IP) lanProbe {
 	return p
 }
 
-// freeLANPort picks a port of the listener's range that is free for UDP
-// right now, so a port another transfer holds doesn't cost
-// listenLANWithRetry its two seconds of retries. When none of a few tries
-// is free, the last one is returned and the listen reports why.
+// freeLANPort picks a port of the listener's range that is free for both
+// UDP and TCP right now. UDP, so a port another transfer holds doesn't
+// cost listenLANWithRetry its two seconds of retries; TCP too, because
+// the listener's TCP route is best effort and a port taken for TCP alone
+// (common on Windows, where the range sits inside the dynamic ports)
+// would make the self-test report a TCP failure that isn't one. When none
+// of a few tries is free, the last one is returned and the listen reports
+// why.
 func freeLANPort() int {
 	port := lanPortFirst
-	for range 8 {
+	for range 16 {
 		port = lanPortFirst + mrand.IntN(lanPortLast-lanPortFirst+1)
-		pc, err := net.ListenPacket("udp", ":"+strconv.Itoa(port))
-		if err == nil {
-			_ = pc.Close()
-			return port
+		addr := ":" + strconv.Itoa(port)
+		pc, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			continue
 		}
+		_ = pc.Close()
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			continue
+		}
+		_ = l.Close()
+		return port
 	}
 	return port
 }
