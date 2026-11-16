@@ -13,32 +13,9 @@ permissions: {}
 # feed the release gate or the shipped bytes.
 
 jobs:
-  # The release body is written by hand: it is CHANGELOG.md's section for
-  # the tag (scripts/release-notes.py), not a list of commit titles. This
-  # runs first and every other job waits for it, so a tag whose section
-  # is missing fails here, in seconds, with a message that says what to
-  # do. The tag comes from the runner's own GITHUB_REF_NAME, read by the
-  # script; nothing is expanded into the shell.
-  notes:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Full history and tags: the notes link to the comparison with
-          # the previous tag.
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Release notes from CHANGELOG.md
-        run: |
-          python3 scripts/release-notes.py > "$RUNNER_TEMP/release-notes.md"
-          cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
-
   # Same as checks.yml's test job: tag pushes don't run PR checks, so
   # gate the release on a fresh, uncached run.
   test:
-    needs: notes
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -61,7 +38,6 @@ jobs:
   # Never ship a known CVE: the vulnerability database may have moved
   # since the last PR run.
   govulncheck:
-    needs: notes
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -95,16 +71,11 @@ jobs:
       - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           syft-version: v1.54.1
-      # The release body (see the notes job, which already checked that
-      # the section exists). Written outside the checkout: goreleaser
-      # refuses to release from a dirty tree.
-      - name: Release notes from CHANGELOG.md
-        run: python3 scripts/release-notes.py > "$RUNNER_TEMP/release-notes.md"
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
         with:
           distribution: goreleaser
           version: v2.18.3
-          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

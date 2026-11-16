@@ -156,7 +156,7 @@ See <a href="docs/architecture.md">Architecture</a>.</em></p>
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and what to do about them |
 | [FAQ](docs/faq.md) | Short answers: privacy, routes and ports, speed, verifying a download, updating |
 | [Comparison](docs/comparison.md) | fsend vs croc, magic-wormhole, sendme and LocalSend |
-| [Version compatibility](docs/compatibility.md) | Which versions work together; release notes in the [changelog](CHANGELOG.md) |
+| [Version compatibility](docs/compatibility.md) | Which versions work together; release notes on [GitHub Releases](https://github.com/polius/fsend/releases) |
 
 ## Contributing
 
