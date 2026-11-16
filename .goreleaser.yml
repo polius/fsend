@@ -233,16 +233,18 @@ release:
     name: fsend
   draft: false
   prerelease: auto
+  footer: |
+    ---
+
+    [Install](https://github.com/polius/fsend/tree/{{ .Tag }}#install) · [Verify a download](https://github.com/polius/fsend/blob/{{ .Tag }}/docs/security.md#release-integrity) · [Version compatibility](https://github.com/polius/fsend/blob/{{ .Tag }}/docs/compatibility.md)
   extra_files:
     - glob: ./scripts/install.sh
     - glob: ./scripts/install.ps1
 
-# The release body is written by hand: release.yml passes CHANGELOG.md's
-# section for the tag with --release-notes (scripts/release-notes.py),
-# and goreleaser then generates nothing from commit titles. This block
-# is only what a run without that flag would fall back to. Don't replace
-# it with `disable: true`: that also skips the step that reads the notes
-# file, and the release would go out with an empty body.
+# The release body: the titles of the commits since the previous tag
+# (each is a squash-merged pull request), the "Full Changelog"
+# comparison link, then release.footer above. Edit the release on
+# GitHub afterwards to add highlights.
 changelog:
   use: github
   sort: asc

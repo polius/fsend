@@ -48,8 +48,7 @@ so discovery can't pass there by not running.
 and Intel), Windows (x86-64 and ARM), 32-bit x86 and a FreeBSD VM (plus
 `-race` on amd64 and arm64), golangci-lint, govulncheck, fuzzing, a dead-code check, a
 snapshot release build of every target (checked to be byte-identical on
-rebuild), a lint of the changelog the release notes come from, the
-install-script smoke tests, the terminal UI audit
+rebuild), the install-script smoke tests, the terminal UI audit
 ([below](#ux-colour-audit), on Linux and macOS), workflow linting
 (actionlint, zizmor) and the coverage gate. A final **`ci-ok`** job fails unless
 every other job passed; it is the one check to mark as required on the
@@ -238,23 +237,18 @@ the same change that fixes the product.
 
 ## Releasing
 
-The body of a GitHub release is the section of
-[`CHANGELOG.md`](../CHANGELOG.md) for that version, not a list of commit
-titles. To release `1.17.0`:
+Tag the commit on `main` and push the tag:
 
-1. Rename `## Unreleased` in `CHANGELOG.md` to `## 1.17.0` and commit.
-2. Read the notes as they will appear:
-   `python3 scripts/release-notes.py v1.17.0`.
-3. Tag that commit `v1.17.0` and push the tag.
+```sh
+git tag v1.17.0 && git push origin v1.17.0
+```
 
-`.github/workflows/release.yml` then runs `scripts/release-notes.py`
-first. A tag with no section, or an empty one, stops the release there
-with a message that says what to do. Otherwise the tests run and
-goreleaser publishes with those notes (`--release-notes`). The script
-joins wrapped lines, pins relative links to the tag, and adds a footer
-with install, verification and compatibility links and the comparison
-with the previous tag. CI lints the changelog on every pull request
-(`python3 scripts/release-notes.py --check`).
+`.github/workflows/release.yml` runs the tests and govulncheck again,
+then goreleaser publishes the release. Its body lists the commit titles
+since the previous tag (one per squash-merged pull request) with the
+comparison link, plus a footer with install, verification and compatibility links
+(`release.footer` in `.goreleaser.yml`). Edit the release on GitHub
+afterwards to add highlights or upgrade notes.
 
 
 ## LAN smoke test (no server needed)
