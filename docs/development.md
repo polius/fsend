@@ -1,334 +1,166 @@
 # Development
 
-Build and test `fsend` (CLI and server are the same binary; the server
-is the `fsend server` subcommand) from source.
-
-## Prerequisites
-
-- **Go ≥ 1.27.0** (the `go` line in `go.mod`). With the default
-  `GOTOOLCHAIN=auto`, Go fetches the patch release named on the
-  `toolchain` line, which CI and releases build with.
-- Optional: **Docker** + **docker compose v2**, only for the reverse-proxy
-  stack in [`deploy/compose/`](../deploy/compose/).
+The CLI and the server are one binary. The server is `fsend server`.
 
 ## Build
 
+You need Go 1.27 or later (Go fetches the exact toolchain in `go.mod`).
+
 ```sh
 go build -o /tmp/fsend ./cmd/fsend
-```
-
-```sh
 /tmp/fsend --version
-/tmp/fsend server --help
 ```
 
-## Tests
+## Test
 
 ```sh
-go test ./...           # unit + E2E
-go test -short ./...    # skip E2E
+go test ./...           # everything, including end-to-end
+go test -short ./...    # skip end-to-end
 go test -race ./...
-go test -v ./test/e2e/
 ```
 
-The E2E suite builds its own binary in a temp dir and runs an isolated
-server on loopback — no shell wrapper needed. It takes roughly 70–110 s
-(about 105 s on an M-series laptop, including the build); much of that
-is tests waiting out real timeouts. CI runs every gating `go test` with
-`-count=1` and a timeout (600 s; 900 s in the FreeBSD VM), so it never
-reuses cached results.
+- The end-to-end tests build their own binary and run a server on
+  loopback. They take about 2 minutes.
+- Local discovery tests skip without multicast.
+  `FSEND_TEST_REQUIRE_MULTICAST=1` makes them fail instead (CI sets it).
+- On Linux, loopback has multicast off: `sudo ip link set lo multicast on`.
 
-The LAN discovery tests skip on a machine without working multicast.
-Set `FSEND_TEST_REQUIRE_MULTICAST=1` to make them fail instead; CI does,
-so discovery can't pass there by not running.
+## Try it by hand
 
-## CI
+**Same network, no server:** run `/tmp/fsend /tmp/hello.txt` in one
+terminal and `/tmp/fsend --yes <code>` in another.
 
-`.github/workflows/checks.yml` runs tests on Linux, macOS (Apple Silicon
-and Intel), Windows (x86-64 and ARM), 32-bit x86 and a FreeBSD VM (plus
-`-race` on amd64 and arm64), golangci-lint, govulncheck, fuzzing, a dead-code check, a
-snapshot release build of every target (checked to be byte-identical on
-rebuild), the install-script smoke tests, the terminal UI audit
-([below](#ux-colour-audit), on Linux and macOS), workflow linting
-(actionlint, zizmor) and the coverage gate. A final **`ci-ok`** job fails unless
-every other job passed; it is the one check to mark as required on the
-branch, so new jobs are gated without changing repository settings.
-
-## Coverage
+**With a local server:**
 
 ```sh
-scripts/coverage.sh          # report
-scripts/coverage.sh --gate   # also fail below the per-package floors (CI runs this)
+FSEND_SERVER_ADDR=:18080 FSEND_RELAY_ADDR=:18443 FSEND_LOG_LEVEL=debug /tmp/fsend server
 ```
 
-`--gate` fails when a security-critical package drops below its floor:
-`internal/transfer` 77 %, `internal/wire` 85 %, `internal/quicconn` 80 %,
-`internal/pake` 88 % (`FLOORS` in the script; they sit a few points under
-the measured merged coverage).
-
-The script runs unit and E2E tests with coverage and prints per-package
-and merged totals. The E2E suite builds `fsend` with
-`-cover -coverpkg=./...`, so the orchestration code it exercises —
-sender/receiver pairing, ICE, relay — counts toward the number instead of
-reading as 0% (which is how per-package profiling reports it). Run the
-script for the current total.
-
-## Design tokens
-
-The terminal UI is built from a small system in `internal/uxlog`: one
-grid, three weights, a few hues and six glyphs. Changes to stderr output
-go through it.
-
-**Grid.** Every line has a one-column gutter: the status glyph sits in
-column 0 (or nothing, for a neutral line), the text starts in column 2,
-and nested lists start in column 4. The share command is the one line
-indented further (column 6), alone, so a triple-click copies a runnable
-command. The printers in `internal/uxlog/grid.go` own the indent and are
-the only way a line reaches the screen — pick the role, never write
-leading spaces:
-
-| printer | prints |
-| --- | --- |
-| `Status(glyph, text)` | the glyph in column 0 (`Check`, `Cross`, `Warn`, `Ask`, `Retry`, an arrow, or `Info`'s blank), text from column 2 |
-| `Line(text)` | a neutral line: text from column 2 |
-| `Note(text)`, `NoteWrapped(text)` | faint detail from column 2; the second breaks between words on a narrow terminal |
-| `Item(text)` | a list row, from column 4 |
-| `On(w).Command(text)` | the command to copy, from column 6 |
-| `Question(text, options)` | a prompt with choices: `? Save to ./  [Y/n] `, cursor left on the line |
-| `Entry(label)` | a prompt for typed text: `? Enter the password the sender shared: ` |
-| `Blank()`, `Debug(text)` | an empty line; a `--debug` line (`  DEBUG: …`) |
-
-They write to stderr and cooperate with what is drawing there (a line
-lands above a live bar and wipes a live spinner's frame first).
-`uxlog.On(w)` gives the same printers for another writer (stdout for a
-query's answer, a buffer in a test); `Row`, `Detail`, `ItemRow` and
-`CommandRow` are the string forms, for a block assembled before it is
-printed (an error and its advice). `uxlog.Gap` separates two columns of
-one row. `TestGridIsTheOnlyWayToPrint` (`cmd/fsend/grid_guard_test.go`)
-parses the package and fails on a `fmt.Print*`/`Fprint*` call, a write to
-`os.Stderr`, a cobra command's own printers (`cmd.Println`), the `println`
-builtin, a string literal with an indent of its own, or a glyph that is
-not one of uxlog's; the functions that write a machine payload or a
-stdout page (JSON, the bare code, `--help`) are listed there with the
-reason. `cmd/fsend/doctor*.go` is not scanned yet.
-
-**Width.** A line that is clipped or padded is measured in terminal
-columns, not runes (`uxlog.Width`, `Clip`, `PadRight`): a CJK ideograph or
-an emoji takes two, a combining mark none, so a device or file name in a
-wide script can't push the spinner or the bar past the terminal's edge.
-The measure is go-runewidth's, the one the progress bar (mpb) uses. Like
-mpb it counts the East Asian Ambiguous class (`…`, `·`, `→`) as two
-columns in a CJK locale, where some terminals draw them wide: the cost is
-a line clipped a little early, never one that wraps.
-`RUNEWIDTH_EASTASIAN=0|1` overrides the guess.
-
-**Durations.** One form: a number, a space, a unit — `188 ms`, `4.8 s`,
-`42 s`, `1 min 05 s`, `2 h 03 min`. `uxlog.HumanDuration` renders every
-measured or announced time (a transfer, a retry's wait, a probe's round
-trip); `uxlog.HumanAge` the rough ones (`30 s`, `4 min`, `3 h`, `2 d`).
-Never print a `time.Duration` with `%s`: Go's form has no space.
-
-**Lists.** A list that is cut ends "… and N more", and N is never 1 —
-that line costs the row it would save. `uxlog.Shown(n, limit)` gives the
-number of rows to print.
-
-**Weights.** Bold for the subject of a line (the file a summary is
-about, the destination a prompt names), default text for the sentence,
-faint (`uxlog.Muted`, SGR 2) for the detail: sizes, counts, the route,
-timings, hints, rows that need no attention. Faint is derived from the
-user's own foreground, so it stays readable on any theme — unlike a fixed
-grey or bright-black. Terminals that ignore SGR 2 show default text.
-
-**Glyphs.** `✓` success, `✗` failure, a bold `!` warning, a bold `?` for a
-line that wants an answer, `→` / `←` for the direction of a transfer, and
-the braille spinner. Every monospace font carries these; ⚠ ℹ ⟳ ⇢ ⇣ are
-missing from common ones and get drawn from a fallback font, so they are
-not used. Neutral notices and narration ("Checking the latest release...",
-the install scripts' steps) have no glyph: an empty gutter. Every prompt
-starts with `?`. Pipes and plain mode get ASCII
-markers (`[OK]`, `[FAIL]`, `[!]`, `[?]`, `[i]`) and no escapes.
-
-**Colour roles.** Six, borrowed from the family opencode's themes use:
-
-| role | dark | light | unknown (ANSI) | means |
-| --- | --- | --- | --- | --- |
-| accent | `#e0805a` | `#b54c22` | 36 | act — the share code, spinner, filled bar, arrows |
-| primary | `#bb9af7` | `#7847bd` | 35 | decide — the `?` gutter and its question |
-| success | `#9ece6a` | `#587539` | 32 | the `✓` tick, and nothing else |
-| warning | `#e5c07b` | `#7d6500` | 33 | caution — `!`, "differs", "deletes yours", a stall |
-| error | `#f7768e` | `#b3261e` | 31 | failure — `✗` |
-| info | `#7dcfff` | `#007197` | 36 | `--help` flags and links |
-
-Green means "it worked": file names are default text, not green. One
-column is chosen per process:
-
-1. `FSEND_THEME=light|dark` — the explicit override.
-2. `COLORFGBG` — the `<fg>;<bg>` var iTerm2/Konsole/rxvt export; a light
-   background index (7, or 9–15) selects the light column, any other the
-   dark one.
-3. An OSC 11 query for the background colour, followed by a DA1 request
-   (`bgquery_unix.go`). Every terminal answers DA1, in order, so its reply
-   marks the end of the exchange; a terminal that stays silent for 0.3 s
-   (a pty with no emulator) is given up on. Only for a foreground job with
-   a colour terminal on stderr. Unix only: on Windows the background
-   stays unknown unless declared (1 or 2).
-4. Otherwise **unknown**: the terminal's own ANSI colours (SGR 31–36).
-   The user's theme has tuned those for its background and their eyes,
-   which is why gh, cargo, git and docker use them.
-
-With a known background, truecolour is used when the terminal advertises
-it (`COLORTERM=truecolor`/`24bit`); otherwise each hex maps to its nearest
-xterm-256 cell. Every dark value clears WCAG AA (4.5:1) on black, VS Code,
-One Dark, Solarized dark and Tokyo Night; every light value on white,
-Solarized light, `#fafafa`, Catppuccin Latte and Gruvbox light
-(`TestPaletteContrast`). `FSEND_PLAIN=1` (or a non-UTF-8 locale) drops
-colour, animation and Unicode symbols altogether.
-
-**`brand/logo-orange` is `#E0805A`**, and the dark accent is the same
-value, so the brand has one orange. The light accent `#b54c22` is that
-hue darkened to clear 4.5:1 on the light backgrounds above. Do not change
-the logo — `docs/assets/icon*.svg` is the reference. Warning sits towards
-yellow so it never reads as a second accent. The README demo
-(`docs/assets/demo.svg` and `demo-light.svg`, produced by `scripts/preview`)
-is rendered in the dark and light columns; a new token needs its
-dark → light pair added to `TOKENS` in `scripts/preview/svg-postprocess.py`.
-
-## UX colour audit
+Then point a client at it for one run:
 
 ```sh
-python3 scripts/validate-ux.py
-```
-
-Empirical audit of the terminal UI: builds the CLI, starts an isolated
-pairing server on loopback (isolated `HOME` — your real config is never
-touched), and runs every user-facing scenario as concurrent pty
-sessions. Each element's rendered colour and weight is parsed from the
-raw SGR stream and asserted against the design tokens in
-`internal/uxlog/glyphs.go`; the grid, the glyph set and the
-green-means-success rule are checked at 60, 80 and 100 columns for an
-unknown, dark and light background (the fake terminal can answer the
-OSC 11 query); degradation contracts (NO_COLOR, piped stderr, ASCII
-fallbacks) must hold byte-clean. The screen rules ride along wherever the
-grid is checked: every prompt starts with `?`, every duration has a space
-before its unit, no list hides exactly one row, and clipped lines fit the
-terminal in display columns (CJK device and file names at 40 and 60).
-Scenarios also cover the install-and-receive lines at 40 to 100 columns
-and the update notice for each kind of install (the install script,
-Homebrew, deb/rpm/apk: a versioned build with a seeded check cache, no
-network). Unix only. It takes about five minutes.
-With working multicast the two sides find each other over mDNS and use
-the local-network route; without it they pair through the script's
-server and the checks still pass, on the QUIC path. (On Linux, loopback
-has multicast off by default: `sudo ip link set lo multicast on`.)
-
-CI runs it on Linux and macOS (the `ux` job). Its assertions include
-design choices (exact hues), so a deliberate change to the UI changes
-the script in the same pull request.
-
-```sh
-python3 scripts/validate-ux.py s14 s21   # only these scenarios
-```
-
-A check that fails because of a known problem in the product is listed
-in `EXPECTED_FAILURES` at the top of the script, with the reason. It is
-reported as `XFAIL` and doesn't fail the run. When such a check passes
-it is reported as `XPASS` and the run fails, so the entry is removed in
-the same change that fixes the product.
-
-## Releasing
-
-Tag the commit on `main` and push the tag:
-
-```sh
-git tag v1.17.0 && git push origin v1.17.0
-```
-
-`.github/workflows/release.yml` runs the tests and govulncheck again,
-then goreleaser publishes the release. Its body lists the commit titles
-since the previous tag (one per squash-merged pull request) with the
-comparison link, plus a footer with install, verification and compatibility links
-(`release.footer` in `.goreleaser.yml`). Edit the release on GitHub
-afterwards to add highlights or upgrade notes.
-
-
-## LAN smoke test (no server needed)
-
-`fsend` uses mDNS for direct peer-to-peer on the same LAN.
-
-Terminal A (sender):
-```sh
-echo "hello" > /tmp/hello.txt
-/tmp/fsend /tmp/hello.txt
-# → abc-defg-jkm
-```
-
-Terminal B (receiver):
-```sh
-mkdir -p /tmp/recv && cd /tmp/recv
-/tmp/fsend --yes abc-defg-jkm
-```
-
-## Run the server locally
-
-For internet transfers (one peer behind NAT), the client needs a pairing
-server. To exercise the full client↔server↔client path:
-
-```sh
-FSEND_SERVER_ADDR=":18080" \
-FSEND_RELAY_ADDR=":18443" \
-FSEND_LOG_LEVEL=debug \
-/tmp/fsend server
-```
-
-Ports `18080`/`18443` are chosen to avoid the privileged-port requirement
-of `:443` (would need root) and the common port collision on `:8080`.
-
-For a single run, point a client at it without touching any config:
-
-```sh
-FSEND_SERVER=http://127.0.0.1:18080 /tmp/fsend doctor   # checks signaling, UDP relay and TCP fallback
+FSEND_SERVER=http://127.0.0.1:18080 /tmp/fsend doctor
 /tmp/fsend report.pdf --server http://127.0.0.1:18080
 ```
 
-Or save it (this writes to your real config file; see
-[Isolated config](#isolated-config) below to use a throwaway one instead):
-
-```sh
-/tmp/fsend --connect 127.0.0.1:18080
-```
-
-Reset to the public default:
-
-```sh
-/tmp/fsend --connect default
-```
-
-Health check (the env var tells the probe where to look):
-
-```sh
-FSEND_SERVER_ADDR=":18080" /tmp/fsend server --health-check
-```
-
-### Common server env vars
-
-| Var | Default | Notes |
-|---|---|---|
-| `FSEND_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `FSEND_SERVER_ADDR` | `:8080` | Signaling listener (TCP) |
-| `FSEND_RELAY_ADDR` | `:443` | Relay listener (UDP); also the STUN endpoint |
-| `FSEND_RELAY_MAX_BYTES_PER_SESSION` | `0` (unlimited) | Per-session relay cap (wire bytes, post-compression). |
-
-Full list: `/tmp/fsend server --help`. For deployment, ports, and all
-tunables, see [Self-hosting](self-hosting.md).
-
-## Isolated config
-
-To experiment with `--connect` without overwriting your real config,
-point the client at a throwaway config root:
+To try `--connect` without touching your real config, use a throwaway
+config folder:
 
 ```sh
 XDG_CONFIG_HOME=/tmp/fsend-dev /tmp/fsend --connect 127.0.0.1:18080
 ```
 
-Config lives in the per-OS path listed in
-[Usage](usage.md#choosing-a-server---connect).
+## CI
+
+`.github/workflows/checks.yml` runs on every pull request:
+
+- Tests on Linux, macOS (ARM and Intel), Windows (x86-64 and ARM),
+  32-bit x86 and FreeBSD, plus `-race`.
+- golangci-lint, govulncheck, fuzzing, a dead-code check.
+- A snapshot release build, checked to be byte-identical when rebuilt.
+- Install script smoke tests, the terminal UI audit (below), workflow
+  linting, and the coverage gate.
+
+The `ci-ok` job passes only if every other job passed. Mark only that
+one as required.
+
+## Coverage
+
+```sh
+scripts/coverage.sh          # report
+scripts/coverage.sh --gate   # also enforce the floors (CI runs this)
+```
+
+Floors: `internal/transfer` 77 %, `internal/wire` 85 %,
+`internal/quicconn` 80 %, `internal/pake` 88 % (`FLOORS` in the script).
+
+## Releasing
+
+```sh
+git tag v1.17.0 && git push origin v1.17.0
+```
+
+`release.yml` runs the tests again, then goreleaser publishes. The
+release body lists the commit titles since the last tag, plus a footer
+(`release.footer` in `.goreleaser.yml`). Edit it on GitHub to add
+highlights.
+
+## Terminal UI rules
+
+All stderr output goes through `internal/uxlog`.
+
+**Grid.** The status glyph is in column 0, text starts in column 2, list
+rows in column 4. The share command alone sits in column 6, so a
+triple-click copies it. Never write leading spaces; use the printer for
+the role:
+
+| Printer | Prints |
+|---|---|
+| `Status(glyph, text)` | A glyph, then text |
+| `Line(text)` | A neutral line |
+| `Note(text)`, `NoteWrapped(text)` | Faint detail |
+| `Item(text)` | A list row |
+| `On(w).Command(text)` | The command to copy |
+| `Question(text, options)` | A prompt with choices |
+| `Entry(label)` | A prompt for typed text |
+| `Blank()`, `Debug(text)` | An empty line; a `--debug` line |
+
+`TestGridIsTheOnlyWayToPrint` fails on any other way of printing
+(`fmt.Print*`, writes to `os.Stderr`, indented literals, unknown glyphs).
+
+**Glyphs.** `✓` success, `✗` failure, `!` warning, `?` question (every
+prompt starts with it), `→` `←` direction, and the braille spinner.
+Others (⚠ ℹ ⟳) are missing from common fonts, so don't use them. Plain
+mode uses `[OK]`, `[FAIL]`, `[!]`, `[?]`, `[i]`.
+
+**Weights.** Bold for the subject, default for the sentence, faint for
+details (sizes, routes, timings, hints).
+
+**Text.**
+
+- Durations always have a space: `188 ms`, `4.8 s`, `1 min 05 s`. Use
+  `uxlog.HumanDuration`, never `%s` on a `time.Duration`.
+- Measure widths in terminal columns (`uxlog.Width`, `Clip`), not runes.
+  CJK and emoji take two.
+- A cut list ends "… and N more", and N is never 1 (`uxlog.Shown`).
+
+**Colors.** Six roles:
+
+| Role | Dark | Light | ANSI | Used for |
+|---|---|---|---|---|
+| accent | `#e0805a` | `#b54c22` | 36 | The share code, spinner, bar, arrows |
+| primary | `#bb9af7` | `#7847bd` | 35 | Questions |
+| success | `#9ece6a` | `#587539` | 32 | `✓` only |
+| warning | `#e5c07b` | `#7d6500` | 33 | `!`, "differs", a stall |
+| error | `#f7768e` | `#b3261e` | 31 | `✗` |
+| info | `#7dcfff` | `#007197` | 36 | `--help` flags and links |
+
+Green means "it worked", nothing else. The column is picked in this
+order:
+
+1. `FSEND_THEME=light|dark`.
+2. `COLORFGBG`, if the terminal sets it.
+3. Asking the terminal for its background (OSC 11; Unix only).
+4. Otherwise, the terminal's own ANSI colors.
+
+Every value passes WCAG AA (4.5:1) on common themes
+(`TestPaletteContrast`). The dark accent is the logo's orange,
+`#E0805A`; don't change the logo (`docs/assets/icon*.svg`). A new color
+also needs its pair in `TOKENS` in `scripts/preview/svg-postprocess.py`.
+
+## Terminal UI audit
+
+```sh
+python3 scripts/validate-ux.py            # all scenarios, about 5 minutes
+python3 scripts/validate-ux.py s14 s21    # only these
+```
+
+It runs every user-facing scenario in a pty, against a local server
+with an isolated `HOME`. It checks each element's color and weight, the
+grid, the glyphs and the text rules at several widths and themes. Unix
+only. CI runs it on Linux and macOS.
+
+It asserts exact design choices, so a UI change updates the script in
+the same pull request. A known product bug goes in `EXPECTED_FAILURES`
+(reported as `XFAIL`). Once fixed, it reports `XPASS` and fails, so the
+entry is removed with the fix.

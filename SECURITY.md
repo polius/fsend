@@ -2,34 +2,25 @@
 
 ## Reporting a vulnerability
 
-Please do **not** open a public issue for security problems — that
-publishes the bug before users can update.
+Don't open a public issue. Report it privately:
+**[Report a vulnerability](https://github.com/polius/fsend/security/advisories/new)**.
+Only you and the maintainer can see it.
 
-Report it privately instead: **[Security and quality tab → Report a
-vulnerability](https://github.com/polius/fsend/security/advisories/new)**.
-The report opens a private advisory thread visible only to you and the
-maintainer.
-
-Include what you can: the affected command or component, reproduction
-steps, and impact. You'll get an acknowledgment within 72 hours.
-Reporters are credited in the release notes unless they prefer
-otherwise. There is no bug bounty.
+Include the affected command or component, steps to reproduce, and the
+impact. You'll get a reply within 72 hours. Reporters are credited in
+the release notes unless they'd rather not be. There's no bug bounty.
 
 ## Supported versions
 
-Only the latest release is supported. fsend is a single self-updating
-binary — update with `fsend --update` (or `brew upgrade fsend` for a
-Homebrew install). Releases are signed with keyless Sigstore and carry
-GitHub build attestations; see
-[Release integrity](docs/security.md#release-integrity) to verify one.
+Only the latest release. Update with `fsend --update` (or
+`brew upgrade fsend`). To verify a release, see
+[Release integrity](docs/security.md#release-integrity).
 
 ## Scope
 
-In scope: the fsend CLI, the wire protocol, the pairing server and
-relay, and the install scripts. Out of scope: vulnerabilities in
-third-party dependencies (report those upstream) and denial of service
-against your own self-hosted instance.
+- **In scope:** the CLI, the wire protocol, the pairing server and
+  relay, and the install scripts.
+- **Out of scope:** bugs in third-party dependencies (report them
+  upstream) and denial of service against your own server.
 
-For the threat model and cryptographic design (CPace bound to TLS 1.3,
-the PQ-hybrid key exchange, what the pairing server and relay can see),
-see [docs/security.md](docs/security.md).
+For the threat model, see [docs/security.md](docs/security.md).

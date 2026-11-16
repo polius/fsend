@@ -1,373 +1,180 @@
 # Troubleshooting
 
-Common situations and how to fix them. Every fsend error also prints a
-short code like `E014`; this page is about what to *do* about it. For the
-full list of codes, see [Usage → Exit codes](usage.md#exit-codes).
+Every error prints a code like `E014`. Find it below. The full list is in
+[Usage → Exit codes](usage.md#exit-codes).
 
-Wondering what the server can see, or whether your ISP can read the file?
-The short answer is no — everything is end-to-end encrypted between the
-two machines. See [Security](security.md) for the details, and the
-[FAQ](faq.md) for short answers to common questions.
+First step for any connection problem: run `fsend doctor`. It says what
+fails and how to fix it.
 
 ## Connecting
 
-### "Server unavailable; retrying — until then only receivers on your local network can connect"
-
-fsend couldn't reach the pairing server. This sender-side warning isn't
-fatal: the sender keeps retrying in the background, and **same-Wi-Fi
-transfers still work** — they use the local network directly and don't
-need the server. Only *cross-network* receivers (someone on a different
-network) can't connect until the server is back.
-
-When the server can't be reached at all — no local-network fallback in
-play — the run ends with `E001`: "Could not reach the server." The
-`Server:` line under it names the cause (timed out, DNS lookup failed,
-connection refused, no network route).
-
-Three variants of this warning name a cause you can fix yourself:
-
-- "The server requires a password" — set it with
-  `fsend --connect <host:port>,<password>` (ask the server operator).
-- "The server rate-limited this device; retrying" — it retries on its
-  own; if it persists, wait a minute and run fsend again.
-- "The server's certificate isn't trusted (a Wi-Fi login page?)" — see
-  [`E047`](#the-servers-certificate-is-not-trusted-e047) below.
-
-What to try:
+### Can't reach the server (`E001`)
 
 - Check your internet connection.
-- If you run your own server, confirm it's up:
-  `curl https://your-server/health`.
-- Run `fsend doctor` to see which part fails.
-- Point at a different server with `fsend --connect <host>:443` (or
-  `--server <host>` for one run), or back to the default with
-  `fsend --connect default`.
+- Your own server? Check it: `curl https://your-server/health`.
+- Try another server: `fsend --connect default` goes back to the public
+  one.
 
-### The server's certificate is not trusted (`E047`)
+A sender that loses the server keeps retrying. Receivers on the same
+network can still connect, because they don't need the server.
 
-```text
-✗ The server's certificate is not trusted. [E047]
-  A Wi-Fi login page or a filtering proxy may be intercepting the
-  connection. Sign in to the network (open any website), or try
-  another network.
-```
+### The server's certificate isn't trusted (`E047`)
 
-The pairing server answered, but its TLS certificate didn't verify
-against your system's trusted roots. That is almost always a captive
-portal (hotel or café Wi-Fi before you sign in) or a TLS-intercepting
-proxy whose certificate your system doesn't trust. Sign in to the network
-(open any website) or switch networks. The relay's TCP fallback goes
-through the same HTTPS endpoint, so it can't get around an intercepting
-proxy either. A sender shows this as a retrying warning rather than
-exiting.
+Usually a Wi-Fi login page (hotel, café) or a company proxy. Open any
+website to sign in, or try another network.
 
-### The code doesn't work on the receiver (`E002`, `E003`, `E004`)
-
-```text
-✗ That code has already been claimed by another receiver. [E003]
-  Ask the sender to generate a fresh code.
-```
+### The code doesn't work (`E002`, `E003`, `E004`)
 
 | Code | Meaning | Fix |
 |---|---|---|
-| `E004` | The code isn't a valid `abc-defg-jkm` shape | Re-type it; codes use only `a–z` minus `i`, `l`, `o`. Case and spaces are fine, and the hyphens can be left out (both, not just one). |
-| `E002` | No sender is waiting on that code (after about 6 seconds of trying) | It was mistyped, the sender stopped, or it was used more than ten minutes ago. Have the sender run again for a fresh code. If a second line says this device's clock is off, fix the date and time: codes are salted with the UTC day. A sender and receiver on either side of 1.16 can't find each other either: run `fsend --version` on both ([compatibility](compatibility.md)). |
-| `E003` | Another receiver already connected with this code | Each code works for one receiver. (A receiver resuming its own dropped transfer on the same device doesn't hit this.) Have the sender run again and share the new code. |
-| `E003`, "already being received on this device" | Another `fsend` on this device is receiving that code right now | Wait for it to finish, or stop it and run the command again. Nothing is wrong with the code. |
+| `E004` | Not a valid code. | Re-type it. Codes use `a–z` without `i`, `l`, `o`. |
+| `E002` | No sender is waiting on it. | Check for typos, or ask the sender to run again. If it says your clock is off, fix the date and time. Also check both sides run 1.16 or later ([compatibility](compatibility.md)). |
+| `E003` | Another receiver already used it. | A code works once. Ask the sender for a new one. |
+| `E003`, "already being received on this device" | Another fsend on this device is receiving it. | Wait for it, or stop it and try again. |
 
-Codes can't be reused — a new send always produces a new code to share.
-After a receiver connects, the server remembers the code as used for ten
-minutes (`E003`); after that it no longer knows it (`E002`).
+### No receiver within an hour (`E007`, sender)
 
-### "Stopped taking local-network connections after 10 failed attempts" (sender side)
+Run the send again for a new code.
 
-A failed handshake is something on your network connecting to the
-sender's local listener without the code. After 10 of them in one
-pairing round the sender stops listening on the local network and keeps
-waiting via the server, so your receiver can still connect. Each failure
-also makes the listener wait a little longer before the next attempt.
-If you see this often, someone on the network may be probing it.
+### Too old for the server (`E060`)
 
-`E046` ("too many failed attempts") is no longer raised; older senders
-stopped with it after 10 failed handshakes.
+Run `fsend --update` (or `brew upgrade fsend`). The other side needs a
+[compatible version](compatibility.md) too.
 
-### Your code expired before anyone received it (`E007`, sender side)
+### Can't reach the other side (`E014`)
 
-This one's on the *sender*: a pairing round waits up to an hour, and no
-receiver connected in that time. Run the send again for a fresh code and
-share it sooner. (The same limit applies while the sender waits for a
-dropped receiver to come back.)
+Neither a direct connection nor the relay worked.
 
-### "This version of fsend is too old for the pairing server" (`E060`)
+- The other side may have stopped or lost its network.
+- The server may have its relay turned off.
+- Your own server? Check that port **443/UDP** is open
+  ([Self-hosting](self-hosting.md#troubleshooting)).
 
-```text
-✗ This version of fsend is too old for the pairing server. [E060]
-  Update fsend, then try again:
-    fsend --update
-```
-
-The server answered HTTP 426: either your fsend speaks an older wire
-protocol than the server supports, or the operator set a minimum client
-version (`FSEND_MIN_CLIENT_VERSION`). Run `fsend --update` (or
-`brew upgrade fsend`). The other side needs a compatible version too;
-see [Version compatibility](compatibility.md).
-
-A sender that hits this keeps its code open for receivers on the same
-local network and says so: "This fsend is too old for the server (run
-fsend --update)".
-
-### The transfer never connects, even across the internet (`E014`)
-
-fsend tried a direct connection, then the fallback relay, and neither
-worked.
-
-- The other side's fsend may have stopped or lost its network.
-- The server may run in pairing-only mode (`FSEND_RELAY_ENABLED=false`),
-  so there is no relay when hole-punching fails.
-- When self-hosting, check that **`443/udp`** reaches your server — many
-  setups open TCP and forget UDP. (Server operators: see
-  [Self-hosting → Troubleshooting](self-hosting.md#troubleshooting).)
-
-Run `fsend doctor` on both machines to see which part fails.
+Run `fsend doctor` on both machines.
 
 ### The network blocks UDP (`E042`)
 
-```text
-✗ This network seems to block the UDP traffic fsend uses. [E042]
-  Try another network (a phone hotspot works), or ask the network admin
-  to allow outbound UDP port 443. `fsend doctor` checks both paths.
-```
+fsend switches to the relay over TCP on its own. `E042` means that
+failed too.
 
-Direct transfers and the relay both prefer UDP. When the relay doesn't
-answer over UDP within 2 seconds, fsend switches automatically to the
-**TCP fallback**: the same relay, reached over a WebSocket on the
-server's HTTPS port (TCP 443). The route then shows as `relay`, and it
-can be slower than over UDP. `E042` means that fallback failed too, or
-the server is too old to offer it.
+- Try another network. A phone hotspot usually works.
+- Your own server? Update it: the TCP fallback needs a recent version.
 
-- Run `fsend doctor`: the `UDP` and `TCP` lines say which path works.
-- Try another network (a phone hotspot usually works).
-- If you run the server, update it: the TCP fallback needs a server that
-  serves `/v1/relay/ws` through its HTTPS proxy (the bundled Caddy does).
-- A TLS-intercepting proxy breaks the fallback as well; that usually
-  shows up first as [`E047`](#the-servers-certificate-is-not-trusted-e047).
+### Couldn't verify the other side (`E022`)
 
-### `fsend doctor` reports a problem (`E043`)
+Almost always a mistyped code. Check it and try again. It can also mean
+someone tampered with the connection, and fsend refused to continue.
 
-`fsend doctor` exits `43` when any check is degraded. Each `!` line (or
-`[!]` in plain output) says what it affects and what still works, and
-the fainter lines under it say how to fix it:
+### Connection dropped (`E029`, `E020`)
 
-| Line | What it means |
-|---|---|
-| `server … unreachable` | Cross-network transfers fail; same-LAN transfers are unaffected. |
-| `UDP` | The relay didn't answer over UDP; relayed transfers will use the TCP fallback. |
-| `TCP … no TCP fallback for its relay` | The server predates the fallback; on a network that blocks UDP, cross-network transfers will fail. |
-| `listener … did not answer` / `cannot open` | fsend's local-network listener doesn't work even from this machine (the port can't be bound, or something drops the connection). Transfers to devices on your network go through the server. |
-| `firewall … blocks` | This machine's firewall keeps other devices from connecting to fsend when you send. Transfers still complete through the server; the lines under the row give the command or setting that opens it. |
-| `mDNS` (LAN answer) | Multicast is blocked here; receivers on other devices will pair through the server instead. |
+Run the same command again on the same device. The transfer
+[resumes](usage.md#resuming-an-interrupted-transfer) where it stopped.
 
-A row with no mark (`[i]` in plain output) is not a problem: doctor
-could not find something out, most often a Linux firewall whose rules
-need root to read. It says how to check, and never changes the exit
-code.
+### Same network, but the transfer goes through the server
 
-See [Usage → `fsend doctor`](usage.md#fsend-doctor) for every check, and
-there [what the listener check can and cannot prove](usage.md#the-listener-check).
-
-### Transfers on the same network go through the server
-
-Both devices are on one network, yet the route shows `direct` or `relay`
-instead of `local network`, or the transfer takes a moment longer to
-start. The receiver could not connect to the sender's listener. Run
+The route shows `direct` or `relay` instead of `local network`. Run
 `fsend doctor` on the **sending** machine:
 
-- **`firewall` shows `!`** — the sender's firewall blocks the listener
-  (UDP and TCP ports 50000–50999). The row prints the fix; see
-  [Usage → The firewall check](usage.md#the-firewall-check). On Windows
-  the usual cause is having cancelled the "allow access?" prompt the
-  first time fsend ran, which leaves a block rule behind.
-- **`firewall` has no mark** — doctor couldn't read the rules (Linux,
-  without root). Run `sudo fsend doctor`, or open the ports it names.
-- **`listener` and `firewall` both pass** — the firewall on this machine
-  isn't the reason. A passing `listener` is tested from the machine
-  itself, so it can't see what sits between two devices: Wi-Fi "client
-  isolation" (guest networks), separate VLANs, or a VPN that takes over
-  local traffic. Try another network, or a cable.
-- **`mDNS` shows `!`** — the devices can't discover each other, so the
-  receiver never learns where the listener is.
+- **`firewall` shows `!`:** the firewall blocks fsend. The row prints
+  the fix ([details](usage.md#the-firewall-check)). On Windows, this
+  usually means the "allow access?" prompt was cancelled once.
+- **`firewall` has no mark:** doctor couldn't read the rules. Run
+  `sudo fsend doctor`.
+- **Everything passes:** something between the devices blocks them, such
+  as Wi-Fi client isolation (guest networks) or a VPN. Try another
+  network or a cable.
 
-### "Could not verify the other side" (`E022`)
+### "Stopped taking local-network connections after 10 failed attempts"
 
-fsend connected but couldn't confirm the peer is who you expect — the
-two sides derived a different secret. Almost always a **mistyped code**:
-re-check it character for character and try again. It can also mean an
-active tamper attempt on the connection, which fsend refuses to transfer
-through (this is the protection working, not a bug).
-
-### "Server closed the connection because no data was flowing" (`E029`)
-
-The connection stalled long enough for the server to drop it. Usually a
-flaky network mid-transfer. While the sender is still running, rerun the
-same command on the same device — the transfer
-[resumes](usage.md#resuming-an-interrupted-transfer) from where it
-stopped.
+Something on your network tried to connect without the code. The sender
+keeps waiting through the server, so your receiver can still connect.
 
 ## Passwords
 
-| Code | Situation | Fix |
+| Code | Meaning | Fix |
 |---|---|---|
-| `E021` | Wrong **transfer** password | Re-enter the sender's `--password` value, or set `FSEND_PASSWORD`. |
-| `E031` | The transfer needs a password you didn't supply | The sender used `--password`; receive with `--password` (or `FSEND_PASSWORD`). |
-| `E028` | The **server** needs a password | Connect with `fsend --connect host:443,<password>`. See [Self-hosting](self-hosting.md#require-a-password-optional). |
+| `E021` | Wrong transfer password. | Use the sender's password. |
+| `E031` | The transfer needs a password. | Receive with `--password`, or set `FSEND_PASSWORD`. |
+| `E028` | The server needs a password. | `fsend --connect host:443,<password>` ([Self-hosting](self-hosting.md#require-a-password-optional)). |
 
-Note the two are different: `--password` protects a *transfer*; the server
-password gates a *self-hosted server*.
+`--password` protects one transfer. A server password protects a
+self-hosted server.
 
 ## Files
 
-### "One or more files differed and were kept" (`E013`)
+### Differing files were kept (`E013`)
 
-A file you're receiving already exists locally with **different
-contents**, so fsend kept your local copy and didn't overwrite it. The
-rest of the transfer completed.
+Some files already existed with different contents, and `--yes` kept
+yours. Everything else arrived.
 
-- To replace differing files, receive again with `--overwrite`.
-- The accept prompt shows the breakdown (new / up to date / differ) before
-  you confirm; `--manifest <file>` records the exact per-file outcome.
-- Identical files are always skipped silently. Without `--checksum`,
-  identical means the same size and modification time, so a copy with
-  the same bytes but another timestamp counts as differing.
-- To keep both copies, receive again with `--rename` (the incoming file
-  is saved as `name (1).ext`).
-- If you chose "skip them" at the prompt yourself, there is no error
-  line: the summary reads "Saved 0 of 1 file" with "1 kept" under it, and
-  fsend exits 0. It was your choice, not a failure. Unattended runs
-  (`--yes`) that keep files still exit 13.
-- The sender's summary says the same ("1 kept by the receiver", and
-  "Nothing sent" when no bytes moved at all). The sender exits 0.
+- To replace them: receive again with `--overwrite`.
+- To keep both: receive again with `--rename`.
 
-### "Some files were skipped" (`E050`)
+Choosing "skip them" at the prompt yourself exits 0, not 13.
+
+### Some files were skipped (`E050`)
 
 ```text
 ✓ Saved 2 of 3 files to ./
-  10 B · 8 ms · local network
 ! 1 file was skipped:
     proj/locked.txt — the sender could not read it
 ✗ Some files were skipped — everything else arrived. [E050]
-  The skipped files and the reason are listed above. Fix the cause and
-  run fsend again; files that already arrived are not sent twice.
 ```
 
-The transfer finished, but some entries didn't make it. Both sides list
-them with a reason (a broken link is listed by the sender, which is the
-side that left it out):
+Both sides list each skipped file and why. Fix the cause and send again;
+files that arrived aren't sent twice.
 
-- **The sender couldn't read the file** — permissions, or it vanished
-  or shrank while being sent. Fix it on the sender and send again.
-- **A broken link in a folder being sent** — its target is missing, so
-  there is nothing to send for it. Fix or remove the link, or leave it
-  out with `--exclude`.
-- **The name can't be placed on the receiver** — two incoming names
-  that your filesystem treats as the same (`Report.pdf` and
-  `report.pdf` on a case-insensitive disk, or the NFC and NFD spellings
-  of an accented name), or a name reserved for fsend (`.fsend`). Rename
-  one on the sender, or receive onto a case-sensitive filesystem.
-- **The receiver's system can't create the name.** On Windows: a
-  reserved device name (`aux.c`, `con.txt`), one of `< > : " | ? * \`,
-  or a trailing dot or space. On any system: a name the filesystem
-  refuses when the file is written (longer than 255 bytes, or not valid
-  in its encoding; a keep-both copy `name (1).ext` can cross the length
-  limit when the original just fits). Only that file is skipped. Rename
-  it on the sender, pack the folder into an archive first, or receive
-  with `--out -`, which writes a tar stream to stdout and creates
-  nothing under these names.
-- **A file appeared at the destination during the transfer.** fsend keeps
-  the file that is there and skips the incoming one. Receive again to be
-  asked what to do with it.
+| Reason | Fix |
+|---|---|
+| The sender couldn't read it | Fix its permissions on the sender. |
+| A broken symlink in the folder | Fix or remove the link, or use `--exclude`. |
+| Two names the receiver's disk treats as one (`Report.pdf`, `report.pdf`) | Rename one on the sender. |
+| A name the receiver can't create (`aux.c` on Windows, over 255 bytes) | Rename it, or send an archive. |
+| A file appeared at the destination meanwhile | Receive again to choose what to do. |
 
-Re-sending is cheap: files that already arrived are skipped as up to
-date.
+### Too many files (`E051`)
 
-### "This transfer has too many files and folders" (`E051`)
+The limit is 4,000,000 files and folders. Send in parts, or as an
+archive: `tar c dir | fsend --as dir.tar`.
 
-One transfer is capped at 4,000,000 entries (files plus folders). The
-sender checks before issuing a code. Send in parts — one subfolder at a
-time — or pack the tree into an archive first
-(`tar c dir | fsend --as dir.tar`).
+### File arrived corrupted (`E011`)
 
-### "File arrived corrupted" (`E011`)
+fsend refused to keep a file that didn't match its hash. Send it again.
 
-A file's contents didn't match the sender's BLAKE3 root on arrival, so
-fsend refused to keep it. Run the transfer again. If a file changed on
-the sender while it was being read, it is still saved, with a warning on
-both sides that the copy may be inconsistent — send it again once the
-source is stable. When resuming, a partial that no longer matches the
-source is simply sent again from the start.
+### Unsafe path rejected (`E012`)
 
-### "Path traversal rejected" (`E012`)
+A file tried to write outside the target folder. Nothing was written
+there. fsend is protecting you.
 
-fsend blocked a file whose path tried to escape your target directory (a
-malformed or malicious listing). Nothing was written outside the target.
-If you trust the sender, ask them to re-send; otherwise this is fsend
-protecting you.
+### Stopped on a symlink (`E036`, sender)
 
-### Sending stopped on a symlink (`E036`, sender side)
-
-fsend follows symlinks to send their target's content. A link it can't
-resolve halts the send before any code is generated when you named the
-link yourself, or when skipping it could not be right. The message names
-the offending link — fix it, or skip it with `--exclude`:
-
-- **Broken** (the target doesn't exist) and named on the command line.
-  A broken link found in a folder you send — at any depth, including
-  the top level of `fsend .` — is skipped and listed instead, and the
-  sender exits `E050`.
-- **Unreadable** (permissions on the target).
-- **Cyclic** — a link that loops back into the folder (`a → b → a`, or a
-  link to a parent directory), which would otherwise recurse forever.
+The link is broken, unreadable or loops. Fix it, or skip it with
+`--exclude`. A broken link inside a folder is skipped instead (`E050`).
 
 ## Performance
 
-### The transfer is slower than expected
+The progress line ends with the route.
 
-The progress line ends with the route — `local network`, `direct` or
-`relay`.
-
-- **A relay is in the path.** When two machines can't connect directly
-  (strict NAT/firewall), fsend falls back to relaying through the server,
-  which is limited by the server's bandwidth and any caps its operator
-  set, rather than by your own links. A relay only kicks in when
-  hole-punching fails. See [How it works](architecture.md).
-- **The relay runs over TCP.** On a network that blocks UDP, the relay is
-  reached over the TCP fallback, which can be slower still.
-- **The local route is on QUIC instead of TCP.** On one network the
-  receiver first connects over TCP, which is far faster on a fast link.
-  When a firewall on the sender blocks TCP on fsend's port (one port
-  between 50000 and 50999), or the sender runs a release before 1.17,
-  the transfer uses QUIC over UDP. The receiver's `--debug` output says
-  which: `route: TCP` or `route: QUIC`. The same happens when local
-  discovery is blocked and the two devices pair through the server: the
-  route still reads `local network`, but it runs over QUIC.
-- **One side's upload is the bottleneck.** A direct transfer can't beat
-  the slower of the two links, and high latency or packet loss on the
-  path lowers it further.
-- **The disk or CPU is.** Many small files each need a sync (batched,
-  but not free), `--checksum` reads everything already on disk, and
-  resuming hashes the existing partial before it continues (a retry
-  within the same run reuses the hashes it already has).
+- **`relay`:** the data goes through the server, so its bandwidth is
+  the limit. It's used only when no direct path exists.
+- **Relay over TCP:** on networks that block UDP. Slower still.
+- **`local network`, but slow:** the sender's firewall may block TCP on
+  fsend's port, so it uses the slower QUIC route. `fsend --debug` on the
+  receiver shows `route: TCP` or `route: QUIC`. Run `fsend doctor` on
+  the sender.
+- **The slower side's connection** limits a direct transfer.
+- **Disk or CPU:** many small files, `--checksum`, and resuming all
+  read from disk.
 
 ## Anything else
 
-### "Unexpected error" (`E099`)
+### Unexpected error (`E099`)
 
-A bug or an unhandled condition. Re-run with `--debug` for detail and
-please [open an issue](https://github.com/polius/fsend/issues) with the
-output.
+A bug. Run again with `--debug` and
+[open an issue](https://github.com/polius/fsend/issues) with the output.
 
-### Resetting things
+### Starting over
 
-- **Back to the public server:** `fsend --connect default`.
-- **See which server you're using:** `fsend --connect`.
-- **Remove fsend entirely:** `fsend --uninstall` (removes the binary and
-  the config directory; `--yes` skips the prompt).
+- Back to the public server: `fsend --connect default`.
+- Which server am I using: `fsend --connect`.
+- Remove fsend: `fsend --uninstall`.
