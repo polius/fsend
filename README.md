@@ -7,8 +7,6 @@
 
 <p align="center"><strong>Private file transfer, straight between two computers.</strong></p>
 
-<p align="center">Like croc or magic-wormhole, but no part of the code ever reaches a server, the key exchange is post-quantum, and files of any size go direct whenever a path exists (<a href="docs/comparison.md">comparison</a>).</p>
-
 <p align="center">
   <a href="https://github.com/polius/fsend/actions/workflows/checks.yml"><img src="https://github.com/polius/fsend/actions/workflows/checks.yml/badge.svg" alt="checks"></a>
   <a href="https://github.com/polius/fsend/releases"><img src="https://img.shields.io/github/v/release/polius/fsend" alt="Release"></a>
