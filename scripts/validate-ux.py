@@ -201,9 +201,10 @@ def split_stream(stream):
 
 def screen_lines(stream):
     """What stays on screen: per \n-line, the last \r-frame (spinner and bar
-    redraws overwrite each other), with the plain text and colours."""
+    redraws overwrite each other), with the plain text and colours. The bell
+    that follows a notification prints nothing, so it is no line."""
     out = []
-    for raw in OSC.sub('', stream).replace('\r\n', '\n').split('\n'):
+    for raw in OSC.sub('', stream).replace('\x07', '').replace('\r\n', '\n').split('\n'):
         frames = [f for f in raw.split('\r') if line_colors(f)[0].strip()]
         if frames:
             out.append(line_colors(frames[-1]))
