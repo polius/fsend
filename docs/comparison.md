@@ -105,44 +105,50 @@ devices on one network) and **direct between networks** (the
 peer-to-peer path a tool takes across the internet, forced here on one
 machine). Relays aren't measured.
 
-| | **fsend** | **croc** | **magic-wormhole** | **sendme** |
-|---|---:|---:|---:|---:|
-| **One 1 GiB file** (random data) | | | | |
-| Local network | **1.2 s**<br>~940 MB/s | 1.9 s<br>~580 MB/s | 21 s<br>~52 MB/s | 25 s<br>~43 MB/s¹ |
-| Direct between networks | **21 s**<br>~52 MB/s | 34 s<br>~32 MB/s² | 21 s<br>~52 MB/s³ | 25 s<br>~43 MB/s⁴ |
-| **A folder of 5,000 files of 20 KiB** (102 MB) | | | | |
-| Local network | **1.7 s**<br>~61 MB/s | 9.1 s<br>~11 MB/s | 5.8 s<br>~18 MB/s | 35 s<br>~3 MB/s |
-| Direct between networks | **2.5 s**<br>~41 MB/s | relayed² | 5.8 s<br>~18 MB/s³ | 35 s<br>~3 MB/s⁴ |
+| | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
+|---|---:|---:|---:|---:|---:|
+| **One 1 GiB file** (random data) | | | | | |
+| Local network | 1.2 s<br>~940 MB/s | 1.9 s<br>~580 MB/s | 21 s<br>~52 MB/s | 25 s<br>~43 MB/s¹ | **0.7 s**<br>~1,500 MB/s⁵ |
+| Direct between networks | **21 s**<br>~52 MB/s | 34 s<br>~32 MB/s² | 21 s<br>~52 MB/s³ | 25 s<br>~43 MB/s⁴ | local network only |
+| **A folder of 5,000 files of 20 KiB** (102 MB) | | | | | |
+| Local network | **1.7 s**<br>~61 MB/s | 9.1 s<br>~11 MB/s | 5.8 s<br>~18 MB/s | 35 s<br>~3 MB/s | 2.3 s<br>~45 MB/s⁵ |
+| Direct between networks | **2.5 s**<br>~41 MB/s | 9.8 s<br>~10 MB/s, relayed² | 5.8 s<br>~18 MB/s³ | 35 s<br>~3 MB/s⁴ | local network only |
 
 - On the local network, fsend, croc and magic-wormhole move the data
-  over TCP (croc through a relay on the same machine), sendme over QUIC
-  on UDP. Between networks, fsend runs QUIC over the path ICE found
+  over TCP (croc through a relay on the same machine), LocalSend over
+  HTTPS, sendme over QUIC on UDP. Between networks, fsend runs QUIC over the path ICE found
   (`--mode direct`, a debug flag that turns the local route off) and
   croc runs WireGuard.
 - Random data, so croc's compression doesn't help it. With data that
   compresses, fsend's zstd helps too.
 - Between two real machines, the link, its latency and the disks add to
   these times. The table shows what each tool needs on top of that.
-- LocalSend isn't measured: it has no command-line client to script,
-  and it works only on the local network.
 
 ¹ Median of seven runs. Three were far slower (22, 9 and 9 MB/s). A run
 traced with debug logs used the direct path at about 49 MB/s; the slow
 ones likely fell back to iroh's public relay.
 ² Between networks croc sends files of 128 MiB or more over Tailscale's
 WireGuard ("Tailcat"), direct when NAT allows, and smaller transfers
-such as this folder through its relay. Measured with
-`--transport derp`, pairing through croc's public relay; every run
-reported `path=direct`.
+such as this folder through its relay. The file was measured with
+`--transport derp`, pairing through croc's public relay, and every run
+reported `path=direct`; the folder with `--transport relay --no-local`
+through a croc relay on the same machine (through croc's public relay,
+the link to it is the limit).
 ³ The same TCP connection as on the local network. magic-wormhole has
 no hole punching: between networks it connects directly only when one
 side accepts incoming connections, and otherwise uses its transit
 relay.
 ⁴ The same QUIC path as on the local network: iroh punches through NAT
 and sends over that one path either way.
+⁵ With `localsend-cli`, an interactive terminal app, driven through a
+pty. Its time starts when the device is picked and the request is
+accepted at once, so it leaves out the startup, discovery and pairing
+that the other tools' times include. The CLI sends files, not folders,
+so the folder went as its 5,000 files.
 
 Measured on 16 November 2026 with fsend 1.17.0 (pre-release build of
-`main`), croc v11.6.5, magic-wormhole 0.24.0 and sendme v0.37.1. fsend,
+`main`), croc v11.6.5, magic-wormhole 0.24.0, sendme v0.37.1 and
+LocalSend CLI v1.18.2. fsend,
 and croc on the local network, paired through a server running on the
 same machine; magic-wormhole through its public mailbox; sendme by
 ticket. croc v11.5.5 failed two of three 1 GiB runs ("could not secure
