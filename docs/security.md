@@ -1,309 +1,162 @@
 # Security
 
-## End-to-end encryption
+## In short
 
-Files are end-to-end encrypted between sender and receiver. The pairing
-server never sees your filenames, sizes, hashes, or contents — not even
-when it's relaying the transfer as a fallback.
+- Files are encrypted end to end, with TLS 1.3 and a post-quantum key
+  exchange.
+- The share code authenticates both sides through a PAKE bound to the
+  TLS session. A man in the middle, even the server, can't get in.
+- The server never sees the code, file names, sizes or contents.
+- The code is the whole secret: whoever uses it first receives the
+  transfer. Add `--password` for a second secret.
 
-Every transfer runs over **TLS 1.3, authenticated by a PAKE that is
-bound to that TLS session**. On the local network the receiver first
-tries TLS 1.3 over TCP (two connections, one for control and one for the
-file bytes) and falls back to QUIC. The internet routes, direct and
-relayed, always use QUIC, which carries TLS 1.3 inside it. Every route
-uses the same post-quantum key exchange and the same PAKE binding. TLS
-and the PAKE are not two independent layers; each covers what the other
-can't:
+## Encryption and authentication
 
-1. **TLS 1.3** (over TCP, or inside QUIC) encrypts and
-   integrity-protects every byte. It's terminated at the two peers,
-   never at the server. On its own it authenticates nothing: the sender
-   presents a fresh, self-signed certificate that the receiver does not
-   verify, and the receiver presents none.
-2. **CPace** (draft-irtf-cfrg-cpace-21, suite CPACE-X25519-SHA512)
-   supplies the authentication. It's a balanced PAKE — a
-   password-authenticated key exchange in which both sides prove they
-   hold the same share code without sending it. CPace is the balanced
-   PAKE the IRTF CFRG selected; fsend's implementation is checked
-   against the draft's test vectors.
+Every route runs **TLS 1.3** between the two devices, never ending at
+the server. On the local network that's TLS over TCP (QUIC as a
+fallback). Across the internet it's QUIC.
 
-The two are tied together by the TLS exporter (RFC 5705 keying-material
-export). Both peers export a value unique to their TLS session and use it
-as the CPace session id, then exchange key-confirmation tags that cover
-the exporter, the full PAKE transcript and the direction (the tag the
-sender sends differs from the one it expects, so a tag can't be reflected
-back). The receiver's tag goes first, and the sender answers only a
-correct one. A tag lets whoever reads it test one guess of the code, so a
-sender that answered first would hand that test to any peer that
-connected. This way a guess against a sender is always a wrong tag, which
-the sender sees and counts; a peer that leaves without sending a tag has
-learned nothing. That binding is what defeats a man-in-the-middle:
+TLS alone authenticates nothing: the sender's certificate is
+self-signed and not checked. Authentication comes from **CPace**
+(draft-irtf-cfrg-cpace-21, CPACE-X25519-SHA512), a balanced PAKE. Both
+sides prove they know the code without sending it.
 
-- A **passive eavesdropper** sees only TLS ciphertext.
-- An **active MITM** that terminates TLS itself — including a malicious
-  pairing server or relay — has a different TLS session with each side,
-  so the exporters differ and the confirmation tags can't match. The
-  handshake fails (`E022`) before any file data flows.
+**Binding.** CPace uses the TLS exporter (RFC 5705) as its session id.
+Both sides then exchange confirmation tags over the exporter, the PAKE
+transcript and the direction. A man in the middle has a different TLS
+session with each side, so the tags can't match, and the handshake fails
+(`E022`) before any data moves.
 
-This holds against the pairing server as long as it doesn't know the
-share code, and it never receives the code: it sees only an
-argon2id-stretched *slot* derived from it (see [Share codes](#share-codes)).
-Without the code it can make one online guess per handshake, like anyone
-else.
+**Order.** The receiver sends its tag first, and the sender answers only
+a correct one. So every guess against a sender is a wrong tag that the
+sender sees and counts. A peer that leaves without a tag learns nothing.
 
-Because the PAKE is the only authentication, the share code is the whole
-secret. Anyone who has it — and gets to the sender before the intended
-receiver — can receive the transfer.
-
-### `--password`
-
-`--password` runs a **second, mutual CPace exchange** inside the
-already-authenticated session: the password is the secret, the session's
-binding (derived from the first PAKE) is the channel identifier, and a
-fresh random nonce is the session id. Both sides send confirmation tags,
-so the sender also proves it knows the password. Nothing on the wire —
-not even to the peer — gives an offline dictionary attack something to
-work on; every attempt is one online guess.
-
-The sender allows three attempts per pairing and three pairing rounds per
-send, so a leaked code buys at most nine password guesses.
+**`--password`** runs a second, mutual CPace inside the session, with
+the password as the secret. Every attempt is one online guess; nothing
+allows an offline attack. The sender allows 3 attempts per pairing and 3
+pairings per send: at most 9 guesses.
 
 ## Post-quantum key exchange
 
-The TLS 1.3 key exchange between peers is the **PQ-hybrid X25519MLKEM768**
-(X25519 combined with ML-KEM-768, NIST FIPS 203), and it is **required**:
-fsend offers no other group, so there is no classical fallback for an
-attacker to downgrade to. A peer that can't negotiate it fails the
-handshake. This protects recorded traffic against a future quantum
-computer ("harvest now, decrypt later").
+The TLS key exchange between the devices is **X25519MLKEM768** (X25519
+plus ML-KEM-768, FIPS 203). It's the only option offered, so there's no
+classical fallback to downgrade to. This protects recorded traffic
+against a future quantum computer.
 
-It covers the peer-to-peer connection only. The HTTPS connection to the
-pairing server uses Go's default TLS settings and whatever the server
-supports, and the PAKE itself (CPace on X25519) is classical: a quantum
-attacker who recorded a handshake could attack the code offline later.
-That would let them learn the code, not decrypt the transfer, whose keys
-come from the hybrid TLS exchange.
+Not covered: the HTTPS connection to the server (Go's defaults), and
+CPace itself, which is classical. A quantum attacker with a recorded
+handshake could recover the code, but not decrypt the transfer.
 
-## Per-session keys and integrity
+## Keys and integrity
 
-- **Fresh TLS identity per session.** The sender's listener
-  generates a new Ed25519 key pair and a self-signed certificate valid
-  for one hour; it lives only in memory. It is not verified (the PAKE
-  authenticates the peer), so there's nothing to manage, rotate, or
-  revoke.
-- **The local-network TCP route has the same protection.** On the local
-  network the receiver connects over TCP first, with the same TLS 1.3
-  settings and the same PAKE, bound to that connection's exporter. The
-  file bytes travel on a second TLS connection, which counts only once
-  both sides prove it belongs to the session: each sends a tag over the
-  session's PAKE binding and this connection's own exporter. A MITM that
-  terminates either connection sees different exporters on each side and
-  can't produce the tags. The sender's handshake limits and failure
-  penalty apply to TCP as to QUIC.
-- **End-to-end integrity.** TLS's AEAD (QUIC's, or TLS over TCP)
-  protects every byte in transit. On top of that, each file carries a BLAKE3 root computed over
-  1 MiB blocks and the file size; the receiver recomputes it from what
-  it wrote and rejects the file on a mismatch (`E011`). When a transfer
-  resumes, the receiver's existing prefix is checked against the
-  sender's root over the same prefix; if it doesn't match, that file is
-  sent again from the start.
+- **Fresh identity per session.** The sender makes a new Ed25519 key and
+  a one-hour self-signed certificate, kept in memory only.
+- **TCP route.** The file data travels on a second TLS connection. It
+  counts only after both sides send a tag tying it to the session.
+- **Integrity.** TLS protects every byte in transit. Each file also
+  carries a BLAKE3 root (1 MiB blocks, plus the size). The receiver
+  recomputes it and rejects a mismatch (`E011`). A resumed file's
+  existing part is checked the same way.
 
 ## What the pairing server can see
 
-It's a matchmaker, not a middleman. Its only job is to introduce two
-peers who can't otherwise find each other across NAT, then step aside
-(for the full mechanics, see
-[How it works → Why a server?](architecture.md#why-a-server)). Same-LAN
-transfers carry no data through it, but every send still registers its
-session there (the slot, ICE credentials and client version) so a
-receiver on another network can find it, unless you pass `--local`.
-
-What a server operator can observe:
-
-- **The slot** for each transfer — a 32-character value derived from the
-  code with argon2id, salted with the UTC day — plus a random session ID
-  and per-role bearer tokens. After the first successful handshake the
-  peers re-pair under a slot derived from their session secret instead,
-  which can't be linked back to the code.
-- **IP addresses and timing:** your public IP and port, and the ICE
-  candidates each peer publishes (the LAN addresses and ports your peer
-  may connect to directly). Link-local addresses are never published,
-  and neither are the interfaces fsend recognizes by name as VPN,
-  container or VM interfaces (`utun`, `tun`, `wg`, `tailscale`,
-  `docker`, `veth`, `vmnet` and similar).
-- **Your fsend version** (sent with each pairing request) and the wire
-  protocol version.
-- **On the relay path:** the volume and timing of the encrypted traffic.
-
-What it can't observe: the share code, file names, sizes, hashes,
-contents, the device names the peers show each other, or a `--password`.
-All of those travel inside the peer-to-peer TLS session.
-
-### Visibility
+The server introduces two devices, then steps aside
+([why a server](architecture.md#why-a-server)). Every send registers
+with it, even on one network, unless you use `--local`.
 
 | | Server sees |
 |---|---|
-| File contents | ✗ never |
-| File names, sizes, hashes | ✗ never |
-| Device names | ✗ never (exchanged inside the encrypted session) |
-| Ciphertext (relay-fallback path only) | ✓ as opaque bytes — not decryptable, even by the operator |
-| The share code | ✗ never — only a derived slot (see below) |
-| Slot, session ID, role tokens | ✓ in memory, for the life of the session |
-| Your IP | ✓ in memory, for pairing — not written to disk at the default log level |
-| Your local addresses | ✓ the LAN addresses your peer may connect to directly (ICE host candidates), relayed in memory during pairing. Link-local addresses and the VPN, container and VM interfaces fsend recognizes by name are not published |
-| Your fsend version | ✓ sent with every pairing request |
+| File contents, names, sizes, hashes | Never |
+| Device names | Never |
+| The share code | Never, only a value derived from it (the slot) |
+| `--password` | Never |
+| Slot, session ID, role tokens | Yes, in memory, while the session lasts |
+| Your public IP | Yes, in memory. Not logged by default. |
+| Your local addresses | Yes, the ones offered for a direct connection. Link-local, VPN, container and VM interfaces are never sent. |
+| Your fsend version | Yes |
+| Relayed data | Only as encrypted bytes, with their size and timing |
 
-### What it writes to disk
+After the first handshake, the two devices re-pair under a slot derived
+from their session secret. It can't be linked to the code.
 
-Very little:
+**What it writes to disk:** almost nothing.
 
-- **No per-transfer line.** The default log level emits lifecycle events
-  (startup, shutdown, errors) and one line per *failed* request, naming
-  only the method, route pattern (e.g. `/v1/session/{slot}/join`),
-  status, size and duration.
-- **No IPs or slots in the logs** at the default level, and share codes
-  never reach the server at all. (`FSEND_LOG_LEVEL=debug` adds the client
-  IP and the request path, which carries the slot, for troubleshooting —
-  don't run a privacy-sensitive server at debug level.)
-- **No database.** Pairing state lives in RAM. An unclaimed session
-  expires after an hour (or five minutes after its sender stops polling),
-  a paired one after ten minutes, and a used code's tombstone after ten
-  minutes. Nothing is written to disk: a restart forgets every session,
-  and senders still waiting re-create theirs on the new process.
-- **Metrics, if enabled,** are aggregate counters on a separate listener
-  (`FSEND_METRICS_ADDR`); nothing per IP, session or code.
+- No database. Sessions live in memory and expire within an hour.
+- No line per transfer. At the default log level: startup, shutdown,
+  errors, and one line per failed request (route and status, no IP or
+  slot). `FSEND_LOG_LEVEL=debug` adds IPs and slots.
+- Metrics, if enabled, are totals only, on a separate port.
 
-If you'd still rather not trust the public server,
-[self-host one](self-hosting.md): it's a single binary with nothing to
-back up.
+Don't want to trust the public server? [Run your own](self-hosting.md).
 
 ## Share codes
 
-A code looks like `abc-defg-jkm` — three letter-groups (3-4-3) drawn from
-a 23-letter alphabet (`i`, `l`, and `o` are left out for legibility),
-about 45 bits. What makes a short code safe to use as the whole secret:
+A code like `abc-defg-jkm` has about **45 bits**: three groups of letters
+from a 23-letter alphabet (no `i`, `l`, `o`).
 
-- **The server sees a slot, not the code.** Both peers register under a
-  *slot*: argon2id of the code (64 MiB of memory, 2 passes), salted with
-  a domain label and the current UTC day, then cut to 16 bytes with HKDF
-  and hex-encoded. The server only matches the two peers that derived
-  the same slot. Recovering a code from a captured slot means
-  brute-forcing the ~2^45 code space at 64 MiB per guess (about 2^44
-  argon2id evaluations on average), and because the day is in the salt,
-  a precomputed table stops working at midnight UTC. Near midnight a
-  receiver also tries the neighbouring day. The mDNS name a sender
-  announces on the LAN is derived from the same stretch with a different
-  label, so a LAN observer faces the same cost.
-- **One receiver.** The first receiver to complete the handshake owns
-  the transfer. From then on both peers re-pair only on a *resume key*
-  derived from their session secret — a fresh rendezvous for discovery
-  and a 256-bit PAKE secret — never on the code again. The code's server
-  slot is tombstoned for ten minutes, so another receiver using the code
-  in that window gets `E003` ("already claimed"); after that it gets
-  `E002`. A receiver that joins but never completes the handshake
-  (it quit, or had no working path) doesn't spend the code, and has
-  learned nothing about it: the sender re-creates its session and waits
-  again, up to three times per round. A receiver that gives up tells the
-  server, so the code opens again within a few seconds; one that just
-  disappears is waited for up to a minute first. A wrong confirmation
-  tag is different: it is a guess, and it ends the round on the server
-  path. After 10 failed handshakes on the local network in one pairing
-  round, the sender stops listening there and keeps waiting via the
-  server.
-- **Resume only from the original device.** The receiver saves its
-  resume key in the fsend config directory (mode `0600`, kept up to 24
-  hours, deleted when the transfer completes), so rerunning the same
-  `fsend <code>` on that device reconnects to a sender that is still
-  running. Someone else holding the code can't take over a dropped
-  transfer.
-- **Time-limited.** Each pairing round waits up to one hour for a
-  receiver (the server drops an unclaimed session after an hour, or five
-  minutes after its sender stops polling). Pressing Ctrl-C on the sender
-  ends it immediately. Once the sender exits, the code is gone; resuming
-  then takes a new code.
-- **Rate-limited.** The public server is configured to cap new sessions
-  and joins at 30 per minute per client address: the IPv4 address, or the
-  /64 prefix for IPv6, with 4× that budget per /48 so rotating /64s inside
-  one site doesn't help. The address is the direct connection's, or, when
-  that connection comes from a reverse proxy listed in
-  `FSEND_SERVER_TRUSTED_PROXIES`, the client the proxy forwarded for.
-  Forwarded headers from anyone else are ignored, since a client could
-  otherwise rotate its "IP" past the cap. Behind a proxy that isn't
-  listed, every client shares the proxy's single allowance. A waiting
-  sender's own polls are not charged. Each guess also costs an argon2id
-  derivation to find the slot and works only against a live session, and
-  failed handshakes slow the sender's listener down. On a self-hosted
-  server the per-IP caps are opt-in — they default to unlimited until you
-  set `FSEND_SERVER_MAX_SESSIONS_PER_IP_PER_MINUTE` and
-  `FSEND_SERVER_MAX_SESSIONS_PER_IP` (see [self-hosting](self-hosting.md)).
-- **Not the encryption key.** File data is encrypted with the TLS 1.3
-  session keys. The code only drives the CPace handshake that
-  authenticates the peer; it never feeds the encryption key and never
-  crosses the wire, in the clear or otherwise.
-- **Chosen for you.** fsend generates the code; it isn't user-selectable.
-  To add a second secret on top, send with `--password`.
+- **The server sees a slot, not the code.** The slot is argon2id of the
+  code (64 MiB, 2 passes), salted with the UTC day, cut to 16 bytes with
+  HKDF. Reversing it means about 2^44 argon2id runs, and the daily salt
+  makes precomputed tables useless after midnight. The mDNS name on the
+  local network costs the same to reverse.
+- **One receiver.** After the handshake, both sides switch to a resume
+  key from their session secret. The code is marked used for 10 minutes
+  (`E003`, then `E002`). A receiver that joins but never finishes the
+  handshake doesn't use up the code.
+- **Resume from the same device only.** The receiver keeps the resume
+  key in its config folder (mode `0600`, up to 24 hours). Someone else
+  with the code can't take over a dropped transfer.
+- **Time-limited.** Each wait lasts up to an hour. The code dies when the
+  sender exits.
+- **Rate-limited.** The public server allows 30 new sessions and joins
+  per minute per IPv4 address or IPv6 /64 (4× that per /48). It trusts
+  `X-Forwarded-For` only from proxies in `FSEND_SERVER_TRUSTED_PROXIES`.
+  On your own server these limits are off until you set them.
+- **Failed handshakes slow the sender.** After 10 on the local network,
+  it stops listening there and waits through the server.
+- **Not the encryption key.** The code only drives the PAKE. It never
+  crosses the network and never feeds the encryption keys.
+- **Chosen by fsend.** You can't pick your own code.
 
-## Relay threat model
+## The relay
 
-The relay forwards datagrams between two peers that the pairing server
-has already introduced. Its protections are about not being abused, not
-about confidentiality (the traffic is already end-to-end encrypted):
+The relay forwards encrypted data. Its protections stop abuse; secrecy
+comes from the encryption.
 
-- **Allocation needs a session.** A relay allocation is requested over
-  signaling with a session's role token, and the relay token it returns
-  is random (128 bits).
-- **Return-routability cookie.** Over UDP, a peer's address is recorded
-  only after a challenge: the relay answers a `HELLO` with a cookie
-  (HMAC over a server secret, a 30-second epoch, the relay token and the
-  source address) sent to that address, and only a `REGISTER` that echoes
-  it registers the peer. A spoofed source never sees the cookie, so it
-  can't aim the relay at a third party. Control replies are fixed-size,
-  so they don't amplify. Challenge replies are rate-limited per
-  allocation, and STUN replies per source prefix.
-- **Two peers per allocation.** Each side registers under a stable
-  private peer ID derived from its role token; a third ID is refused.
-  A peer whose address changes (a network switch) re-registers with a
-  fresh challenge.
-- **TCP fallback.** A peer that attaches over the WebSocket fallback
-  (`/v1/relay/ws`) authenticates with its session role token (and the
-  server password, if one is set); a TCP connection is already
-  return-routable, so it registers without a cookie.
+- **Needs a session.** An allocation requires a session's role token,
+  and returns a random 128-bit relay token.
+- **Return-routability.** Over UDP, a peer registers only by echoing a
+  cookie (an HMAC over a server secret, a 30-second epoch, the token and
+  its address). A spoofed address never sees the cookie, so the relay
+  can't be aimed at someone else. Replies don't amplify and are rate
+  limited.
+- **Two peers per allocation.** A third is refused.
+- **TCP fallback** (`/v1/relay/ws`) authenticates with the role token.
 
-What a malicious relay can do: drop, delay or reorder traffic (the
-transfer stalls or fails), and observe volume and timing. It can't read
-or alter the transfer, and it can't impersonate a peer without the code.
+A malicious relay can drop, delay or watch the volume of traffic. It
+can't read it, change it, or pretend to be a peer.
 
-## Resume-key threat model
+## The resume key
 
-- The resume key is derived from the session binding, a secret only the
-  two peers that completed the first CPace run hold. It is not derivable
-  from the code, so a shoulder-surfed code can't take over a dropped
-  transfer, and the new rendezvous slot can't be linked to the old one.
-- The receiver's copy is stored unencrypted (mode `0600`) in its config
-  directory, under a file name hashed from the code. Anyone who can read
-  your config directory while that file exists could reconnect to a
-  sender that is still running, which is roughly what they could do by
-  running fsend as you anyway.
-- The sender keeps its copy only in memory.
+- It's derived from a secret only the two devices hold, not from the
+  code.
+- The receiver stores it unencrypted (mode `0600`) in its config folder.
+  Anyone who can read that folder could already run fsend as you.
+- The sender keeps it in memory only.
 
 ## Release integrity
 
-Each release ships a `checksums.txt` with the SHA-256 of every archive,
-every Linux package (deb, rpm, apk) and the two install scripts, plus:
+Each release includes:
 
-- **A keyless Sigstore signature** over `checksums.txt`
-  (`checksums.txt.sigstore.json`), made by cosign from the release
-  workflow, so the signing identity is that workflow at a release tag.
-- **GitHub artifact attestations** (SLSA build provenance) for every
-  archive, binary, `checksums.txt` and installer. The Linux packages
-  have no attestation of their own; verify one through its line in
-  `checksums.txt`.
-- **An SBOM per archive** (`*.sbom.json`, generated by syft).
-- **Reproducible builds.** Builds use `-trimpath`, no build ID, and the
-  commit's timestamp for the embedded date and file times; CI rebuilds a
-  snapshot and checks it is byte-identical.
+- `checksums.txt`: SHA-256 of every archive, package and install script.
+- `checksums.txt.sigstore.json`: a keyless Sigstore signature, made by
+  the release workflow.
+- GitHub build attestations for every archive, binary, `checksums.txt`
+  and installer. Linux packages are covered through `checksums.txt`.
+- An SBOM per archive.
+- Reproducible builds: CI rebuilds and checks the bytes match.
 
-To verify a download yourself:
+To verify a download:
 
 ```sh
 # 1. checksums.txt was signed by fsend's release workflow
@@ -312,37 +165,25 @@ cosign verify-blob --bundle checksums.txt.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 
-# 2. the archive matches its line in checksums.txt
+# 2. the file matches checksums.txt
 sha256sum --ignore-missing -c checksums.txt     # macOS: shasum -a 256 --ignore-missing -c checksums.txt
 
 # or, instead of both: check the build provenance
 gh attestation verify fsend_<version>_linux_amd64.tar.gz --repo polius/fsend
 ```
 
-What the tools check for you:
+What's checked for you:
 
-- The **install scripts** verify the archive against `checksums.txt`
-  before installing. When `cosign` is installed they first verify
-  `checksums.txt`'s signature and abort if it is bad; for an old release
-  with no signature they warn and go on. Without cosign they check the
-  checksum alone, which comes from the same place as the archive: that
-  proves the download is intact, not who built it.
-- **`fsend --update`** downloads the new release's own install script,
-  checks it against that release's `checksums.txt` (checking the
-  signature first when cosign is installed), and runs it pinned to that
-  version; the script then verifies the archive as above.
-- **The install address.** `getfsend.alzina.dev`, the address in the
-  one-line installs, is a redirect on the maintainer's domain and serves
-  nothing itself: `/` answers with a redirect to
-  `https://github.com/polius/fsend/releases/latest/download/install.sh`
-  and `/windows` to `…/install.ps1`. Whoever controls that domain chooses
-  what the one-liner runs, so it is a trust root next to GitHub. To trust
-  GitHub alone, put those release URLs in the same commands:
-  `curl -fsSL <url> | sh`, or `irm <url> | iex` in PowerShell.
-- **Homebrew** installs carry the same attestation; the cask's caveats
-  show `gh attestation verify "$(brew --prefix)/bin/fsend" --repo polius/fsend`.
+- **Install scripts** check the archive against `checksums.txt`. With
+  `cosign` installed, they also check the signature. Without it, they
+  only prove the download is intact, not who built it.
+- **`fsend --update`** checks the new install script against the
+  release's `checksums.txt` before running it.
+- **Homebrew:** `gh attestation verify "$(brew --prefix)/bin/fsend" --repo polius/fsend`.
 
-A checksum fetched from the same place as the archive only proves
-integrity. The signature and the attestations are what tie a release to
-fsend's workflow, so if you need authenticity, install cosign or use
-`gh attestation verify`.
+**The install address.** `getfsend.alzina.dev` only redirects to the
+latest release's `install.sh` (and `/windows` to `install.ps1`). Whoever
+controls that domain controls what the one-line install runs. To trust
+GitHub alone, use
+`https://github.com/polius/fsend/releases/latest/download/install.sh`
+directly.
