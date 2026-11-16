@@ -1,9 +1,8 @@
 # fsend compared with croc, magic-wormhole, sendme and LocalSend
 
-All five tools encrypt transfers by default and need no account. They differ in
-where they work, what a server learns, how the bytes travel, how
-strongly each side knows who is on the other end, and how fast they
-are ([Speed](#speed)).
+All five encrypt by default and need no account. They differ in where
+they work, what a server learns, and how fast they are
+([Speed](#speed)).
 
 > Checked against source code on 24 October 2026: fsend (wire protocol
 > v3), croc v11.5.5, magic-wormhole 0.24.0, sendme v0.37.1, LocalSend
@@ -52,58 +51,25 @@ Gatekeeper or SmartScreen.
 
 ## What sets fsend apart
 
-**The server never learns the code.** Peers register under
-argon2id(code), salted with the UTC day, so reversing what the server
-holds means a memory-hard search of a ~2^45 code space, restarted
-daily. croc's relay room is `SHA-256(first word + "croc")`, and its
-1,296-word list can be enumerated, so the relay learns a third of the
-code.
-
-**Authentication covers the channel itself.** fsend runs CPace with the
-TLS 1.3 exporter as its session ID, so the PAKE authenticates the
-exact encrypted session the file travels over. A man-in-the-middle,
-including a malicious server or relay, fails before any data flows.
-`--password` adds a second, mutual CPace. croc's `--pass` only grants
-access to the relay, and LocalSend has no shared secret at all: it
-trusts the certificate fingerprint a device announces.
-
-**Post-quantum by default, and only.** Every peer connection negotiates
-X25519MLKEM768, and classical-only peers are refused, so recorded
-traffic stays confidential against a future quantum computer. The
-others use classical key exchange.
-
-**Direct for every transfer, on standard ports.** The server introduces
-the peers over ICE and steps aside. It relays encrypted packets only
-when NAT defeats hole-punching, and over a WebSocket on TCP/443 when UDP
-is blocked. croc relays every transfer under 128 MiB, uses TCP
-9009–9017, and depends on Tailscale for larger files even when you
-self-host. LocalSend works only on the local network.
-
-**Transfers you can verify.** Each file is checked against a BLAKE3
-root. Resume re-verifies the partial file and works only from the
-original receiver device; anyone else using the code gets `E003`.
-`--manifest` records each file's SHA-256, `--preview` shows what would
-be sent, `--json` serves scripts, and `fsend doctor` diagnoses
-connectivity.
-
-**One binary, private by default.** The client is also the server
-(`fsend server`). At its default log level the server logs no client
-IPs, and it exposes metrics
-only on a private listener. Releases are signed with cosign and carry
-GitHub attestations; croc publishes checksums only.
+- **The server never learns the code.** It sees only argon2id(code),
+  salted daily. croc's relay learns the first of its three words.
+- **The code authenticates the encrypted channel itself** (CPace bound
+  to TLS 1.3). A man in the middle, even the server, fails. croc's
+  `--pass` only unlocks its relay; LocalSend has no shared secret.
+- **Post-quantum, always.** X25519MLKEM768 on every connection; the
+  others use classical key exchange.
+- **Direct whatever the size, on port 443.** croc relays everything
+  under 128 MiB, uses TCP 9009–9017, and needs Tailscale for larger
+  files. LocalSend works only on the local network.
+- **Verifiable.** Per-file BLAKE3 checks, resume only from the original
+  device, `--manifest` with SHA-256, `--json` and `fsend doctor`.
 
 ## Speed
 
-Both ends on one machine (Apple M2 Pro, macOS), so the network is out
-of the picture and what remains is each tool's own overhead: crypto,
-protocol and disk. Time from starting the sender to the receiver
-exiting with every byte written to disk and checked against the
-original; median of three runs or more.
-
-Each tool is measured on its two direct routes: **local network** (both
-devices on one network) and **direct between networks** (the
-peer-to-peer path a tool takes across the internet, forced here on one
-machine). Relays aren't measured.
+Both ends on one machine (Apple M2 Pro), so the network is out of the
+picture: what's left is each tool's own overhead. Time from starting the
+sender to the receiver finishing, with every byte written and checked.
+Median of 3 or more runs.
 
 | | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|---:|---:|---:|---:|---:|
@@ -114,47 +80,30 @@ machine). Relays aren't measured.
 | Local network | **1.7 s**<br>~61 MB/s | 9.1 s<br>~11 MB/s | 5.8 s<br>~18 MB/s | 35 s<br>~3 MB/s | 2.3 s<br>~45 MB/s⁵ |
 | Direct between networks | **2.5 s**<br>~41 MB/s | 9.8 s<br>~10 MB/s, relayed² | 5.8 s<br>~18 MB/s³ | 35 s<br>~3 MB/s⁴ | local network only |
 
-- On the local network, fsend, croc and magic-wormhole move the data
-  over TCP (croc through a relay on the same machine), LocalSend over
-  HTTPS, sendme over QUIC on UDP. Between networks, fsend runs QUIC over the path ICE found
-  (`--mode direct`, a debug flag that turns the local route off) and
-  croc runs WireGuard.
-- Random data, so croc's compression doesn't help it. With data that
-  compresses, fsend's zstd helps too.
-- Between two real machines, the link, its latency and the disks add to
-  these times. The table shows what each tool needs on top of that.
 
-¹ Median of seven runs. Three were far slower (22, 9 and 9 MB/s). A run
-traced with debug logs used the direct path at about 49 MB/s; the slow
-ones likely fell back to iroh's public relay.
-² Between networks croc sends files of 128 MiB or more over Tailscale's
-WireGuard ("Tailcat"), direct when NAT allows, and smaller transfers
-such as this folder through its relay. The file was measured with
-`--transport derp`, pairing through croc's public relay, and every run
-reported `path=direct`; the folder with `--transport relay --no-local`
-through a croc relay on the same machine (through croc's public relay,
-the link to it is the limit).
-³ The same TCP connection as on the local network. magic-wormhole has
-no hole punching: between networks it connects directly only when one
-side accepts incoming connections, and otherwise uses its transit
-relay.
-⁴ The same QUIC path as on the local network: iroh punches through NAT
-and sends over that one path either way.
-⁵ With `localsend-cli`, an interactive terminal app, driven through a
-pty. Its time starts when the device is picked and the request is
-accepted at once, so it leaves out the startup, discovery and pairing
-that the other tools' times include. The CLI sends files, not folders,
-so the folder went as its 5,000 files.
+- **Local network:** fsend, croc and magic-wormhole use TCP, LocalSend
+  HTTPS, sendme QUIC.
+- **Direct between networks**, forced on one machine: fsend with
+  `--mode direct` (QUIC), croc with Tailscale's WireGuard.
+- Random data, so compression doesn't help anyone.
+- Between two real machines, the network and disks add to these times.
 
-Measured on 16 November 2026 with fsend 1.17.0 (pre-release build of
-`main`), croc v11.6.5, magic-wormhole 0.24.0, sendme v0.37.1 and
-LocalSend CLI v1.18.2. fsend,
-and croc on the local network, paired through a server running on the
-same machine; magic-wormhole through its public mailbox; sendme by
-ticket. croc v11.5.5 failed two of three 1 GiB runs ("could not secure
-channel"), so the table uses the current release. fsend's limits on
-each route, on Linux as well, are in the
-[FAQ](faq.md#how-fast-is-it).
+¹ Median of 7 runs. 3 were much slower (22, 9, 9 MB/s), probably through
+iroh's relay.
+² croc sends files of 128 MiB or more over Tailscale's WireGuard
+(`--transport derp`; every run reported `path=direct`), and smaller
+transfers through its relay (measured with a relay on the same machine).
+³ Same connection as on the local network. magic-wormhole can't punch
+through NAT: between networks it's direct only if one side accepts
+incoming connections.
+⁴ Same QUIC path as on the local network.
+⁵ `localsend-cli`, driven through a pty. Its time starts when the device
+is picked, so it leaves out the startup and discovery the others
+include. The folder went as 5,000 files.
+
+Measured on 16 November 2026: fsend 1.17.0 (pre-release), croc v11.6.5,
+magic-wormhole 0.24.0, sendme v0.37.1, LocalSend CLI v1.18.2. croc
+v11.5.5 failed 2 of 3 runs, so the table uses v11.6.5.
 
 ## Trade-offs
 
@@ -166,8 +115,7 @@ each route, on Linux as well, are in the
 - LocalSend has graphical apps for Android, iOS, macOS, Windows and
   Linux, and lets a browser on the LAN receive through a link.
 
-fsend is a command-line tool with one code and one receiver, by design,
-and pairs across networks through its server.
+fsend is a command-line tool: one code, one receiver, by design.
 
 ## Sources
 
