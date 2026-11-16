@@ -26,7 +26,10 @@ jobs:
     env:
       # LAN discovery tests skip where multicast is unavailable; here a
       # skip would hide a broken discovery path, so it fails instead.
-      FSEND_TEST_REQUIRE_MULTICAST: "1"
+      # Not on macos-15-intel: its runner drops multicast now and then
+      # (three tries in a row in TestReceive_LANBlackholeFallsBackFast),
+      # so a miss there skips. macos-latest still requires it on macOS.
+      FSEND_TEST_REQUIRE_MULTICAST: ${{ matrix.os != 'macos-15-intel' && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
