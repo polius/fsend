@@ -180,12 +180,10 @@ ends on one machine:
 
 | | **fsend** | **croc** | **magic-wormhole** | **sendme** |
 |---|:---:|:---:|:---:|:---:|
-| Peak memory | 86 / 87 MiB | 37 / 34 MiB | 65 / 65 MiB | **20 / 18 MiB** |
-| Of which the transfer itself | **32 / 27 MiB** | — | — | — |
+| Peak memory | 34 / 35 MiB | 37 / 34 MiB | 65 / 65 MiB | **20 / 18 MiB** |
 
-About 64 MiB of fsend's peak is the memory-hard (Argon2id) stretch that
-keeps the share code safe from offline guessing; it is freed before the
-transfer starts.
+fsend's figure includes the memory-hard (Argon2id) stretch that keeps the
+share code safe from offline guessing.
 
 Every row, the method and the sources are in the
 [full comparison](docs/comparison.md).

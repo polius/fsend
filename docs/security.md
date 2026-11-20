@@ -95,10 +95,13 @@ A code like `abc-defg-jkm` has about **45 bits**: three groups of letters
 from a 23-letter alphabet (no `i`, `l`, `o`).
 
 - **The server sees a slot, not the code.** The slot is argon2id of the
-  code (64 MiB, 2 passes), salted with the UTC day, cut to 16 bytes with
-  HKDF. Reversing it means about 2^44 argon2id runs, and the daily salt
-  makes precomputed tables useless after midnight. The mDNS name on the
-  local network costs the same to reverse.
+  code (8 MiB, 5 passes: OWASP's recommended minimum), salted with the
+  UTC day, cut to 16 bytes with HKDF. Reversing it means about 2^44
+  argon2id runs, far more than fit in the hour a code lives, and the
+  daily salt makes precomputed tables useless after midnight. The mDNS
+  name on the local network costs the same to reverse. Up to 1.17 the
+  stretch used 64 MiB and 2 passes: each guess cost about three times
+  as much, and fsend's memory peak was twice as high.
 - **One receiver.** After the handshake, both sides switch to a resume
   key from their session secret. The code is marked used for 10 minutes
   (`E003`, then `E002`). A receiver that joins but never finishes the

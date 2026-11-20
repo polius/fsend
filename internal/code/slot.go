@@ -49,15 +49,16 @@ func Slot(code string) string { return SlotAt(code, Epoch(time.Now())) }
 // handshake with each peer and MITM the transfer. The code has only
 // ~45 bits of entropy, so a fast hash would let anyone holding a slot
 // recover the code by offline brute force. argon2id makes each guess
-// cost ~64 MiB of memory and tens of milliseconds (same parameters as
-// internal/landisc, which solves the identical problem for the mDNS
-// name), putting the 2^44-average search out of practical reach.
+// cost 8 MiB of memory and 5 passes over it (see stretchMemKiB; the
+// stretch is shared with internal/landisc, which solves the identical
+// problem for the mDNS name), putting the 2^44-average search out of
+// practical reach.
 //
 // The peers share no prior state, so a per-session salt is impossible.
-// The salt is a domain label plus the UTC day (see Epoch): the
-// memory-hardness makes one day's table cost tens of thousands of
-// CPU-years, and a new day needs a new table. Distinct from the landisc
-// label so the two derived values can't be cross-correlated (see Stretch).
+// The salt is a domain label plus the UTC day (see Epoch): one day's
+// table would take 2^45 memory-hard runs, and a new day needs a new
+// table. The label is distinct from the landisc one so the two derived
+// values can't be cross-correlated (see Stretch).
 func SlotAt(code string, epoch int64) string {
 	return hex.EncodeToString(Stretch(code, epoch, "fsend-slot-v3", 16))
 }
