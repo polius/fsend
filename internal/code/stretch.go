@@ -3,6 +3,7 @@ package code
 import (
 	"crypto/hkdf"
 	"crypto/sha256"
+	"runtime/debug"
 	"sync"
 
 	"golang.org/x/crypto/argon2"
@@ -44,6 +45,12 @@ func stretchKey(code string, epoch int64) []byte {
 		return k
 	}
 	k := argon2.IDKey([]byte(code), EpochSalt("fsend-stretch-v3", epoch), 2, 64*1024, 4, 32)
+	// Argon2's 64 MiB of blocks is garbage now, but still counted live by
+	// the GC pacer until the next cycle: left alone, it sets the next GC
+	// target near 128 MiB and the transfer's heap grows into it (139 MiB
+	// peak RSS on the sender). Collect and hand the pages back now, once
+	// per code (the result is memoised), so the transfer starts small.
+	debug.FreeOSMemory()
 	if len(stretchCache) >= stretchCacheMax {
 		clear(stretchCache)
 	}
