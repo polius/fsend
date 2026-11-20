@@ -900,7 +900,7 @@ func dialOverTransport(ctx context.Context, tr *quic.Transport, secret string) (
 	}
 	// ReceiverHandshake bounds itself by HandshakeTimeout: a stalled peer
 	// or a hostile relay can't hang the receiver.
-	return quicconn.ReceiverHandshake(ctx, qc, secret)
+	return quicconn.ReceiverHandshakeOver(ctx, tr, qc, secret)
 }
 
 // relayProbe identifies a relay allocation for classifyRelayDrop.
