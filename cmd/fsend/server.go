@@ -60,6 +60,7 @@ func serverCmd() *cobra.Command {
 				// — never the E099 "file an issue" catchall (exit 99).
 				if err := healthCheck(); err != nil {
 					uxlog.Status(uxlog.Cross(), err.Error())
+					uxlog.RestoreFlowControl()
 					os.Exit(1)
 				}
 				return nil

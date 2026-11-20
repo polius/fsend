@@ -769,41 +769,82 @@ func (hh *harness) runFsendIn(t *testing.T, xdgHome, dir string, args ...string)
 // A receive with no input and no --yes (cron, CI, ssh -T) can't answer the
 // accept prompt. That is a usage error (exit 24, done ok=false), not a "no":
 // no decline goes out, the sender keeps waiting, and the same code with
-// --yes on this device completes.
+// --yes on this device completes. On every route: the local one (TCP first)
+// and the relay over QUIC and over TCP.
 func TestReceive_NoInputWithoutYes_Exits24SenderWaits(t *testing.T) {
 	requireE2E(t)
-	src, dst := t.TempDir(), t.TempDir()
-	srcFile := filepath.Join(src, "unattended.bin")
-	writeRandom(t, srcFile, 32*1024)
+	for _, tc := range []struct {
+		name, mode, transport string
+	}{
+		{"local", "", ""},
+		{"relay_quic", "--mode=relay", ""},
+		{"relay_tcp", "--mode=relay", "tcp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.transport != "" {
+				t.Setenv("FSEND_RELAY_TRANSPORT", tc.transport)
+			}
+			src, dst := t.TempDir(), t.TempDir()
+			srcFile := filepath.Join(src, "unattended.bin")
+			writeRandom(t, srcFile, 32*1024)
+			xdg := h.newXDG(t)
+			args := []string{srcFile}
+			if tc.mode != "" {
+				args = append([]string{tc.mode}, args...)
+			}
+			s := h.startSender(t, xdg, args...)
+			t.Cleanup(func() { _ = s.cmd.Process.Kill() })
+			code := s.waitForCode(t, 5*time.Second)
+
+			first := h.fsendCmd(xdg, code, "--json") // Stdin nil: /dev/null
+			first.Dir = dst
+			var out, errb bytes.Buffer
+			first.Stdout, first.Stderr = &out, &errb
+			if got := exitCodeOf(t, first.Run()); got != 24 {
+				t.Fatalf("receiver without input exited %d, want 24\nstderr:\n%s", got, errb.String())
+			}
+			if !strings.Contains(errb.String(), "fsend --yes "+code) {
+				t.Errorf("message must name the fix (fsend --yes %s):\n%s", code, errb.String())
+			}
+			evs := jsonLines(t, out.String())
+			if done := evs[len(evs)-1]; done["event"] != "done" || done["ok"] != false || done["exit"] != float64(24) {
+				t.Errorf("done event: %v", done)
+			}
+
+			// The sender finishing with the rerun below shows it kept waiting.
+			again := h.fsendCmd(xdg, "--yes", code)
+			again.Dir = dst
+			var aerr bytes.Buffer
+			again.Stderr = &aerr
+			if got := exitCodeOf(t, again.Run()); got != 0 {
+				t.Fatalf("rerun with --yes exited %d\nstderr:\n%s\nsender stderr:\n%s", got, aerr.String(), s.stderr.String())
+			}
+			if got := s.wait(t, 5*time.Second); got != 0 {
+				t.Fatalf("sender exited %d\nsender stderr:\n%s", got, s.stderr.String())
+			}
+			assertFilesEqual(t, srcFile, filepath.Join(dst, "unattended.bin"))
+		})
+	}
+}
+
+// A stream (--text, stdin) can't be replayed, so its sender can't wait for
+// a rerun: it still hears a decline (E006, as before), while the receiver
+// that had no input exits 24.
+func TestReceive_NoInputStreamStillDeclines(t *testing.T) {
+	requireE2E(t)
+	dst := t.TempDir()
 	xdg := h.newXDG(t)
-	s := h.startSender(t, xdg, srcFile)
+	s := h.startSender(t, xdg, "--text", "hello")
 	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
 	code := s.waitForCode(t, 5*time.Second)
-
-	first := h.fsendCmd(xdg, code, "--json") // Stdin nil: /dev/null
-	first.Dir = dst
-	var out, errb bytes.Buffer
-	first.Stdout, first.Stderr = &out, &errb
-	if got := exitCodeOf(t, first.Run()); got != 24 {
-		t.Fatalf("receiver without input exited %d, want 24\nstderr:\n%s", got, errb.String())
+	rcv := h.fsendCmd(xdg, code) // stdin and stdout not terminals: "Show the text?" is asked
+	rcv.Dir = dst
+	var errb bytes.Buffer
+	rcv.Stderr = &errb
+	if got := exitCodeOf(t, rcv.Run()); got != 24 {
+		t.Fatalf("receiver exited %d, want 24\nstderr:\n%s", got, errb.String())
 	}
-	if !strings.Contains(errb.String(), "fsend --yes "+code) {
-		t.Errorf("message must name the fix (fsend --yes %s):\n%s", code, errb.String())
+	if got := s.wait(t, 10*time.Second); got != 6 {
+		t.Fatalf("stream sender exited %d, want 6 (declined)\nsender stderr:\n%s", got, s.stderr.String())
 	}
-	evs := jsonLines(t, out.String())
-	if done := evs[len(evs)-1]; done["event"] != "done" || done["ok"] != false || done["exit"] != float64(24) {
-		t.Errorf("done event: %v", done)
-	}
-	// The sender finishing with the rerun below shows it kept waiting.
-	again := h.fsendCmd(xdg, "--yes", code)
-	again.Dir = dst
-	var aerr bytes.Buffer
-	again.Stderr = &aerr
-	if got := exitCodeOf(t, again.Run()); got != 0 {
-		t.Fatalf("rerun with --yes exited %d\nstderr:\n%s\nsender stderr:\n%s", got, aerr.String(), s.stderr.String())
-	}
-	if got := s.wait(t, 5*time.Second); got != 0 {
-		t.Fatalf("sender exited %d\nsender stderr:\n%s", got, s.stderr.String())
-	}
-	assertFilesEqual(t, srcFile, filepath.Join(dst, "unattended.bin"))
 }
