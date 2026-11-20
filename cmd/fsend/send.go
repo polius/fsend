@@ -373,9 +373,10 @@ func renderCodeBlock(w io.Writer, c string, password, copied bool) {
 	out.Blank()
 	out.Command(uxlog.Subject("fsend") + " " + uxlog.Code(c))
 	out.Blank()
-	note := uxlog.Join("One receiver", "valid while this runs")
+	valid := "valid for " + codeLifetime(pairTTL)
+	note := uxlog.Join("One receiver", valid)
 	if copied {
-		note = uxlog.Join("Copied to clipboard", "one receiver", "valid while this runs")
+		note = uxlog.Join("Copied to clipboard", "one receiver", valid)
 	}
 	if password {
 		note = uxlog.Join(note, "they need the password too")

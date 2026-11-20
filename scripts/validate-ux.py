@@ -735,6 +735,8 @@ def s1_single_file():
     lacks_text(s, 'no box around the command', sp, '│')
     has_text(s, 'command line is runnable as is', sp, '      fsend ' + code + '\n')
     check(s, 'tagline faint', sp, 'One receiver', 'One receiver', DEFAULT, False, True)
+    # R7: the code's real lifetime (pairTTL), not "while this runs".
+    has_text(s, 'tagline gives the code\'s lifetime', sp, 'One receiver · valid for 1 hour')
     # The install-and-receive hint pairs through the default server; this
     # harness uses its own, so the hint must stay away.
     lacks_text(s, 'no install hint on a server of its own', sp, 'No fsend there yet')

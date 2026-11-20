@@ -300,6 +300,25 @@ const sessionDeleteTimeout = 3 * time.Second
 // re-created on the server. Var so tests can shrink it.
 var pairTTL = time.Hour
 
+// expiryWarn is how long before pairTTL runs out the waiting line starts
+// counting down. Var so tests can shrink it.
+var expiryWarn = 10 * time.Minute
+
+// codeLifetime says how long a code lasts, for the line under it: "1 hour",
+// "2 hours", "90 min".
+func codeLifetime(d time.Duration) string {
+	if d >= time.Hour && d%time.Hour == 0 {
+		return uxlog.CountNoun(int(d/time.Hour), "hour")
+	}
+	return fmt.Sprintf("%d min", int((d+time.Minute-1)/time.Minute))
+}
+
+// expiringLabel is a waiting line once the code has less than expiryWarn
+// left: "Waiting for receiver · code expires in 4 min".
+func expiringLabel(msg string, left time.Duration) string {
+	return msg + uxlog.Sep + fmt.Sprintf("code expires in %d min", max(1, int((left+time.Minute-1)/time.Minute)))
+}
+
 // serverRetryMax caps the backoff between attempts to reach a down
 // server. Var so tests can shrink it.
 var serverRetryMax = 30 * time.Second
@@ -818,6 +837,33 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 
 	ttl := time.NewTimer(pairTTL)
 	defer ttl.Stop()
+	// In the code's last minutes the waiting line counts down, refreshed
+	// each minute and kept across the spinner restarts below.
+	deadline := time.Now().Add(pairTTL)
+	waitMsg := "Waiting for receiver"
+	var expiring <-chan time.Time
+	if pairTTL > expiryWarn {
+		warn := time.NewTimer(pairTTL - expiryWarn)
+		defer warn.Stop()
+		expiring = warn.C
+	}
+	var countdown *time.Ticker
+	defer func() {
+		if countdown != nil {
+			countdown.Stop()
+		}
+	}()
+	var countdownC <-chan time.Time
+	label := func(msg string) string {
+		if countdown == nil {
+			return msg
+		}
+		return expiringLabel(msg, time.Until(deadline))
+	}
+	wait := func(msg string) *uxlog.Spinner {
+		waitMsg = msg
+		return startWaitSpinner(f, label(msg))
+	}
 
 	var (
 		lanDone, serverDone bool
@@ -853,7 +899,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 		serverDownErr = err
 		waitSpin.Stop()
 		uxlog.Status(uxlog.Warn(), serverPairNotice(err))
-		waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
+		waitSpin = wait("Waiting for receiver on local network")
 	}
 
 	for !winnerPicked && (!lanDone || !serverDone) {
@@ -865,12 +911,20 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 			// Stop announcing a code nobody redeemed within the server's TTL.
 			return abort(fserrors.ErrSessionExpired)
 
+		case <-expiring:
+			countdown = time.NewTicker(time.Minute)
+			countdownC = countdown.C
+			waitSpin.SetMessage(label(waitMsg))
+
+		case <-countdownC:
+			waitSpin.SetMessage(label(waitMsg))
+
 		case <-vanishedCh:
 			// The code is still good: nobody proved they held it.
 			if !f.quiet {
 				waitSpin.Stop()
 				uxlog.Status(uxlog.Info(), "A receiver joined but didn't connect. The code still works.")
-				waitSpin = startWaitSpinner(f, "Waiting for receiver")
+				waitSpin = wait("Waiting for receiver")
 			}
 
 		case err := <-serverDownCh:
@@ -899,7 +953,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 					waitSpin.Stop()
 					uxlog.Status(uxlog.Warn(), fmt.Sprintf("Stopped taking local-network connections after %d failed attempts", maxLANAuthFailures)+
 						"\n"+uxlog.Detail("Still waiting via the server."))
-					waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
+					waitSpin = wait("Waiting for receiver via server")
 				}
 				lanDownNoticed = true
 				continue
@@ -917,7 +971,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				// line, then restart it for the remaining (server) path.
 				waitSpin.Stop()
 				uxlog.Status(uxlog.Info(), "Local-network discovery unavailable — connecting via the server instead.")
-				waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
+				waitSpin = wait("Waiting for receiver via server")
 			}
 
 		case res := <-serverCh:
