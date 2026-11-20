@@ -54,7 +54,8 @@ type RecvOptions struct {
 	Accept func(hello wire.SenderHello, summary ClassifySummary) bool
 	// Unanswered runs after Accept returned false. A non-nil error means
 	// nobody could answer (no input): the receiver leaves with that error
-	// and sends no decline, so the sender keeps waiting for a rerun.
+	// and, for files, sends no decline, so the sender keeps waiting for a
+	// rerun. A stream is still declined: its sender can't replay it.
 	Unanswered func() error
 	// ResolveConflicts decides, once, what to do with all differing entries.
 	// It runs right after Accept, so a UI can ask both in one prompt.
@@ -1454,14 +1455,15 @@ func StreamFileName(displayName string) string {
 // single file under TargetDir.
 func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts RecvOptions) error {
 	accept := opts.Accept == nil || opts.Accept(*hello, ClassifySummary{})
-	if !accept {
-		if err := opts.unanswered(); err != nil {
-			return err
-		}
-	}
 	ackProceed(s, opts, accept)
 	if !accept {
 		drainControl(s)
+		// A stream can't be replayed, so its sender can't wait for a
+		// rerun: it hears a decline either way, and an unanswered
+		// prompt only changes this side's exit.
+		if err := opts.unanswered(); err != nil {
+			return err
+		}
 		return fserrors.ErrReceiverDeclined
 	}
 	if hello.HasPassword {
