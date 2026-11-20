@@ -246,6 +246,30 @@ func liveLayout(width int, total int64, showNames bool) barLayout {
 // isn't a measurable terminal. mpb re-samples the size every refresh
 // frame; content sized to the width should too, so a mid-transfer resize
 // re-flows instead of leaving stale geometry.
+// stalledChip marks the rate chip's "stalled" state for its colouring.
+const stalledChip = Sep + "stalled"
+
+// rateChip is the rate decorator's text at now: it feeds the window (the
+// ETA reads it even while the chip is hidden), then shows " · 12 MB/s",
+// "stalled", or nothing. Like the ETA it waits out the first second: a
+// figure over a fraction of a second rests on two or three uneven frames
+// and came out far below the truth.
+func rateChip(win *rateWindow, start, now time.Time, current int64, show bool) string {
+	r := win.observe(now, current)
+	if current < rateThreshold || !show || now.Sub(start) < time.Second {
+		return ""
+	}
+	if win.stalled(now) {
+		return stalledChip
+	}
+	// Below 1 B/s the figure rounds to "0 B/s"; show nothing rather than a
+	// rate that reads as stalled.
+	if r < 1 {
+		return ""
+	}
+	return Sep + RateLabel(r)
+}
+
 // Columns is the width of the terminal stderr writes to, 0 off a terminal.
 func Columns() int { return terminalWidth(0) }
 
@@ -427,7 +451,6 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 
 	// The stalled marker carries the warning colour; decor.Meta colours it
 	// while mpb measures the bar width off the ANSI-free form.
-	const stalledChip = Sep + "stalled"
 	if showRate {
 		appendDecs = append(appendDecs,
 			// Rate: hidden when the figure would be misleading (start
@@ -441,20 +464,7 @@ func New(totalBytes int64, showNames bool, route string) *Progress {
 					if s.Completed || s.Aborted || s.Current == 0 {
 						return ""
 					}
-					now := time.Now()
-					r := win.observe(now, s.Current) // feeds the ETA even when hidden
-					if s.Current < rateThreshold || !lay().rate {
-						return ""
-					}
-					if win.stalled(now) {
-						return stalledChip
-					}
-					// Below 1 B/s the figure rounds to "0 B/s"; show nothing
-					// rather than a rate that reads as stalled.
-					if r < 1 {
-						return ""
-					}
-					return Sep + RateLabel(r)
+					return rateChip(win, start, time.Now(), s.Current, lay().rate)
 				}),
 				func(str string) string {
 					if str == stalledChip {
