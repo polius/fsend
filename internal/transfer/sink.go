@@ -59,6 +59,9 @@ func recvFilesToSink(ctx context.Context, s *Streams, hello *wire.SenderHello, e
 		}
 	}
 	if opts.Accept != nil && !opts.Accept(*hello, summary) {
+		if err := opts.unanswered(); err != nil {
+			return err
+		}
 		declineTransfer(s, wire.ErrCodeDeclined, "receiver declined")
 		return fserrors.ErrReceiverDeclined
 	}

@@ -762,3 +762,45 @@ func (hh *harness) runFsendIn(t *testing.T, xdgHome, dir string, args ...string)
 	err := cmd.Run()
 	return out.String(), errb.String(), exitCodeOf(t, err)
 }
+
+// A receive with no input and no --yes (cron, CI, ssh -T) can't answer the
+// accept prompt. That is a usage error (exit 24, done ok=false), not a "no":
+// no decline goes out, the sender keeps waiting, and the same code with
+// --yes on this device completes.
+func TestReceive_NoInputWithoutYes_Exits24SenderWaits(t *testing.T) {
+	requireE2E(t)
+	src, dst := t.TempDir(), t.TempDir()
+	srcFile := filepath.Join(src, "unattended.bin")
+	writeRandom(t, srcFile, 32*1024)
+	xdg := h.newXDG(t)
+	s := h.startSender(t, xdg, srcFile)
+	t.Cleanup(func() { _ = s.cmd.Process.Kill() })
+	code := s.waitForCode(t, 5*time.Second)
+
+	first := h.fsendCmd(xdg, code, "--json") // Stdin nil: /dev/null
+	first.Dir = dst
+	var out, errb bytes.Buffer
+	first.Stdout, first.Stderr = &out, &errb
+	if got := exitCodeOf(t, first.Run()); got != 24 {
+		t.Fatalf("receiver without input exited %d, want 24\nstderr:\n%s", got, errb.String())
+	}
+	if !strings.Contains(errb.String(), "fsend --yes "+code) {
+		t.Errorf("message must name the fix (fsend --yes %s):\n%s", code, errb.String())
+	}
+	evs := jsonLines(t, out.String())
+	if done := evs[len(evs)-1]; done["event"] != "done" || done["ok"] != false || done["exit"] != float64(24) {
+		t.Errorf("done event: %v", done)
+	}
+	// The sender finishing with the rerun below shows it kept waiting.
+	again := h.fsendCmd(xdg, "--yes", code)
+	again.Dir = dst
+	var aerr bytes.Buffer
+	again.Stderr = &aerr
+	if got := exitCodeOf(t, again.Run()); got != 0 {
+		t.Fatalf("rerun with --yes exited %d\nstderr:\n%s\nsender stderr:\n%s", got, aerr.String(), s.stderr.String())
+	}
+	if got := s.wait(t, 5*time.Second); got != 0 {
+		t.Fatalf("sender exited %d\nsender stderr:\n%s", got, s.stderr.String())
+	}
+	assertFilesEqual(t, srcFile, filepath.Join(dst, "unattended.bin"))
+}

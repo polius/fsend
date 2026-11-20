@@ -68,6 +68,9 @@ type receiverUI struct {
 	notSaved []string // entries not saved for other reasons (unreadable, unplaceable)
 	changed  []string // files the sender saw change while reading them
 
+	// unanswered is set when the accept prompt hit end of input.
+	unanswered error
+
 	closeOnce sync.Once
 }
 
@@ -118,6 +121,7 @@ func (ui *receiverUI) recvOptions(hostname string) transfer.RecvOptions {
 		TargetDir:      ui.outDir,
 		Checksum:       ui.f.checksum,
 		Accept:         ui.accept,
+		Unanswered:     ui.unansweredErr,
 		Password:       ui.f.passArg,
 		ProgressFn:     ui.progress,
 		OnResume:       ui.onResume,
@@ -279,9 +283,7 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 			return false
 		}
 		if eof {
-			uxlog.Blank()
-			uxlog.Status(uxlog.Info(), "No input to answer the prompt — declining. Pass --yes to accept automatically.")
-			return false
+			return ui.noAnswer()
 		}
 		switch line {
 		case "", "y", "yes":
@@ -292,6 +294,24 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		uxlog.Line("Please answer y or n.")
 	}
 }
+
+// noAnswer handles end of input at the accept prompt (cron, CI, ssh -T):
+// nobody can answer, which is not a "no". The receive ends with a usage
+// error and sends no decline, so the sender keeps waiting and a rerun
+// with --yes on this device picks the transfer up.
+func (ui *receiverUI) noAnswer() bool {
+	uxlog.Blank()
+	again := "fsend --yes <code>"
+	if receiveResume != "" {
+		again = strings.Replace(receiveResume, "fsend ", "fsend --yes ", 1)
+	}
+	ui.unanswered = fmt.Errorf("%w: no input to answer the accept prompt; run %s to accept without one",
+		fserrors.ErrUsage, again)
+	return false
+}
+
+// unansweredErr is RecvOptions.Unanswered: the noAnswer error, if any.
+func (ui *receiverUI) unansweredErr() error { return ui.unanswered }
 
 // askWithConflicts is the accept prompt when some incoming files already
 // exist and differ. It lists them and asks once: keep both (the default —
@@ -321,9 +341,7 @@ func (ui *receiverUI) askWithConflicts(question string, conflicts []transfer.Con
 			return false
 		}
 		if eof {
-			uxlog.Blank()
-			uxlog.Status(uxlog.Info(), "No input to answer the prompt — declining. Pass --yes to accept automatically.")
-			return false
+			return ui.noAnswer()
 		}
 		choice := transfer.ConflictKeep
 		switch line {
