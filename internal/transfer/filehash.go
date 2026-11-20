@@ -61,9 +61,20 @@ func blockHash(b []byte) [32]byte {
 	return out
 }
 
+// rootKeyed is a hasher keyed for rootContext, never written to: foldRoot
+// starts each fold from a copy. Keying hashes the context string, and a
+// hasher is about 10 KB: a fresh one per file was most of a folder send's
+// garbage (over 120 MB for 12,000 files), and the collections it set off
+// emptied the block pool, so 1 MiB buffers were allocated again and again.
+var rootKeyed = blake3.NewDeriveKey(rootContext)
+
+var rootHashers = sync.Pool{New: func() any { return new(blake3.Hasher) }}
+
 // foldRoot folds block hashes and the byte count into the tree root.
 func foldRoot(blocks [][32]byte, size uint64) [32]byte {
-	h := blake3.NewDeriveKey(rootContext)
+	h := rootHashers.Get().(*blake3.Hasher)
+	defer rootHashers.Put(h)
+	*h = *rootKeyed
 	for i := range blocks {
 		_, _ = h.Write(blocks[i][:])
 	}

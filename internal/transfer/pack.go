@@ -32,24 +32,79 @@ type packed struct {
 	buf  []byte
 }
 
-// chunkEncoder is the zstd encoder every transfer in this process compresses
-// its chunks with (EncodeAll is safe for concurrent use). It is built once:
-// each of its workers keeps a history buffer of twice the window, so an
-// encoder per transfer with the default 8 MiB window allocated about
-// 130 MB for every transfer, and again for every retry. A chunk is at most
-// 1 MiB, so that is all the window it can use: the bytes on the wire are
-// the same as with the default.
-var chunkEncoder = sync.OnceValues(func() (*zstd.Encoder, error) {
-	return zstd.NewWriter(nil, zstd.WithEncoderConcurrency(packWorkers()), zstd.WithWindowSize(wire.MaxChunkSize))
-})
+// encoderPool holds the zstd encoders every transfer in this process
+// compresses its chunks with, each a single-worker encoder used by one
+// chunk at a time. They live for the process: one keeps a history buffer
+// and match tables (a few MiB), so an encoder per transfer allocated that
+// for every transfer, and again for every retry. They are made on first
+// use, up to packWorkers: data that doesn't compress only ever wakes one
+// (compressBackoff probes with a single chunk), so a send of photos or
+// archives doesn't pay for eight. A chunk is at most 1 MiB, so that is all
+// the window it can use: the bytes on the wire are the same as with the
+// default window.
+type encoderPool struct {
+	mu   sync.Mutex
+	cond *sync.Cond // signalled when an encoder is returned
+	idle []*zstd.Encoder
+	made int
+}
 
-func newChunkPacker(w io.Writer) (*chunkPacker, error) {
-	enc, err := chunkEncoder()
+var chunkEncoders = newEncoderPool()
+
+func newEncoderPool() *encoderPool {
+	p := &encoderPool{}
+	p.cond = sync.NewCond(&p.mu)
+	return p
+}
+
+// get returns an idle encoder, makes one while fewer than packWorkers
+// exist, or waits for one to come back (only when transfers in one process
+// overlap: a transfer runs packWorkers workers, each with one encoder).
+func (p *encoderPool) get() (*zstd.Encoder, error) {
+	p.mu.Lock()
+	for len(p.idle) == 0 && p.made >= packWorkers() {
+		p.cond.Wait()
+	}
+	if n := len(p.idle); n > 0 {
+		e := p.idle[n-1]
+		p.idle = p.idle[:n-1]
+		p.mu.Unlock()
+		return e, nil
+	}
+	p.made++
+	p.mu.Unlock()
+	e, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1), zstd.WithWindowSize(wire.MaxChunkSize))
 	if err != nil {
+		p.mu.Lock()
+		p.made--
+		p.cond.Signal()
+		p.mu.Unlock()
 		return nil, fmt.Errorf("send: zstd writer: %w", err)
 	}
+	return e, nil
+}
+
+func (p *encoderPool) put(e *zstd.Encoder) {
+	p.mu.Lock()
+	p.idle = append(p.idle, e)
+	p.cond.Signal()
+	p.mu.Unlock()
+}
+
+// compress returns src compressed into dst, or nil when no encoder could
+// be made (the chunk then goes uncompressed).
+func (p *encoderPool) compress(src, dst []byte) []byte {
+	e, err := p.get()
+	if err != nil {
+		return nil
+	}
+	defer p.put(e)
+	return e.EncodeAll(src, dst)
+}
+
+func newChunkPacker(w io.Writer) (*chunkPacker, error) {
 	p := &chunkPacker{buf: getBlock()[:0], out: make(chan packed, 2), done: make(chan struct{})}
-	go p.writeLoop(p.out, w, enc)
+	go p.writeLoop(p.out, w, chunkEncoders)
 	return p, nil
 }
 
@@ -60,36 +115,62 @@ func packWorkers() int { return min(runtime.GOMAXPROCS(0), 8) }
 
 // packJob is one chunk on its way through the compression workers.
 type packJob struct {
-	c    packed
-	try  bool   // compress it (false while backing off incompressible data)
-	z    []byte // the compressed bytes, when tried
-	done chan struct{}
+	c      packed
+	try    bool   // compress it (false while backing off incompressible data)
+	probe  bool   // it is the one chunk finding out whether data compresses
+	z      []byte // the compressed bytes, when tried
+	shrank bool   // z is worth sending: smaller by more than a tenth
+	done   chan struct{}
 }
 
 // compressBackoff decides which chunks are worth compressing. After a
 // chunk that doesn't shrink, the next ones go uncompressed for a growing
-// stretch, so incompressible data doesn't burn cores on zstd. Results
-// come back in order but late (chunks are in flight), so a stretch can
-// start a few chunks later than with one worker: harmless, a chunk's
-// compression is its own flag on the wire.
+// stretch, so incompressible data doesn't burn cores on zstd. While it is
+// not known whether the data compresses (at the start, and after each
+// stretch) a single chunk probes it and the next one waits for the answer:
+// otherwise every worker would try a chunk of an incompressible file at
+// once, each waking an encoder and taking a second buffer. Once a chunk
+// shrinks, chunks are tried on every worker. Results arrive as chunks
+// finish, not in order: harmless, a chunk's compression is its own flag
+// on the wire.
 type compressBackoff struct {
 	mu            sync.Mutex
 	skip, backoff int
+	compresses    bool          // the last result shrank: try every chunk
+	probing       chan struct{} // closed when the probe's result is in
 }
 
-func (b *compressBackoff) shouldTry() bool {
+// shouldTry reports whether to compress the next chunk, and whether it is
+// a probe whose result the one after it waits for. It may wait for the
+// result of the probe in flight; a worker always delivers it.
+func (b *compressBackoff) shouldTry() (try, probe bool) {
 	b.mu.Lock()
+	for b.probing != nil {
+		wait := b.probing
+		b.mu.Unlock()
+		<-wait
+		b.mu.Lock()
+	}
 	defer b.mu.Unlock()
 	if b.skip > 0 {
 		b.skip--
-		return false
+		return false, false
 	}
-	return true
+	if !b.compresses {
+		b.probing = make(chan struct{})
+		return true, true
+	}
+	return true, false
 }
 
-func (b *compressBackoff) result(shrank bool) {
+func (b *compressBackoff) result(shrank, probe bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if probe && b.probing != nil {
+		close(b.probing)
+		b.probing = nil
+	}
+	b.compresses = shrank
 	if shrank {
 		b.backoff = 0
 		return
@@ -101,11 +182,15 @@ func (b *compressBackoff) result(shrank bool) {
 // writeLoop compresses chunks on packWorkers goroutines (when it pays)
 // and writes them in order: reading, compressing and the network overlap,
 // and compression uses more than one core.
-func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *zstd.Encoder) {
+func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool) {
 	defer close(p.done)
 	n := packWorkers()
 	jobs := make(chan *packJob, n)
 	order := make(chan *packJob, n) // bounds the chunks in flight
+	// Chunks sent as they are need no worker, only to wait their turn
+	// behind the network: a couple queued keep it busy. Without this bound
+	// a file that doesn't compress filled the whole queue, n MiB held.
+	plain := make(chan struct{}, plainAhead)
 	var bo compressBackoff
 	var workers sync.WaitGroup
 	for range n {
@@ -114,7 +199,11 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *zstd.Encoder
 				if j.try {
 					// A pooled block has room for a chunk that doesn't
 					// shrink (blockSlack), so EncodeAll stays inside it.
-					j.z = enc.EncodeAll(j.c.buf, getBlock()[:0])
+					j.z = enc.compress(j.c.buf, getBlock()[:0])
+					j.shrank = j.z != nil && len(j.z)+len(j.z)/10 < len(j.c.buf)
+					// Decided here, not by the writer: a probe's answer must
+					// arrive even once the connection has failed.
+					bo.result(j.shrank, j.probe)
 				}
 				close(j.done)
 			}
@@ -125,12 +214,20 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *zstd.Encoder
 		defer close(written)
 		for j := range order {
 			<-j.done
-			p.writeChunk(w, j, &bo)
+			p.writeChunk(w, j)
+			if !j.try {
+				<-plain
+			}
 		}
 	}()
 	for c := range in {
 		j := &packJob{c: c, done: make(chan struct{})}
-		j.try = len(c.buf) > 0 && p.failed() == nil && bo.shouldTry()
+		if len(c.buf) > 0 && p.failed() == nil {
+			j.try, j.probe = bo.shouldTry()
+		}
+		if !j.try {
+			plain <- struct{}{}
+		}
 		order <- j
 		jobs <- j
 	}
@@ -140,9 +237,12 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *zstd.Encoder
 	<-written
 }
 
+// plainAhead is how many uncompressed chunks may wait for the network.
+const plainAhead = 2
+
 // writeChunk writes one finished job, compressed if that shrank it by
 // more than a tenth, and returns its buffers to the pool.
-func (p *chunkPacker) writeChunk(w io.Writer, j *packJob, bo *compressBackoff) {
+func (p *chunkPacker) writeChunk(w io.Writer, j *packJob) {
 	defer putBlock(j.c.buf)
 	if j.z != nil {
 		defer putBlock(j.z)
@@ -151,12 +251,8 @@ func (p *chunkPacker) writeChunk(w io.Writer, j *packJob, bo *compressBackoff) {
 		return
 	}
 	ch := &wire.Chunk{Segments: j.c.segs, Payload: j.c.buf}
-	if j.try {
-		shrank := len(j.z)+len(j.z)/10 < len(j.c.buf)
-		bo.result(shrank)
-		if shrank {
-			ch.Compressed, ch.Payload = true, j.z
-		}
+	if j.shrank {
+		ch.Compressed, ch.Payload = true, j.z
 	}
 	if err := wire.WriteChunk(w, ch); err != nil {
 		p.mu.Lock()
