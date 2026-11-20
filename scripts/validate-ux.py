@@ -1194,6 +1194,25 @@ def s23_prompts():
     has_text(s, 'code-or-file: the re-ask hint in column 2', both.text, '\n  Please answer s or r.')
     grid_ok(s, both.text, 'code-or-file')
     os.remove(os.path.join(d, 'abc-defg-jkm'))
+    # A folder named like a subcommand (R1): a terminal is asked; "s" sends it.
+    os.makedirs(os.path.join(d, 'server'), exist_ok=True)
+    with open(os.path.join(d, 'server', 'main.go'), 'w') as f:
+        f.write('package main\n')
+    cmd = PtyRun([H.bin, 'server', '--preview'], d, feed=[(1.5, b'x\n'), (3.0, b's\n')], runtime=8)
+    cmd.start(); cmd.join()
+    has_text(s, 'command-or-folder: the collision is named', cmd.text,
+             '"server" is an fsend command AND a local folder.')
+    prompt_ok(s, 'command-or-folder prompt behind the ? gutter', cmd.text, 'Send this folder, or run fsend server?')
+    has_text(s, 'command-or-folder: options two spaces after the question', cmd.text,
+             '? Send this folder, or run fsend server?  [s/R] ')
+    has_text(s, 'command-or-folder: "s" sends the folder', cmd.text, 'main.go')
+    grid_ok(s, cmd.text.split('path,size')[0], 'command-or-folder')  # the preview list is stdout data
+    # --send skips the question and sends the folder.
+    forced = PtyRun([H.bin, '--send', 'server', '--preview'], d, runtime=6)
+    forced.start(); forced.join()
+    lacks_text(s, '--send server: no unknown-flag error', forced.text, 'Unknown flag')
+    has_text(s, '--send server: the folder is previewed', forced.text, 'main.go')
+    shutil.rmtree(os.path.join(d, 'server'))
     # --uninstall asks before removing anything; "n" removes nothing.
     un = PtyRun([H.bin, '--uninstall'], d, feed=[(1.5, b'what\n'), (3.0, b'n\n')], runtime=6)
     un.start(); un.join()

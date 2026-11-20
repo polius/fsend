@@ -19,7 +19,10 @@ rest, the environment variables and the exit codes.
 
 fsend picks send or receive from the argument: a code means receive,
 anything else means send. If an argument is both a code and a file, it
-asks. In scripts, use `--send` or `--receive`.
+asks. The same goes for a file or folder named like a command (`server`,
+`doctor`, `help`, `completion`): in a terminal it asks, in a script the
+command runs and `fsend --send server` sends the folder. In scripts, use
+`--send` or `--receive`.
 
 ## Your first transfer
 
@@ -409,7 +412,8 @@ fsend server --health-check  Exits 0 if the server is healthy
 ## Exit codes
 
 `0` is success. It's also used for your own "no" at a prompt, such as
-declining a transfer. For what to do about an error, see
+declining a transfer. A prompt that gets no input at all (cron, CI,
+`ssh -T`) is not a "no": it exits `24`. For what to do about an error, see
 [Troubleshooting](troubleshooting.md).
 
 | Code | Meaning |
@@ -435,7 +439,7 @@ declining a transfer. For what to do about an error, see
 | `21` | `E021` Wrong transfer password. |
 | `22` | `E022` Couldn't verify the other side. |
 | `23` | `E023` The server's size limit was reached. |
-| `24` | `E024` Invalid usage. |
+| `24` | `E024` Invalid usage. Also a receive with no input to answer the accept prompt and no `--yes`; the sender keeps waiting. |
 | `25` | `E025` File or folder not found. |
 | `27` | `E027` Couldn't open the local-network port. |
 | `28` | `E028` The server needs a password. |

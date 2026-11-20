@@ -52,6 +52,11 @@ type RecvOptions struct {
 	// Accept is shown the HELLO and (ModeFiles) the classification breakdown,
 	// including any conflicts. nil → auto-accept. false declines everything.
 	Accept func(hello wire.SenderHello, summary ClassifySummary) bool
+	// Unanswered runs after Accept returned false. A non-nil error means
+	// nobody could answer (no input): the receiver leaves with that error
+	// and, for files, sends no decline, so the sender keeps waiting for a
+	// rerun. A stream is still declined: its sender can't replay it.
+	Unanswered func() error
 	// ResolveConflicts decides, once, what to do with all differing entries.
 	// It runs right after Accept, so a UI can ask both in one prompt.
 	ResolveConflicts func(conflicts []Conflict) ConflictPolicy
@@ -98,6 +103,14 @@ type RecvOptions struct {
 
 // caps is the capability bitmap this receiver advertises and honours.
 func (o *RecvOptions) caps() wire.Capability { return wire.CapsSupported &^ o.withoutCaps }
+
+// unanswered is the Unanswered hook's error, nil without a hook.
+func (o *RecvOptions) unanswered() error {
+	if o.Unanswered == nil {
+		return nil
+	}
+	return o.Unanswered()
+}
 
 func (o *RecvOptions) policy() ConflictPolicy {
 	if o.Overwrite {
@@ -242,6 +255,9 @@ func (r *receiver) run(ctx context.Context, hello *wire.SenderHello, entries []w
 		return err
 	}
 	if opts.Accept != nil && !opts.Accept(*hello, summary) {
+		if err := opts.unanswered(); err != nil {
+			return err
+		}
 		declineTransfer(s, wire.ErrCodeDeclined, "receiver declined")
 		return fserrors.ErrReceiverDeclined
 	}
@@ -1442,6 +1458,12 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 	ackProceed(s, opts, accept)
 	if !accept {
 		drainControl(s)
+		// A stream can't be replayed, so its sender can't wait for a
+		// rerun: it hears a decline either way, and an unanswered
+		// prompt only changes this side's exit.
+		if err := opts.unanswered(); err != nil {
+			return err
+		}
 		return fserrors.ErrReceiverDeclined
 	}
 	if hello.HasPassword {

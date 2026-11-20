@@ -102,6 +102,12 @@ self-hosted server.
 
 ## Files
 
+### No input to answer the prompt (`E024`, receiver)
+
+The receive ran without a terminal (cron, CI, `ssh -T`) and without
+`--yes`, so nobody could accept. Nothing was declined: the sender is
+still waiting. On the same device, run `fsend --yes <code>`.
+
 ### Differing files were kept (`E013`)
 
 Some files already existed with different contents, and `--yes` kept

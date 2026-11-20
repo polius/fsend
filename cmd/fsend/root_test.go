@@ -629,3 +629,61 @@ func TestDispatch_ForceReceiveCodeAsSeparateWords(t *testing.T) {
 		}
 	}
 }
+
+// A folder named like a subcommand: --send makes it a path, a terminal gets
+// asked, and without a terminal the subcommand wins.
+func TestResolveSubcommandCollision(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir(filepath.Join(dir, "server"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fs := rootCmd().Flags()
+	tty := func() bool { return true }
+	noTTY := func() bool { return false }
+	reader := func(in string) func() *bufio.Reader {
+		return func() *bufio.Reader { return bufio.NewReader(strings.NewReader(in)) }
+	}
+	run := func(t *testing.T, args []string, isTTY func() bool, in string) ([]string, error) {
+		t.Helper()
+		var out []string
+		var err error
+		captureStderr(t, func() { out, err = resolveSubcommandCollision(fs, args, isTTY, reader(in)) })
+		return out, err
+	}
+	cases := []struct {
+		name  string
+		args  []string
+		isTTY func() bool
+		in    string
+		want  string
+	}{
+		{"send_flag_after", []string{"fsend", "server", "--send", "--preview"}, noTTY, "", "fsend ./server --send --preview"},
+		{"send_flag_before", []string{"fsend", "--send", "server"}, noTTY, "", "fsend --send ./server"},
+		{"send_flag_skips_flag_value", []string{"fsend", "--send", "--exclude", "help", "server"}, noTTY, "", "fsend --send --exclude help ./server"},
+		{"no_tty_runs_subcommand", []string{"fsend", "server"}, noTTY, "", "fsend server"},
+		{"tty_answer_send", []string{"fsend", "server"}, tty, "s\n", "fsend ./server"},
+		{"tty_enter_runs_subcommand", []string{"fsend", "server"}, tty, "\n", "fsend server"},
+		{"tty_no_such_file", []string{"fsend", "doctor"}, tty, "s\n", "fsend doctor"},
+		{"receive_flag_no_prompt", []string{"fsend", "server", "--receive"}, tty, "s\n", "fsend server --receive"},
+		{"not_a_subcommand", []string{"fsend", "--send", "report.pdf"}, noTTY, "", "fsend --send report.pdf"},
+		{"after_double_dash", []string{"fsend", "--send", "--", "server"}, noTTY, "", "fsend --send -- server"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := run(t, c.args, c.isTTY, c.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s := strings.Join(got, " "); s != c.want {
+				t.Errorf("got %q, want %q", s, c.want)
+			}
+		})
+	}
+	t.Run("tty_eof_aborts", func(t *testing.T) {
+		_, err := run(t, []string{"fsend", "server"}, tty, "")
+		if !errors.Is(err, fserrors.ErrUsage) || !strings.Contains(err.Error(), "./server") {
+			t.Fatalf("EOF must abort with a usage error naming ./server, got %v", err)
+		}
+	})
+}

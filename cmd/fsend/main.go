@@ -62,7 +62,13 @@ func main() {
 	// into a silent exit 141.
 	signal.Ignore(syscall.SIGPIPE)
 
-	if err := rootCmd().Execute(); err != nil {
+	root := rootCmd()
+	args, err := resolveSubcommandCollision(root.Flags(), os.Args, stdinIsTTY, stdinReader)
+	if err == nil {
+		os.Args = args
+		err = root.Execute()
+	}
+	if err != nil {
 		os.Exit(renderError(err, debugRequested()))
 	}
 }
