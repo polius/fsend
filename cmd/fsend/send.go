@@ -812,6 +812,8 @@ func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 	var mu sync.Mutex
 	var hint *time.Timer
 	done := false
+	released := make(chan struct{})
+	var releaseOnce sync.Once
 	go func() {
 		select {
 		case <-ch:
@@ -835,12 +837,24 @@ func signalContext(quiet bool) (context.Context, context.CancelFunc) {
 			mu.Unlock()
 		}
 		cancel()
-		signal.Stop(ch)
+		// A second signal force-quits. Caught rather than left to the
+		// default action, so the terminal's flow control comes back first.
+		select {
+		case s := <-ch:
+			uxlog.RestoreFlowControl()
+			n := 2 // SIGINT
+			if sn, ok := s.(syscall.Signal); ok {
+				n = int(sn)
+			}
+			os.Exit(128 + n)
+		case <-released:
+		}
 	}()
 	// The caller's cancel marks teardown done: release the signal and make
 	// sure the hint never fires late.
 	return ctx, func() {
 		signal.Stop(ch)
+		releaseOnce.Do(func() { close(released) })
 		cancel()
 		mu.Lock()
 		done = true

@@ -62,14 +62,25 @@ func main() {
 	// into a silent exit 141.
 	signal.Ignore(syscall.SIGPIPE)
 
+	// A paused terminal (Ctrl-S) must not stall the transfer: every
+	// stderr write holds one lock, so a blocked write would hold up the
+	// protocol goroutines that print. Restored on every exit below and on
+	// a force-quit (signalContext).
+	uxlog.StopFlowControl()
+
 	root := rootCmd()
 	args, err := resolveSubcommandCollision(root.Flags(), os.Args, stdinIsTTY, stdinReader)
 	if err == nil {
 		os.Args = args
 		err = root.Execute()
 	}
+	code := 0
 	if err != nil {
-		os.Exit(renderError(err, debugRequested()))
+		code = renderError(err, debugRequested())
+	}
+	uxlog.RestoreFlowControl()
+	if code != 0 {
+		os.Exit(code)
 	}
 }
 
