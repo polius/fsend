@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Spinner draws an animated single-line status to stderr until Stop is
@@ -212,13 +213,23 @@ func wrapWords(text string, indent int) []string {
 }
 
 // wrapWordsAt is wrapWords for a given terminal width, in display columns.
-// A word wider than the row stays whole on a row of its own.
+// A word wider than a whole row (a long host name, a deep path) is cut
+// across rows rather than left to run past the edge.
 func wrapWordsAt(text string, indent, width int) []string {
 	avail := max(20, width-1-indent)
 	var rows []string
 	row, used := "", 0
 	for _, w := range strings.Fields(text) {
 		wl := visibleWidth(w)
+		if wl > avail {
+			if row != "" {
+				rows = append(rows, row)
+			}
+			pieces := splitWide(w, avail)
+			rows = append(rows, pieces[:len(pieces)-1]...)
+			row, used = pieces[len(pieces)-1], visibleWidth(pieces[len(pieces)-1])
+			continue
+		}
 		switch {
 		case row == "":
 			row, used = w, wl
@@ -234,6 +245,32 @@ func wrapWordsAt(text string, indent, width int) []string {
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// splitWide cuts a word into pieces of at most avail columns, never inside
+// an escape sequence or a wide character.
+func splitWide(w string, avail int) []string {
+	var parts []string
+	var cur strings.Builder
+	used := 0
+	for i := 0; i < len(w); {
+		if loc := escapes.FindStringIndex(w[i:]); loc != nil && loc[0] == 0 {
+			cur.WriteString(w[i : i+loc[1]])
+			i += loc[1]
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(w[i:])
+		rw := cells.RuneWidth(r)
+		if used > 0 && used+rw > avail {
+			parts = append(parts, cur.String())
+			cur.Reset()
+			used = 0
+		}
+		cur.WriteString(w[i : i+size])
+		used += rw
+		i += size
+	}
+	return append(parts, cur.String())
 }
 
 // spinnerElapsed renders a spinner's running age in compact wall-clock

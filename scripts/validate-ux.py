@@ -878,7 +878,7 @@ def s4_password():
         rcv.start(); rcv.join()
         snd.wait_for(r'They can rerun', timeout=6)
         snd.stop()
-        has_text(s, f'{cols} cols: wrong-password headline', snd.text, ' — still waiting')
+        has_text(s, f'{cols} cols: wrong-password headline', snd.text, 'still waiting')
         has_text(s, f'{cols} cols: the rerun on a faint line', snd.text, 'They can rerun')
         grid_ok(s, snd.text, f'wrong password at {cols}')
 

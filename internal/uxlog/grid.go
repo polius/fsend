@@ -118,7 +118,13 @@ func LineCommand(label, cmd string) {
 }
 
 // Note prints faint detail in column 2, under the line it belongs to.
-func (p Printer) Note(text string) { p.println(Detail(text)) }
+// On a terminal it wraps like Status.
+func (p Printer) Note(text string) {
+	if p.w == nil {
+		text = wrapBlock(text, terminalWidth(0))
+	}
+	p.println(Detail(text))
+}
 
 // NoteWrapped is Note for a sentence that may be longer than the terminal
 // is wide: it breaks between words, every row a Note from column 2.

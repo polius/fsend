@@ -163,8 +163,12 @@ func TestSanitizeForDisplay_TruncatesMiddleKeepingExtension(t *testing.T) {
 }
 
 func TestSaveTargetLabel(t *testing.T) {
-	if got := saveTargetLabel("/tmp/dst"); got != "/tmp/dst/" {
-		t.Errorf("explicit out = %q", got)
+	dst, err := filepath.Abs(filepath.Join(string(filepath.Separator)+"tmp", "dst"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := saveTargetLabel(dst), dst+string(filepath.Separator); got != want {
+		t.Errorf("explicit out = %q, want %q", got, want)
 	}
 }
 
