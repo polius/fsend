@@ -386,3 +386,37 @@ func TestCodeLifetimeAndCountdown(t *testing.T) {
 		t.Errorf("code block must give the code's lifetime:\n%s", out)
 	}
 }
+
+// The countdown stays quiet until warnBefore the deadline, then refreshes
+// every interval with the time left; a lifetime too short to warn about
+// never fires.
+func TestCountdownFiresBeforeTheDeadline(t *testing.T) {
+	cd := newCountdown(400*time.Millisecond, 300*time.Millisecond, 50*time.Millisecond)
+	defer cd.stop()
+	if got := cd.label("Waiting for receiver"); got != "Waiting for receiver" {
+		t.Fatalf("before the warning: %q", got)
+	}
+	select {
+	case <-cd.warn:
+	case <-time.After(time.Second):
+		t.Fatal("warn never fired")
+	}
+	cd.start()
+	if got := cd.label("Waiting for receiver"); got != "Waiting for receiver · code expires in 1 min" {
+		t.Errorf("after the warning: %q", got)
+	}
+	select {
+	case <-cd.tickC:
+	case <-time.After(time.Second):
+		t.Fatal("the refresh never ticked")
+	}
+	if time.Until(cd.deadline) <= 0 {
+		t.Error("the countdown must start before the code expires")
+	}
+
+	quiet := newCountdown(100*time.Millisecond, 300*time.Millisecond, 10*time.Millisecond)
+	defer quiet.stop()
+	if quiet.warn != nil || quiet.tickC != nil {
+		t.Error("a lifetime shorter than the warning must not count down")
+	}
+}

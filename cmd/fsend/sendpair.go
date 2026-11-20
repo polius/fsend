@@ -314,6 +314,54 @@ func codeLifetime(d time.Duration) string {
 	return fmt.Sprintf("%d min", int((d+time.Minute-1)/time.Minute))
 }
 
+// countdown drives the waiting line through a code's last minutes: warn
+// fires warnBefore the deadline, then tickC every interval. Both channels
+// are nil when there is nothing to count (a lifetime no longer than
+// warnBefore), so a select on them never fires.
+type countdown struct {
+	deadline time.Time
+	every    time.Duration
+	timer    *time.Timer
+	warn     <-chan time.Time
+	ticker   *time.Ticker
+	tickC    <-chan time.Time
+}
+
+func newCountdown(ttl, warnBefore, every time.Duration) *countdown {
+	c := &countdown{deadline: time.Now().Add(ttl), every: every}
+	if ttl > warnBefore {
+		c.timer = time.NewTimer(ttl - warnBefore)
+		c.warn = c.timer.C
+	}
+	return c
+}
+
+// start begins the per-interval refresh, once warn has fired.
+func (c *countdown) start() {
+	c.warn = nil
+	if c.ticker == nil {
+		c.ticker = time.NewTicker(c.every)
+		c.tickC = c.ticker.C
+	}
+}
+
+// label is msg, with the time left once the countdown has started.
+func (c *countdown) label(msg string) string {
+	if c.ticker == nil {
+		return msg
+	}
+	return expiringLabel(msg, time.Until(c.deadline))
+}
+
+func (c *countdown) stop() {
+	if c.timer != nil {
+		c.timer.Stop()
+	}
+	if c.ticker != nil {
+		c.ticker.Stop()
+	}
+}
+
 // expiringLabel is a waiting line once the code has less than expiryWarn
 // left: "Waiting for receiver · code expires in 4 min".
 func expiringLabel(msg string, left time.Duration) string {
@@ -840,30 +888,12 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 	defer ttl.Stop()
 	// In the code's last minutes the waiting line counts down, refreshed
 	// each minute and kept across the spinner restarts below.
-	deadline := time.Now().Add(pairTTL)
+	cd := newCountdown(pairTTL, expiryWarn, time.Minute)
+	defer cd.stop()
 	waitMsg := "Waiting for receiver"
-	var expiring <-chan time.Time
-	if pairTTL > expiryWarn {
-		warn := time.NewTimer(pairTTL - expiryWarn)
-		defer warn.Stop()
-		expiring = warn.C
-	}
-	var countdown *time.Ticker
-	defer func() {
-		if countdown != nil {
-			countdown.Stop()
-		}
-	}()
-	var countdownC <-chan time.Time
-	label := func(msg string) string {
-		if countdown == nil {
-			return msg
-		}
-		return expiringLabel(msg, time.Until(deadline))
-	}
 	wait := func(msg string) *uxlog.Spinner {
 		waitMsg = msg
-		return startWaitSpinner(f, label(msg))
+		return startWaitSpinner(f, cd.label(msg))
 	}
 
 	var (
@@ -912,13 +942,12 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 			// Stop announcing a code nobody redeemed within the server's TTL.
 			return abort(fserrors.ErrSessionExpired)
 
-		case <-expiring:
-			countdown = time.NewTicker(time.Minute)
-			countdownC = countdown.C
-			waitSpin.SetMessage(label(waitMsg))
+		case <-cd.warn:
+			cd.start()
+			waitSpin.SetMessage(cd.label(waitMsg))
 
-		case <-countdownC:
-			waitSpin.SetMessage(label(waitMsg))
+		case <-cd.tickC:
+			waitSpin.SetMessage(cd.label(waitMsg))
 
 		case <-vanishedCh:
 			// The code is still good: nobody proved they held it.

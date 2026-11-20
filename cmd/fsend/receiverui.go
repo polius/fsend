@@ -653,7 +653,7 @@ func printCancelKeptHint(f *flags, ui *receiverUI) {
 		ui.mu.Unlock()
 		cancelKept = &cancelState{
 			pct:     uxlog.Percent(total, hint),
-			partial: displayPath(transfer.PartialDir(ui.outDir)),
+			partial: placePath(transfer.PartialDir(ui.outDir)),
 		}
 	}
 }

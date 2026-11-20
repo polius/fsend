@@ -320,7 +320,7 @@ var catalog = map[error]Entry{
 	},
 	ErrTargetExists: {
 		Code: "E013", Exit: 13,
-		Message:       "Kept files of yours that differ; nothing replaced them.",
+		Message:       "Kept your existing files; nothing replaced them.",
 		Action:        "Run again with --overwrite to replace them, or --rename to keep both.",
 		SenderMessage: "The receiver already has a file with this name.",
 		SenderAction:  "They can rerun with --overwrite to replace it.",
