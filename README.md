@@ -171,9 +171,9 @@ croc goes through its relay, as it does between networks:
 
 | Lossy internet link | **fsend** | **croc** |
 |---|:---:|:---:|
-| One 256 MiB file | **26 s** | 30.5 s |
-| 717 MiB of source code | **14.8 s** | 55.5 s |
-| 12,000 small files (157 MB) | **5.1 s** | 55.8 s |
+| One 256 MiB file | **28 s** | 31 s |
+| 657 MB of source code | **13.5 s** | 47 s |
+| 10,939 small files (139 MB) | **4.5 s** | 45 s |
 
 **Memory**, peak while sending one 1 GiB file (sender / receiver), both
 ends on one machine:

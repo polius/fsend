@@ -105,6 +105,79 @@ Measured on 16 November 2026: fsend 1.17.0 (pre-release), croc v11.6.5,
 magic-wormhole 0.24.0, sendme v0.37.1, LocalSend CLI v1.18.2. croc
 v11.5.5 failed 2 of 3 runs, so the table uses v11.6.5.
 
+## Emulated networks
+
+On one machine there is no network to slow anything down. To see how
+the tools behave on a real one, the Mac's loopback is shaped with pf and
+dummynet ([`scripts/bench/shape.sh`](../scripts/bench/shape.sh)): its
+MTU is set to 1,500 bytes, and only the benchmark's own traffic is
+delayed, rate-limited and dropped. Each run is timed and measured with
+[`scripts/bench/transfer.sh`](../scripts/bench/transfer.sh), from
+starting the sender to the receiver finishing, every byte checked.
+
+- **LAN:** 1 Gbit/s, no added delay. The shaper caps it at about
+  540 Mbit/s of real throughput.
+- **Internet:** 100 Mbit/s, 30 ms round trip, with 0.1% random packet
+  loss or none.
+
+fsend takes its local route on the LAN, and its peer-to-peer QUIC route
+(`--mode direct`) on the internet profiles. croc finds the sender on the LAN.
+On the internet profiles it runs with `--no-local` through its relay
+on the same machine, each leg shaped with half the delay.
+
+Median of 3 runs, peak memory as sender / receiver. Measured on
+20 November 2026 on the same Mac as above, with fsend from this
+repository and croc v11.6.5.
+
+**LAN:**
+
+| | **fsend** | **croc** |
+|---|---:|---:|
+| One 1 GiB file (random) | **16.4 s**, **34 / 31 MiB** | 37.6 s, 37 / 34 MiB |
+| 657 MB of source code | **2.3 s**, 50 / 31 MiB | 15.1 s, 40 / 34 MiB |
+| 10,939 files (139 MB) | **3.5 s**, 63 / 50 MiB | 37.5 s, 57 / 55 MiB |
+
+fsend's sender uses more memory on compressible data. It adds
+compressors, up to one per core, for as long as the network waits on
+them, which is where its speed on text comes from.
+
+**Internet, 0.1% loss:**
+
+| | **fsend** | **croc** |
+|---|---:|---:|
+| One 256 MiB file (random) | **28.0 s**, 44 / 35 MiB | 30.7 s, **33 / 33 MiB** |
+| 657 MB of source code | **13.5 s**, 50 / 39 MiB | 47.4 s, **36 / 34 MiB** |
+| 10,939 files (139 MB) | **4.5 s**, 64 / 63 MiB | 45.1 s, **57 / 56 MiB** |
+
+A single loss-based connection is capped by packet loss: at 0.1% loss
+and a 30 ms round trip, one connection gets about 1.7 MB/s however fast
+the link is. fsend's direct route therefore spreads each transfer over
+six QUIC connections that join the first one's authenticated session.
+croc opens four TCP connections.
+
+**Internet, no loss:**
+
+| | **fsend** | **croc** |
+|---|---:|---:|
+| One 256 MiB file (random) | **25.0 s**, 44 / 35 MiB | 27.4 s, **33 / 32 MiB** |
+| 657 MB of source code | **12.9 s**, 50 / 38 MiB | 42.8 s, **36 / 34 MiB** |
+| 10,939 files (139 MB) | **4.5 s**, 64 / 63 MiB | 42.2 s, **55 / 56 MiB** |
+
+## Memory
+
+Peak resident memory while sending one 1 GiB file, both ends on one
+machine, median of 5 runs (`/usr/bin/time -l`):
+
+| | **fsend** | **croc** | **magic-wormhole** | **sendme** |
+|---|:---:|:---:|:---:|:---:|
+| Sender / receiver | 34 / 35 MiB | 37 / 34 MiB | 65 / 65 MiB¹ | **20 / 18 MiB** |
+
+¹ Including the Python 3.14 interpreter.
+
+fsend's figure includes the memory-hard Argon2id stretch of the share
+code (8 MiB, [Security](security.md#share-codes)). LocalSend is a
+desktop app and wasn't measured.
+
 ## Trade-offs
 
 - croc has a browser receiver, QR codes, custom code phrases,
