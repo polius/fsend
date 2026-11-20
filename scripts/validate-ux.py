@@ -122,6 +122,96 @@ def cols_of(text):
     return n
 
 
+SCREEN_CSI = re.compile(r'\x1b\[([0-9;?]*)([A-Za-z])')
+SCREEN_OSC = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+
+
+def plain_screen(text):
+    """The lines a terminal is left showing, before any auto-wrap: \\r,
+    cursor moves and erases applied, colours dropped. A line wider than the
+    pty is one the terminal wrapped into column 0."""
+    text = SCREEN_OSC.sub('', text)
+    lines, r, c, i = [[]], 0, 0, 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '\x1b':
+            m = SCREEN_CSI.match(text, i)
+            if m:
+                arg, cmd = m.groups()
+                i = m.end()
+                n = int(arg) if arg.isdigit() else 1
+                if cmd == 'A':
+                    r = max(0, r - n)
+                elif cmd == 'B':
+                    r += n
+                elif cmd == 'C':
+                    c += n
+                elif cmd == 'D':
+                    c = max(0, c - n)
+                elif cmd == 'G':
+                    c = n - 1
+                elif cmd == 'K':
+                    if arg in ('', '0'):
+                        del lines[r][c:]
+                    elif arg in ('1', '2'):
+                        lines[r] = [] if arg == '2' else [' '] * c + lines[r][c:]
+                elif cmd == 'J':
+                    del lines[r][c:]
+                    del lines[r + 1:]
+                while len(lines) <= r:
+                    lines.append([])
+                continue
+            i += 2
+            continue
+        if ch == '\r':
+            c = 0
+        elif ch == '\n':
+            r += 1
+            c = 0
+            while len(lines) <= r:
+                lines.append([])
+        elif ch == '\b':
+            c = max(0, c - 1)
+        elif ch >= ' ':
+            ln = lines[r]
+            while len(ln) < c:
+                ln.append(' ')
+            if c < len(ln):
+                ln[c] = ch
+            else:
+                ln.append(ch)
+            c += 1
+        i += 1
+    return [''.join(ln).rstrip() for ln in lines]
+
+
+def unbreakable(line):
+    """A command to copy or a path, in a list row, is never broken: a copy
+    of half of it would not work. Such a row may run past the edge."""
+    if not line.startswith('    '):
+        return False
+    body = line.strip()
+    return body.startswith(('curl ', 'iex ', 'fsend ')) or any(len(t) > 20 and '/' in t for t in body.split())
+
+
+# Every PtyRun of the scenario that is running, for the width check.
+RUNS = []
+
+
+def widths_ok(sc):
+    """U1: no line fsend leaves on screen is wider than its pty. stdout data
+    (a preview list, a received text) is the user's, so runs marked
+    data=True are skipped."""
+    for run in RUNS:
+        if run.data or run.out == b'':
+            continue
+        wide = [(cols_of(ln), ln) for ln in plain_screen(run.text)
+                if cols_of(ln) > run.cols and not unbreakable(ln)]
+        label = 'no line wider than %d columns: %s' % (run.cols, ' '.join(os.path.basename(a) for a in run.argv)[:40])
+        glob_ok(sc, label, not wide, '; '.join('%d: %s' % w for w in wide[:3]) or None)
+    RUNS.clear()
+
+
 def rel_lum(r, g, b):
     def lin(c):
         c /= 255
@@ -322,7 +412,16 @@ def grid_ok(sc, stream, label=''):
     glob_ok(sc, pre + 'green only on ✓', not green, repr(green[:1]) if green else None)
     glob_ok(sc, pre + 'only ✓ ✗ ! ? → ← and the spinner', not old, repr(old[:1]) if old else None)
     # V7: a line that waits for an answer starts with ? in the gutter.
-    bare = [pl for pl, _ in screen_lines(stream) if PROMPT.search(pl) and not pl.startswith('? ')]
+    # A question too wide for the terminal puts its options on the rows
+    # under it, from column 2: those rows belong to the ? line above.
+    bare, asking = [], False
+    for pl, _ in screen_lines(stream):
+        if pl.startswith('? '):
+            asking = True
+        elif not pl.startswith('  ') or pl.startswith('    '):
+            asking = False
+        if PROMPT.search(pl) and not pl.startswith('? ') and not asking:
+            bare.append(pl)
     glob_ok(sc, pre + 'every prompt starts with ?', not bare, repr(bare[:1]) if bare else None)
     # V9: "188 ms", never "188ms".
     glued = [pl for pl, _ in screen_lines(stream) if GLUED_DURATION.search(pl)]
@@ -347,8 +446,10 @@ def prompt_ok(sc, label, stream, question):
 class PtyRun(threading.Thread):
     """Runs argv in a pty; captures raw output while feeds fire on schedule."""
 
-    def __init__(self, argv, cwd, feed=None, runtime=30, env=None, cols=100, bg=None):
+    def __init__(self, argv, cwd, feed=None, runtime=30, env=None, cols=100, bg=None, data=False):
         super().__init__(daemon=True)
+        self.data = data  # stdout carries the user's data: no width check
+        RUNS.append(self)
         self.argv, self.cwd, self.feed, self.runtime, self.env = argv, cwd, feed, runtime, env
         self.cols = cols
         # bg: an "rgb:RRRR/GGGG/BBBB" the fake terminal answers the OSC 11
@@ -743,6 +844,41 @@ def s4_password():
     has_text(s, 'code block says a password is needed', sp, 'they need the password too')
     ansi_only(s, sp + rv)
     grid_ok(s, sp + rv)
+    # R4: a receiver out of password tries; the sender's notice fits 80 and
+    # 40 columns as a headline and a faint line (widths_ok checks the rest).
+    for cols in (80, 40):
+        snd = PtyRun([H.bin, 'small.txt', '--password'], d, feed=[(2.0, b'\n')], runtime=30, cols=cols)
+        snd.start()
+        code_m = snd.wait_for(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
+        if not code_m:
+            snd.stop()
+            RESULTS.append((s, f'{cols} cols: sender produced no code', 'TIMEOUT', False))
+            continue
+        time.sleep(0.5)
+        rcv = PtyRun([H.bin, code_m.group(1), '--out', 'recv_out'], d,
+                     feed=[(3.0, b'nope1\n'), (5.0, b'nope2\n'), (7.0, b'nope3\n')], runtime=15, cols=cols)
+        rcv.start(); rcv.join()
+        snd.wait_for(r'They can rerun', timeout=6)
+        snd.stop()
+        has_text(s, f'{cols} cols: wrong-password headline', snd.text, ' — still waiting')
+        has_text(s, f'{cols} cols: the rerun on a faint line', snd.text, 'They can rerun')
+        grid_ok(s, snd.text, f'wrong password at {cols}')
+
+
+def s29_server_down():
+    """R4: with the server down the sender says so in a headline and says
+    what still works on a faint line under it, at 80 and 40 columns."""
+    s = 'S29 server down'
+    d = fresh('s29')
+    for cols in (80, 40):
+        snd = PtyRun([H.bin, 'small.txt'], d, runtime=8, cols=cols,
+                     env={'FSEND_SERVER': 'http://127.0.0.1:9'})
+        snd.start()
+        snd.wait_for(r'local network can connect', timeout=7)
+        snd.stop()
+        has_text(s, f'{cols} cols: the headline', snd.text, 'Server unavailable; retrying')
+        has_text(s, f'{cols} cols: what still works', snd.text, 'Until then,')
+        grid_ok(s, snd.text, f'server down at {cols}')
 
 
 def s5_decline():
@@ -1542,7 +1678,7 @@ SCENARIOS = (s1_single_file, s2_folder, s3_conflict, s4_password, s5_decline,
              s17_plain, s18_spinner_width, s19_detected_background, s20_visual_system,
              s21_cancel_resume, s22_clipboard, s23_prompts, s24_wide_names,
              s25_skipped_lists, s26_install_hint, s27_update_notice,
-             s28_paused_terminal)
+             s28_paused_terminal, s29_server_down)
 
 
 def main():
@@ -1567,6 +1703,7 @@ def main():
                 fn()
             except Exception as e:  # noqa: BLE001 — one broken scenario ≠ lost matrix
                 RESULTS.append((fn.__name__, 'scenario crashed', repr(e), False))
+            widths_ok(fn.__name__.split('_')[0].upper())
             H.kill_clients()
             time.sleep(0.5)
     finally:

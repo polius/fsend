@@ -1,6 +1,7 @@
 package uxlog
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
@@ -22,6 +23,18 @@ var cells = runewidth.DefaultCondition
 // Width returns the number of terminal columns s occupies. s must be
 // plain text: escape sequences are not skipped.
 func Width(s string) int { return cells.StringWidth(s) }
+
+// escapes matches the CSI (colour) and OSC (link, title) sequences a styled
+// string may carry.
+var escapes = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+
+// visibleWidth is Width for styled text: escape sequences take no columns.
+func visibleWidth(s string) int {
+	if strings.IndexByte(s, 0x1b) < 0 {
+		return Width(s)
+	}
+	return Width(escapes.ReplaceAllString(s, ""))
+}
 
 // Clip cuts s to at most max columns, ending in "…" when cut. A wide
 // character that would straddle the limit is dropped whole, so the result

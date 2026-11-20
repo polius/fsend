@@ -246,6 +246,9 @@ func liveLayout(width int, total int64, showNames bool) barLayout {
 // isn't a measurable terminal. mpb re-samples the size every refresh
 // frame; content sized to the width should too, so a mid-transfer resize
 // re-flows instead of leaving stale geometry.
+// Columns is the width of the terminal stderr writes to, 0 off a terminal.
+func Columns() int { return terminalWidth(0) }
+
 func terminalWidth(fallback int) int {
 	w, _, err := term.GetSize(int(os.Stderr.Fd()))
 	if err != nil || w <= 0 {

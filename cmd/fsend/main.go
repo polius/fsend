@@ -314,9 +314,9 @@ func renderError(err error, debug bool) int {
 	if errorRole == "receiver" && receiveResume != "" {
 		switch {
 		case errors.Is(err, fserrors.ErrTransientFailure):
-			uxlog.Line("Resume with: " + uxlog.Code(receiveResume))
+			uxlog.LineCommand("Resume with:", receiveResume)
 		case errors.Is(err, fserrors.ErrWrongPassword), errors.Is(err, fserrors.ErrPasswordRequired):
-			uxlog.Line("Try again with: " + uxlog.Code(receiveResume+" --password"))
+			uxlog.LineCommand("Try again with:", receiveResume+" --password")
 		}
 	}
 

@@ -93,7 +93,8 @@ original receiver can reconnect.
 Local transfers keep working. The sender shows:
 
 ```
-! Server unavailable; retrying — until then only receivers on your local network can connect.
+! Server unavailable; retrying
+  Until then, only receivers on your local network can connect.
 ```
 
 It keeps retrying in the background. To use another server:

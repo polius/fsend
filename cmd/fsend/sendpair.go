@@ -691,8 +691,8 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 			(errors.Is(err, fserrors.ErrWrongPassword) || errors.Is(err, fserrors.ErrPasswordRequired)) {
 			pwMisses++
 			if !f.quiet {
-				uxlog.Status(uxlog.Warn(), fmt.Sprintf("%s — still waiting; they can rerun %s with the right password.",
-					passwordMissNotice(err), uxlog.Code("fsend "+code)))
+				uxlog.Status(uxlog.Warn(), passwordMissNotice(err)+" — still waiting\n"+
+					uxlog.Detail("They can rerun with the right password: ")+uxlog.Code("fsend "+code))
 			}
 			waitSpin = startWaitSpinner(f, "Waiting for receiver")
 			continue
@@ -897,7 +897,8 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				// server path is up, so pairing carries on there.
 				if !f.quiet {
 					waitSpin.Stop()
-					uxlog.Status(uxlog.Warn(), fmt.Sprintf("Stopped taking local-network connections after %d failed attempts. Still waiting via the server.", maxLANAuthFailures))
+					uxlog.Status(uxlog.Warn(), fmt.Sprintf("Stopped taking local-network connections after %d failed attempts", maxLANAuthFailures)+
+						"\n"+uxlog.Detail("Still waiting via the server."))
 					waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
 				}
 				lanDownNoticed = true
@@ -1275,20 +1276,23 @@ func isServerDown(err error) bool {
 // serverPairNotice renders the mid-wait warning for a failed server
 // path. 401 and 429 are the sender's own problem to fix — name them;
 // everything else (unreachable, 5xx) stays the generic "unavailable".
+//
+// A headline names what happened; the faint line under it says what still
+// works, so neither runs past an 80-column terminal.
 func serverPairNotice(err error) string {
-	const lanOnly = "only receivers on your local network can connect."
+	const lanOnly = "Until then, only receivers on your local network can connect."
+	head, fix := "Server unavailable; retrying", ""
 	switch {
 	case errors.Is(err, fserrors.ErrServerAuthRequired):
-		return "The server requires a password (fsend --connect <host:port>,<password>) — " + lanOnly
+		head, fix = "The server requires a password", "Run fsend --connect <host:port>,<password>. "
 	case errors.Is(err, fserrors.ErrRateLimited):
-		return "The server rate-limited this device; retrying — until then " + lanOnly
+		head = "The server rate-limited this device; retrying"
 	case errors.Is(err, fserrors.ErrClientTooOld):
-		return "This fsend is too old for the server (run fsend --update) — " + lanOnly
+		head, fix = "This fsend is too old for the server", "Run fsend --update. "
 	case errors.Is(err, fserrors.ErrServerCertUntrusted):
-		return "The server's certificate isn't trusted (a Wi-Fi login page?); retrying — until then " + lanOnly
-	default:
-		return "Server unavailable; retrying — until then " + lanOnly
+		head = "The server's certificate isn't trusted (a Wi-Fi login page?); retrying"
 	}
+	return head + "\n" + uxlog.Detail(fix+lanOnly)
 }
 
 // pickFinalSendError chooses which error to surface when both pair

@@ -218,7 +218,7 @@ func wrapWordsAt(text string, indent, width int) []string {
 	var rows []string
 	row, used := "", 0
 	for _, w := range strings.Fields(text) {
-		wl := Width(w)
+		wl := visibleWidth(w)
 		switch {
 		case row == "":
 			row, used = w, wl
