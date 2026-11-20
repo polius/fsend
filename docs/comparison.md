@@ -74,11 +74,11 @@ Median of 3 or more runs.
 | | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|---:|---:|---:|---:|---:|
 | **One 1 GiB file** (random data) | | | | | |
-| Local network | 1.2 s<br>~940 MB/s | 1.9 s<br>~580 MB/s | 21 s<br>~52 MB/s | 25 s<br>~43 MB/s¹ | **0.7 s**<br>~1,500 MB/s⁵ |
-| Direct between networks | **21 s**<br>~52 MB/s | 34 s<br>~32 MB/s² | 21 s<br>~52 MB/s³ | 25 s<br>~43 MB/s⁴ | local network only |
+| Local network | 0.9 s<br>~1,200 MB/s | 1.9 s<br>~580 MB/s | 21 s<br>~52 MB/s | 25 s<br>~43 MB/s¹ | **0.7 s**<br>~1,500 MB/s⁵ |
+| Direct between networks | **19 s**<br>~57 MB/s | 34 s<br>~32 MB/s² | 21 s<br>~52 MB/s³ | 25 s<br>~43 MB/s⁴ | local network only |
 | **A folder of 5,000 files of 20 KiB** (102 MB) | | | | | |
-| Local network | **1.7 s**<br>~61 MB/s | 9.1 s<br>~11 MB/s | 5.8 s<br>~18 MB/s | 35 s<br>~3 MB/s | 2.3 s<br>~45 MB/s⁵ |
-| Direct between networks | **2.5 s**<br>~41 MB/s | 9.8 s<br>~10 MB/s, relayed² | 5.8 s<br>~18 MB/s³ | 35 s<br>~3 MB/s⁴ | local network only |
+| Local network | **1.6 s**<br>~63 MB/s | 9.1 s<br>~11 MB/s | 5.8 s<br>~18 MB/s | 35 s<br>~3 MB/s | 2.3 s<br>~45 MB/s⁵ |
+| Direct between networks | **2.7 s**<br>~38 MB/s | 9.8 s<br>~10 MB/s, relayed² | 5.8 s<br>~18 MB/s³ | 35 s<br>~3 MB/s⁴ | local network only |
 
 
 - **Local network:** fsend, croc and magic-wormhole use TCP, LocalSend
@@ -101,8 +101,9 @@ incoming connections.
 is picked, so it leaves out the startup and discovery the others
 include. The folder went as 5,000 files.
 
-Measured on 16 November 2026: fsend 1.17.0 (pre-release), croc v11.6.5,
-magic-wormhole 0.24.0, sendme v0.37.1, LocalSend CLI v1.18.2. croc
+Measured on 16 November 2026: croc v11.6.5, magic-wormhole 0.24.0,
+sendme v0.37.1, LocalSend CLI v1.18.2. fsend re-measured on 21 November
+2026 with this repository's code. croc
 v11.5.5 failed 2 of 3 runs, so the table uses v11.6.5.
 
 ## Emulated networks

@@ -40,7 +40,7 @@
 - **Private.** End-to-end encrypted, with a post-quantum key exchange. The
   server that pairs the two computers never learns the code, the file names or
   the contents.
-- **Fast.** About 940 MB/s with both ends on one machine, so in practice your
+- **Fast.** About 1,200 MB/s with both ends on one machine, so in practice your
   network is the limit, not fsend ([numbers below](#how-it-compares)).
 - **Resumable.** A dropped transfer continues where it stopped. Re-sending a
   folder moves only what changed.
@@ -155,15 +155,15 @@ overhead and not your network:
 
 | Local network | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|:---:|:---:|:---:|:---:|:---:|
-| One 1 GiB file | 1.2 s | 1.9 s | 21 s | 25 s | **0.7 s** |
-| 5,000 files of 20 KiB | **1.7 s** | 9.1 s | 5.8 s | 35 s | 2.3 s |
+| One 1 GiB file | 0.9 s | 1.9 s | 21 s | 25 s | **0.7 s** |
+| 5,000 files of 20 KiB | **1.6 s** | 9.1 s | 5.8 s | 35 s | 2.3 s |
 
 The same test over the route each tool uses between networks:
 
 | Between networks | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|:---:|:---:|:---:|:---:|:---:|
-| One 1 GiB file | **21 s** | 34 s | **21 s** | 25 s | LAN only |
-| 5,000 files of 20 KiB | **2.5 s** | 9.8 s | 5.8 s | 35 s | LAN only |
+| One 1 GiB file | **19 s** | 34 s | 21 s | 25 s | LAN only |
+| 5,000 files of 20 KiB | **2.7 s** | 9.8 s | 5.8 s | 35 s | LAN only |
 
 On an imperfect internet path (emulated: 100 Mbit/s, 30 ms round trip,
 0.1% packet loss), fsend spreads a transfer over six direct connections.
