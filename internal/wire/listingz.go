@@ -28,7 +28,11 @@ var (
 
 func listingEncoder() *zstd.Encoder {
 	zEncOnce.Do(func() {
-		zEnc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
+		// A batch is at most maxListingInflated, so that is all the window
+		// it can use: the default 8 MiB window kept a 16 MiB history buffer
+		// for the whole process, for nothing.
+		zEnc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1),
+			zstd.WithWindowSize(maxListingInflated))
 	})
 	return zEnc
 }
@@ -59,6 +63,13 @@ func WriteListingBatchZ(w io.Writer, batch []ListingEntry) error {
 	return nil
 }
 
+// inflatePool recycles the buffers listing batches inflate into: a folder
+// of many files arrives in many batches, and each took 2 MiB afresh.
+var inflatePool = sync.Pool{New: func() any {
+	b := make([]byte, 0, maxListingInflated)
+	return &b
+}}
+
 // DecodeListingBatchZ inflates and decodes a TypeListingBatchZ body,
 // refusing anything that inflates past maxListingInflated.
 func DecodeListingBatchZ(body []byte) ([]ListingEntry, error) {
@@ -68,7 +79,9 @@ func DecodeListingBatchZ(body []byte) ([]ListingEntry, error) {
 		return nil, err
 	}
 	defer dec.Close()
-	raw, err := dec.DecodeAll(body, make([]byte, 0, maxListingInflated))
+	bp := inflatePool.Get().(*[]byte)
+	defer inflatePool.Put(bp)
+	raw, err := dec.DecodeAll(body, (*bp)[:0])
 	if err != nil {
 		return nil, fmt.Errorf("wire: inflating listing: %w", err)
 	}

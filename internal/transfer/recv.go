@@ -715,6 +715,12 @@ func readChunks(data io.Reader, out chan<- inChunk, stop <-chan struct{}) {
 			}
 			ic.plain, ic.err = decodeChunkPayload(c, &dec, plainBuf)
 			ic.segs = c.Segments
+			if c.Compressed && ic.err == nil {
+				// Decoded: the compressed bytes aren't read again, and a
+				// chunk queued for the disk would hold both blocks.
+				putBlock(raw)
+				ic.bufs[0] = nil
+			}
 		}
 		select {
 		case out <- ic:

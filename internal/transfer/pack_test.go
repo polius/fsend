@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/zeebo/blake3"
@@ -149,5 +150,39 @@ func TestLooksIncompressible(t *testing.T) {
 	}
 	if looksIncompressible(randBytes(1000)) {
 		t.Error("a short chunk is left to zstd")
+	}
+}
+
+// slowWriter stands in for a link slower than compression.
+type slowWriter struct {
+	bytes.Buffer
+	per time.Duration
+}
+
+func (w *slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(w.per)
+	return w.Buffer.Write(p)
+}
+
+// On a link slower than one encoder, compression stays on one: more
+// encoders would only hold memory while the network is the limit.
+func TestPack_SlowLinkKeepsOneEncoder(t *testing.T) {
+	data := textBytes(10 * hashBlockSize)
+	// Slower than one encoder however fast this machine (or the race
+	// detector) compresses: a write takes three times a chunk's compression.
+	pool := newEncoderPool()
+	start := time.Now()
+	_ = pool.compress(data[:hashBlockSize], nil)
+	w := &slowWriter{per: max(10*time.Millisecond, 3*time.Since(start))}
+	made, err := packAll(t, w, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made != 1 {
+		t.Errorf("encoders made = %d, want 1", made)
+	}
+	chunks, compressed, plain := readPacked(t, &w.Buffer)
+	if compressed != chunks || !bytes.Equal(plain, data) {
+		t.Errorf("compressed %d of %d chunks, round trip equal %v", compressed, chunks, bytes.Equal(plain, data))
 	}
 }

@@ -202,6 +202,12 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 	// behind the network: a couple queued keep it busy. Without this bound
 	// a file that doesn't compress filled the whole queue, n MiB held.
 	plain := make(chan struct{}, plainAhead)
+	// Chunks being compressed, or compressed and waiting for the network,
+	// are bounded by slots, which grow only while the network waits on
+	// compression. On a link slower than one core compresses (most of
+	// them, for data that shrinks to a fifth) one encoder and a couple of
+	// chunks are all a transfer holds; on a fast one it grows to n.
+	slots := newPackSlots(n)
 	var bo compressBackoff
 	var workers sync.WaitGroup
 	for range n {
@@ -214,7 +220,9 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 				case j.try:
 					// A pooled block has room for a chunk that doesn't
 					// shrink (blockSlack), so EncodeAll stays inside it.
+					slots.startCompress()
 					j.z = enc.compress(j.c.buf, getBlock()[:0])
+					slots.endCompress()
 					j.shrank = j.z != nil && len(j.z)+len(j.z)/10 < len(j.c.buf)
 				}
 				if j.try {
@@ -230,9 +238,20 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 	go func() {
 		defer close(written)
 		for j := range order {
-			<-j.done
+			waited := false
+			select {
+			case <-j.done:
+			default:
+				waited = true
+				<-j.done
+			}
+			if j.z != nil {
+				slots.compressed(waited)
+			}
 			p.writeChunk(w, j)
-			if !j.try {
+			if j.try {
+				slots.release()
+			} else {
 				<-plain
 			}
 		}
@@ -242,7 +261,9 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 		if len(c.buf) > 0 && p.failed() == nil {
 			j.try, j.probe = bo.shouldTry()
 		}
-		if !j.try {
+		if j.try {
+			slots.acquire()
+		} else {
 			plain <- struct{}{}
 		}
 		order <- j
@@ -287,6 +308,82 @@ func looksIncompressible(b []byte) bool {
 // to compress. zstd's literal coding alone needs entropy well under 8 bits
 // to save a tenth (about 7.2), so 7.5 leaves margin both ways.
 const incompressibleBits = 7.5
+
+// packSlots bounds compression: how many chunks compress at once (each
+// wakes an encoder), and how many are tried in all, compressing or
+// compressed and waiting for the network (each holds the chunk and its
+// compressed copy). One more chunk is in flight than compress, so the next
+// compresses while one is written. The limit starts at one and grows by
+// one each time the writer has found the next compressed chunk unfinished
+// growAfter times running: a transfer only pays for the encoders that keep
+// its link busy. It doesn't shrink: what it grew to, it already holds.
+type packSlots struct {
+	mu                    sync.Mutex
+	cond                  *sync.Cond
+	inFlight, compressing int
+	limit, max            int
+	starved               int // compressed chunks running the writer found unfinished
+}
+
+// growAfter is how many compressed chunks running must keep the writer
+// waiting before another encoder joins: one wait is the pipeline filling.
+const growAfter = 2
+
+func newPackSlots(max int) *packSlots {
+	s := &packSlots{limit: 1, max: max}
+	s.cond = sync.NewCond(&s.mu)
+	return s
+}
+
+// acquire waits for room for another tried chunk; release, once written.
+func (s *packSlots) acquire() {
+	s.mu.Lock()
+	for s.inFlight >= s.limit+1 {
+		s.cond.Wait()
+	}
+	s.inFlight++
+	s.mu.Unlock()
+}
+
+func (s *packSlots) release() {
+	s.mu.Lock()
+	s.inFlight--
+	s.cond.Broadcast()
+	s.mu.Unlock()
+}
+
+// startCompress waits for an encoder's turn; endCompress gives it back.
+func (s *packSlots) startCompress() {
+	s.mu.Lock()
+	for s.compressing >= s.limit {
+		s.cond.Wait()
+	}
+	s.compressing++
+	s.mu.Unlock()
+}
+
+func (s *packSlots) endCompress() {
+	s.mu.Lock()
+	s.compressing--
+	s.cond.Broadcast()
+	s.mu.Unlock()
+}
+
+// compressed reports a compressed chunk reaching the writer, and whether
+// the writer had to wait for it.
+func (s *packSlots) compressed(waited bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !waited {
+		s.starved = 0
+		return
+	}
+	if s.starved++; s.starved >= growAfter && s.limit < s.max {
+		s.limit++
+		s.starved = 0
+		s.cond.Broadcast()
+	}
+}
 
 // plainAhead is how many uncompressed chunks may wait for the network.
 const plainAhead = 2
