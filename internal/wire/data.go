@@ -87,14 +87,21 @@ func WriteChunk(w io.Writer, c *Chunk) error {
 		flags = FlagCompressed
 	}
 
-	// The frame is assembled in a pooled buffer: allocating a fresh one per
-	// chunk churned ~1.5x the payload through the allocator (777 MB for a
-	// 512 MiB file). io.Writer must not retain p, so it is reused at once.
-	need := chunkFixedHeader + len(c.Segments)*(9+32) + len(c.Payload)
+	// The header is assembled in a pooled buffer: allocating a fresh one
+	// per chunk churned the allocator. io.Writer must not retain p, so it is
+	// reused at once. A small payload is appended and goes in one write; a
+	// large one is written from where it lies, after the header, rather than
+	// copied: a 1 MiB frame buffer per chunk in flight held more memory than
+	// the extra write per MiB costs (one small TLS record or QUIC frame).
+	joined := len(c.Payload) <= joinPayloadMax
+	need := chunkFixedHeader + len(c.Segments)*(9+32)
+	if joined {
+		need += len(c.Payload)
+	}
 	bp := framePool.Get().(*[]byte)
 	defer framePool.Put(bp)
 	if cap(*bp) < need {
-		*bp = make([]byte, 0, max(need, MaxChunkSize+chunkFixedHeader+64*(9+32)))
+		*bp = make([]byte, 0, max(need, chunkFixedHeader+64*(9+32)+joinPayloadMax))
 	}
 	header := (*bp)[:chunkFixedHeader]
 	header[0] = byte(TypeChunk)
@@ -114,17 +121,26 @@ func WriteChunk(w io.Writer, c *Chunk) error {
 		}
 	}
 
-	// One write per frame: the header and payload travel together, so a
-	// stream-backed writer doesn't pay a syscall (or a QUIC frame) per half.
-	header = append(header, c.Payload...)
+	if joined {
+		header = append(header, c.Payload...)
+	}
 	*bp = header[:0]
 	if _, err := w.Write(header); err != nil {
 		return fmt.Errorf("wire: writing chunk: %w", err)
 	}
+	if !joined {
+		if _, err := w.Write(c.Payload); err != nil {
+			return fmt.Errorf("wire: writing chunk: %w", err)
+		}
+	}
 	return nil
 }
 
-// framePool holds chunk frame buffers (header plus payload).
+// joinPayloadMax is the largest payload copied in behind its header so the
+// frame goes in one write.
+const joinPayloadMax = 64 << 10
+
+// framePool holds chunk frame buffers (the header, and a small payload).
 var framePool = sync.Pool{New: func() any { b := []byte(nil); return &b }}
 
 // ReadChunk reads one chunk frame from r. It validates the frame's internal

@@ -536,7 +536,7 @@ func sendOneFile(ctx, work context.Context, s *Streams, packer *chunkPacker, src
 	}
 	defer func() { _ = f.Close() }()
 
-	h := newFileHasher()
+	h := newFileHasher(s)
 	keep := sourceBlocks{path: src.AbsPath, began: time.Now()}
 	if canResume(src.Entry.Size) || remember {
 		if fi, err := f.Stat(); err == nil && conv.Uint64(fi.Size()) == src.Entry.Size {
@@ -586,6 +586,9 @@ func sendOneFile(ctx, work context.Context, s *Streams, packer *chunkPacker, src
 	}
 
 	sent = offset
+	if err := packer.alignFor(src.Entry.Size - sent); err != nil {
+		return sendChunkErr(s, err)
+	}
 	for sent < src.Entry.Size {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -603,11 +606,26 @@ func sendOneFile(ctx, work context.Context, s *Streams, packer *chunkPacker, src
 			}
 			return skip(rerr)
 		}
-		if err := packer.appendBytes(idx, b); err != nil {
-			putBlock(b)
+		// A whole block goes out as a chunk of its own, shared with the
+		// hasher rather than copied; otherwise its bytes are packed in.
+		hashed, adopted, err := packer.adoptBlock(idx, b)
+		if err != nil {
+			if adopted {
+				hashed() // the writer releases its share
+			} else {
+				putBlock(b)
+			}
 			return sendChunkErr(s, err)
 		}
-		h.addBlock(b) // hashed in parallel; the buffer returns to the pool
+		if adopted {
+			h.addShared(b, hashed) // hashed in parallel
+		} else {
+			if err := packer.appendBytes(idx, b); err != nil {
+				putBlock(b)
+				return sendChunkErr(s, err)
+			}
+			h.addBlock(b) // hashed in parallel; the buffer returns to the pool
+		}
 		sent += conv.Uint64(int64(n))
 		if opts.ProgressFn != nil {
 			opts.ProgressFn(idx, sent)
@@ -674,7 +692,7 @@ func sendStream(ctx context.Context, s *Streams, opts SendOptions) error {
 	}
 	defer func() { _ = packer.Close() }()
 
-	root := newFileHasher()
+	root := newFileHasher(s)
 	defer root.discard()
 	var sent uint64
 	rbuf := make([]byte, 256*1024)

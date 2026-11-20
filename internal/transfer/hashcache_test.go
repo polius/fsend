@@ -375,7 +375,7 @@ func TestBlockCache(t *testing.T) {
 	data := randBytes(5<<20 + 123)
 	writeFile(t, p, data)
 	want := func(n int) [][32]byte {
-		h := newFileHasher()
+		h := newFileHasher(&Streams{})
 		_, _ = h.Write(data[:n])
 		return h.blocks()
 	}

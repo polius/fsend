@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -653,10 +654,35 @@ type inChunk struct {
 	plain []byte
 	bufs  [2][]byte
 	err   error
+	refs  *atomic.Int32 // set once the plain bytes are held past release
 }
 
 func (c *inChunk) release() {
-	for _, b := range c.bufs {
+	if c.refs != nil && c.refs.Add(-1) != 0 {
+		return
+	}
+	putBlocks(c.bufs)
+}
+
+// hold keeps the chunk's buffers past release, for a hasher reading its
+// plain bytes in place of copying them: they return to the pool once both
+// release and the returned func have run.
+func (c *inChunk) hold() func() {
+	if c.refs == nil {
+		c.refs = new(atomic.Int32)
+		c.refs.Store(1) // release's
+	}
+	c.refs.Add(1)
+	refs, bufs := c.refs, c.bufs
+	return func() {
+		if refs.Add(-1) == 0 {
+			putBlocks(bufs)
+		}
+	}
+}
+
+func putBlocks(bufs [2][]byte) {
+	for _, b := range bufs {
 		if b != nil {
 			putBlock(b)
 		}
@@ -797,7 +823,7 @@ func (r *receiver) receiveData(ctx context.Context, byIndex map[uint32]*entryPla
 					declineTransfer(s, wire.ErrCodeProtocolError, "restart mid-file")
 					return fmt.Errorf("%w: restart flag mid-file", fserrors.ErrProtocolError)
 				}
-				if err := cur.write(data); err != nil {
+				if err := cur.write(data, seg.EOF, c.hold); err != nil {
 					return err
 				}
 				if seg.EOF {
@@ -865,7 +891,7 @@ func (r *receiver) openFile(p *entryPlan, restart bool) (*recvFile, error) {
 		declineTransfer(s, wire.ErrCodeProtocolError, "restart for a file not resumed")
 		return nil, fmt.Errorf("%w: restart for a file not resumed", fserrors.ErrProtocolError)
 	}
-	rf := &recvFile{r: r, plan: p, hasher: newFileHasher()}
+	rf := &recvFile{r: r, plan: p, hasher: newFileHasher(r.s)}
 	if r.wantSHA {
 		rf.sha = sha256.New()
 	}
@@ -934,7 +960,12 @@ func (rf *recvFile) abandon(keep bool) {
 	hashCache.rememberBlocks(rf.partial, blocks[:min(whole, int64(len(blocks)))])
 }
 
-func (rf *recvFile) write(data []byte) error {
+// write lands data at the file's current offset; last says no more bytes
+// of the file follow. hold, when set, keeps data's buffer readable past the
+// call: a block that starts on a block boundary and is whole, or is the
+// file's last, is then hashed where it lies instead of copied into the
+// hasher (a 1 MiB buffer per small file of a folder, otherwise).
+func (rf *recvFile) write(data []byte, last bool, hold func() func()) error {
 	if len(data) == 0 {
 		return nil
 	}
@@ -954,7 +985,11 @@ func (rf *recvFile) write(data []byte) error {
 		declineTransfer(r.s, code, peerSafe("write", rf.plan.rel, err))
 		return classifyWriteErr("write", err)
 	}
-	_, _ = rf.hasher.Write(data)
+	if hold != nil && rf.hasher.aligned() && (len(data) == hashBlockSize || last && len(data) < hashBlockSize) {
+		rf.hasher.addShared(data, hold())
+	} else {
+		_, _ = rf.hasher.Write(data)
+	}
 	if rf.sha != nil {
 		_, _ = rf.sha.Write(data)
 	}
@@ -1549,7 +1584,7 @@ func recvStream(ctx context.Context, s *Streams, hello *wire.SenderHello, opts R
 // to w, verifying the tree root on the EOF segment. Used for sink and stream
 // receives, where no partial/resume applies.
 func streamPayload(ctx context.Context, s *Streams, w io.Writer, progress func(uint64)) error {
-	verifier := newFileHasher()
+	verifier := newFileHasher(s)
 	defer verifier.discard()
 	var written uint64
 	var dec *zstd.Decoder

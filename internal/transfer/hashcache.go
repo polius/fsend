@@ -241,7 +241,7 @@ func (c *blockCache) hashOpen(ctx context.Context, f *os.File, fi os.FileInfo, p
 // parallel. When ctx ends it stops before the next block and returns the
 // hashes of the blocks it finished along with the context's error.
 func hashBlocksFrom(ctx context.Context, f *os.File, from, to int64, progress func(int64)) ([][32]byte, error) {
-	h := newFileHasher()
+	h := newDiskHasher()
 	done := from
 	var err error
 	for done < to {

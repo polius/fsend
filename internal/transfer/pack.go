@@ -3,6 +3,7 @@ package transfer
 import (
 	"fmt"
 	"io"
+	"math"
 	"runtime"
 	"sync"
 
@@ -28,8 +29,18 @@ type chunkPacker struct {
 }
 
 type packed struct {
-	segs []wire.Segment
-	buf  []byte
+	segs    []wire.Segment
+	buf     []byte
+	release func() // returns buf once written; nil: buf is the packer's own
+}
+
+// free returns the chunk's buffer once it is written (or dropped).
+func (c packed) free() {
+	if c.release != nil {
+		c.release()
+		return
+	}
+	putBlock(c.buf)
 }
 
 // encoderPool holds the zstd encoders every transfer in this process
@@ -196,11 +207,17 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 	for range n {
 		workers.Go(func() {
 			for j := range jobs {
-				if j.try {
+				switch {
+				case j.try && j.probe && looksIncompressible(j.c.buf):
+					// Answered without an encoder: a photo, video or
+					// archive never wakes one.
+				case j.try:
 					// A pooled block has room for a chunk that doesn't
 					// shrink (blockSlack), so EncodeAll stays inside it.
 					j.z = enc.compress(j.c.buf, getBlock()[:0])
 					j.shrank = j.z != nil && len(j.z)+len(j.z)/10 < len(j.c.buf)
+				}
+				if j.try {
 					// Decided here, not by the writer: a probe's answer must
 					// arrive even once the connection has failed.
 					bo.result(j.shrank, j.probe)
@@ -237,13 +254,47 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 	<-written
 }
 
+// looksIncompressible reports whether b's bytes are spread so evenly that
+// zstd can't take a tenth off: the byte entropy of samples across the chunk
+// is near the 8 bits of random data. Compressed formats (JPEG, MP4, zip,
+// zstd) read about 7.9 or more; text and code about 5, binaries about 6.
+// It only spares an encoder: a chunk it lets through is still compressed
+// and kept only if it shrank.
+func looksIncompressible(b []byte) bool {
+	const sample, samples = 4 << 10, 16
+	if len(b) < sample*samples {
+		return false
+	}
+	var hist [256]int
+	step := len(b) / samples
+	for i := range samples {
+		for _, c := range b[i*step : i*step+sample] {
+			hist[c]++
+		}
+	}
+	n := float64(sample * samples)
+	bits := 0.0
+	for _, c := range hist {
+		if c > 0 {
+			p := float64(c) / n
+			bits -= p * math.Log2(p)
+		}
+	}
+	return bits > incompressibleBits
+}
+
+// incompressibleBits is the byte entropy above which a chunk is taken not
+// to compress. zstd's literal coding alone needs entropy well under 8 bits
+// to save a tenth (about 7.2), so 7.5 leaves margin both ways.
+const incompressibleBits = 7.5
+
 // plainAhead is how many uncompressed chunks may wait for the network.
 const plainAhead = 2
 
 // writeChunk writes one finished job, compressed if that shrank it by
 // more than a tenth, and returns its buffers to the pool.
 func (p *chunkPacker) writeChunk(w io.Writer, j *packJob) {
-	defer putBlock(j.c.buf)
+	defer j.c.free()
 	if j.z != nil {
 		defer putBlock(j.z)
 	}
@@ -339,6 +390,40 @@ func (p *chunkPacker) appendBytes(index uint32, data []byte) error {
 		}
 	}
 	return nil
+}
+
+// adoptBlock sends b, a whole chunk's worth of file index read into a
+// pooled block, as a chunk of its own instead of copying it into the
+// packer's buffer. It applies only when nothing is buffered (a large file
+// starts on a chunk boundary: see alignFor); otherwise it reports false and
+// the caller appends the bytes. The caller's hasher reads b too: the block
+// returns to the pool once both the hasher (through the returned func) and
+// the writer are done with it.
+func (p *chunkPacker) adoptBlock(index uint32, b []byte) (hashed func(), ok bool, err error) {
+	if err := p.failed(); err != nil {
+		return nil, false, err
+	}
+	if len(b) != wire.MaxChunkSize || len(p.segs) > 0 || len(p.buf) > 0 {
+		return nil, false, nil
+	}
+	seg := wire.Segment{FileIndex: index, Length: wire.MaxChunkSize}
+	if p.restart[index] {
+		seg.Restart = true
+		delete(p.restart, index)
+	}
+	release := shareBlock(b, 2)
+	p.out <- packed{segs: []wire.Segment{seg}, buf: b, release: release}
+	return release, true, p.failed()
+}
+
+// alignFor starts a new chunk before a file with at least a chunk of bytes
+// still to send, so its blocks line up with chunks and go without a copy
+// (adoptBlock). Small files keep packing together.
+func (p *chunkPacker) alignFor(remaining uint64) error {
+	if remaining < wire.MaxChunkSize || len(p.segs) == 0 {
+		return p.failed()
+	}
+	return p.flush()
 }
 
 // endFile marks file index complete with its root hash. If the file's bytes

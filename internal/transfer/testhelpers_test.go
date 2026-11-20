@@ -19,7 +19,7 @@ func classify(entries []wire.ListingEntry, targetDir string, checksum bool) ([]e
 
 // bytesRoot is the tree root of an in-memory buffer (tests, small inputs).
 func bytesRoot(b []byte) [32]byte {
-	h := newFileHasher()
+	h := newFileHasher(&Streams{})
 	_, _ = h.Write(b)
 	return h.Sum()
 }

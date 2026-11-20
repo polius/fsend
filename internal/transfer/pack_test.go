@@ -65,17 +65,18 @@ func readPacked(t *testing.T, r io.Reader) (chunks, compressed int, plain []byte
 	}
 }
 
-// Data that doesn't compress wakes a single encoder: one chunk probes it,
-// and the others wait for the answer instead of each trying at once.
-func TestPack_IncompressibleWakesOneEncoder(t *testing.T) {
+// Data that doesn't compress wakes no encoder: one chunk probes it (its
+// bytes alone answer), and the others wait for the answer instead of each
+// trying at once.
+func TestPack_IncompressibleWakesNoEncoder(t *testing.T) {
 	data := randBytes(24 * hashBlockSize)
 	var out bytes.Buffer
 	made, err := packAll(t, &out, data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if made != 1 {
-		t.Errorf("encoders made = %d, want 1", made)
+	if made != 0 {
+		t.Errorf("encoders made = %d, want 0", made)
 	}
 	chunks, compressed, plain := readPacked(t, &out)
 	if compressed != 0 || chunks != 24 || !bytes.Equal(plain, data) {
@@ -133,5 +134,20 @@ func TestFoldRoot_SameAsFreshHasher(t *testing.T) {
 	}
 	if got := foldRoot(nil, 0); got == want {
 		t.Fatal("a different input gave the same root")
+	}
+}
+
+func TestLooksIncompressible(t *testing.T) {
+	if !looksIncompressible(randBytes(hashBlockSize)) {
+		t.Error("random bytes: want incompressible")
+	}
+	if looksIncompressible(textBytes(hashBlockSize)) {
+		t.Error("text: want compressible")
+	}
+	if looksIncompressible(make([]byte, hashBlockSize)) {
+		t.Error("zeros: want compressible")
+	}
+	if looksIncompressible(randBytes(1000)) {
+		t.Error("a short chunk is left to zstd")
 	}
 }
