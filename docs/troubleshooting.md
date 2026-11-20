@@ -111,7 +111,13 @@ still waiting. On the same device, run `fsend --yes <code>`.
 ### Differing files were kept (`E013`)
 
 Some files already existed with different contents, and `--yes` kept
-yours. Everything else arrived.
+yours. Everything else arrived. The summary says it in one line:
+
+```text
+  Accepting (--yes)
+! Kept 2 files of yours that differ · 39 up to date · nothing saved
+  Run again with --overwrite to replace them, or --rename to keep both. [E013]
+```
 
 - To replace them: receive again with `--overwrite`.
 - To keep both: receive again with `--rename`.

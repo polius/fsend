@@ -209,6 +209,12 @@ func renderError(err error, debug bool) int {
 		glyph = uxlog.Info()
 	}
 
+	// The receiver's summary already named the kept files and the remedy.
+	if keptReported && errors.Is(err, fserrors.ErrTargetExists) {
+		jsonEmitDone(jsonDoneFromErr(err, exit, errorRole))
+		return exit
+	}
+
 	// The sentence leads and the catalog code follows it, where support
 	// and scripts still find it without it being the first thing read —
 	// on the opening line, never glued to a command the user will copy. A

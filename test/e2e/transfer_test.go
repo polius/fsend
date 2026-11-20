@@ -457,8 +457,11 @@ func TestReceive_DifferingFileKept_ReceiverSeesE013(t *testing.T) {
 	}
 	// The summary must agree with the exit code: warn glyph and a headline
 	// counting what was written, not a green "Saved 1 file" for a kept file.
-	if !strings.Contains(r.receiverErr, "Saved 0 of 1 file") {
+	if !strings.Contains(r.receiverErr, "Kept 1 file of yours that differs") || !strings.Contains(r.receiverErr, "nothing saved") {
 		t.Errorf("summary should say nothing was written:\nstderr:\n%s", r.receiverErr)
+	}
+	if strings.Count(r.receiverErr, "--overwrite") != 1 || strings.Contains(r.receiverErr, "[FAIL]") {
+		t.Errorf("one warning and one remedy, no failure line:\nstderr:\n%s", r.receiverErr)
 	}
 	if strings.Contains(r.receiverErr, "[OK] Saved") {
 		t.Errorf("kept conflict must not render a success summary:\nstderr:\n%s", r.receiverErr)

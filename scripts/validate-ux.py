@@ -806,6 +806,17 @@ def s3_conflict():
             f'exit {rcv.status if rcv else None}')
     ansi_only(s, sp + rv)
     grid_ok(s, sp + rv)
+    # R5: --yes keeps the differing file. One warning names it, one line
+    # gives the remedy with E013: no ✗, the remedy once.
+    snd, rcv = pair(s, d, ['small.txt'], ['--yes', '--out', 'recv_out'], [])
+    rv = rcv.text if rcv else ''
+    has_text(s, '--yes kept: one warning', rv, '! Kept 1 file of yours that differs · nothing saved')
+    has_text(s, '--yes kept: the remedy with E013', rv,
+             '\n  Run again with --overwrite to replace them, or --rename to keep both. [E013]')
+    lacks_text(s, '--yes kept: no failure line', rv, '✗')
+    glob_ok(s, '--yes kept: the remedy once', rv.count('--overwrite') == 1, rv.count('--overwrite'))
+    glob_ok(s, '--yes kept: exit 13', rcv is not None and rcv.status == 13, f'exit {rcv.status if rcv else None}')
+    grid_ok(s, rv, '--yes kept')
 
 
 def s4_password():

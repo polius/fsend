@@ -267,3 +267,12 @@ func TestCatalog_LinesAreOnTheGrid(t *testing.T) {
 		}
 	}
 }
+
+// E013's action is the remedy the receiver's summary prints under --yes:
+// both ways out, in one sentence.
+func TestTargetExistsNamesBothRemedies(t *testing.T) {
+	e, _ := Lookup(ErrTargetExists)
+	if e.Exit != 13 || !strings.Contains(e.Action, "--overwrite") || !strings.Contains(e.Action, "--rename") {
+		t.Errorf("E013 = %+v", e)
+	}
+}

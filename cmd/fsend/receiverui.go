@@ -250,14 +250,10 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 	}
 	_, flagged := ui.flagPolicy()
 	if f.yes {
+		// --yes answers the accept prompt, not the existing-files question:
+		// differing files are kept and the exit will be E013. The summary
+		// says so once, with the remedy (printRecvSummary).
 		uxlog.Note("Accepting (--yes)")
-		// --yes answers the accept prompt, not the existing-files question —
-		// differing files are kept and the exit will be E013. Scripts reading
-		// --yes as "yes to everything" deserve to hear that now.
-		if summary.Differing > 0 && !flagged {
-			uxlog.Status(uxlog.Warn(), "Keeping "+uxlog.CountNoun(summary.Differing, "differing file")+
-				" — pass --overwrite to replace, or --rename to keep both")
-		}
 		return true
 	}
 	// Every line that wants an answer leads with the ? gutter, so a glance
@@ -294,6 +290,10 @@ func (ui *receiverUI) promptAccept(h wire.SenderHello, summary transfer.Classify
 		uxlog.Line("Please answer y or n.")
 	}
 }
+
+// keptReported is set once the receiver's summary has named the files
+// --yes kept and the E013 remedy, so renderError doesn't say it again.
+var keptReported bool
 
 // noAnswer handles end of input at the accept prompt (cron, CI, ssh -T):
 // nobody can answer, which is not a "no". The receive ends with a usage
@@ -753,7 +753,11 @@ func finishReceive(f *flags, ui *receiverUI, elapsed time.Duration) error {
 		headline := ui.headline(h, files)
 		// With kept-back or skipped files the peer-supplied display name ("2
 		// files") would overcount what landed — say how many were written.
-		if (kept > 0 || len(skipped) > 0) && !ui.sink {
+		// Nothing saved at all: "" lets the summary lead with what was kept.
+		switch {
+		case kept > 0 && !keptByChoice && len(files) == 0 && len(skipped) == 0 && !ui.sink:
+			headline = ""
+		case (kept > 0 || len(skipped) > 0) && !ui.sink:
 			headline = fmt.Sprintf("Saved %d of %s to %s",
 				len(files), uxlog.CountNoun(len(files)+skippedSame+kept+len(skipped), "file"), saveTargetLabel(ui.outDir))
 		}
@@ -935,6 +939,7 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 	case kept > 0:
 		glyph = uxlog.Warn()
 	}
+	nothingSaved := headline == "" // set by finishReceive when --yes kept every file
 	if headline == "" {
 		headline = "Received"
 	}
@@ -947,20 +952,40 @@ func printRecvSummary(f *flags, headline string, total, moved int64, kept, skipp
 		printUpdateNotice(f)
 		return
 	}
-	uxlog.Status(glyph, headline)
-	uxlog.Note(summaryDetail(total, moved, "received", elapsed, path))
-	// No "(use --overwrite)" here: the remedy already appears once — the
-	// upfront --yes warning or E013's action line — and after an explicit
-	// "n" at the prompt it must not appear at all.
-	var exceptions []string
+	// Files kept without being asked (--yes): one warning names them and
+	// one line gives the remedy with the E013 tag, and renderError adds
+	// nothing. After the user's own "skip" there is no remedy to give.
+	autoKept := kept > 0 && !keptByChoice
+	upToDate := ""
 	if skippedSame > 0 {
-		exceptions = append(exceptions, fmt.Sprintf("%d up to date", skippedSame))
+		upToDate = fmt.Sprintf("%d up to date", skippedSame)
 	}
-	if kept > 0 {
-		exceptions = append(exceptions, fmt.Sprintf("%d kept", kept))
+	yours := uxlog.CountNoun(kept, "file") + " of yours that " + differVerb(kept)
+	switch {
+	case autoKept && nothingSaved:
+		uxlog.Status(glyph, uxlog.Join("Kept "+yours, upToDate, "nothing saved"))
+	case autoKept:
+		uxlog.Status(glyph, headline)
+		uxlog.Note(summaryDetail(total, moved, "received", elapsed, path))
+		uxlog.Note(uxlog.Join("kept "+yours, upToDate))
+	default:
+		uxlog.Status(glyph, headline)
+		uxlog.Note(summaryDetail(total, moved, "received", elapsed, path))
+		var exceptions []string
+		if upToDate != "" {
+			exceptions = append(exceptions, upToDate)
+		}
+		if kept > 0 {
+			exceptions = append(exceptions, fmt.Sprintf("%d kept", kept))
+		}
+		if len(exceptions) > 0 {
+			uxlog.Note(uxlog.Join(exceptions...))
+		}
 	}
-	if len(exceptions) > 0 {
-		uxlog.Note(uxlog.Join(exceptions...))
+	if autoKept {
+		e, _ := fserrors.Lookup(fserrors.ErrTargetExists)
+		uxlog.Line(e.Action + " " + uxlog.Muted("["+e.Code+"]"))
+		keptReported = true
 	}
 	if kept == 0 && moved > 0 {
 		uxlog.Notify("Received "+uxlog.HumanBytes(total), time.Since(runStart))
