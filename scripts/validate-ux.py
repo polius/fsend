@@ -874,9 +874,9 @@ def s4_password():
             continue
         time.sleep(0.5)
         rcv = PtyRun([H.bin, code_m.group(1), '--out', 'recv_out'], d,
-                     feed=[(3.0, b'nope1\n'), (5.0, b'nope2\n'), (7.0, b'nope3\n')], runtime=15, cols=cols)
+                     feed=[(3.0, b'nope1\n'), (5.0, b'nope2\n'), (7.0, b'nope3\n')], runtime=20, cols=cols)
         rcv.start(); rcv.join()
-        snd.wait_for(r'They can rerun', timeout=6)
+        snd.wait_for(r'They can rerun', timeout=15)  # a loaded runner is slow here
         snd.stop()
         has_text(s, f'{cols} cols: wrong-password headline', snd.text, 'still waiting')
         has_text(s, f'{cols} cols: the rerun on a faint line', snd.text, 'They can rerun')
