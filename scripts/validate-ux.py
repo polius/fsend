@@ -1501,12 +1501,48 @@ def s27_update_notice():
     glob_ok(s, 'deb: --update exits 39', refused.status == 39, f'exit {refused.status}')
 
 
+def s28_paused_terminal():
+    """R3: a paused terminal must not freeze the transfer. Every stderr
+    write holds one lock, so with flow control on, Ctrl-S on the sender's
+    terminal blocked the next spinner frame and with it the pairing. fsend
+    turns IXON off for the run: the receiver finishes while the sender's
+    terminal is still "paused", the sender's lines follow in order after
+    Ctrl-Q, and the terminal gets IXON back when fsend exits."""
+    s = 'S28 paused terminal'
+    d = fresh('s28')
+    snd = PtyRun([H.bin, 'small.txt'], d, feed=[(1.0, b'\x13'), (14.0, b'\x11')], runtime=30)
+    snd.start()
+    m = snd.wait_for(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
+    if not m:
+        snd.stop()
+        RESULTS.append((s, 'sender produced no code', 'TIMEOUT', False))
+        return
+    time.sleep(3.0)  # well past the Ctrl-S
+    rcv = PtyRun([H.bin, m.group(1), '--yes', '--out', 'recv_out'], d, runtime=20)
+    rcv.start(); rcv.join()
+    glob_ok(s, 'receiver finishes while the sender is paused', rcv.status == 0 and rcv.elapsed < 9,
+            f'exit {rcv.status} after {rcv.elapsed:.1f} s')
+    has_text(s, 'receiver saved the file', rcv.text, 'Saved ./recv_out/small.txt')
+    snd.join(timeout=25); snd.stop()
+    sp = snd.text
+    glob_ok(s, 'sender exits 0', snd.status == 0, f'exit {snd.status}')
+    lacks_text(s, 'sender never lost the receiver', sp, 'Connection interrupted')
+    order = [sp.find(m.group(1)), sp.find('Sent')]
+    glob_ok(s, "sender's lines in order: code, then the summary", -1 not in order and order == sorted(order), order)
+    grid_ok(s, sp, 'paused sender')
+    # The terminal gets its flow control back.
+    tty = PtyRun(['sh', '-c', H.bin + ' --version >/dev/null; stty -a'], d, runtime=6)
+    tty.start(); tty.join()
+    glob_ok(s, 'IXON restored on exit', re.search(r'(?<![-\w])ixon\b', tty.text) is not None, tty.text[-200:])
+
+
 SCENARIOS = (s1_single_file, s2_folder, s3_conflict, s4_password, s5_decline,
              s6_text, s7_errors, s8_no_color, s9_help, s10_piped, s11_themes,
              s12_narrow, s13_cancel, s14_late_arriver, s15_completion, s16_notify,
              s17_plain, s18_spinner_width, s19_detected_background, s20_visual_system,
              s21_cancel_resume, s22_clipboard, s23_prompts, s24_wide_names,
-             s25_skipped_lists, s26_install_hint, s27_update_notice)
+             s25_skipped_lists, s26_install_hint, s27_update_notice,
+             s28_paused_terminal)
 
 
 def main():
