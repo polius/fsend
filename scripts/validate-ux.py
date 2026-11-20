@@ -745,13 +745,17 @@ def s1_single_file():
     check(s, 'recv arrow accent', rv, 'Incoming', '←', ORANGE)
     check(s, 'recv subject bold', rv, 'Incoming', 'small.txt', DEFAULT, True)
     check(s, 'prompt ? primary+bold', rv, 'Save to', '?', VIOLET, True)
-    check(s, 'destination bold', rv, 'Save to', './recv_out/', DEFAULT, True)
-    check(s, 'recv summary subject bold', rv, 'Saved', './recv_out/small.txt', DEFAULT, True)
+    check(s, 'destination bold', rv, 'Save to', 'recv_out/', DEFAULT, True)
+    check(s, 'recv summary subject bold', rv, 'Saved', 'recv_out/small.txt', DEFAULT, True)
+    # R6: the real place, never "./": from ~ or /, middle folders folded.
+    glob_ok(s, 'prompt names the real folder',
+            any(re.search(r'Save to [~/]\S*recv_out/  ', pl) for pl, _ in screen_lines(rv)))
     glob_ok(s, 'no grey 244', '38;5;244' not in sp and '38;5;244' not in rv)
     # What the user reads: who connected, what went where.
     has_text(s, 'sender names who accepted', sp, ' accepted')
     has_text(s, 'sender summary names subject + peer', sp, 'Sent small.txt to ')
-    has_text(s, 'receiver names the saved file', rv, 'Saved ./recv_out/small.txt')
+    glob_ok(s, 'receiver names the saved file where it is',
+            any(re.search(r'Saved [~/]\S*recv_out/small\.txt', pl) for pl, _ in screen_lines(rv)))
     lacks_text(s, 'no progress bar under 1 MB', rv, '100%')
     # The sender's run includes waiting for the receiver to answer, so a
     # slow runner can push it past NotifyAfter (10 s), where the bell is
@@ -779,7 +783,8 @@ def s2_folder():
     check(s, 'recv listing name default', rv, 'video1.bin', 'assets/video1.bin', DEFAULT, False, False)
     check(s, 'filled bar accent', rv, '%', '━', ORANGE)
     has_text(s, 'sender summary names the folder', sp, 'Sent myproj/ to ')
-    has_text(s, 'receiver names folder and place', rv, 'Saved myproj/ to ./recv_out/')
+    glob_ok(s, 'receiver names folder and real place',
+            any(re.search(r'Saved myproj/ to [~/]\S*recv_out/', pl) for pl, _ in screen_lines(rv)))
     ansi_only(s, sp + rv)
     grid_ok(s, sp + rv)
 
@@ -1385,7 +1390,7 @@ def s23_prompts():
     rcv.start(); rcv.join(); snd.join(timeout=8); snd.stop()
     prompt_ok(s, 'bare --password (receiver) behind the ? gutter', rcv.text, 'Enter the password the sender shared:')
     lacks_text(s, 'the typed password is not echoed', rcv.text, 'hunter2')
-    has_text(s, 'bare --password transfer completes', rcv.text, 'Saved ./recv_out/small.txt')
+    has_text(s, 'bare --password transfer completes', rcv.text, 'recv_out/small.txt')
     grid_ok(s, snd.text + rcv.text, 'bare --password')
     # A long text is asked about before it fills the screen.
     long_text = '\n'.join(f'line {i}' for i in range(60))
@@ -1440,7 +1445,7 @@ def s24_wide_names():
                     '…' in longest and cols_of(longest) <= cols - 1, repr(longest))
         else:
             glob_ok(s, f'{tag}: its name is shown whole', rcv_name + ' to accept' in longest, repr(longest))
-        has_text(s, f'{tag}: the transfer still completes', rv, 'Saved 写真アルバム/ to ./recv_out/')
+        has_text(s, f'{tag}: the transfer still completes', rv, 'Saved 写真アルバム/')  # the place may wrap to the next row
         # Rows of the listing line their sizes up under names of mixed width.
         rows = [pl for pl, _ in screen_lines(rv) if pl.startswith('    ') and ' MB' in pl]
         starts = {cols_of(pl[:pl.index(' MB')]) for pl in rows}
@@ -1669,7 +1674,7 @@ def s28_paused_terminal():
     rcv.start(); rcv.join()
     glob_ok(s, 'receiver finishes while the sender is paused', rcv.status == 0 and rcv.elapsed < 9,
             f'exit {rcv.status} after {rcv.elapsed:.1f} s')
-    has_text(s, 'receiver saved the file', rcv.text, 'Saved ./recv_out/small.txt')
+    has_text(s, 'receiver saved the file', rcv.text, 'recv_out/small.txt')
     snd.join(timeout=25); snd.stop()
     sp = snd.text
     glob_ok(s, 'sender exits 0', snd.status == 0, f'exit {snd.status}')

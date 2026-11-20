@@ -103,8 +103,11 @@ func TestDisplayPath_RelativeToWorkingDir(t *testing.T) {
 	if got := displayPath(filepath.Join(wd, "dl", "a.txt")); got != "."+sep+filepath.Join("dl", "a.txt") {
 		t.Errorf("under cwd = %q", got)
 	}
-	if got := saveTargetLabel(wd); got != "./" {
-		t.Errorf("save target for cwd = %q, want ./", got)
+	// The receiver names the real folder even for the current one.
+	t.Setenv("HOME", wd)
+	t.Setenv("USERPROFILE", wd)
+	if got := saveTargetLabel(wd); got != "~"+sep {
+		t.Errorf("save target for cwd = %q, want ~/", got)
 	}
 }
 
@@ -114,15 +117,18 @@ func TestReceiverHeadline_NamesTheSavedFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	wd, _ := os.Getwd()
+	t.Setenv("HOME", wd)
+	t.Setenv("USERPROFILE", wd)
+	sep := string(filepath.Separator)
 	ui := &receiverUI{outDir: filepath.Join(wd, "dl")}
 	h := &wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "report.pdf"}
 	got := ui.headline(h, []string{filepath.Join(wd, "dl", "report.pdf")})
-	if want := "Saved ." + string(filepath.Separator) + filepath.Join("dl", "report.pdf"); !strings.Contains(got, want) {
+	if want := "Saved ~" + sep + filepath.Join("dl", "report.pdf"); !strings.Contains(got, want) {
 		t.Errorf("single file headline = %q, want %q", got, want)
 	}
 	h = &wire.SenderHello{Mode: wire.ModeFiles, DisplayName: "proj/"}
 	got = ui.headline(h, []string{filepath.Join(wd, "dl", "proj", "a"), filepath.Join(wd, "dl", "proj", "b")})
-	if !strings.Contains(got, "Saved proj/ to ."+string(filepath.Separator)+"dl/") {
+	if !strings.Contains(got, "Saved proj/ to ~"+sep+"dl"+sep) {
 		t.Errorf("folder headline = %q", got)
 	}
 }

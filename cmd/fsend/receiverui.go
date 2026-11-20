@@ -909,7 +909,7 @@ func (ui *receiverUI) headline(h *wire.SenderHello, files []string) string {
 	// stream send): name the saved file itself, path and all.
 	if len(files) == 1 && h != nil &&
 		(h.Mode == wire.ModeStream || sanitizeForDisplay(h.DisplayName, 128) == filepath.Base(files[0])) {
-		return "Saved " + uxlog.Subject(displayPath(files[0]))
+		return "Saved " + uxlog.Subject(placePath(files[0]))
 	}
 	name := ""
 	if h != nil && h.Mode != wire.ModeStream {

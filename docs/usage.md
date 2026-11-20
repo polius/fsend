@@ -54,13 +54,13 @@ Windows PowerShell.
 **On the receiver:**
 
 ```console
-$ fsend abc-defg-jkm
+~/Downloads $ fsend abc-defg-jkm
 
 ← Incoming report.pdf from macbook
   1 file · 2.4 MB · local network
 
-? Save to ./  [Y/n] y
-✓ Saved ./report.pdf
+? Save to ~/Downloads/  [Y/n] y
+✓ Saved ~/Downloads/report.pdf
   2.4 MB · 8 ms · local network
 ```
 
@@ -144,7 +144,7 @@ When files differ, fsend asks once:
 ? 1 file here already exists and differs
     a.txt   2 B → 8 B   yours is newer by 3 h
 ! Yours is newer — replace would lose your changes
-? Save to ./  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
+? Save to ~/Downloads/  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
 ```
 
 - **Keep both** (default): saves the new copy as `a (1).txt`.

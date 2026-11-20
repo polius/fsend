@@ -127,7 +127,7 @@ Choosing "skip them" at the prompt yourself exits 0, not 13.
 ### Some files were skipped (`E050`)
 
 ```text
-✓ Saved 2 of 3 files to ./
+✓ Saved 2 of 3 files to ~/Downloads/
 ! 1 file was skipped:
     proj/locked.txt — the sender could not read it
 ✗ Some files were skipped — everything else arrived. [E050]

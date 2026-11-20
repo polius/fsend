@@ -7,7 +7,9 @@ import (
 	"io"
 	"math"
 	"net"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -643,11 +645,60 @@ func receiverPreview(files []transfer.SummaryEntry) []previewItem {
 	return items
 }
 
-// saveTargetLabel renders the receive destination for the accept prompt.
-// Resolves the absolute path through displayPath so $HOME collapses to
-// "~"; the trailing slash signals "this is a directory, not a file."
+// saveTargetLabel renders the receive destination for the accept prompt
+// and the summary: the real folder, even when it is the current one ("./"
+// names no place). The trailing slash says "a folder, not a file".
 func saveTargetLabel(outDir string) string {
-	return displayPath(outDir) + "/"
+	p := placePath(outDir)
+	if strings.HasSuffix(p, string(filepath.Separator)) {
+		return p
+	}
+	return p + string(filepath.Separator)
+}
+
+// placeMax is the most columns placePath spends on a path.
+const placeMax = 50
+
+// placePath names a file or folder by where it really is: under the home
+// folder from "~", anywhere else in full. Past placeMax columns the middle
+// folders fold into "…", keeping the first folder and as much of the end,
+// which says the most, as fits.
+func placePath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	sep := string(filepath.Separator)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		switch {
+		case p == home:
+			return "~"
+		case strings.HasPrefix(p, home+sep):
+			p = "~" + p[len(home):]
+		}
+	}
+	if uxlog.Width(p) <= placeMax {
+		return p
+	}
+	parts := strings.Split(p, sep)
+	head, first := parts[0]+sep, 1 // "~/", or a volume ("C:\")
+	if parts[0] == "" && len(parts) > 2 {
+		head, first = sep+parts[1]+sep, 2 // "/var/"
+	}
+	if len(parts)-1 <= first {
+		return p
+	}
+	tail := parts[len(parts)-1]
+	for i := len(parts) - 2; i >= first; i-- {
+		next := parts[i] + sep + tail
+		if uxlog.Width(head+"…"+sep+next) > placeMax {
+			break
+		}
+		tail = next
+	}
+	if head+"…"+sep+tail == p || strings.HasPrefix(p, head+tail) {
+		return p
+	}
+	return head + "…" + sep + tail
 }
 
 // sanitizeForDisplay strips control characters, Unicode format and
