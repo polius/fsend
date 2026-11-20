@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -965,24 +966,122 @@ func promptCodeOrPath(f *flags, arg string) error {
 // user meant. EOF must not take that default (see the readLine contract);
 // unrecognized input re-prompts instead of hard-erroring on a typo.
 func askCodeOrPath(br *bufio.Reader, arg string) (send bool, err error) {
+	return askSendOr(br, fmt.Sprintf("%q matches a code AND is a local file.", arg),
+		"Send this file, or receive with this code?", "receive",
+		"no input to answer the code-vs-file prompt; pass --receive (or --send) to choose without a prompt")
+}
+
+// askSendOr is the shared "send it, or do the other thing?" prompt. Bare
+// Enter picks the other thing (other is also accepted as an answer); EOF
+// aborts with eofErr as a usage error.
+func askSendOr(br *bufio.Reader, line, question, other, eofErr string) (send bool, err error) {
 	uxlog.Blank()
-	uxlog.Line(fmt.Sprintf("%q matches a code AND is a local file.", arg))
+	uxlog.Line(line)
 	for {
-		uxlog.Question("Send this file, or receive with this code?", "[s/R]")
+		uxlog.Question(question, "[s/R]")
 		resp, eof := readLineFrom(br)
 		if eof {
 			uxlog.Blank()
-			return false, fmt.Errorf("%w: no input to answer the code-vs-file prompt; pass --receive (or --send) to choose without a prompt",
-				fserrors.ErrUsage)
+			return false, fmt.Errorf("%w: %s", fserrors.ErrUsage, eofErr)
 		}
 		switch resp {
 		case "s", "send":
 			return true, nil
-		case "r", "receive", "":
+		case "r", other, "":
 			return false, nil
 		}
 		uxlog.Line("Please answer s or r.")
 	}
+}
+
+// collidingSubcommands are the subcommands a file or folder might share a
+// name with (a project's server/ folder, a help/ folder).
+var collidingSubcommands = map[string]bool{"server": true, "doctor": true, "help": true, "completion": true}
+
+// resolveSubcommandCollision runs on the raw arguments before cobra picks a
+// subcommand. With --send anywhere on the line, a positional that names a
+// subcommand is rewritten to ./name so it is sent. Without --send, when the
+// first argument is such a name, a file of that name exists here and stdin
+// is a terminal, it asks. With no terminal the subcommand wins, so service
+// units and the container image keep working.
+func resolveSubcommandCollision(fs *pflag.FlagSet, args []string, isTTY func() bool, br func() *bufio.Reader) ([]string, error) {
+	i := firstPositional(fs, args)
+	if i < 0 || !collidingSubcommands[args[i]] {
+		return args, nil
+	}
+	name := args[i]
+	out := append([]string(nil), args...)
+	if flagOnLine(args, "--send") {
+		out[i] = "./" + name
+		return out, nil
+	}
+	if i != 1 || flagOnLine(args, "--receive") || !isTTY() {
+		return args, nil
+	}
+	// G703: name is one of collidingSubcommands, a fixed set.
+	st, err := os.Stat(name) //nolint:gosec
+	if err != nil {
+		return args, nil
+	}
+	kind := "file"
+	if st.IsDir() {
+		kind = "folder"
+	}
+	send, err := askSendOr(br(), fmt.Sprintf("%q is an fsend command AND a local %s.", name, kind),
+		fmt.Sprintf("Send this %s, or run fsend %s?", kind, name), "run",
+		fmt.Sprintf("no input to answer the command-vs-%s prompt; run fsend ./%s to send it", kind, name))
+	if err != nil {
+		return nil, err
+	}
+	if send {
+		out[i] = "./" + name
+		return out, nil
+	}
+	return args, nil
+}
+
+// firstPositional returns the index in args (args[0] is the program) of the
+// first argument cobra would treat as positional, or -1. Values of flags
+// that take one ("--out dir", "-o dir") are skipped.
+func firstPositional(fs *pflag.FlagSet, args []string) int {
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return -1 // cobra never dispatches a subcommand after "--"
+		case strings.HasPrefix(a, "--"):
+			if !strings.Contains(a, "=") {
+				if fl := fs.Lookup(a[2:]); fl != nil && fl.NoOptDefVal == "" {
+					i++
+				}
+			}
+		case len(a) > 1 && a[0] == '-':
+			if fl := fs.ShorthandLookup(a[len(a)-1:]); fl != nil && fl.NoOptDefVal == "" && !strings.Contains(a, "=") {
+				i++
+			}
+		default:
+			return i
+		}
+	}
+	return -1
+}
+
+// flagOnLine reports whether a boolean flag is set before any "--".
+func flagOnLine(args []string, name string) bool {
+	for _, a := range args[1:] {
+		if a == "--" {
+			return false
+		}
+		if a == name {
+			return true
+		}
+		if v, ok := strings.CutPrefix(a, name+"="); ok {
+			if b, err := strconv.ParseBool(v); err == nil && b {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // joinCode joins arguments that spell one share code across several words

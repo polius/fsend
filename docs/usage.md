@@ -19,7 +19,10 @@ rest, the environment variables and the exit codes.
 
 fsend picks send or receive from the argument: a code means receive,
 anything else means send. If an argument is both a code and a file, it
-asks. In scripts, use `--send` or `--receive`.
+asks. The same goes for a file or folder named like a command (`server`,
+`doctor`, `help`, `completion`): in a terminal it asks, in a script the
+command runs and `fsend --send server` sends the folder. In scripts, use
+`--send` or `--receive`.
 
 ## Your first transfer
 
