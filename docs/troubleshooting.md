@@ -28,7 +28,7 @@ website to sign in, or try another network.
 | Code | Meaning | Fix |
 |---|---|---|
 | `E004` | Not a valid code. | Re-type it. Codes use `a–z` without `i`, `l`, `o`. |
-| `E002` | No sender is waiting on it. | Check for typos, or ask the sender to run again. If it says your clock is off, fix the date and time. Also check both sides run 1.16 or later ([compatibility](compatibility.md)). |
+| `E002` | No sender is waiting on it. | Check for typos, or ask the sender to run again. If it says your clock is off, fix the date and time. Also check both sides run 1.18 or later ([compatibility](compatibility.md)). |
 | `E003` | Another receiver already used it. | A code works once. Ask the sender for a new one. |
 | `E003`, "already being received on this device" | Another fsend on this device is receiving it. | Wait for it, or stop it and try again. |
 

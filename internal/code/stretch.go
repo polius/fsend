@@ -22,15 +22,17 @@ func Stretch(code string, epoch int64, label string, n int) []byte {
 	return key
 }
 
-// The argon2id cost: 8 MiB and 5 passes, OWASP's recommended minimum
-// (its equivalent of 19 MiB and 2 passes). Up to 1.17 it was 64 MiB and
-// 2 passes, a 64 MiB peak on both sides, more than the whole transfer
-// needs. A guess now takes about a third of the time (6.7 ms against
-// 22 ms, measured on an M-series Mac), and a GPU fits 8 times as many at
-// once, but a code still takes about 2^44 guesses on average, far beyond
-// what fits in the hour a code lives. Changing either value changes every
-// slot and mDNS name, so peers on different settings never find each
-// other: bump the salt label with them.
+// The argon2id cost: 8 MiB and 5 passes, a little above OWASP's 7 MiB
+// and 5 passes (one of its settings equivalent to 19 MiB and 2; OWASP
+// uses one lane, fsend four, with the same memory and work in total).
+// Up to 1.17 it was 64 MiB and 2 passes, a 64 MiB peak on both sides,
+// more than the whole transfer needs. A guess now takes about a third of
+// the time (6.7 ms against 22 ms, measured on an M-series Mac), and a GPU
+// fits 8 times as many at once, but a code still takes about 2^44
+// guesses on average, far beyond what fits in the hour a code lives.
+// Changing either value changes every slot and mDNS name, so peers on
+// different settings never find each other: bump the salt label with
+// them.
 const (
 	stretchMemKiB = 8 * 1024
 	stretchPasses = 5

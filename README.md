@@ -166,8 +166,8 @@ The same test over the route each tool uses between networks:
 | 5,000 files of 20 KiB | **2.5 s** | 9.8 s | 5.8 s | 35 s | LAN only |
 
 On an imperfect internet path (emulated: 100 Mbit/s, 30 ms round trip,
-0.1% packet loss), fsend spreads a transfer over six direct connections;
-croc goes through its relay, as it does between networks:
+0.1% packet loss), fsend spreads a transfer over six direct connections.
+croc goes through its own relay, set up on the same path:
 
 | Lossy internet link | **fsend** | **croc** |
 |---|:---:|:---:|

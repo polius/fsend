@@ -111,9 +111,10 @@ On one machine there is no network to slow anything down. To see how
 the tools behave on a real one, the Mac's loopback is shaped with pf and
 dummynet ([`scripts/bench/shape.sh`](../scripts/bench/shape.sh)): its
 MTU is set to 1,500 bytes, and only the benchmark's own traffic is
-delayed, rate-limited and dropped. Each run is timed and measured with
-[`scripts/bench/transfer.sh`](../scripts/bench/transfer.sh), from
-starting the sender to the receiver finishing, every byte checked.
+delayed, rate-limited and dropped. Each run is timed from starting the
+sender to the receiver finishing, every byte checked;
+[`scripts/bench/transfer.sh`](../scripts/bench/transfer.sh) reproduces
+one run and reports both sides' peak memory.
 
 - **LAN:** 1 Gbit/s, no added delay. The shaper caps it at about
   540 Mbit/s of real throughput.
@@ -123,7 +124,9 @@ starting the sender to the receiver finishing, every byte checked.
 fsend takes its local route on the LAN, and its peer-to-peer QUIC route
 (`--mode direct`) on the internet profiles. croc finds the sender on the LAN.
 On the internet profiles it runs with `--no-local` through its relay
-on the same machine, each leg shaped with half the delay.
+on the same machine, each leg shaped with half the delay. With its
+public relay, croc sends 128 MiB or more over Tailscale's WireGuard
+instead (see footnote ² above), which this setup doesn't reproduce.
 
 Median of 3 runs, peak memory as sender / receiver. Measured on
 20 November 2026 on the same Mac as above, with fsend from this
