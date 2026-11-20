@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -1120,7 +1121,13 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// The receiver's HELLO reply only names it: a file receiver decides after
 	// seeing the listing, so "accepted" waits for OnAccepted and the spinner
 	// names the device while it reads the prompt (or types the password).
-	spin := startWaitSpinner(f, "Waiting for them to accept")
+	//
+	// Off a terminal a spinner is a static line, and the named one follows
+	// within a round trip: print only that.
+	var spin *uxlog.Spinner
+	if uxlog.IsTTY(os.Stderr) {
+		spin = startWaitSpinner(f, "Waiting for them to accept")
+	}
 	defer func() { spin.Stop() }() // spin is swapped as the receiver moves on
 	stream := plan.mode == wire.ModeStream
 	waitFor := func(what string) {

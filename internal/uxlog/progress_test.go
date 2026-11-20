@@ -403,3 +403,9 @@ func TestRateChip_HoldsTheFirstSecond(t *testing.T) {
 		t.Errorf("a layout without the rate shows nothing, got %q", got)
 	}
 }
+
+// Drop, like Done, is safe on a nil bar and on a plain-mode one.
+func TestProgress_DropNilSafe(t *testing.T) {
+	var p *Progress
+	p.Drop()
+}

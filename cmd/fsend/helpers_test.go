@@ -1419,8 +1419,8 @@ func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
 	got := captureStderr(t, func() {
 		printSendSummary(&flags{}, "f.txt", 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
 	})
-	if !strings.Contains(got, "Already up to date") || !strings.Contains(got, "1 file unchanged") {
-		t.Errorf("all-skipped summary must read up to date, got %q", got)
+	if !strings.Contains(got, "Already up to date") || strings.Contains(got, "unchanged") {
+		t.Errorf("all-skipped summary must read up to date, and say it once: %q", got)
 	}
 	if strings.Contains(got, "Sent") || strings.Contains(got, "0 B") {
 		t.Errorf("no byte counter on an up-to-date no-op: %q", got)

@@ -1028,6 +1028,26 @@ def s10_piped():
     glob_ok(s, '/dev/null stdin shows help, not a send',
             b'USAGE' in q.stdout and b'Sending stdin' not in q.stderr and q.returncode == 0,
             f'exit {q.returncode}')
+    # n1, n3: piped logs of a real send and then of a no-op resend.
+    logs = []
+    for _ in range(2):
+        p = subprocess.Popen([H.bin, 'small.txt'], cwd=d, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        code = p.stdout.readline().decode().strip()
+        r = subprocess.run([H.bin, code, '--yes', '--out', 'recv_out'], cwd=d, env=env,
+                           capture_output=True, stdin=subprocess.DEVNULL, timeout=20)
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        logs.append((p.stderr.read().decode('utf-8', 'replace'), r.stderr.decode('utf-8', 'replace')))
+    (snd1, _), (snd2, rcv2) = logs
+    glob_ok(s, 'piped sender: only the named waiting line',
+            'Waiting for them to accept' not in snd1, snd1[-300:])
+    glob_ok(s, 'no-op resend: up to date on both sides',
+            'Already up to date' in snd2 and 'Already up to date' in rcv2, (snd2[-200:], rcv2[-200:]))
+    glob_ok(s, 'no-op resend: said once, no "unchanged" line',
+            'unchanged' not in snd2 + rcv2, (snd2[-200:], rcv2[-200:]))
 
 
 def s11_themes():
@@ -1289,8 +1309,13 @@ def s21_cancel_resume():
     grid_ok(s, rv)
     lines = [pl for pl, _ in screen_lines(rv)]
     k = next((i for i, l in enumerate(lines) if 'Cancelled at' in l), None)
-    glob_ok(s, 'the bar stays above the block', k is not None and '%' in lines[k - 1],
-            repr(lines[k - 1:k + 1]) if k else None)
+    # n5: "Cancelled at N%" carries the figure; the frozen bar is gone
+    # (plain_screen applies the erase mpb sends for a dropped bar).
+    final = plain_screen(rv)
+    k = next((i for i, l in enumerate(final) if 'Cancelled at' in l), None)
+    glob_ok(s, 'no frozen bar above the block',
+            k is not None and not any(re.search(r'\d+%', l) for l in final[:k]),
+            repr(final[max(0, (k or 0) - 2):(k or 0) + 1]))
 
 
 def s22_clipboard():

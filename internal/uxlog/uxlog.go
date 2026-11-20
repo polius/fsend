@@ -731,6 +731,20 @@ func (p *Progress) Done() {
 	setActive(nil)
 }
 
+// Drop is Done for a bar whose figure a line below will carry ("Cancelled
+// at 62%"): the bar is removed instead of left frozen on screen.
+func (p *Progress) Drop() {
+	if p == nil || p.plain != nil || p.mp == nil {
+		p.Done()
+		return
+	}
+	if p.bar != nil && !p.bar.Completed() {
+		p.bar.Abort(true) // mpb erases the dropped bar's rows
+	}
+	p.mp.Wait()
+	setActive(nil)
+}
+
 // IsTTY reports whether w refers to a terminal.
 func IsTTY(w io.Writer) bool {
 	f, ok := w.(*os.File)
