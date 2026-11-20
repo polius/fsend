@@ -38,7 +38,7 @@ $ fsend report.pdf
 
       fsend abc-defg-jkm
 
-  One receiver · valid while this runs
+  One receiver · valid for 1 hour
 
   No fsend there yet? This installs it and receives:
     curl -fsSL https://getfsend.alzina.dev | sh -s -- abc-defg-jkm
@@ -49,18 +49,19 @@ $ fsend report.pdf
 
 Share the code any way you like. The two install lines are for a
 receiver without fsend: the first for macOS and Linux, the second for
-Windows PowerShell.
+Windows PowerShell. The code lasts an hour; in its last ten minutes the
+waiting line counts down (`code expires in 4 min`).
 
 **On the receiver:**
 
 ```console
-$ fsend abc-defg-jkm
+~/Downloads $ fsend abc-defg-jkm
 
 ← Incoming report.pdf from macbook
   1 file · 2.4 MB · local network
 
-? Save to ./  [Y/n] y
-✓ Saved ./report.pdf
+? Save to ~/Downloads/  [Y/n] y
+✓ Saved ~/Downloads/report.pdf
   2.4 MB · 8 ms · local network
 ```
 
@@ -144,7 +145,7 @@ When files differ, fsend asks once:
 ? 1 file here already exists and differs
     a.txt   2 B → 8 B   yours is newer by 3 h
 ! Yours is newer — replace would lose your changes
-? Save to ./  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
+? Save to ~/Downloads/  [K]eep both · [r]eplace (deletes yours) · [s]kip them · [n]o
 ```
 
 - **Keep both** (default): saves the new copy as `a (1).txt`.

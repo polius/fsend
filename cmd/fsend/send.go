@@ -373,9 +373,10 @@ func renderCodeBlock(w io.Writer, c string, password, copied bool) {
 	out.Blank()
 	out.Command(uxlog.Subject("fsend") + " " + uxlog.Code(c))
 	out.Blank()
-	note := uxlog.Join("One receiver", "valid while this runs")
+	valid := "valid for " + codeLifetime(pairTTL)
+	note := uxlog.Join("One receiver", valid)
 	if copied {
-		note = uxlog.Join("Copied to clipboard", "one receiver", "valid while this runs")
+		note = uxlog.Join("Copied to clipboard", "one receiver", valid)
 	}
 	if password {
 		note = uxlog.Join(note, "they need the password too")
@@ -575,8 +576,9 @@ func printSendSummary(f *flags, subject string, total int64, s senderStats, elap
 	// says "Already up to date" — "Sent · (0 B sent)" would contradict
 	// itself. Mirror the receiver's headline.
 	if s.moved == 0 && s.keptFiles == 0 && s.skippedFiles > 0 {
+		// The listing above already counted the files; the receiver's
+		// screen ends the same way.
 		uxlog.Status(uxlog.Check(), "Already up to date")
-		uxlog.Note(uxlog.Join(uxlog.CountNoun(s.skippedFiles, "file")+" unchanged", path.Tag()))
 		printUpdateNotice(f)
 		return
 	}

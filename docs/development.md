@@ -98,12 +98,19 @@ the role:
 |---|---|
 | `Status(glyph, text)` | A glyph, then text |
 | `Line(text)` | A neutral line |
+| `LineCommand(label, cmd)` | A label and its command, the command on its own row when narrow |
 | `Note(text)`, `NoteWrapped(text)` | Faint detail |
 | `Item(text)` | A list row |
 | `On(w).Command(text)` | The command to copy |
 | `Question(text, options)` | A prompt with choices |
 | `Entry(label)` | A prompt for typed text |
 | `Blank()`, `Debug(text)` | An empty line; a `--debug` line |
+
+On a terminal, `Status`, `Line`, `Question` and `Entry` break between
+words at the right edge, continuing in the row's own column; list rows
+fit their name column to the width. A command or path is never broken.
+`validate-ux.py` checks after every scenario that no line is wider than
+its pty.
 
 `TestGridIsTheOnlyWayToPrint` fails on any other way of printing
 (`fmt.Print*`, writes to `os.Stderr`, indented literals, unknown glyphs).

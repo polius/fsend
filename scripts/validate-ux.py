@@ -122,6 +122,96 @@ def cols_of(text):
     return n
 
 
+SCREEN_CSI = re.compile(r'\x1b\[([0-9;?]*)([A-Za-z])')
+SCREEN_OSC = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+
+
+def plain_screen(text):
+    """The lines a terminal is left showing, before any auto-wrap: \\r,
+    cursor moves and erases applied, colours dropped. A line wider than the
+    pty is one the terminal wrapped into column 0."""
+    text = SCREEN_OSC.sub('', text)
+    lines, r, c, i = [[]], 0, 0, 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '\x1b':
+            m = SCREEN_CSI.match(text, i)
+            if m:
+                arg, cmd = m.groups()
+                i = m.end()
+                n = int(arg) if arg.isdigit() else 1
+                if cmd == 'A':
+                    r = max(0, r - n)
+                elif cmd == 'B':
+                    r += n
+                elif cmd == 'C':
+                    c += n
+                elif cmd == 'D':
+                    c = max(0, c - n)
+                elif cmd == 'G':
+                    c = n - 1
+                elif cmd == 'K':
+                    if arg in ('', '0'):
+                        del lines[r][c:]
+                    elif arg in ('1', '2'):
+                        lines[r] = [] if arg == '2' else [' '] * c + lines[r][c:]
+                elif cmd == 'J':
+                    del lines[r][c:]
+                    del lines[r + 1:]
+                while len(lines) <= r:
+                    lines.append([])
+                continue
+            i += 2
+            continue
+        if ch == '\r':
+            c = 0
+        elif ch == '\n':
+            r += 1
+            c = 0
+            while len(lines) <= r:
+                lines.append([])
+        elif ch == '\b':
+            c = max(0, c - 1)
+        elif ch >= ' ':
+            ln = lines[r]
+            while len(ln) < c:
+                ln.append(' ')
+            if c < len(ln):
+                ln[c] = ch
+            else:
+                ln.append(ch)
+            c += 1
+        i += 1
+    return [''.join(ln).rstrip() for ln in lines]
+
+
+def unbreakable(line):
+    """A command to copy or a path, in a list row, is never broken: a copy
+    of half of it would not work. Such a row may run past the edge."""
+    if not line.startswith('    '):
+        return False
+    body = line.strip()
+    return body.startswith(('curl ', 'iex ', 'fsend ')) or any(len(t) > 20 and '/' in t for t in body.split())
+
+
+# Every PtyRun of the scenario that is running, for the width check.
+RUNS = []
+
+
+def widths_ok(sc):
+    """U1: no line fsend leaves on screen is wider than its pty. stdout data
+    (a preview list, a received text) is the user's, so runs marked
+    data=True are skipped."""
+    for run in RUNS:
+        if run.data or run.out == b'':
+            continue
+        wide = [(cols_of(ln), ln) for ln in plain_screen(run.text)
+                if cols_of(ln) > run.cols and not unbreakable(ln)]
+        label = 'no line wider than %d columns: %s' % (run.cols, ' '.join(os.path.basename(a) for a in run.argv)[:40])
+        glob_ok(sc, label, not wide, '; '.join('%d: %s' % w for w in wide[:3]) or None)
+    RUNS.clear()
+
+
 def rel_lum(r, g, b):
     def lin(c):
         c /= 255
@@ -322,7 +412,16 @@ def grid_ok(sc, stream, label=''):
     glob_ok(sc, pre + 'green only on ✓', not green, repr(green[:1]) if green else None)
     glob_ok(sc, pre + 'only ✓ ✗ ! ? → ← and the spinner', not old, repr(old[:1]) if old else None)
     # V7: a line that waits for an answer starts with ? in the gutter.
-    bare = [pl for pl, _ in screen_lines(stream) if PROMPT.search(pl) and not pl.startswith('? ')]
+    # A question too wide for the terminal puts its options on the rows
+    # under it, from column 2: those rows belong to the ? line above.
+    bare, asking = [], False
+    for pl, _ in screen_lines(stream):
+        if pl.startswith('? '):
+            asking = True
+        elif not pl.startswith('  ') or pl.startswith('    '):
+            asking = False
+        if PROMPT.search(pl) and not pl.startswith('? ') and not asking:
+            bare.append(pl)
     glob_ok(sc, pre + 'every prompt starts with ?', not bare, repr(bare[:1]) if bare else None)
     # V9: "188 ms", never "188ms".
     glued = [pl for pl, _ in screen_lines(stream) if GLUED_DURATION.search(pl)]
@@ -347,8 +446,10 @@ def prompt_ok(sc, label, stream, question):
 class PtyRun(threading.Thread):
     """Runs argv in a pty; captures raw output while feeds fire on schedule."""
 
-    def __init__(self, argv, cwd, feed=None, runtime=30, env=None, cols=100, bg=None):
+    def __init__(self, argv, cwd, feed=None, runtime=30, env=None, cols=100, bg=None, data=False):
         super().__init__(daemon=True)
+        self.data = data  # stdout carries the user's data: no width check
+        RUNS.append(self)
         self.argv, self.cwd, self.feed, self.runtime, self.env = argv, cwd, feed, runtime, env
         self.cols = cols
         # bg: an "rgb:RRRR/GGGG/BBBB" the fake terminal answers the OSC 11
@@ -634,6 +735,8 @@ def s1_single_file():
     lacks_text(s, 'no box around the command', sp, '│')
     has_text(s, 'command line is runnable as is', sp, '      fsend ' + code + '\n')
     check(s, 'tagline faint', sp, 'One receiver', 'One receiver', DEFAULT, False, True)
+    # R7: the code's real lifetime (pairTTL), not "while this runs".
+    has_text(s, 'tagline gives the code\'s lifetime', sp, 'One receiver · valid for 1 hour')
     # The install-and-receive hint pairs through the default server; this
     # harness uses its own, so the hint must stay away.
     lacks_text(s, 'no install hint on a server of its own', sp, 'No fsend there yet')
@@ -644,13 +747,17 @@ def s1_single_file():
     check(s, 'recv arrow accent', rv, 'Incoming', '←', ORANGE)
     check(s, 'recv subject bold', rv, 'Incoming', 'small.txt', DEFAULT, True)
     check(s, 'prompt ? primary+bold', rv, 'Save to', '?', VIOLET, True)
-    check(s, 'destination bold', rv, 'Save to', './recv_out/', DEFAULT, True)
-    check(s, 'recv summary subject bold', rv, 'Saved', './recv_out/small.txt', DEFAULT, True)
+    check(s, 'destination bold', rv, 'Save to', 'recv_out/', DEFAULT, True)
+    check(s, 'recv summary subject bold', rv, 'Saved', 'recv_out/small.txt', DEFAULT, True)
+    # R6: the real place, never "./": from ~ or /, middle folders folded.
+    glob_ok(s, 'prompt names the real folder',
+            any(re.search(r'Save to [~/]\S*recv_out/  ', pl) for pl, _ in screen_lines(rv)))
     glob_ok(s, 'no grey 244', '38;5;244' not in sp and '38;5;244' not in rv)
     # What the user reads: who connected, what went where.
     has_text(s, 'sender names who accepted', sp, ' accepted')
     has_text(s, 'sender summary names subject + peer', sp, 'Sent small.txt to ')
-    has_text(s, 'receiver names the saved file', rv, 'Saved ./recv_out/small.txt')
+    glob_ok(s, 'receiver names the saved file where it is',
+            any(re.search(r'Saved [~/]\S*recv_out/small\.txt', pl) for pl, _ in screen_lines(rv)))
     lacks_text(s, 'no progress bar under 1 MB', rv, '100%')
     # The sender's run includes waiting for the receiver to answer, so a
     # slow runner can push it past NotifyAfter (10 s), where the bell is
@@ -678,7 +785,8 @@ def s2_folder():
     check(s, 'recv listing name default', rv, 'video1.bin', 'assets/video1.bin', DEFAULT, False, False)
     check(s, 'filled bar accent', rv, '%', '━', ORANGE)
     has_text(s, 'sender summary names the folder', sp, 'Sent myproj/ to ')
-    has_text(s, 'receiver names folder and place', rv, 'Saved myproj/ to ./recv_out/')
+    glob_ok(s, 'receiver names folder and real place',
+            any(re.search(r'Saved myproj/ to [~/]\S*recv_out/', pl) for pl, _ in screen_lines(rv)))
     ansi_only(s, sp + rv)
     grid_ok(s, sp + rv)
 
@@ -705,6 +813,17 @@ def s3_conflict():
             f'exit {rcv.status if rcv else None}')
     ansi_only(s, sp + rv)
     grid_ok(s, sp + rv)
+    # R5: --yes keeps the differing file. One warning names it, one line
+    # gives the remedy with E013: no ✗, the remedy once.
+    snd, rcv = pair(s, d, ['small.txt'], ['--yes', '--out', 'recv_out'], [])
+    rv = rcv.text if rcv else ''
+    has_text(s, '--yes kept: one warning', rv, '! Kept 1 file of yours that differs · nothing saved')
+    has_text(s, '--yes kept: the remedy with E013', rv,
+             '\n  Run again with --overwrite to replace them, or --rename to keep both. [E013]')
+    lacks_text(s, '--yes kept: no failure line', rv, '✗')
+    glob_ok(s, '--yes kept: the remedy once', rv.count('--overwrite') == 1, rv.count('--overwrite'))
+    glob_ok(s, '--yes kept: exit 13', rcv is not None and rcv.status == 13, f'exit {rcv.status if rcv else None}')
+    grid_ok(s, rv, '--yes kept')
 
 
 def s4_password():
@@ -743,6 +862,41 @@ def s4_password():
     has_text(s, 'code block says a password is needed', sp, 'they need the password too')
     ansi_only(s, sp + rv)
     grid_ok(s, sp + rv)
+    # R4: a receiver out of password tries; the sender's notice fits 80 and
+    # 40 columns as a headline and a faint line (widths_ok checks the rest).
+    for cols in (80, 40):
+        snd = PtyRun([H.bin, 'small.txt', '--password'], d, feed=[(2.0, b'\n')], runtime=30, cols=cols)
+        snd.start()
+        code_m = snd.wait_for(r'([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
+        if not code_m:
+            snd.stop()
+            RESULTS.append((s, f'{cols} cols: sender produced no code', 'TIMEOUT', False))
+            continue
+        time.sleep(0.5)
+        rcv = PtyRun([H.bin, code_m.group(1), '--out', 'recv_out'], d,
+                     feed=[(3.0, b'nope1\n'), (5.0, b'nope2\n'), (7.0, b'nope3\n')], runtime=20, cols=cols)
+        rcv.start(); rcv.join()
+        snd.wait_for(r'They can rerun', timeout=15)  # a loaded runner is slow here
+        snd.stop()
+        has_text(s, f'{cols} cols: wrong-password headline', snd.text, 'still waiting')
+        has_text(s, f'{cols} cols: the rerun on a faint line', snd.text, 'They can rerun')
+        grid_ok(s, snd.text, f'wrong password at {cols}')
+
+
+def s29_server_down():
+    """R4: with the server down the sender says so in a headline and says
+    what still works on a faint line under it, at 80 and 40 columns."""
+    s = 'S29 server down'
+    d = fresh('s29')
+    for cols in (80, 40):
+        snd = PtyRun([H.bin, 'small.txt'], d, runtime=8, cols=cols,
+                     env={'FSEND_SERVER': 'http://127.0.0.1:9'})
+        snd.start()
+        snd.wait_for(r'local network can connect', timeout=7)
+        snd.stop()
+        has_text(s, f'{cols} cols: the headline', snd.text, 'Server unavailable; retrying')
+        has_text(s, f'{cols} cols: what still works', snd.text, 'Until then,')
+        grid_ok(s, snd.text, f'server down at {cols}')
 
 
 def s5_decline():
@@ -874,6 +1028,26 @@ def s10_piped():
     glob_ok(s, '/dev/null stdin shows help, not a send',
             b'USAGE' in q.stdout and b'Sending stdin' not in q.stderr and q.returncode == 0,
             f'exit {q.returncode}')
+    # n1, n3: piped logs of a real send and then of a no-op resend.
+    logs = []
+    for _ in range(2):
+        p = subprocess.Popen([H.bin, 'small.txt'], cwd=d, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        code = p.stdout.readline().decode().strip()
+        r = subprocess.run([H.bin, code, '--yes', '--out', 'recv_out'], cwd=d, env=env,
+                           capture_output=True, stdin=subprocess.DEVNULL, timeout=20)
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        logs.append((p.stderr.read().decode('utf-8', 'replace'), r.stderr.decode('utf-8', 'replace')))
+    (snd1, _), (snd2, rcv2) = logs
+    glob_ok(s, 'piped sender: only the named waiting line',
+            'Waiting for them to accept' not in snd1, snd1[-300:])
+    glob_ok(s, 'no-op resend: up to date on both sides',
+            'Already up to date' in snd2 and 'Already up to date' in rcv2, (snd2[-200:], rcv2[-200:]))
+    glob_ok(s, 'no-op resend: said once, no "unchanged" line',
+            'unchanged' not in snd2 + rcv2, (snd2[-200:], rcv2[-200:]))
 
 
 def s11_themes():
@@ -1135,8 +1309,13 @@ def s21_cancel_resume():
     grid_ok(s, rv)
     lines = [pl for pl, _ in screen_lines(rv)]
     k = next((i for i, l in enumerate(lines) if 'Cancelled at' in l), None)
-    glob_ok(s, 'the bar stays above the block', k is not None and '%' in lines[k - 1],
-            repr(lines[k - 1:k + 1]) if k else None)
+    # n5: "Cancelled at N%" carries the figure; the frozen bar is gone
+    # (plain_screen applies the erase mpb sends for a dropped bar).
+    final = plain_screen(rv)
+    k = next((i for i, l in enumerate(final) if 'Cancelled at' in l), None)
+    glob_ok(s, 'no frozen bar above the block',
+            k is not None and not any(re.search(r'\d+%', l) for l in final[:k]),
+            repr(final[max(0, (k or 0) - 2):(k or 0) + 1]))
 
 
 def s22_clipboard():
@@ -1238,7 +1417,7 @@ def s23_prompts():
     rcv.start(); rcv.join(); snd.join(timeout=8); snd.stop()
     prompt_ok(s, 'bare --password (receiver) behind the ? gutter', rcv.text, 'Enter the password the sender shared:')
     lacks_text(s, 'the typed password is not echoed', rcv.text, 'hunter2')
-    has_text(s, 'bare --password transfer completes', rcv.text, 'Saved ./recv_out/small.txt')
+    has_text(s, 'bare --password transfer completes', rcv.text, 'recv_out/small.txt')
     grid_ok(s, snd.text + rcv.text, 'bare --password')
     # A long text is asked about before it fills the screen.
     long_text = '\n'.join(f'line {i}' for i in range(60))
@@ -1293,7 +1472,7 @@ def s24_wide_names():
                     '…' in longest and cols_of(longest) <= cols - 1, repr(longest))
         else:
             glob_ok(s, f'{tag}: its name is shown whole', rcv_name + ' to accept' in longest, repr(longest))
-        has_text(s, f'{tag}: the transfer still completes', rv, 'Saved 写真アルバム/ to ./recv_out/')
+        has_text(s, f'{tag}: the transfer still completes', rv, 'Saved 写真アルバム/')  # the place may wrap to the next row
         # Rows of the listing line their sizes up under names of mixed width.
         rows = [pl for pl, _ in screen_lines(rv) if pl.startswith('    ') and ' MB' in pl]
         starts = {cols_of(pl[:pl.index(' MB')]) for pl in rows}
@@ -1522,7 +1701,7 @@ def s28_paused_terminal():
     rcv.start(); rcv.join()
     glob_ok(s, 'receiver finishes while the sender is paused', rcv.status == 0 and rcv.elapsed < 9,
             f'exit {rcv.status} after {rcv.elapsed:.1f} s')
-    has_text(s, 'receiver saved the file', rcv.text, 'Saved ./recv_out/small.txt')
+    has_text(s, 'receiver saved the file', rcv.text, 'recv_out/small.txt')
     snd.join(timeout=25); snd.stop()
     sp = snd.text
     glob_ok(s, 'sender exits 0', snd.status == 0, f'exit {snd.status}')
@@ -1542,7 +1721,7 @@ SCENARIOS = (s1_single_file, s2_folder, s3_conflict, s4_password, s5_decline,
              s17_plain, s18_spinner_width, s19_detected_background, s20_visual_system,
              s21_cancel_resume, s22_clipboard, s23_prompts, s24_wide_names,
              s25_skipped_lists, s26_install_hint, s27_update_notice,
-             s28_paused_terminal)
+             s28_paused_terminal, s29_server_down)
 
 
 def main():
@@ -1567,6 +1746,7 @@ def main():
                 fn()
             except Exception as e:  # noqa: BLE001 — one broken scenario ≠ lost matrix
                 RESULTS.append((fn.__name__, 'scenario crashed', repr(e), False))
+            widths_ok(fn.__name__.split('_')[0].upper())
             H.kill_clients()
             time.sleep(0.5)
     finally:

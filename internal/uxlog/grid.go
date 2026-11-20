@@ -57,13 +57,74 @@ func (p Printer) println(line string) {
 // Status prints a line with glyph in column 0 (Check, Cross, Warn, Ask,
 // an arrow, Info's blank) and text from column 2. A text of several lines
 // brings its own rows (Row, Detail, ItemRow).
-func (p Printer) Status(glyph, text string) { p.println(glyph + " " + text) }
+//
+// On a terminal each row of the block that would run past the right edge
+// breaks between words, the continuation in the row's own column (2 for
+// the headline), so the terminal never wraps a line into column 0.
+func (p Printer) Status(glyph, text string) {
+	if p.w == nil {
+		text = wrapBlock(text, terminalWidth(0))
+	}
+	p.println(glyph + " " + text)
+}
+
+// wrapBlock wraps every row of a status block to width columns: the first
+// row from column 2, every other row from its own leading spaces. Width 0
+// (not a terminal) leaves the block as it is.
+func wrapBlock(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	rows := strings.Split(text, "\n")
+	for i, row := range rows {
+		indent, body := len(colText), row
+		if i > 0 {
+			body = strings.TrimLeft(row, " ")
+			indent = len(row) - len(body)
+		}
+		if indent+visibleWidth(body) < width {
+			continue
+		}
+		pad := strings.Repeat(" ", indent)
+		lead := pad
+		if i == 0 {
+			lead = "" // the glyph and its space fill columns 0 and 1
+		}
+		rows[i] = lead + strings.Join(wrapWordsAt(body, indent, width), "\n"+pad)
+	}
+	return strings.Join(rows, "\n")
+}
 
 // Line prints a neutral line: no glyph, text from column 2.
-func (p Printer) Line(text string) { p.println(Row(text)) }
+// On a terminal it wraps like Status.
+func (p Printer) Line(text string) {
+	if p.w == nil {
+		text = wrapBlock(text, terminalWidth(0))
+	}
+	p.println(Row(text))
+}
+
+// LineCommand prints a label and the command it introduces ("Resume
+// with: fsend …") on one line when that fits the terminal, else the label
+// and then the command on a row of its own, so the command is never broken.
+func LineCommand(label, cmd string) {
+	line := label + " " + Code(cmd)
+	if w := terminalWidth(0); w > 0 && len(colText)+visibleWidth(line) >= w {
+		Line(label)
+		stderrPrinter.Command(Code(cmd))
+		return
+	}
+	Line(line)
+}
 
 // Note prints faint detail in column 2, under the line it belongs to.
-func (p Printer) Note(text string) { p.println(Detail(text)) }
+// On a terminal it wraps like Status.
+func (p Printer) Note(text string) {
+	if p.w == nil {
+		text = wrapBlock(text, terminalWidth(0))
+	}
+	p.println(Detail(text))
+}
 
 // NoteWrapped is Note for a sentence that may be longer than the terminal
 // is wide: it breaks between words, every row a Note from column 2.
@@ -110,7 +171,7 @@ func Debug(text string) { stderrPrinter.Line("DEBUG: " + text) }
 // line first returns to column 0. Off a terminal nothing was echoed and no
 // carriage return is written.
 func StatusAfterInterrupt(glyph, text string) {
-	line := glyph + " " + text
+	line := glyph + " " + wrapBlock(text, terminalWidth(0))
 	if IsTTY(os.Stderr) {
 		line = "\r" + line
 	}
@@ -138,7 +199,37 @@ func CommandRow(text string) string { return colCommand + text }
 //
 // Every line that waits for an answer starts with ?, so a glance down the
 // gutter finds it.
-func Question(text, options string) { prompt(QuestionLine(text, options)) }
+//
+// When the line won't fit the terminal, the question wraps and the options
+// go on rows of their own from column 2, broken only between choices, with
+// the cursor after the last.
+func Question(text, options string) {
+	line := QuestionLine(text, options)
+	if w := terminalWidth(0); w > 0 && visibleWidth(line) >= w {
+		line = Ask() + " " + wrapBlock(text, w) + "\n" + colText + strings.Join(packChoices(options, w-1-len(colText)), "\n"+colText) + " "
+	}
+	prompt(line)
+}
+
+// packChoices breaks an options string ("[K]eep both · [r]eplace · [n]o")
+// into rows no wider than avail, only between choices.
+func packChoices(options string, avail int) []string {
+	const sep = " · "
+	var rows []string
+	row := ""
+	for _, c := range strings.Split(options, sep) {
+		switch {
+		case row == "":
+			row = c
+		case visibleWidth(row+sep+c) > avail:
+			rows = append(rows, row)
+			row = c
+		default:
+			row += sep + c
+		}
+	}
+	return append(rows, row)
+}
 
 // QuestionLine is Question's string form.
 func QuestionLine(text, options string) string {
@@ -150,7 +241,15 @@ func QuestionLine(text, options string) string {
 // question's colour, as in
 //
 //	? Enter the password the sender shared: _
-func Entry(label string) { prompt(EntryLine(label)) }
+//
+// A label too wide for the terminal wraps, the cursor after its last row.
+func Entry(label string) {
+	line := EntryLine(label)
+	if w := terminalWidth(0); w > 0 && visibleWidth(line) >= w {
+		line = Ask() + " " + wrapBlock(Prompt(strings.TrimRight(label, " ")), w) + " "
+	}
+	prompt(line)
+}
 
 // EntryLine is Entry's string form.
 func EntryLine(label string) string {

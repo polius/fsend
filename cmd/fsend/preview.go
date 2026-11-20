@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -56,13 +57,27 @@ func renderPreview(w io.Writer, items []previewItem) {
 	// decision. Names pad to one column, capped so a single long path
 	// doesn't push every size off screen; the padding counts display
 	// columns, so names in a wide script still line the sizes up.
-	nameWidth, sizeWidth := 0, 0
+	nameWidth, sizeWidth, noteWidth := 0, 0, 0
 	for _, it := range items[:shown] {
 		nameWidth = max(nameWidth, min(nameColumnCap, uxlog.Width(rowName(it))))
 		sizeWidth = max(sizeWidth, len(sizeCell(it)))
+		if it.note != "" {
+			noteWidth = max(noteWidth, len(uxlog.Gap)+uxlog.Width(it.note))
+		}
+	}
+	// On a terminal the row also fits its width: the name column gives way
+	// (never below a readable minimum) and a longer name is clipped.
+	if w == os.Stderr {
+		if cols := uxlog.Columns(); cols > 0 {
+			nameWidth = min(nameWidth, max(12, cols-1-len(uxlog.ItemRow(""))-len(uxlog.Gap)-sizeWidth-noteWidth))
+		}
 	}
 	for _, it := range items[:shown] {
-		line := uxlog.Path(uxlog.PadRight(rowName(it), nameWidth)) + uxlog.Gap + uxlog.Muted(fmt.Sprintf("%*s", sizeWidth, sizeCell(it)))
+		name := rowName(it)
+		if uxlog.Width(name) > nameWidth && w == os.Stderr {
+			name = uxlog.Clip(name, nameWidth)
+		}
+		line := uxlog.Path(uxlog.PadRight(name, nameWidth)) + uxlog.Gap + uxlog.Muted(fmt.Sprintf("%*s", sizeWidth, sizeCell(it)))
 		if it.note != "" {
 			line += uxlog.Gap + noteText(it.note)
 		}

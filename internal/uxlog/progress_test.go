@@ -381,3 +381,31 @@ func TestTruncateName(t *testing.T) {
 		}
 	}
 }
+
+// The rate chip waits out the first second, as the ETA does: before that a
+// figure rests on two or three uneven frames (the review saw 10.6 MB/s when
+// 71 MB had moved in under half a second). From one second on it is the
+// window's rate.
+func TestRateChip_HoldsTheFirstSecond(t *testing.T) {
+	win := &rateWindow{}
+	start := time.Unix(1000, 0)
+	cum := int64(71_000_000)
+	for ms := 100; ms <= 900; ms += 100 {
+		if chip := rateChip(win, start, start.Add(time.Duration(ms)*time.Millisecond), cum, true); chip != "" {
+			t.Fatalf("chip at %d ms = %q, want nothing in the first second", ms, chip)
+		}
+		cum += 3_500_000
+	}
+	if chip := rateChip(win, start, start.Add(1100*time.Millisecond), cum, true); chip != " · 31.5 MB/s" {
+		t.Errorf("chip after a second = %q, want 31.5 MB/s (31.5 MB over the 1 s since the first frame)", chip)
+	}
+	if got := rateChip(win, start, start.Add(1200*time.Millisecond), cum+3_500_000, false); got != "" {
+		t.Errorf("a layout without the rate shows nothing, got %q", got)
+	}
+}
+
+// Drop, like Done, is safe on a nil bar and on a plain-mode one.
+func TestProgress_DropNilSafe(t *testing.T) {
+	var p *Progress
+	p.Drop()
+}

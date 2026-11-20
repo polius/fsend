@@ -170,3 +170,36 @@ func TestControl(t *testing.T) {
 		t.Errorf("Control wrote %q", got)
 	}
 }
+
+// A status block wider than the terminal breaks between words, each
+// continuation in its row's own column; escapes take no width; off a
+// terminal (width 0) nothing changes.
+func TestWrapBlock(t *testing.T) {
+	head := "Wrong password from laptop — still waiting; they can rerun fsend abc-defg-jkm with the right password."
+	got := wrapBlock(head+"\n"+Detail("To resume, rerun on that device: fsend abc-defg-jkm --out ./downloads/here"), 40)
+	for i, row := range strings.Split(got, "\n") {
+		plain := escapes.ReplaceAllString(row, "")
+		if w := 2*boolToInt(i == 0) + Width(plain); w >= 40 {
+			t.Errorf("row %d is %d columns: %q", i, w, plain)
+		}
+		if i > 0 && !strings.HasPrefix(plain, "  ") {
+			t.Errorf("row %d must continue in column 2: %q", i, plain)
+		}
+	}
+	if !strings.Contains(escapes.ReplaceAllString(got, ""), "abc-defg-jkm") {
+		t.Errorf("a word must never be split: %q", got)
+	}
+	if wrapBlock(head, 0) != head {
+		t.Error("width 0 must leave the block alone")
+	}
+	if short := "Sent · 1 file"; wrapBlock(short, 40) != short {
+		t.Error("a row that fits must be left alone")
+	}
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

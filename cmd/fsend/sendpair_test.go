@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -356,5 +357,66 @@ func TestIsReceiverClose(t *testing.T) {
 	}
 	if isReceiverClose(&quic.StreamError{StreamID: 3, ErrorCode: 0, Remote: false}) {
 		t.Error("local stream cancel must not classify as receiver close")
+	}
+}
+
+// The line under the code says how long it lasts, taken from pairTTL, and
+// in its last minutes the waiting line counts down.
+func TestCodeLifetimeAndCountdown(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		time.Hour: "1 hour", 2 * time.Hour: "2 hours", 90 * time.Minute: "90 min", 90 * time.Second: "2 min",
+	} {
+		if got := codeLifetime(d); got != want {
+			t.Errorf("codeLifetime(%v) = %q, want %q", d, got, want)
+		}
+	}
+	if got := expiringLabel("Waiting for receiver", 4*time.Minute+10*time.Second); got != "Waiting for receiver · code expires in 5 min" {
+		t.Errorf("expiringLabel = %q", got)
+	}
+	if got := expiringLabel("Waiting for receiver", 5*time.Second); !strings.HasSuffix(got, "expires in 1 min") {
+		t.Errorf("the last minute still reads 1 min: %q", got)
+	}
+
+	old := pairTTL
+	pairTTL = 2 * time.Minute
+	t.Cleanup(func() { pairTTL = old })
+	var buf bytes.Buffer
+	renderCodeBlock(&buf, "abc-defg-jkm", false, false)
+	if out := buf.String(); !strings.Contains(out, "valid for 2 min") || strings.Contains(out, "while this runs") {
+		t.Errorf("code block must give the code's lifetime:\n%s", out)
+	}
+}
+
+// The countdown stays quiet until warnBefore the deadline, then refreshes
+// every interval with the time left; a lifetime too short to warn about
+// never fires.
+func TestCountdownFiresBeforeTheDeadline(t *testing.T) {
+	cd := newCountdown(400*time.Millisecond, 300*time.Millisecond, 50*time.Millisecond)
+	defer cd.stop()
+	if got := cd.label("Waiting for receiver"); got != "Waiting for receiver" {
+		t.Fatalf("before the warning: %q", got)
+	}
+	select {
+	case <-cd.warn:
+	case <-time.After(time.Second):
+		t.Fatal("warn never fired")
+	}
+	cd.start()
+	if got := cd.label("Waiting for receiver"); got != "Waiting for receiver · code expires in 1 min" {
+		t.Errorf("after the warning: %q", got)
+	}
+	select {
+	case <-cd.tickC:
+	case <-time.After(time.Second):
+		t.Fatal("the refresh never ticked")
+	}
+	if time.Until(cd.deadline) <= 0 {
+		t.Error("the countdown must start before the code expires")
+	}
+
+	quiet := newCountdown(100*time.Millisecond, 300*time.Millisecond, 10*time.Millisecond)
+	defer quiet.stop()
+	if quiet.warn != nil || quiet.tickC != nil {
+		t.Error("a lifetime shorter than the warning must not count down")
 	}
 }

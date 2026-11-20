@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -299,6 +300,73 @@ const sessionDeleteTimeout = 3 * time.Second
 // past it the code (or resume key) stops being announced on the LAN and
 // re-created on the server. Var so tests can shrink it.
 var pairTTL = time.Hour
+
+// expiryWarn is how long before pairTTL runs out the waiting line starts
+// counting down. Var so tests can shrink it.
+var expiryWarn = 10 * time.Minute
+
+// codeLifetime says how long a code lasts, for the line under it: "1 hour",
+// "2 hours", "90 min".
+func codeLifetime(d time.Duration) string {
+	if d >= time.Hour && d%time.Hour == 0 {
+		return uxlog.CountNoun(int(d/time.Hour), "hour")
+	}
+	return fmt.Sprintf("%d min", int((d+time.Minute-1)/time.Minute))
+}
+
+// countdown drives the waiting line through a code's last minutes: warn
+// fires warnBefore the deadline, then tickC every interval. Both channels
+// are nil when there is nothing to count (a lifetime no longer than
+// warnBefore), so a select on them never fires.
+type countdown struct {
+	deadline time.Time
+	every    time.Duration
+	timer    *time.Timer
+	warn     <-chan time.Time
+	ticker   *time.Ticker
+	tickC    <-chan time.Time
+}
+
+func newCountdown(ttl, warnBefore, every time.Duration) *countdown {
+	c := &countdown{deadline: time.Now().Add(ttl), every: every}
+	if ttl > warnBefore {
+		c.timer = time.NewTimer(ttl - warnBefore)
+		c.warn = c.timer.C
+	}
+	return c
+}
+
+// start begins the per-interval refresh, once warn has fired.
+func (c *countdown) start() {
+	c.warn = nil
+	if c.ticker == nil {
+		c.ticker = time.NewTicker(c.every)
+		c.tickC = c.ticker.C
+	}
+}
+
+// label is msg, with the time left once the countdown has started.
+func (c *countdown) label(msg string) string {
+	if c.ticker == nil {
+		return msg
+	}
+	return expiringLabel(msg, time.Until(c.deadline))
+}
+
+func (c *countdown) stop() {
+	if c.timer != nil {
+		c.timer.Stop()
+	}
+	if c.ticker != nil {
+		c.ticker.Stop()
+	}
+}
+
+// expiringLabel is a waiting line once the code has less than expiryWarn
+// left: "Waiting for receiver · code expires in 4 min".
+func expiringLabel(msg string, left time.Duration) string {
+	return msg + uxlog.Sep + fmt.Sprintf("code expires in %d min", max(1, int((left+time.Minute-1)/time.Minute)))
+}
 
 // serverRetryMax caps the backoff between attempts to reach a down
 // server. Var so tests can shrink it.
@@ -691,8 +759,8 @@ func runSendParallel(ctx context.Context, f *flags, plan *sendPlan, code string,
 			(errors.Is(err, fserrors.ErrWrongPassword) || errors.Is(err, fserrors.ErrPasswordRequired)) {
 			pwMisses++
 			if !f.quiet {
-				uxlog.Status(uxlog.Warn(), fmt.Sprintf("%s — still waiting; they can rerun %s with the right password.",
-					passwordMissNotice(err), uxlog.Code("fsend "+code)))
+				uxlog.Status(uxlog.Warn(), passwordMissNotice(err)+" — still waiting\n"+
+					uxlog.Detail("They can rerun with the right password: ")+uxlog.Code("fsend "+code))
 			}
 			waitSpin = startWaitSpinner(f, "Waiting for receiver")
 			continue
@@ -818,6 +886,15 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 
 	ttl := time.NewTimer(pairTTL)
 	defer ttl.Stop()
+	// In the code's last minutes the waiting line counts down, refreshed
+	// each minute and kept across the spinner restarts below.
+	cd := newCountdown(pairTTL, expiryWarn, time.Minute)
+	defer cd.stop()
+	waitMsg := "Waiting for receiver"
+	wait := func(msg string) *uxlog.Spinner {
+		waitMsg = msg
+		return startWaitSpinner(f, cd.label(msg))
+	}
 
 	var (
 		lanDone, serverDone bool
@@ -853,7 +930,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 		serverDownErr = err
 		waitSpin.Stop()
 		uxlog.Status(uxlog.Warn(), serverPairNotice(err))
-		waitSpin = startWaitSpinner(f, "Waiting for receiver on local network")
+		waitSpin = wait("Waiting for receiver on local network")
 	}
 
 	for !winnerPicked && (!lanDone || !serverDone) {
@@ -865,12 +942,19 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 			// Stop announcing a code nobody redeemed within the server's TTL.
 			return abort(fserrors.ErrSessionExpired)
 
+		case <-cd.warn:
+			cd.start()
+			waitSpin.SetMessage(cd.label(waitMsg))
+
+		case <-cd.tickC:
+			waitSpin.SetMessage(cd.label(waitMsg))
+
 		case <-vanishedCh:
 			// The code is still good: nobody proved they held it.
 			if !f.quiet {
 				waitSpin.Stop()
 				uxlog.Status(uxlog.Info(), "A receiver joined but didn't connect. The code still works.")
-				waitSpin = startWaitSpinner(f, "Waiting for receiver")
+				waitSpin = wait("Waiting for receiver")
 			}
 
 		case err := <-serverDownCh:
@@ -897,8 +981,9 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				// server path is up, so pairing carries on there.
 				if !f.quiet {
 					waitSpin.Stop()
-					uxlog.Status(uxlog.Warn(), fmt.Sprintf("Stopped taking local-network connections after %d failed attempts. Still waiting via the server.", maxLANAuthFailures))
-					waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
+					uxlog.Status(uxlog.Warn(), fmt.Sprintf("Stopped taking local-network connections after %d failed attempts", maxLANAuthFailures)+
+						"\n"+uxlog.Detail("Still waiting via the server."))
+					waitSpin = wait("Waiting for receiver via server")
 				}
 				lanDownNoticed = true
 				continue
@@ -916,7 +1001,7 @@ func runSendOnce(ctx context.Context, f *flags, plan *sendPlan, sess *sendSessio
 				// line, then restart it for the remaining (server) path.
 				waitSpin.Stop()
 				uxlog.Status(uxlog.Info(), "Local-network discovery unavailable — connecting via the server instead.")
-				waitSpin = startWaitSpinner(f, "Waiting for receiver via server")
+				waitSpin = wait("Waiting for receiver via server")
 			}
 
 		case res := <-serverCh:
@@ -1065,7 +1150,13 @@ func runSenderTransferLoop(ctx context.Context, f *flags, plan *sendPlan, pathIn
 	// The receiver's HELLO reply only names it: a file receiver decides after
 	// seeing the listing, so "accepted" waits for OnAccepted and the spinner
 	// names the device while it reads the prompt (or types the password).
-	spin := startWaitSpinner(f, "Waiting for them to accept")
+	//
+	// Off a terminal a spinner is a static line, and the named one follows
+	// within a round trip: print only that.
+	var spin *uxlog.Spinner
+	if uxlog.IsTTY(os.Stderr) {
+		spin = startWaitSpinner(f, "Waiting for them to accept")
+	}
 	defer func() { spin.Stop() }() // spin is swapped as the receiver moves on
 	stream := plan.mode == wire.ModeStream
 	waitFor := func(what string) {
@@ -1275,20 +1366,23 @@ func isServerDown(err error) bool {
 // serverPairNotice renders the mid-wait warning for a failed server
 // path. 401 and 429 are the sender's own problem to fix — name them;
 // everything else (unreachable, 5xx) stays the generic "unavailable".
+//
+// A headline names what happened; the faint line under it says what still
+// works, so neither runs past an 80-column terminal.
 func serverPairNotice(err error) string {
-	const lanOnly = "only receivers on your local network can connect."
+	const lanOnly = "Until then, only receivers on your local network can connect."
+	head, fix := "Server unavailable; retrying", ""
 	switch {
 	case errors.Is(err, fserrors.ErrServerAuthRequired):
-		return "The server requires a password (fsend --connect <host:port>,<password>) — " + lanOnly
+		head, fix = "The server requires a password", "Run fsend --connect <host:port>,<password>. "
 	case errors.Is(err, fserrors.ErrRateLimited):
-		return "The server rate-limited this device; retrying — until then " + lanOnly
+		head = "The server rate-limited this device; retrying"
 	case errors.Is(err, fserrors.ErrClientTooOld):
-		return "This fsend is too old for the server (run fsend --update) — " + lanOnly
+		head, fix = "This fsend is too old for the server", "Run fsend --update. "
 	case errors.Is(err, fserrors.ErrServerCertUntrusted):
-		return "The server's certificate isn't trusted (a Wi-Fi login page?); retrying — until then " + lanOnly
-	default:
-		return "Server unavailable; retrying — until then " + lanOnly
+		head = "The server's certificate isn't trusted (a Wi-Fi login page?); retrying"
 	}
+	return head + "\n" + uxlog.Detail(fix+lanOnly)
 }
 
 // pickFinalSendError chooses which error to surface when both pair

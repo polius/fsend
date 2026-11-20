@@ -163,8 +163,12 @@ func TestSanitizeForDisplay_TruncatesMiddleKeepingExtension(t *testing.T) {
 }
 
 func TestSaveTargetLabel(t *testing.T) {
-	if got := saveTargetLabel("/tmp/dst"); got != "/tmp/dst/" {
-		t.Errorf("explicit out = %q", got)
+	dst, err := filepath.Abs(filepath.Join(string(filepath.Separator)+"tmp", "dst"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := saveTargetLabel(dst), dst+string(filepath.Separator); got != want {
+		t.Errorf("explicit out = %q, want %q", got, want)
 	}
 }
 
@@ -492,6 +496,18 @@ func TestRenderError_MapsCancelledToUserCancelled(t *testing.T) {
 	// Unknown wrap → catalog E099.
 	if !strings.Contains(got, "E099") {
 		t.Errorf("expected E099 catchall for unknown error, got: %s", got)
+	}
+}
+
+// E013 after a summary that already named the kept files and the remedy:
+// nothing more is printed, and the exit stays 13.
+func TestRenderError_KeptAlreadyReported(t *testing.T) {
+	keptReported = true
+	t.Cleanup(func() { keptReported = false })
+	var code int
+	got := captureStderr(t, func() { code = renderError(fserrors.ErrTargetExists, false) })
+	if got != "" || code != 13 {
+		t.Errorf("renderError = %d, %q; want 13 and nothing printed", code, got)
 	}
 }
 
@@ -1046,7 +1062,7 @@ func TestFinishReceive_KeptFilesGetHonestSummary(t *testing.T) {
 			t.Errorf("finishReceive error = %v, want ErrTargetExists", err)
 		}
 	})
-	if want := uxlog.Warn() + " Saved 0 of 2 files to /tmp"; !strings.Contains(got, want) {
+	if want := uxlog.Warn() + " Kept 1 file of yours that differs · 1 up to date · nothing saved"; !strings.Contains(got, want) {
 		t.Errorf("summary missing %q:\n%s", want, got)
 	}
 	if strings.Contains(got, uxlog.Check()) {
@@ -1139,9 +1155,9 @@ func TestDifferVerb(t *testing.T) {
 	}
 }
 
-// --yes answers the accept prompt only — differing files are still kept. The
-// accept line must say so upfront instead of leaving a surprise E013 exit.
-func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
+// --yes answers the accept prompt only: differing files are still kept, and
+// the summary says so once with the remedy, so the accept line stays quiet.
+func TestPromptAccept_YesWarnsOnlyInSummary(t *testing.T) {
 	differ := transfer.ClassifySummary{
 		Total: 2, Identical: 1, Differing: 1,
 		OfferedBytes: 2048, DifferingBytes: 1024,
@@ -1154,17 +1170,8 @@ func TestPromptAccept_YesWarnsAboutKeptDiffers(t *testing.T) {
 		ui := newReceiverUI(context.Background(), &flags{yes: true}, "/tmp", false, mustLANInfo())
 		_ = ui.promptAccept(filesHello(), differ)
 	})
-	if want := "Keeping 1 differing file — pass --overwrite to replace, or --rename to keep both"; !strings.Contains(got, want) {
-		t.Errorf("--yes accept missing kept-differs warning %q:\n%s", want, got)
-	}
-
-	// With --overwrite the differing file transfers; no warning.
-	got = captureStderr(t, func() {
-		ui := newReceiverUI(context.Background(), &flags{yes: true, overwrite: true}, "/tmp", false, mustLANInfo())
-		_ = ui.promptAccept(filesHello(), differ)
-	})
-	if strings.Contains(got, "Keeping") {
-		t.Errorf("--yes --overwrite must not warn:\n%s", got)
+	if strings.Contains(got, uxlog.Warn()) || strings.Contains(got, "--overwrite") {
+		t.Errorf("--yes accept must not warn ahead of the summary:\n%s", got)
 	}
 }
 
@@ -1416,8 +1423,8 @@ func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
 	got := captureStderr(t, func() {
 		printSendSummary(&flags{}, "f.txt", 4096, senderStats{skippedFiles: 1}, time.Millisecond, mustLANInfo())
 	})
-	if !strings.Contains(got, "Already up to date") || !strings.Contains(got, "1 file unchanged") {
-		t.Errorf("all-skipped summary must read up to date, got %q", got)
+	if !strings.Contains(got, "Already up to date") || strings.Contains(got, "unchanged") {
+		t.Errorf("all-skipped summary must read up to date, and say it once: %q", got)
 	}
 	if strings.Contains(got, "Sent") || strings.Contains(got, "0 B") {
 		t.Errorf("no byte counter on an up-to-date no-op: %q", got)
@@ -1432,19 +1439,23 @@ func TestPrintSendSummary_AllSkippedReadsUpToDate(t *testing.T) {
 	}
 }
 
-// Kept files render as a count only — the --overwrite remedy already
-// appears once elsewhere (the --yes warning or E013's action line), and
-// after an explicit "n" it must not appear at all. The glyph tracks who
+// Files kept without asking (--yes) get the remedy once, in the summary,
+// with E013; after the user's own "skip" it must not appear at all. The glyph tracks who
 // decided: warn for the silent auto-keep, info for the user's own "n".
 func TestPrintRecvSummary_KeptCarriesNoFlagAdvice(t *testing.T) {
+	keptReported = false
+	t.Cleanup(func() { keptReported = false })
 	autoKept := captureStderr(t, func() {
-		printRecvSummary(&flags{}, "Saved 0 of 1 file to /tmp", 0, 0, 1, 0, false, time.Second, mustLANInfo())
+		printRecvSummary(&flags{}, "", 0, 0, 1, 0, false, time.Second, mustLANInfo())
 	})
-	if strings.Contains(autoKept, "--overwrite") {
-		t.Errorf("summary must not repeat the --overwrite advice: %q", autoKept)
+	if strings.Count(autoKept, "--overwrite") != 1 || strings.Count(autoKept, "[E013]") != 1 {
+		t.Errorf("auto-kept summary must give the remedy and E013 once: %q", autoKept)
 	}
-	if !strings.Contains(autoKept, "1 kept") || !strings.Contains(autoKept, uxlog.Warn()) {
-		t.Errorf("auto-kept summary must warn with a kept count: %q", autoKept)
+	if strings.Count(autoKept, uxlog.Warn()) != 1 || strings.Contains(autoKept, uxlog.Cross()) {
+		t.Errorf("auto-kept summary must carry one warning and no failure: %q", autoKept)
+	}
+	if !keptReported {
+		t.Error("renderError must learn that the summary covered E013")
 	}
 
 	byChoice := captureStderr(t, func() {

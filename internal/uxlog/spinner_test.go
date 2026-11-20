@@ -183,3 +183,17 @@ func TestWrapWords(t *testing.T) {
 		}
 	}
 }
+
+// A word wider than a row is cut across rows, escapes kept whole.
+func TestWrapWordsCutsOverlongWords(t *testing.T) {
+	host := "iad20-gt1021-57f9ee3a-21a6-4b1f-82a2-80b15b7fe6aa"
+	rows := wrapWordsAt("Sent to "+Subject(host)+" now", 2, 40)
+	for _, row := range rows {
+		if n := 2 + visibleWidth(row); n > 39 {
+			t.Errorf("row %q is %d columns with its indent", row, n)
+		}
+	}
+	if got := escapes.ReplaceAllString(strings.Join(rows, ""), ""); !strings.Contains(got, host) {
+		t.Errorf("the cut word must rejoin whole: %q", got)
+	}
+}

@@ -209,6 +209,12 @@ func renderError(err error, debug bool) int {
 		glyph = uxlog.Info()
 	}
 
+	// The receiver's summary already named the kept files and the remedy.
+	if keptReported && errors.Is(err, fserrors.ErrTargetExists) {
+		jsonEmitDone(jsonDoneFromErr(err, exit, errorRole))
+		return exit
+	}
+
 	// The sentence leads and the catalog code follows it, where support
 	// and scripts still find it without it being the first thing read —
 	// on the opening line, never glued to a command the user will copy. A
@@ -314,9 +320,9 @@ func renderError(err error, debug bool) int {
 	if errorRole == "receiver" && receiveResume != "" {
 		switch {
 		case errors.Is(err, fserrors.ErrTransientFailure):
-			uxlog.Line("Resume with: " + uxlog.Code(receiveResume))
+			uxlog.LineCommand("Resume with:", receiveResume)
 		case errors.Is(err, fserrors.ErrWrongPassword), errors.Is(err, fserrors.ErrPasswordRequired):
-			uxlog.Line("Try again with: " + uxlog.Code(receiveResume+" --password"))
+			uxlog.LineCommand("Try again with:", receiveResume+" --password")
 		}
 	}
 
