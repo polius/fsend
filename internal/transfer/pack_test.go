@@ -186,3 +186,45 @@ func TestPack_SlowLinkKeepsOneEncoder(t *testing.T) {
 		t.Errorf("compressed %d of %d chunks, round trip equal %v", compressed, chunks, bytes.Equal(plain, data))
 	}
 }
+
+// A chunk that compresses far less than the one before outgrows the
+// buffer its copy was given: it is grown, and the bytes still round-trip.
+func TestPack_CompressedCopyOutgrowsItsBuffer(t *testing.T) {
+	var data []byte
+	for i := range 6 {
+		chunk := textBytes(hashBlockSize)
+		if i%2 == 1 { // about half incompressible: shrinks to a little over half
+			copy(chunk[:hashBlockSize/2], randBytes(hashBlockSize/2))
+		}
+		data = append(data, chunk...)
+	}
+	var out bytes.Buffer
+	if _, err := packAll(t, &out, data); err != nil {
+		t.Fatal(err)
+	}
+	chunks, compressed, plain := readPacked(t, &out)
+	if !bytes.Equal(plain, data) {
+		t.Fatal("round trip differs")
+	}
+	if compressed != chunks {
+		t.Errorf("compressed %d of %d chunks", compressed, chunks)
+	}
+}
+
+func TestZFor(t *testing.T) {
+	if got := zFor(hashBlockSize, 0); got != hashBlockSize+blockSlack {
+		t.Errorf("no history: %d, want a full block", got)
+	}
+	if got := zFor(hashBlockSize, 180<<10); got > 256<<10 || got < 180<<10 {
+		t.Errorf("after a 180 KiB copy: %d, want room for it in the 256 KiB class", got)
+	}
+	if got := zFor(1000, 200<<10); got > 1000+1000>>8+64 {
+		t.Errorf("small chunk: %d, want at most its own bound", got)
+	}
+	if b := getZ(100 << 10); cap(b) != 128<<10 {
+		t.Errorf("getZ(100 KiB) cap = %d", cap(b))
+	}
+	if b := getZ(900 << 10); cap(b) != hashBlockSize+blockSlack {
+		t.Errorf("getZ(900 KiB) cap = %d, want a block", cap(b))
+	}
+}

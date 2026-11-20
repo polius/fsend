@@ -30,9 +30,9 @@ const ALPNStripe = "fsend/1+stripe"
 const ALPNAttach = "fsend-attach/1"
 
 // stripeLanes is how many connections a striped transfer uses, the first
-// included. Four lift a path with 0.1% loss about 3.5x; past the link's
+// included. Six take a path with 0.1% loss from 1.7 to 10 MB/s (eight: 10.6, near its 12.5); past the link's
 // capacity more only add per-connection overhead.
-const stripeLanes = 4
+const stripeLanes = 6
 
 // maxLanes bounds the lanes one session accepts.
 const maxLanes = 16

@@ -6,6 +6,8 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -209,6 +211,7 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 	// chunks are all a transfer holds; on a fast one it grows to n.
 	slots := newPackSlots(n)
 	var bo compressBackoff
+	var lastZ atomic.Int64 // the last compressed size: sizes the next copy's buffer
 	var workers sync.WaitGroup
 	for range n {
 		workers.Go(func() {
@@ -218,11 +221,12 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 					// Answered without an encoder: a photo, video or
 					// archive never wakes one.
 				case j.try:
-					// A pooled block has room for a chunk that doesn't
-					// shrink (blockSlack), so EncodeAll stays inside it.
 					slots.startCompress()
-					j.z = enc.compress(j.c.buf, getBlock()[:0])
+					j.z = enc.compress(j.c.buf, getZ(zFor(len(j.c.buf), lastZ.Load())))
 					slots.endCompress()
+					if j.z != nil {
+						lastZ.Store(int64(len(j.z)))
+					}
 					j.shrank = j.z != nil && len(j.z)+len(j.z)/10 < len(j.c.buf)
 				}
 				if j.try {
@@ -237,16 +241,27 @@ func (p *chunkPacker) writeLoop(in <-chan packed, w io.Writer, enc *encoderPool)
 	written := make(chan struct{})
 	go func() {
 		defer close(written)
+		prev, primed := time.Now(), false
 		for j := range order {
-			waited := false
+			// cycle: since the writer last went for a chunk, so the write
+			// of the one before and this wait, the share judged.
+			top := time.Now()
+			cycle := top.Sub(prev)
+			prev = top
+			var waited time.Duration
 			select {
 			case <-j.done:
 			default:
-				waited = true
+				start := time.Now()
 				<-j.done
+				waited = time.Since(start)
 			}
 			if j.z != nil {
-				slots.compressed(waited)
+				// The first is always waited for: nothing else was ready.
+				if primed {
+					slots.compressed(waited, cycle+waited)
+				}
+				primed = true
 			}
 			p.writeChunk(w, j)
 			if j.try {
@@ -309,25 +324,87 @@ func looksIncompressible(b []byte) bool {
 // to save a tenth (about 7.2), so 7.5 leaves margin both ways.
 const incompressibleBits = 7.5
 
+// Compressed copies go in buffers sized to what the data compresses to,
+// not in a 1 MiB block each: text shrinks to a fifth, and every chunk in
+// flight held its block. The size is guessed from the chunk before (zFor);
+// a copy that outgrows its buffer has it grown by EncodeAll, once, and the
+// next guess is larger.
+var zClasses = [...]int{128 << 10, 256 << 10, 512 << 10}
+
+var zFree = func() (f [len(zClasses)]chan []byte) {
+	for i := range f {
+		f[i] = make(chan []byte, keepZ)
+	}
+	return f
+}()
+
+// keepZ bounds each class's free list: the chunks in compression at once.
+const keepZ = 16
+
+// zFor is the room to give the compressed copy of an n-byte chunk when
+// the one before compressed to last bytes (0: none yet, so a full block,
+// which a chunk that doesn't shrink fits: blockSlack).
+func zFor(n int, last int64) int {
+	if last <= 0 {
+		return hashBlockSize + blockSlack
+	}
+	return min(int(last)+int(last)/4+16<<10, n+n>>8+64)
+}
+
+// getZ returns an empty buffer with at least want bytes of room.
+func getZ(want int) []byte {
+	for i, c := range zClasses {
+		if want <= c {
+			select {
+			case b := <-zFree[i]:
+				return b[:0]
+			default:
+				return make([]byte, 0, c)
+			}
+		}
+	}
+	return getBlock()[:0]
+}
+
+// putZ recycles a buffer from getZ; one EncodeAll grew is left to the
+// collector.
+func putZ(b []byte) {
+	for i, c := range zClasses {
+		if cap(b) == c {
+			select {
+			case zFree[i] <- b[:0]:
+			default:
+			}
+			return
+		}
+	}
+	putBlock(b)
+}
+
 // packSlots bounds compression: how many chunks compress at once (each
 // wakes an encoder), and how many are tried in all, compressing or
 // compressed and waiting for the network (each holds the chunk and its
 // compressed copy). One more chunk is in flight than compress, so the next
 // compresses while one is written. The limit starts at one and grows by
-// one each time the writer has found the next compressed chunk unfinished
-// growAfter times running: a transfer only pays for the encoders that keep
-// its link busy. It doesn't shrink: what it grew to, it already holds.
+// one when, over the last growWindow compressed chunks, the writer spent
+// more than a quarter of its time waiting for compression rather than for
+// the network: a transfer only pays for the encoders that keep its link
+// busy. A brief wait doesn't count: a link that takes data in bursts
+// (several QUIC lanes) has the writer wait a moment between them while
+// the network is still the limit. It doesn't shrink: what it grew to, it
+// already holds.
 type packSlots struct {
 	mu                    sync.Mutex
 	cond                  *sync.Cond
 	inFlight, compressing int
 	limit, max            int
-	starved               int // compressed chunks running the writer found unfinished
+	seen                  int           // compressed chunks in this window
+	waited, spent         time.Duration // the writer's waits for them, and its time
 }
 
-// growAfter is how many compressed chunks running must keep the writer
-// waiting before another encoder joins: one wait is the pipeline filling.
-const growAfter = 2
+// growWindow is how many compressed chunks the writer's waiting is
+// judged over before another encoder may join.
+const growWindow = 4
 
 func newPackSlots(max int) *packSlots {
 	s := &packSlots{limit: 1, max: max}
@@ -369,20 +446,23 @@ func (s *packSlots) endCompress() {
 	s.mu.Unlock()
 }
 
-// compressed reports a compressed chunk reaching the writer, and whether
-// the writer had to wait for it.
-func (s *packSlots) compressed(waited bool) {
+// compressed reports a compressed chunk reaching the writer: how long the
+// writer waited for it, out of the time since it went for the chunk before
+// (that one's write, and this wait).
+func (s *packSlots) compressed(waited, spent time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !waited {
-		s.starved = 0
+	s.seen++
+	s.waited += waited
+	s.spent += spent
+	if s.seen < growWindow {
 		return
 	}
-	if s.starved++; s.starved >= growAfter && s.limit < s.max {
+	if s.waited*4 > s.spent && s.limit < s.max {
 		s.limit++
-		s.starved = 0
 		s.cond.Broadcast()
 	}
+	s.seen, s.waited, s.spent = 0, 0, 0
 }
 
 // plainAhead is how many uncompressed chunks may wait for the network.
@@ -393,7 +473,7 @@ const plainAhead = 2
 func (p *chunkPacker) writeChunk(w io.Writer, j *packJob) {
 	defer j.c.free()
 	if j.z != nil {
-		defer putBlock(j.z)
+		defer putZ(j.z)
 	}
 	if p.failed() != nil {
 		return
