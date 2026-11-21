@@ -7,7 +7,7 @@
 
 <h3 align="center">Private file transfer, straight between two computers.</h3>
 
-<p align="center">One command to send, one to receive. No account, no setup.</p>
+<p align="center">One command to send, one to receive.<br>End-to-end encrypted. No account, nothing to configure.</p>
 
 <p align="center">
   <a href="https://github.com/polius/fsend/actions/workflows/checks.yml"><img src="https://github.com/polius/fsend/actions/workflows/checks.yml/badge.svg" alt="checks"></a>
@@ -18,6 +18,7 @@
 
 <p align="center">
   <a href="#install">Install</a> ·
+  <a href="#why-fsend">Why fsend</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#how-it-compares">Comparison</a> ·
   <a href="#how-it-works">How it works</a> ·
@@ -32,22 +33,6 @@
       alt="fsend demo: the sender runs 'fsend backup.zip' and gets a share code; the receiver runs 'fsend <code>' in ~/Downloads, accepts, and the file is saved there.">
   </picture>
 </p>
-
-## Why fsend
-
-- **Direct.** On one network or across the internet, the bytes go straight
-  from sender to receiver. An encrypted relay is only the fallback.
-- **Private.** End-to-end encrypted, with a post-quantum key exchange. The
-  server that pairs the two computers never learns the code, the file names or
-  the contents.
-- **Fast.** About 1,200 MB/s with both ends on one machine, so in practice your
-  network is the limit, not fsend ([numbers below](#how-it-compares)).
-- **Resumable.** A dropped transfer continues where it stopped. Re-sending a
-  folder moves only what changed.
-- **Send anything.** A file, a folder, several at once, a pipe, or a line of
-  text. Add `--password` for a second secret.
-- **Runs anywhere.** One static binary for Linux, macOS, FreeBSD and Windows,
-  on x86 and ARM.
 
 ## Install
 
@@ -69,12 +54,15 @@ brew install polius/tap/fsend
 irm https://getfsend.alzina.dev/windows | iex
 ```
 
-**Update or remove:** `fsend --update` installs the latest release, and
-`fsend --uninstall` removes fsend and its settings. A Homebrew or package
-install is left to brew or the package manager.
+Then send your first file:
+
+```bash
+fsend backup.zip        # prints a code to share
+fsend abc-defg-jkm      # run this on the other computer
+```
 
 <details>
-<summary>Other install methods</summary>
+<summary>Other ways to install</summary>
 
 From source:
 
@@ -93,9 +81,14 @@ Or grab a release binary from [the releases page](https://github.com/polius/fsen
 </details>
 
 <details>
-<summary>Tab-completion (optional)</summary>
+<summary>Update, uninstall and tab-completion</summary>
 
-Add the line for your shell to its rc file (`$PROFILE` on PowerShell):
+`fsend --update` installs the latest release, and `fsend --uninstall` removes
+fsend and its settings. A Homebrew or package install is left to brew or the
+package manager.
+
+For tab-completion, add the line for your shell to its rc file (`$PROFILE` on
+PowerShell):
 
 ```bash
 eval "$(fsend completion zsh)"                                 # zsh
@@ -109,6 +102,23 @@ already, and the man pages (`man fsend`). Release archives carry the same
 scripts in `completions/` and the pages in `manpages/`.
 
 </details>
+
+## Why fsend
+
+- **Direct.** The bytes go straight from sender to receiver, on one network
+  or across the internet. An encrypted relay is only the fallback.
+- **Private.** End-to-end encrypted, with a post-quantum key exchange. The
+  server never learns the code, the file names or the contents.
+- **Fast.** Parallel connections and compression fill your link: 10,939 small
+  files cross a lossy 100 Mbit/s path in 4.8 s ([benchmarks](#how-it-compares)).
+- **Resumable.** A dropped transfer continues where it stopped. Re-sending a
+  folder moves only what changed.
+- **Send anything.** A file, a folder, several at once, a pipe, or a line of
+  text.
+- **Runs anywhere.** One static binary for Linux, macOS, FreeBSD and Windows,
+  on x86 and ARM.
+- **Scriptable.** `--json` output, documented exit codes, and `fsend doctor`
+  to diagnose a connection.
 
 ## Usage
 
@@ -132,11 +142,8 @@ fsend --out ~/Downloads abc-defg-jkm  # save to a specific folder
 fsend --out - abc-defg-jkm | tar x    # stream to stdout (a folder arrives as tar)
 ```
 
-No fsend on the other computer? The sender also prints a one-line command that
-installs it and receives the file.
-
-More in [Usage](docs/usage.md): resuming, scripting with `--json`, and
-`fsend doctor` for when something won't connect.
+No fsend on the other computer? The sender also prints a one-line command
+that installs it and receives the file. More in [Usage](docs/usage.md).
 
 ## How it compares
 
@@ -150,58 +157,64 @@ More in [Usage](docs/usage.md): resuming, scripting with `--json`, and
 | Strength of the default code | ~45 bits | ~31 bits | 16 bits | — | — |
 | Stdin and stdout streaming | ✓ | ✓ | ✗ | ✗ | ✗ |
 
-**Speed**, with both ends on one machine, so it shows each tool's own
-overhead and not your network:
+**Speed** on an emulated internet link (100 Mbit/s, 30 ms round trip, 0.1%
+packet loss), fsend direct and croc through its own relay:
 
-| Local network | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
+| | **fsend** | **croc** |
+|---|:---:|:---:|
+| One 256 MiB file (random data) | **25 s** | 30 s |
+| 657 MB of source code | **13 s** | 47 s |
+| 10,939 small files (139 MB) | **4.8 s** | 45 s |
+
+<details>
+<summary>Each tool's raw speed and memory, with both ends on one machine</summary>
+
+<br>
+
+With no network in between, these show each tool's own ceiling, not what
+you'll see between two computers.
+
+The route each tool uses on one network:
+
+| | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|:---:|:---:|:---:|:---:|:---:|
 | One 1 GiB file | 0.9 s | 1.9 s | 21 s | 25 s | **0.7 s** |
 | 5,000 files of 20 KiB | **1.6 s** | 9.1 s | 5.8 s | 35 s | 2.3 s |
 
-The same test over the route each tool uses between networks:
+The route each tool uses between networks. croc sends its 1 GiB file over
+Tailscale's WireGuard here, not the relay tested above:
 
-| Between networks | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
+| | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|:---:|:---:|:---:|:---:|:---:|
 | One 1 GiB file | **19 s** | 34 s | 21 s | 25 s | LAN only |
 | 5,000 files of 20 KiB | **2.7 s** | 9.8 s | 5.8 s | 35 s | LAN only |
 
-On an imperfect internet path (emulated: 100 Mbit/s, 30 ms round trip,
-0.1% packet loss), fsend spreads a transfer over eight direct connections.
-croc goes through its own relay, set up on the same path:
-
-| Lossy internet link | **fsend** | **croc** |
-|---|:---:|:---:|
-| One 256 MiB file | **25 s** | 30 s |
-| 657 MB of source code | **13 s** | 47 s |
-| 10,939 small files (139 MB) | **4.8 s** | 45 s |
-
-**Memory**, peak while sending one 1 GiB file (sender / receiver), both
-ends on one machine:
+Peak memory sending one 1 GiB file (sender / receiver):
 
 | | **fsend** | **croc** | **magic-wormhole** | **sendme** |
 |---|:---:|:---:|:---:|:---:|
 | Peak memory | 34 / 35 MiB | 37 / 34 MiB | 65 / 65 MiB | **20 / 18 MiB** |
 
-fsend's figure includes the memory-hard (Argon2id) stretch that keeps the
-share code safe from offline guessing.
+fsend's figure includes the Argon2id stretch that protects the share code.
 
-Every row, the method and the sources are in the
+</details>
+
+Method, sources and where the other tools win:
 [full comparison](docs/comparison.md).
 
 ## How it works
 
-A share code pairs the two computers. fsend then takes the fastest route that
-works, with nothing for you to choose:
+A share code pairs the two computers, and fsend takes the fastest route that
+works:
 
 | Route | When | How |
 |---|---|---|
-| **Local network** | Both on the same network | They find each other over mDNS. The data never touches a server. |
-| **Direct** | Different networks | Both NATs are hole-punched, and the data flows peer to peer over QUIC. |
-| **Relay** | No direct path | The server forwards encrypted data it can't read, over HTTPS when UDP is blocked. |
+| **Local network** | Same network | Found over mDNS. The data never touches a server. |
+| **Direct** | Different networks | NAT hole punching, then peer to peer over QUIC. |
+| **Relay** | No direct path | The server forwards encrypted data it can't read. |
 
-The default server, `fsend.alzina.dev`, is free and best effort. Transfers on
-one network work without it, and the same binary lets you
-[run your own](docs/self-hosting.md).
+The default server, `fsend.alzina.dev`, is free and best effort. The same
+binary lets you [run your own](docs/self-hosting.md).
 
 <br>
 
@@ -212,8 +225,8 @@ one network work without it, and the same binary lets you
   </a>
 </p>
 
-<p align="center"><em>Sixty-five seconds on pairing and the three routes. Plays as an MP4 in your
-browser. Prefer reading? See <a href="docs/architecture.md">Architecture</a>.</em></p>
+<p align="center"><em>A 65-second video (MP4) on pairing and the three routes.
+Prefer reading? See <a href="docs/architecture.md">Architecture</a>.</em></p>
 
 ## Security
 
@@ -247,8 +260,12 @@ The whole threat model is in [Security](docs/security.md).
 
 ## Contributing
 
-Bug reports and pull requests are welcome. See [Development](docs/development.md)
-to build from source, or open an [issue](https://github.com/polius/fsend/issues).
+Bug reports and pull requests are welcome: open an
+[issue](https://github.com/polius/fsend/issues), or see
+[Development](docs/development.md) to build from source. Report
+vulnerabilities privately, through the [security policy](SECURITY.md).
+
+If fsend is useful to you, a star helps other people find it.
 
 ## License
 
