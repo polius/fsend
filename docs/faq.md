@@ -11,6 +11,7 @@
 - [Why does macOS or Windows warn about the binary?](#why-does-macos-or-windows-warn-about-the-binary)
 - [How do I update or uninstall?](#how-do-i-update-or-uninstall)
 - [Can I send text or use pipes?](#can-i-send-text-or-use-pipes)
+- [Does the public server have limits?](#does-the-public-server-have-limits)
 - [Can I run my own server?](#can-i-run-my-own-server)
 - [What's different on Windows?](#whats-different-on-windows)
 
@@ -149,6 +150,17 @@ fsend abc-defg-jkm --out - | tar x      # receive to stdout
 ```
 
 For scripts, see [Usage → Scripting](usage.md#scripting).
+
+## Does the public server have limits?
+
+Yes, on relayed data and on codes. A local-network or direct transfer
+doesn't pass through the server, so its size has no limit.
+
+- **Relay:** up to 100 MB per transfer, counted after compression (`E023`
+  above that), and 30 GB a day across everyone (`E037`, until 00:00 UTC).
+- **Codes:** 5 open at once and 30 new ones a minute, per IP address.
+
+For your own limits, [run your own server](self-hosting.md).
 
 ## Can I run my own server?
 
