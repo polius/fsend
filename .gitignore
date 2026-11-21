@@ -29,3 +29,6 @@ __pycache__/
 # Local config
 .env
 .env.local
+
+# scripts/bench working folder (test data, results)
+/bench-work/

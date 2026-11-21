@@ -6,8 +6,9 @@
 // code, not the code itself: the name is multicast to the whole broadcast
 // domain, the code is the PAKE secret, and the code has only ~45 bits of
 // entropy — a fast hash would let a passive LAN observer recover it by
-// offline brute force. argon2id makes each guess cost ~64 MiB of memory
-// and tens of milliseconds, putting a full sweep out of practical reach.
+// offline brute force. argon2id makes each guess cost 8 MiB of memory and
+// 5 passes over it (code.Stretch), putting a full sweep out of practical
+// reach.
 //
 // This package only does discovery — the actual connection is established
 // via internal/quicconn after we have an address.

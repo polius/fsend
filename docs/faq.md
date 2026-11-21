@@ -42,7 +42,7 @@ elsewhere can find it. `--local` skips the server completely.
 
 ## Do both sides need fsend?
 
-Yes, 1.16 or later on both ([compatibility](compatibility.md)). A
+Yes, 1.18 or later on both ([compatibility](compatibility.md)). A
 receiver without fsend can install it and receive in one line:
 
 ```bash

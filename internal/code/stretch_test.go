@@ -31,3 +31,14 @@ func TestStretch_CacheBounded(t *testing.T) {
 		t.Fatal("re-derivation after eviction changed the value")
 	}
 }
+
+// The stretch's output is part of the protocol: peers that derive a
+// different slot or mDNS name never find each other. A change to the
+// argon2id cost or a label must be deliberate (and bump the label).
+func TestStretch_KnownAnswer(t *testing.T) {
+	got := SlotAt("abc-defg-jkm", 20000)
+	const want = "bb0656a24f2747ebad8f3bf222a84293"
+	if got != want {
+		t.Fatalf("SlotAt = %s, want %s", got, want)
+	}
+}

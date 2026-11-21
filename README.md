@@ -40,7 +40,7 @@
 - **Private.** End-to-end encrypted, with a post-quantum key exchange. The
   server that pairs the two computers never learns the code, the file names or
   the contents.
-- **Fast.** About 940 MB/s with both ends on one machine, so in practice your
+- **Fast.** About 1,200 MB/s with both ends on one machine, so in practice your
   network is the limit, not fsend ([numbers below](#how-it-compares)).
 - **Resumable.** A dropped transfer continues where it stopped. Re-sending a
   folder moves only what changed.
@@ -155,37 +155,35 @@ overhead and not your network:
 
 | Local network | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|:---:|:---:|:---:|:---:|:---:|
-| One 1 GiB file | 1.2 s | 1.9 s | 21 s | 25 s | **0.7 s** |
-| 5,000 files of 20 KiB | **1.7 s** | 9.1 s | 5.8 s | 35 s | 2.3 s |
+| One 1 GiB file | 0.9 s | 1.9 s | 21 s | 25 s | **0.7 s** |
+| 5,000 files of 20 KiB | **1.6 s** | 9.1 s | 5.8 s | 35 s | 2.3 s |
 
 The same test over the route each tool uses between networks:
 
 | Between networks | **fsend** | **croc** | **magic-wormhole** | **sendme** | **LocalSend** |
 |---|:---:|:---:|:---:|:---:|:---:|
-| One 1 GiB file | **21 s** | 34 s | **21 s** | 25 s | LAN only |
-| 5,000 files of 20 KiB | **2.5 s** | 9.8 s | 5.8 s | 35 s | LAN only |
+| One 1 GiB file | **19 s** | 34 s | 21 s | 25 s | LAN only |
+| 5,000 files of 20 KiB | **2.7 s** | 9.8 s | 5.8 s | 35 s | LAN only |
 
 On an imperfect internet path (emulated: 100 Mbit/s, 30 ms round trip,
-0.1% packet loss), fsend spreads a transfer over six direct connections;
-croc goes through its relay, as it does between networks:
+0.1% packet loss), fsend spreads a transfer over six direct connections.
+croc goes through its own relay, set up on the same path:
 
 | Lossy internet link | **fsend** | **croc** |
 |---|:---:|:---:|
-| One 256 MiB file | **26 s** | 30.5 s |
-| 717 MiB of source code | **14.8 s** | 55.5 s |
-| 12,000 small files (157 MB) | **5.1 s** | 55.8 s |
+| One 256 MiB file | **28 s** | 31 s |
+| 657 MB of source code | **13.5 s** | 47 s |
+| 10,939 small files (139 MB) | **4.5 s** | 45 s |
 
 **Memory**, peak while sending one 1 GiB file (sender / receiver), both
 ends on one machine:
 
 | | **fsend** | **croc** | **magic-wormhole** | **sendme** |
 |---|:---:|:---:|:---:|:---:|
-| Peak memory | 86 / 87 MiB | 37 / 34 MiB | 65 / 65 MiB | **20 / 18 MiB** |
-| Of which the transfer itself | **32 / 27 MiB** | — | — | — |
+| Peak memory | 34 / 35 MiB | 37 / 34 MiB | 65 / 65 MiB | **20 / 18 MiB** |
 
-About 64 MiB of fsend's peak is the memory-hard (Argon2id) stretch that
-keeps the share code safe from offline guessing; it is freed before the
-transfer starts.
+fsend's figure includes the memory-hard (Argon2id) stretch that keeps the
+share code safe from offline guessing.
 
 Every row, the method and the sources are in the
 [full comparison](docs/comparison.md).
