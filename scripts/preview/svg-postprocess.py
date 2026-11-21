@@ -46,7 +46,7 @@ DOT_R    = 7.5          # traffic-light radius
 DOTS     = [(23, "#ff5f58"), (47, "#ffbd2e"), (71, "#28c840")]  # cx, colour
 DOT_CX0, DOT_GAP = 23, 24   # first traffic-light centre + spacing
 # Must match demo.sh / ptyrec.py, which read the same variables.
-COLS = int(os.environ.get("FSEND_DEMO_COLS", 88))
+COLS = int(os.environ.get("FSEND_DEMO_COLS", 80))
 ROWS = int(os.environ.get("FSEND_DEMO_ROWS", 33))
 PADDING = 14
 # svg-term's column pitch in terminal units: its font metric (0.6em at the size

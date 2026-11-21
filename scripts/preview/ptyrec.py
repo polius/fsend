@@ -2,7 +2,7 @@
 # Minimal asciinema-v2 cast recorder with a *fixed* PTY size.
 #
 # Why this exists instead of `asciinema rec`: the demo is a full-screen tmux
-# session that must record at an exact geometry (88x33 by default), and
+# session that must record at an exact geometry (80x33 by default), and
 # svg-term needs a cast as input. This forces the master PTY window size so
 # tmux renders both panes fully, then streams output to a v2 cast. Run from
 # the repo root.
@@ -11,7 +11,7 @@
 import os, pty, sys, time, json, fcntl, termios, struct, select, codecs
 
 # Must match demo.sh, which sizes the tmux session from the same variables.
-COLS = int(os.environ.get("FSEND_DEMO_COLS", 88))
+COLS = int(os.environ.get("FSEND_DEMO_COLS", 80))
 ROWS = int(os.environ.get("FSEND_DEMO_ROWS", 33))
 OUT = sys.argv[1] if len(sys.argv) > 1 else "demo.cast"
 CMD = ["bash", "-lc", "scripts/preview/demo.sh play"]

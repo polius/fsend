@@ -28,9 +28,10 @@ python3 scripts/preview/render-video.py
 renders both themes. Re-run it whenever the CLI output changes, then
 `render-video.py`.
 
-**Check the speed on screen before committing.** A VPN or network filter
-can slow the transfer to a few MB/s, which makes fsend look slow. Pause
-it and record again.
+**Check the speed on screen before committing.** The demo sends 2 GB over
+the local route, about 1 GB/s on one machine, so the bar shows for about
+two seconds. A VPN or network filter doesn't slow that route, but it can
+slow the direct one to a few MB/s: keep the shim on `--mode=local`.
 
 To watch the demo live without recording: `scripts/preview/demo.sh`.
 
@@ -39,7 +40,7 @@ To watch the demo live without recording: `scripts/preview/demo.sh`.
 | File | Role |
 |---|---|
 | `demo.sh` | Sets up the two tmux panes and types the transfer. |
-| `ptyrec.py` | Records the session as an asciinema cast at 88x33. |
+| `ptyrec.py` | Records the session as an asciinema cast at 80x33. |
 | `svg-postprocess.py` | Themes the cast, renders it with svg-term, and adds the cursor, final hold, fade, window frame and embedded font. |
 | `record-svg.sh` | Runs it all: build, record, render both SVGs. |
 | `render-video.py` | Turns `demo.svg` into the mp4 and gif with headless Chrome. |
@@ -60,7 +61,7 @@ To watch the demo live without recording: `scripts/preview/demo.sh`.
 |---|---|
 | Pacing | `director()` in `demo.sh` |
 | Pane labels and layout | `do_setup()` in `demo.sh` |
-| Terminal size | `FSEND_DEMO_COLS`, `FSEND_DEMO_ROWS` (88x33) |
+| Terminal size | `FSEND_DEMO_COLS`, `FSEND_DEMO_ROWS` (80x33: below about 74 columns fsend drops the progress bar) |
 | Transfer size | `PAYLOAD_BYTES` in `demo.sh` |
 | Theme colors, title bar | `THEMES` in `svg-postprocess.py` |
 | Dark → light color map | `TOKENS` in `svg-postprocess.py` (mirror `internal/uxlog/glyphs.go`) |
@@ -76,7 +77,7 @@ To watch the demo live without recording: `scripts/preview/demo.sh`.
 |---|---|
 | "missing required tool" | Install what it names (see setup). |
 | "cast uses #xxxxxx, which has no entry in TOKENS" | Add that color and its light pair to `TOKENS`. |
-| The demo shows a slow transfer | Pause your VPN or network filter and record again. |
+| The demo shows a slow transfer | Check the shim in `demo.sh` uses `--mode=local`; if it does, pause your VPN or network filter and record again. |
 | `AssertionError` in `svg-postprocess.py` | svg-term's output changed. Pin svg-term or update the assertion. |
 | Plain font on GitHub | Check `demo.svg` has an `@font-face` with a `data:` URL. |
 | A pane is cut off | Check the pane sizes in `director()` against `FSEND_DEMO_ROWS`. |

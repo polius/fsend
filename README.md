@@ -28,7 +28,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/demo.svg">
-    <img src="docs/assets/demo-light.svg" width="820"
+    <img src="docs/assets/demo-light.svg" width="640"
       alt="fsend demo: the sender runs 'fsend backup.zip' and gets a share code; the receiver runs 'fsend <code>' in ~/Downloads, accepts, and the file is saved there.">
   </picture>
 </p>

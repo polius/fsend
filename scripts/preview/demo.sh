@@ -21,8 +21,8 @@ UDP_ADDR="${FSEND_DEMO_UDP:-127.0.0.1:8798}"
 HOME_DIR="$ROOT/home"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# What gets transferred. A ~100 MB file so the transfer runs a few seconds and
-# shows the progress bar; a realistic name (not a plain "file.bin"). The payload
+# What gets transferred. A 2 GB file, so the local route's ~1 GB/s runs about
+# two seconds: long enough to show the progress bar, short enough to stay brisk; a realistic name (not a plain "file.bin"). The payload
 # is fresh /dev/urandom (incompressible, so zstd can't shrink it away) and cached.
 FILE="backup.zip"
 PAYLOAD="$ROOT/payload.bin"
@@ -35,7 +35,7 @@ P0="$SESSION.0"     # sender
 P1="$SESSION.1"     # receiver
 
 # Terminal geometry; ptyrec.py and svg-postprocess.py read the same values.
-COLS="${FSEND_DEMO_COLS:-88}"
+COLS="${FSEND_DEMO_COLS:-80}"
 ROWS="${FSEND_DEMO_ROWS:-33}"
 # The shell prompt colour (Tokyo Night blue, the family fsend's tokens come
 # from). Deliberately not one of fsend's six roles: the prompt is the shell's,
@@ -44,14 +44,14 @@ PROMPT_RGB="122;162;247"
 # Muted tone for the card's "· your laptop": svg-term ignores SGR dim.
 HOST_RGB="154;165;206"
 
-# ensure_payload generates the cached ~100 MB transfer payload if missing. Fresh
+# ensure_payload generates the cached 2 GB transfer payload if missing. Fresh
 # /dev/urandom so it stays incompressible — a compressible payload would shrink
 # on the wire and the progress bar would misreport the transfer.
-PAYLOAD_BYTES=100000000   # ~100 MB as fsend displays it; a few seconds in-render
+PAYLOAD_BYTES=2000000000  # 2 GB as fsend displays it; about two seconds in-render
 ensure_payload() {
   [ -f "$PAYLOAD" ] && [ "$(wc -c <"$PAYLOAD")" -eq "$PAYLOAD_BYTES" ] && return
   mkdir -p "$(dirname "$PAYLOAD")"
-  dd if=/dev/urandom of="$PAYLOAD" bs=1000000 count=100 2>/dev/null
+  dd if=/dev/urandom of="$PAYLOAD" bs=1000000 count=$((PAYLOAD_BYTES / 1000000)) 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ do_setup() {
   # Panes inherit this: silence macOS bash's "default shell is now zsh" notice.
   export BASH_SILENCE_DEPRECATION_WARNING=1
 
-  # The 100 MB payload is cached (generation is the slow part). Hardlink it
+  # The 2 GB payload is cached (generation is the slow part). Hardlink it
   # into the sender's home so each run is instant; it's outside HOME_DIR,
   # which is wiped above.
   ensure_payload
@@ -92,15 +92,16 @@ do_setup() {
     sleep 0.1
   done
 
-  # A `fsend` shim on the panes' PATH pins the transfer to the direct P2P
-  # path (--mode=direct). This keeps the recording deterministic and free of
-  # environment-specific LAN-discovery notices, while the on-screen command
-  # the viewer sees stays a plain `fsend ...`.
+  # A `fsend` shim on the panes' PATH pins the transfer to the local-network
+  # route (--mode=local), the one two devices on one network take. It keeps
+  # the recording deterministic, and a VPN or network filter that slows the
+  # hole-punched path doesn't touch it. The on-screen command the viewer sees
+  # stays a plain `fsend ...`.
   local shim="$ROOT/shim"
   mkdir -p "$shim"
   cat >"$shim/fsend" <<EOF
 #!/usr/bin/env bash
-args=(--mode=direct)
+args=(--mode=local)
 # Advertise a neutral peer name (set per pane) instead of the real hostname.
 [ -n "\${FSEND_DEMO_NAME:-}" ] && args+=(--name "\$FSEND_DEMO_NAME")
 exec '$bin' "\${args[@]}" "\$@"
