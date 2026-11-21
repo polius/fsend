@@ -142,21 +142,22 @@ repository and croc v11.6.5.
 | 10,939 files (139 MB) | **3.5 s**, 63 / 50 MiB | 37.5 s, 57 / 55 MiB |
 
 fsend's sender uses more memory on compressible data. It adds
-compressors, up to one per core, for as long as the network waits on
+compressors, up to four, for as long as the network waits on
 them, which is where its speed on text comes from.
 
-**Internet, 0.1% loss:**
+**Internet, 0.1% loss** (re-measured on 21 November 2026 with eight
+connections, mean of 2 runs, both tools in the same session):
 
 | | **fsend** | **croc** |
 |---|---:|---:|
-| One 256 MiB file (random) | **28.0 s**, 44 / 35 MiB | 30.7 s, **33 / 33 MiB** |
-| 657 MB of source code | **13.5 s**, 50 / 39 MiB | 47.4 s, **36 / 34 MiB** |
-| 10,939 files (139 MB) | **4.5 s**, 64 / 63 MiB | 45.1 s, **57 / 56 MiB** |
+| One 256 MiB file (random) | **24.7 s**, 45 / 36 MiB | 30.4 s, **34 / 33 MiB** |
+| 657 MB of source code | **12.9 s**, 55 / 40 MiB | 46.5 s, **35 / 34 MiB** |
+| 10,939 files (139 MB) | **4.8 s**, 64 / 65 MiB | 45.1 s, **56 / 56 MiB** |
 
 A single loss-based connection is capped by packet loss: at 0.1% loss
 and a 30 ms round trip, one connection gets about 1.7 MB/s however fast
 the link is. fsend's direct route therefore spreads each transfer over
-six QUIC connections that join the first one's authenticated session.
+eight QUIC connections that join the first one's authenticated session.
 croc opens four TCP connections.
 
 **Internet, no loss:**

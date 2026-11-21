@@ -166,14 +166,14 @@ The same test over the route each tool uses between networks:
 | 5,000 files of 20 KiB | **2.7 s** | 9.8 s | 5.8 s | 35 s | LAN only |
 
 On an imperfect internet path (emulated: 100 Mbit/s, 30 ms round trip,
-0.1% packet loss), fsend spreads a transfer over six direct connections.
+0.1% packet loss), fsend spreads a transfer over eight direct connections.
 croc goes through its own relay, set up on the same path:
 
 | Lossy internet link | **fsend** | **croc** |
 |---|:---:|:---:|
-| One 256 MiB file | **28 s** | 31 s |
-| 657 MB of source code | **13.5 s** | 47 s |
-| 10,939 small files (139 MB) | **4.5 s** | 45 s |
+| One 256 MiB file | **25 s** | 30 s |
+| 657 MB of source code | **13 s** | 47 s |
+| 10,939 small files (139 MB) | **4.8 s** | 45 s |
 
 **Memory**, peak while sending one 1 GiB file (sender / receiver), both
 ends on one machine:

@@ -30,9 +30,12 @@ const ALPNStripe = "fsend/1+stripe"
 const ALPNAttach = "fsend-attach/1"
 
 // stripeLanes is how many connections a striped transfer uses, the first
-// included. Six take a path with 0.1% loss from 1.7 to 10 MB/s (eight: 10.6, near its 12.5); past the link's
-// capacity more only add per-connection overhead.
-const stripeLanes = 6
+// included. Each loss-based connection is capped by packet loss, so more
+// keep a lossy path full: on 100 Mbit/s with a 30 ms round trip, eight
+// against six were 21% faster at 0.5% loss, 24% at 1% and 3–5% at
+// 0.1%, and 2–3% slower with no loss. Twelve gained more under loss
+// (38–44%) but were 9–12% slower with none.
+const stripeLanes = 8
 
 // maxLanes bounds the lanes one session accepts.
 const maxLanes = 16
