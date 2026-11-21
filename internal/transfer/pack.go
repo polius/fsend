@@ -52,7 +52,7 @@ func (c packed) free() {
 // for every transfer, and again for every retry. They are made on first
 // use, up to packWorkers: data that doesn't compress only ever wakes one
 // (compressBackoff probes with a single chunk), so a send of photos or
-// archives doesn't pay for eight. A chunk is at most 1 MiB, so that is all
+// archives doesn't pay for four. A chunk is at most 1 MiB, so that is all
 // the window it can use: the bytes on the wire are the same as with the
 // default window.
 type encoderPool struct {
@@ -123,8 +123,11 @@ func newChunkPacker(w io.Writer) (*chunkPacker, error) {
 
 // packWorkers is how many chunks compress at once. One core held text to
 // about a third of the engine's speed; a few cores lift it near the
-// network's. Past eight the writer, not zstd, is the limit.
-func packWorkers() int { return min(runtime.GOMAXPROCS(0), 8) }
+// network's. Four move 657 MB of source code over the local route as fast
+// as eight (about 0.95 s on arm64, also on emulated amd64 and a 1 Gbit
+// LAN), and each encoder is about 3 MiB: eight held 12–23 MiB more on
+// the sender. Two were 30% slower.
+func packWorkers() int { return min(runtime.GOMAXPROCS(0), 4) }
 
 // packJob is one chunk on its way through the compression workers.
 type packJob struct {
