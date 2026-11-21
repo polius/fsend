@@ -105,7 +105,7 @@ func (s *Server) ServeWS(w http.ResponseWriter, r *http.Request, tok Token) {
 		if s.lookup(tok) == nil {
 			return // evicted (cap, budget, idle): end the link
 		}
-		s.handleSafe(msg, endpoint{ws: l})
+		s.handleSafe(msg, endpoint{ws: l}, nil)
 	}
 }
 

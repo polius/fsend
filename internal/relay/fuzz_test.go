@@ -36,6 +36,6 @@ func FuzzHandleDatagram(f *testing.F) {
 	c := s.cookie(tok, src, cookieEpoch(time.Now()))
 	f.Add(frameControl(tok, msgRegister, PeerID{1}, &c)) // registers: later seeds hit the forward branch
 	f.Fuzz(func(t *testing.T, data []byte) {
-		s.handle(data, endpoint{udp: src})
+		s.handle(data, endpoint{udp: src}, nil)
 	})
 }

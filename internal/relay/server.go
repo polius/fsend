@@ -389,6 +389,9 @@ func (s *Server) Run(ctx context.Context) error {
 const maxReaders = 4
 
 func (s *Server) readLoop(ctx context.Context) error {
+	if bc := newBatchConn(s.conn); bc != nil {
+		return s.readBatchLoop(ctx, bc)
+	}
 	// One byte over MaxDatagram, so a datagram the buffer would truncate
 	// is detected and dropped instead of forwarded cut short.
 	buf := make([]byte, MaxDatagram+1)
@@ -426,22 +429,25 @@ func (s *Server) readLoop(ctx context.Context) error {
 		}
 		// Process inline — no goroutine per datagram. The buffer is reused,
 		// so anything handle keeps (a WebSocket send) must copy.
-		s.handleSafe(buf[:n], endpoint{udp: ua})
+		s.handleSafe(buf[:n], endpoint{udp: ua}, nil)
 	}
 }
 
 // handleSafe runs handle with panic recovery so one malformed datagram can
 // never crash the whole server (and every other live session with it).
-func (s *Server) handleSafe(datagram []byte, src endpoint) {
+//
+// A non-nil out collects the datagram handle forwards to a UDP peer, for
+// the caller to write with the rest of its batch.
+func (s *Server) handleSafe(datagram []byte, src endpoint, out *outBatch) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("relay: recovered panic handling datagram", "panic", r)
 		}
 	}()
-	s.handle(datagram, src)
+	s.handle(datagram, src, out)
 }
 
-func (s *Server) handle(datagram []byte, src endpoint) {
+func (s *Server) handle(datagram []byte, src endpoint, out *outBatch) {
 	if len(datagram) == 0 {
 		return
 	}
@@ -521,6 +527,9 @@ func (s *Server) handle(datagram []byte, src endpoint) {
 		if total <= cur || s.peakTransferBytes.CompareAndSwap(cur, total) {
 			break
 		}
+	}
+	if out != nil && dst.ep.udp != nil && out.add(datagram, dst.ep.udp) {
+		return
 	}
 	s.send(dst.ep, datagram)
 }
