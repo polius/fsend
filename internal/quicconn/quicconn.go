@@ -162,8 +162,10 @@ func SenderTLSConfig() (*tls.Config, error) {
 		return nil, err
 	}
 	return &tls.Config{
-		Certificates:     []tls.Certificate{cert},
-		NextProtos:       []string{ALPN},
+		Certificates: []tls.Certificate{cert},
+		// Preference order: striped when the receiver offers it, plain for
+		// a receiver up to 1.17, and extra lanes of a striped session.
+		NextProtos:       []string{ALPNStripe, ALPN, ALPNAttach},
 		MinVersion:       tls.VersionTLS13,
 		CurvePreferences: pqCurvePreferences,
 		ClientAuth:       tls.NoClientCert,
@@ -183,7 +185,7 @@ func SenderTLSConfig() (*tls.Config, error) {
 func ReceiverTLSConfig() *tls.Config {
 	return &tls.Config{
 		InsecureSkipVerify: true,
-		NextProtos:         []string{ALPN},
+		NextProtos:         []string{ALPNStripe, ALPN},
 		MinVersion:         tls.VersionTLS13,
 		CurvePreferences:   pqCurvePreferences,
 	}
@@ -270,9 +272,11 @@ type Listener struct {
 	pending map[string]chan *tls.Conn // TCP data connections awaited, by id; under mu
 	results chan *AcceptResult
 	fails   chan error // failed handshakes; dropped when full
-	done    chan struct{}
-	err     error // set before done closes
-	once    sync.Once
+
+	laneSessions map[[laneIDLen]byte]*laneSession // striped sessions open to lanes; under mu
+	done         chan struct{}
+	err          error // set before done closes
+	once         sync.Once
 }
 
 // NewListener wraps ln, authenticating each peer with secret.
@@ -370,6 +374,20 @@ func (l *Listener) acceptLoop() {
 			_ = c.CloseWithError(closeRefused, "refused")
 			continue
 		}
+		if c.ConnectionState().TLS.NegotiatedProtocol == ALPNAttach {
+			// An extra lane: no code exchange, so no failure penalty, but
+			// it shares the bound on handshakes in progress.
+			select {
+			case sem <- struct{}{}:
+				go func() {
+					defer func() { <-sem }()
+					_ = l.acceptLane(c)
+				}()
+			default:
+				_ = c.CloseWithError(closeBusy, "busy")
+			}
+			continue
+		}
 		if !l.pause() {
 			_ = c.CloseWithError(closeBusy, "closed")
 			return
@@ -382,7 +400,7 @@ func (l *Listener) acceptLoop() {
 		}
 		go func() {
 			defer func() { <-sem }()
-			res, err := SenderHandshake(context.Background(), c, l.currentSecret())
+			res, err := l.senderHandshake(context.Background(), c, l.currentSecret())
 			l.handshakeDone(err)
 			if err != nil {
 				select {
@@ -430,6 +448,14 @@ func (l *Listener) Accept(ctx context.Context) (*AcceptResult, error) {
 // The handshake is bounded by HandshakeTimeout, and a failure closes the
 // connection: keepalives would otherwise hold it open.
 func SenderHandshake(ctx context.Context, c *quic.Conn, secret string) (res *AcceptResult, err error) {
+	var l *Listener
+	return l.senderHandshake(ctx, c, secret)
+}
+
+// senderHandshake is SenderHandshake for a connection l accepted: a
+// striped session is filed with l, so the receiver's extra lanes can join
+// it. Without a listener (l nil) a striped session keeps one lane.
+func (l *Listener) senderHandshake(ctx context.Context, c *quic.Conn, secret string) (res *AcceptResult, err error) {
 	ctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer cancel()
 	defer closeOnFailure(c, &err)
@@ -450,6 +476,22 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, secret string) (res *Acc
 	if err != nil {
 		return nil, fmt.Errorf("quicconn: open data: %w", err)
 	}
+	out := wrapUniOut(data)
+	if striped(c) {
+		so := newStripeOut(&sendLane{data})
+		if l != nil {
+			// Filed before the prime goes out: the receiver dials its
+			// lanes once it has read it.
+			key, id := laneSecrets(binding)
+			l.addLaneSession(id, &laneSession{key: key, out: so, primary: c})
+			so.onClose = func() { l.dropLaneSession(id) }
+			go func() {
+				<-c.Context().Done()
+				l.dropLaneSession(id)
+			}()
+		}
+		out = so
+	}
 	if _, err := data.Write([]byte{0}); err != nil {
 		return nil, fmt.Errorf("quicconn: prime data: %w", err)
 	}
@@ -457,7 +499,7 @@ func SenderHandshake(ctx context.Context, c *quic.Conn, secret string) (res *Acc
 		Conn: c,
 		Streams: transfer.Streams{
 			Control: &streamCloser{stream: ctrl},
-			Data:    wrapUniOut(data),
+			Data:    out,
 			Binding: binding,
 		},
 	}, nil
@@ -522,6 +564,13 @@ func DialTimeout(ctx context.Context, addr, secret string, connectTimeout time.D
 // stream and consumes the priming byte. Bounded and closed on failure
 // like SenderHandshake.
 func ReceiverHandshake(ctx context.Context, c *quic.Conn, secret string) (res *AcceptResult, err error) {
+	return ReceiverHandshakeOver(ctx, nil, c, secret)
+}
+
+// ReceiverHandshakeOver is ReceiverHandshake for a connection dialed on
+// tr: a striped session then opens its extra lanes on tr, on the same
+// path. With tr nil a striped session keeps one lane.
+func ReceiverHandshakeOver(ctx context.Context, tr *quic.Transport, c *quic.Conn, secret string) (res *AcceptResult, err error) {
 	ctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer cancel()
 	defer closeOnFailure(c, &err)
@@ -544,11 +593,19 @@ func ReceiverHandshake(ctx context.Context, c *quic.Conn, secret string) (res *A
 	if _, err := io.ReadFull(data, prime[:]); err != nil {
 		return nil, fmt.Errorf("quicconn: read data prime: %w", err)
 	}
+	in := wrapUniIn(data)
+	if striped(c) {
+		si := newStripeIn(&recvLane{data})
+		if tr != nil {
+			dialLanes(tr, c, binding, si)
+		}
+		in = si
+	}
 	return &AcceptResult{
 		Conn: c,
 		Streams: transfer.Streams{
 			Control: &streamCloser{stream: ctrl},
-			Data:    wrapUniIn(data),
+			Data:    in,
 			Binding: binding,
 		},
 	}, nil

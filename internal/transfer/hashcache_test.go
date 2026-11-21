@@ -375,7 +375,7 @@ func TestBlockCache(t *testing.T) {
 	data := randBytes(5<<20 + 123)
 	writeFile(t, p, data)
 	want := func(n int) [][32]byte {
-		h := newFileHasher()
+		h := newFileHasher(&Streams{})
 		_, _ = h.Write(data[:n])
 		return h.blocks()
 	}
@@ -565,6 +565,12 @@ func TestSend_PrefixHashingEndsWithTheConnection(t *testing.T) {
 	for hashedBytes.Load() == before { // the prefix hasher is at work
 		time.Sleep(time.Millisecond)
 	}
+	// Measured from the drop: on a busy machine the sleep above can wake
+	// late, and a sparse file reads at GB/s meanwhile.
+	atDrop := hashedBytes.Load()
+	if atDrop-before >= size-2*hashBlockSize {
+		t.Skip("the whole prefix was hashed before the drop")
+	}
 	start := time.Now()
 	drop(dropped)
 	_ = ctrlB.Close()
@@ -584,8 +590,9 @@ func TestSend_PrefixHashingEndsWithTheConnection(t *testing.T) {
 	if took := time.Since(start); took > 2*time.Second {
 		t.Errorf("Send took %v to notice the drop", took)
 	}
-	if read := hashedBytes.Load() - before; read > size/2 {
-		t.Errorf("the hasher read %d MiB of a %d MiB prefix for a connection that was gone", read>>20, size>>20)
+	t.Logf("hashed %d MiB before the drop, %d MiB after", (atDrop-before)>>20, (hashedBytes.Load()-atDrop)>>20)
+	if read := hashedBytes.Load() - atDrop; read > size/2 {
+		t.Errorf("the hasher read %d MiB of a %d MiB prefix after its connection was gone", read>>20, size>>20)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,6 +39,8 @@ var errorRole string
 var runStart = time.Now()
 
 func main() {
+	tightenGC()
+
 	// Normalise --connect arguments before cobra parses. We use
 	// NoOptDefVal so bare `fsend --connect` prints the current server,
 	// but that turns the natural `fsend --connect default` into
@@ -484,3 +487,16 @@ func argsHaveFlag(name string) bool {
 	}
 	return found
 }
+
+// tightenGC collects at half the default heap growth unless GOGC is set.
+// A transfer's big buffers are recycled, not garbage, so what grows the
+// heap between collections is per-file bookkeeping: with the default the
+// heap of a folder transfer ran at about twice what it held. The extra
+// collections cost little, as the recycled buffers hold no pointers to scan.
+func tightenGC() {
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(gcPercent)
+	}
+}
+
+const gcPercent = 50

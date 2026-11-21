@@ -196,7 +196,7 @@ func streamTar(ctx context.Context, s *Streams, entries []wire.ListingEntry, nam
 						return sinkErr(err)
 					}
 					next = pos + 1
-					cur, h, written = pos, newFileHasher(), 0
+					cur, h, written = pos, newFileHasher(s), 0
 				}
 				if written+uint64(len(data)) > entries[pos].Size {
 					declineTransfer(s, wire.ErrCodeProtocolError, "received bytes exceed declared size")

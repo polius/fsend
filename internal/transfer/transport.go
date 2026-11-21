@@ -9,7 +9,10 @@
 // in-memory io.Pipes.
 package transfer
 
-import "io"
+import (
+	"io"
+	"sync"
+)
 
 // Streams is the minimal abstraction the transfer engine needs from its
 // underlying transport. In production this is wired to QUIC streams. In
@@ -23,6 +26,16 @@ type Streams struct {
 	// Binding is a secret only the two authenticated peers share (derived
 	// from the code PAKE). In-session PAKEs such as --password bind to it.
 	Binding []byte
+
+	aheadOnce sync.Once
+	ahead     chan struct{} // bounds this side's blocks in hashing (hashAhead)
+}
+
+// hashAhead bounds the blocks this side of the transfer has in hashing,
+// across all its files: see streamHashAhead.
+func (s *Streams) hashAhead() chan struct{} {
+	s.aheadOnce.Do(func() { s.ahead = make(chan struct{}, streamHashAhead) })
+	return s.ahead
 }
 
 // Close shuts both streams, swallowing individual close errors.
