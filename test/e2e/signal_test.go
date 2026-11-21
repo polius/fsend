@@ -438,6 +438,11 @@ func TestSignal_ReceiverKilledCodeStaysLive(t *testing.T) {
 
 	// Idle timeout (2 s) + two bounded re-accepts (15 s each) + backoff.
 	if !waitForStderr(s, "Lost contact with", 60*time.Second) {
+		// Failed once on macOS CI with no retry notice at all: SIGQUIT
+		// makes the stuck sender print its goroutines, to show where.
+		_ = s.cmd.Process.Signal(syscall.SIGQUIT)
+		waitForStderr(s, "goroutine ", 5*time.Second)
+		time.Sleep(500 * time.Millisecond) // the rest of the dump
 		t.Fatalf("sender never reported the lost receiver\n--- sender stderr ---\n%s", s.stderr.String())
 	}
 	// The user-facing retry notice must carry a rounded wait, not the raw
