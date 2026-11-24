@@ -318,11 +318,32 @@ jobs:
             coverage_by_package.out
           if-no-files-found: ignore
 
+  # The release image and the self-hosting stack, which nothing else here
+  # touches: docker.yml only builds on tags. Builds both release platforms
+  # (the builder cross-compiles, so no QEMU), runs the native image, and
+  # has the compose file's pinned Caddy check the Caddyfile, so a base
+  # image bump is tested before it merges.
+  docker:
+    runs-on: ubuntu-latest
+    env:
+      FSEND_DOMAIN: fsend.example.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: docker buildx build --platform linux/arm64 .
+      - run: docker build -t fsend-ci .
+      - run: docker run --rm fsend-ci --version
+      - working-directory: deploy/compose
+        run: |
+          docker compose config -q
+          docker compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
   # The one check to mark required in the ruleset: it fails unless every
   # job above passed, so new jobs are gated without touching repo settings.
   ci-ok:
     if: always()
-    needs: [test, test-386, test-freebsd, race, lint, govulncheck, fuzz, deadcode, snapshot, install-sh, install-ps1, ux, workflows, coverage]
+    needs: [test, test-386, test-freebsd, race, lint, govulncheck, fuzz, deadcode, snapshot, install-sh, install-ps1, ux, workflows, coverage, docker]
     runs-on: ubuntu-latest
     steps:
       - env:
