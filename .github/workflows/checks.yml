@@ -333,7 +333,7 @@ jobs:
           persist-credentials: false
       - run: docker buildx build --platform linux/arm64 .
       - run: docker build -t fsend-ci .
-      - run: docker run --rm fsend-ci version
+      - run: docker run --rm fsend-ci --version
       - working-directory: deploy/compose
         run: |
           docker compose config -q
