@@ -34,12 +34,18 @@ updates:
           - "patch"
 
   # Base images are pinned by digest (Dockerfile, compose); keep them current.
+  # Non-majors are auto-merged once ci-ok passes (its docker job builds the
+  # image and validates the compose stack).
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker-compose"
     directory: "/deploy/compose"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
