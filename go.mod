@@ -8,7 +8,7 @@ require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/adrg/xdg v0.5.3
 	github.com/coder/websocket v1.8.15
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/pion/ice/v4 v4.4.9
